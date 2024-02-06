@@ -25,8 +25,8 @@ use proptest_arbitrary_interop::arb;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-#[cfg(any(feature = "arbitrary", test))]
-use reth_primitives::empty_sidecars_strategy;
+//#[cfg(any(feature = "arbitrary", test))]
+//use reth_primitives::empty_sidecars_strategy;
 
 /// This informs peers of new blocks that have appeared on the network.
 #[derive_arbitrary(rlp)]
@@ -89,7 +89,8 @@ pub struct NewBlock {
 
     // only for bsc
     /// Tx sidecars for the block.
-    #[cfg_attr(any(test, feature = "arbitrary"), proptest(strategy = "empty_sidecars_strategy()"))]
+    // #[cfg_attr(any(test, feature = "arbitrary"), proptest(strategy =
+    // "empty_sidecars_strategy()"))]
     pub sidecars: Option<BlobSidecars>,
 }
 

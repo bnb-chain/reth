@@ -561,12 +561,12 @@ pub struct BlockBody {
     pub withdrawals: Option<Withdrawals>,
     // only for bsc
     /// Tx sidecars for the block.
-    //#[cfg_attr(any(test, feature = "arbitrary"), proptest(strategy =
-    //#[cfg_attr(any(test, "empty_sidecars_strategy()"))]
+    // #[cfg_attr(any(test, feature = "arbitrary"), proptest(strategy =
+    // "empty_sidecars_strategy()"))]
     pub sidecars: Option<BlobSidecars>,
     /// Requests in the block.
-    //#[cfg_attr(any(test, feature = "arbitrary"), proptest(strategy =
-    //#[cfg_attr(any(test, "empty_requests_strategy()"))]
+    // #[cfg_attr(any(test, feature = "arbitrary"), proptest(strategy =
+    // "empty_requests_strategy()"))]
     pub requests: Option<Requests>,
 }
 

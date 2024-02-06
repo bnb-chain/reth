@@ -27,6 +27,7 @@ serde = { workspace = true, optional = true }
 # arbitrary utils
 arbitrary = { workspace = true, features = ["derive"], optional = true }
 proptest = { workspace = true, optional = true }
+proptest-derive = { workspace = true, optional = true }
 proptest-arbitrary-interop = { workspace = true, optional = true }
 
 [dev-dependencies]
@@ -34,17 +35,18 @@ reth-primitives = { workspace = true, features = ["arbitrary"] }
 
 arbitrary = { workspace = true, features = ["derive"] }
 proptest.workspace = true
-proptest-arbitrary-interop.workspace = true
 proptest-derive.workspace = true
+proptest-arbitrary-interop.workspace = true
 rand.workspace = true
 
 [features]
 default = ["serde"]
+serde = ["dep:serde"]
 arbitrary = [
     "reth-primitives/arbitrary",
     "dep:arbitrary",
     "dep:proptest",
+    "dep:proptest-derive",
     "dep:proptest-arbitrary-interop",
 ]
-serde = ["dep:serde"]
 

@@ -52,7 +52,7 @@ zstd = { version = "0.13", features = ["experimental"], optional = true }
 # arbitrary utils
 arbitrary = { workspace = true, features = ["derive"], optional = true }
 proptest = { workspace = true, optional = true }
-# proptest-derive = { workspace = true, optional = true }
+proptest-derive = { workspace = true, optional = true }
 
 # `bsc` feature
 alloy-chains = { workspace = true, optional = true }
@@ -102,6 +102,7 @@ arbitrary = [
     "alloy-eips/arbitrary",
     "dep:arbitrary",
     "dep:proptest",
+    "dep:proptest-derive",
     "zstd-codec",
 ]
 c-kzg = ["dep:c-kzg", "revm-primitives/c-kzg", "dep:tempfile", "alloy-eips/kzg"]
