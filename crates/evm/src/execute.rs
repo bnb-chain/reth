@@ -157,6 +157,8 @@ pub trait BlockExecutorProvider: Send + Sync + Clone + Unpin + 'static {
         Error = BlockExecutionError,
     >;
 
+    type T; 
+
     /// Creates a new executor for single block execution.
     ///
     /// This is used to execute a single block and get the changed state.
@@ -165,7 +167,7 @@ pub trait BlockExecutorProvider: Send + Sync + Clone + Unpin + 'static {
         DB: Database<Error = ProviderError>;
 
     /// Creates a new executor for single block execution with provider read-write.
-    fn executor_with_provider_rw<DB, P>(&self, db: DB, _provider_rw: P) -> Self::Executor<DB>
+    fn executor_with_provider_rw<DB>(&self, db: DB, _provider_rw: Self::T) -> Self::Executor<DB>
         where
             DB: Database<Error = ProviderError> {
         // return normal executor by default
@@ -184,7 +186,7 @@ pub trait BlockExecutorProvider: Send + Sync + Clone + Unpin + 'static {
         DB: Database<Error = ProviderError>;
 
     /// Creates a new batch executor with the given database and pruning modes with provider read-write.
-    fn batch_executor_with_provider_rw<DB, P>(&self, db: DB, prune_modes: PruneModes, _provider: P) -> Self::BatchExecutor<DB>
+    fn batch_executor_with_provider_rw<DB>(&self, db: DB, prune_modes: PruneModes, _provider: Self::T) -> Self::BatchExecutor<DB>
         where
             DB: Database<Error = ProviderError> {
         // return normal batch executor by default

@@ -102,12 +102,13 @@ where
 
 impl<P, EvmConfig> BlockExecutorProvider for BscExecutorProvider<P, EvmConfig>
 where
-    P: ParliaProvider,
+    P: ParliaProvider + Clone + Unpin + 'static,
     EvmConfig: ConfigureEvm,
 {
     type Executor<DB: Database<Error = ProviderError>> = BscBlockExecutor<EvmConfig, DB, P>;
-
     type BatchExecutor<DB: Database<Error = ProviderError>> = BscBatchExecutor<EvmConfig, DB, P>;
+    type T = P;
+
     fn executor<DB>(&self, _db: DB) -> Self::Executor<DB>
     where
         DB: Database<Error = ProviderError>,
@@ -115,7 +116,7 @@ where
         panic!("Use `executor_with_provider_rw` instead")
     }
 
-    fn executor_with_provider_rw<DB, P>(&self, db: DB, provider: P) -> Self::Executor<DB>
+    fn executor_with_provider_rw<DB>(&self, db: DB, provider: Self::T) -> Self::Executor<DB>
     where
         DB: Database<Error = ProviderError>,
     {
@@ -129,11 +130,11 @@ where
         panic!("Use `batch_executor_with_provider_rw` instead")
     }
 
-    fn batch_executor_with_provider_rw<DB, P>(
+    fn batch_executor_with_provider_rw<DB>(
         &self,
         db: DB,
         prune_modes: PruneModes,
-        provider: P,
+        provider: Self::T,
     ) -> Self::BatchExecutor<DB>
     where
         DB: Database<Error = ProviderError>,
