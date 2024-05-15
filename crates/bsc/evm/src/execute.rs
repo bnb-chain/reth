@@ -48,6 +48,7 @@ use std::{collections::HashMap, marker::PhantomData, num::NonZeroUsize, sync::Ar
 use tracing::{debug, trace};
 
 const SNAP_CACHE_NUM: usize = 2048;
+const BLST_DST: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_";
 
 lazy_static! {
     // snapshot cache map by block_hash: snapshot
@@ -622,12 +623,11 @@ where
 
             let sig = Signature::from_bytes(&attestation.agg_signature[..])
                 .map_err(|_| BscBlockExecutionError::BLSTInnerError)?;
-            let err = sig.aggregate_verify(
+            let err = sig.fast_aggregate_verify(
                 true,
-                &[attestation.data.hash().as_slice()],
-                &[],
+                attestation.data.hash().as_slice(),
+                BLST_DST,
                 &vote_addrs,
-                true,
             );
 
             return match err {
@@ -1346,6 +1346,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use super::BLST_DST;
     use blst::min_pk::{PublicKey, Signature};
     use reth_db::models::parlia::{VoteAddress, VoteData, VoteSignature};
     use reth_primitives::{b256, hex};
@@ -1372,9 +1373,9 @@ mod tests {
         let vote_addrs: Vec<&PublicKey> = vote_addrs.iter().collect();
 
         let sig = Signature::from_bytes(&agg_signature[..]).unwrap();
-        let err =
-            sig.aggregate_verify(true, &[vote_data.hash().as_slice()], &[], &vote_addrs, true);
+        let res =
+            sig.fast_aggregate_verify(true, vote_data.hash().as_slice(), BLST_DST, &vote_addrs);
 
-        println!("{:?}", err);
+        assert_eq!(res, blst::BLST_ERROR::BLST_SUCCESS);
     }
 }

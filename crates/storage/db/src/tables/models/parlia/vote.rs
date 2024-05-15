@@ -59,18 +59,6 @@ impl VoteEnvelope {
     pub fn hash(&self) -> B256 {
         keccak256(alloy_rlp::encode(self))
     }
-
-    // /// verify, check if VoteEnvelope's signature is valid
-    // pub fn verify(&self) -> Result<(), > {
-    //     let bls_key = PublicKey::from_bytes(&self.vote_address[..])?;
-    //     let sig = Signature::from_bytes(&self.signature[..])?;
-    //
-    //     let err = sig.verify(true, self.hash().as_bytes(), &[], &[], &bls_key, true);
-    //     if !err == BLST_ERROR::BLST_SUCCESS {
-    //         return Err(err.into());
-    //     }
-    //     Ok(())
-    // }
 }
 
 /// VoteAttestation represents the votes of super majority validators.
