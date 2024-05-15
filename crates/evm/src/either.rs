@@ -19,6 +19,7 @@ where
     type Executor<DB: Database<Error = ProviderError>> = Either<A::Executor<DB>, B::Executor<DB>>;
     type BatchExecutor<DB: Database<Error = ProviderError>> =
         Either<A::BatchExecutor<DB>, B::BatchExecutor<DB>>;
+    type ExtraProvider = ();
 
     fn executor<DB>(&self, db: DB) -> Self::Executor<DB>
     where

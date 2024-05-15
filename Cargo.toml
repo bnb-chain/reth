@@ -409,5 +409,5 @@ test-fuzz = "5"
 
 [patch.crates-io]
 # TODO: update to official version
-revm = { git = "https://github.com/bnb-chain/revm", rev = "dee51654d63f2a8c0197ae804e3efe985ec39557" }
-revm-primitives = { git = "https://github.com/bnb-chain/revm", rev = "dee51654d63f2a8c0197ae804e3efe985ec39557" }
+revm = { git = "https://github.com/bnb-chain/revm", rev = "baf5e15d053b9cc183d69867934f40ffece898e1" }
+revm-primitives = { git = "https://github.com/bnb-chain/revm", rev = "baf5e15d053b9cc183d69867934f40ffece898e1" }

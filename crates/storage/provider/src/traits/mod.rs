@@ -85,4 +85,7 @@ mod tree_viewer;
 pub use tree_viewer::TreeViewer;
 
 mod parlia_snapshot;
+mod parlia_provider;
+pub use parlia_provider::ParliaProvider;
+
 pub use parlia_snapshot::{ParliaSnapshotReader, ParliaSnapshotWriter};

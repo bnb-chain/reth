@@ -10,11 +10,10 @@ use lazy_static::lazy_static;
 use lru::LruCache;
 use parking_lot::RwLock;
 use reth_bsc_consensus::{
-    get_top_validators_by_voting_power, hash_with_chain_id, is_breathe_block,
-    is_system_transaction, Parlia, ParliaConfig, ParliaConsensusError,
-    COLLECT_ADDITIONAL_VOTES_REWARD_RATIO, DIFF_INTURN, DIFF_NOTURN, EXTRA_SEAL_LEN,
-    EXTRA_VANITY_LEN, MAX_SYSTEM_REWARD, NATURALLY_JUSTIFIED_DIST, SYSTEM_REWARD_CONTRACT,
-    SYSTEM_REWARD_PERCENT, SYSTEM_TXS_GAS,
+    get_top_validators_by_voting_power, is_breathe_block, is_system_transaction, Parlia,
+    ParliaConfig, COLLECT_ADDITIONAL_VOTES_REWARD_RATIO, DIFF_INTURN, DIFF_NOTURN,
+    MAX_SYSTEM_REWARD, NATURALLY_JUSTIFIED_DIST, SYSTEM_REWARD_CONTRACT, SYSTEM_REWARD_PERCENT,
+    SYSTEM_TXS_GAS,
 };
 use reth_db::models::parlia::{
     Snapshot, VoteAddress, CHECKPOINT_INTERVAL, MAX_ATTESTATION_EXTRA_LENGTH,
@@ -32,21 +31,20 @@ use reth_interfaces::{
 };
 use reth_primitives::{
     constants::SYSTEM_ADDRESS, Address, BlockNumber, BlockWithSenders, Bytes, ChainSpec,
-    GotExpected, Hardfork, Header, PruneModes, Receipt, Receipts, SealedHeader, Transaction,
-    TransactionSigned, TxType, Withdrawals, B256, U256,
+    GotExpected, Hardfork, Header, PruneModes, Receipt, Receipts, Transaction, TransactionSigned,
+    B256, U256,
 };
-use reth_provider::{HeaderProvider, ParliaSnapshotReader, ParliaSnapshotWriter};
+use reth_provider::ParliaProvider;
 use reth_revm::{
     batch::{BlockBatchRecord, BlockExecutorStats},
     db::states::bundle_state::BundleRetention,
-    state_change::{apply_beacon_root_contract_call, post_block_balance_increments},
     Evm, State,
 };
 use revm_primitives::{
     db::{Database, DatabaseCommit},
     BlockEnv, CfgEnvWithHandlerCfg, EnvWithHandlerCfg, ResultAndState, TransactTo,
 };
-use std::{collections::HashMap, num::NonZeroUsize, sync::Arc};
+use std::{collections::HashMap, marker::PhantomData, num::NonZeroUsize, sync::Arc};
 use tracing::{debug, trace};
 
 const SNAP_CACHE_NUM: usize = 2048;
@@ -58,31 +56,32 @@ lazy_static! {
 
 /// Provides executors to execute regular bsc blocks
 #[derive(Debug, Clone)]
-pub struct BscExecutorProvider<EvmConfig = BscEvmConfig> {
+pub struct BscExecutorProvider<P, EvmConfig = BscEvmConfig> {
     chain_spec: Arc<ChainSpec>,
     evm_config: EvmConfig,
     parlia_config: ParliaConfig,
+    _marker: PhantomData<P>,
 }
 
-impl BscExecutorProvider {
+impl<P> BscExecutorProvider<P> {
     /// Creates a new default bsc executor provider.
     pub fn bsc(chain_spec: Arc<ChainSpec>) -> Self {
         Self::new(chain_spec, Default::default(), ParliaConfig::default())
     }
 }
 
-impl<EvmConfig> BscExecutorProvider<EvmConfig> {
+impl<P, EvmConfig> BscExecutorProvider<P, EvmConfig> {
     /// Creates a new executor provider.
     pub fn new(
         chain_spec: Arc<ChainSpec>,
         evm_config: EvmConfig,
         parlia_config: ParliaConfig,
     ) -> Self {
-        Self { chain_spec, evm_config, parlia_config }
+        Self { chain_spec, evm_config, parlia_config, _marker: PhantomData::<P> }
     }
 }
 
-impl<EvmConfig, P> BscExecutorProvider<EvmConfig>
+impl<P, EvmConfig> BscExecutorProvider<P, EvmConfig>
 where
     EvmConfig: ConfigureEvm,
 {
@@ -100,13 +99,17 @@ where
     }
 }
 
-impl<EvmConfig, P> BlockExecutorProvider for BscExecutorProvider<EvmConfig>
+impl<P, EvmConfig> BlockExecutorProvider for BscExecutorProvider<P, EvmConfig>
 where
+    P: ParliaProvider + Clone + Unpin + 'static,
     EvmConfig: ConfigureEvm,
 {
     type Executor<DB: Database<Error = ProviderError>> = BscBlockExecutor<EvmConfig, DB, P>;
 
     type BatchExecutor<DB: Database<Error = ProviderError>> = BscBatchExecutor<EvmConfig, DB, P>;
+
+    type ExtraProvider = P;
+
     fn executor<DB>(&self, _db: DB) -> Self::Executor<DB>
     where
         DB: Database<Error = ProviderError>,
@@ -114,11 +117,15 @@ where
         panic!("Use `executor_with_provider_rw` instead")
     }
 
-    fn executor_with_provider_rw<DB, P>(&self, db: DB, provider: P) -> Self::Executor<DB>
+    fn executor_with_provider_rw<DB>(
+        &self,
+        db: DB,
+        extra_provider: Self::ExtraProvider,
+    ) -> Self::Executor<DB>
     where
         DB: Database<Error = ProviderError>,
     {
-        self.bsc_executor(db, provider)
+        self.bsc_executor(db, extra_provider)
     }
 
     fn batch_executor<DB>(&self, _db: DB, _prune_modes: PruneModes) -> Self::BatchExecutor<DB>
@@ -128,16 +135,16 @@ where
         panic!("Use `batch_executor_with_provider_rw` instead")
     }
 
-    fn batch_executor_with_provider_rw<DB, P>(
+    fn batch_executor_with_provider_rw<DB>(
         &self,
         db: DB,
         prune_modes: PruneModes,
-        provider: P,
+        extra_provider: Self::ExtraProvider,
     ) -> Self::BatchExecutor<DB>
     where
         DB: Database<Error = ProviderError>,
     {
-        let executor = self.bsc_executor(db, provider);
+        let executor = self.bsc_executor(db, extra_provider);
         BscBatchExecutor {
             executor,
             batch_record: BlockBatchRecord::new(prune_modes),
@@ -169,8 +176,8 @@ where
     fn execute_pre_and_transactions<Ext, DB>(
         &self,
         block: &BlockWithSenders,
-        evm: &mut Evm<'_, Ext, &mut State<DB>>,
-    ) -> Result<(Vec<&TransactionSigned>, Vec<Receipt>, u64), BlockExecutionError>
+        mut evm: Evm<'_, Ext, &mut State<DB>>,
+    ) -> Result<(Vec<TransactionSigned>, Vec<Receipt>, u64), BlockExecutionError>
     where
         DB: Database<Error = ProviderError>,
     {
@@ -183,15 +190,13 @@ where
         let mut receipts = Vec::with_capacity(block.body.len());
         for (sender, transaction) in block.transactions_with_sender() {
             if is_system_transaction(transaction, &block.header) {
-                system_txs.push(transaction);
+                system_txs.push(transaction.clone());
                 continue
             }
             // systemTxs should be always at the end of block.
             if self.chain_spec.is_cancun_active_at_timestamp(block.timestamp) {
                 if system_txs.len() > 0 {
-                    return Err(BlockExecutionError::Validation(
-                        BscBlockExecutionError::UnexpectedNormalTx.into(),
-                    ))
+                    return Err(BscBlockExecutionError::UnexpectedNormalTx.into())
                 }
             }
 
@@ -243,6 +248,7 @@ where
                 },
             );
         }
+        drop(evm);
 
         Ok((system_txs, receipts, cumulative_gas_used))
     }
@@ -283,6 +289,7 @@ impl<EvmConfig, DB, P> BscBlockExecutor<EvmConfig, DB, P> {
         &self.executor.chain_spec
     }
 
+    #[allow(unused)]
     #[inline]
     fn parlia(&self) -> &Parlia {
         &self.parlia
@@ -299,7 +306,7 @@ impl<EvmConfig, DB, P> BscBlockExecutor<EvmConfig, DB, P>
 where
     EvmConfig: ConfigureEvm,
     DB: Database<Error = ProviderError>,
-    P: HeaderProvider + ParliaSnapshotReader + ParliaSnapshotWriter,
+    P: ParliaProvider,
 {
     /// Configures a new evm configuration and block environment for the given block.
     ///
@@ -340,12 +347,13 @@ where
             todo!()
         }
 
-        let mut evm = self.executor.evm_config.evm_with_env(&mut self.state, env);
-        let (mut system_txs, mut receipts, mut gas_used) =
-            self.executor.execute_pre_and_transactions(block, &mut evm)?;
+        let (mut system_txs, mut receipts, mut gas_used) = {
+            let evm = self.executor.evm_config.evm_with_env(&mut self.state, env.clone());
+            self.executor.execute_pre_and_transactions(block, evm)
+        }?;
 
         // 3. apply post execution changes
-        self.post_execution(block, &mut system_txs, &mut receipts, &mut gas_used, &mut evm)?;
+        self.post_execution(block, &mut system_txs, &mut receipts, &mut gas_used, env.clone())?;
 
         // Check if gas used matches the value set in header.
         if block.gas_used != gas_used {
@@ -385,17 +393,15 @@ where
     }
 
     /// Apply post execution state changes, including system txs and other state change.
-    pub fn post_execution<Ext, DB>(
+    pub fn post_execution(
         &mut self,
         block: &BlockWithSenders,
-        system_txs: &mut Vec<&TransactionSigned>,
+        system_txs: &mut Vec<TransactionSigned>,
         receipts: &mut Vec<Receipt>,
         cumulative_gas_used: &mut u64,
-        evm: &mut Evm<'_, Ext, &mut State<DB>>,
-    ) -> Result<(), BlockExecutionError>
-    where
-        DB: Database<Error = ProviderError>,
-    {
+        // evm: &mut Evm<'_, Ext, &mut State<DB>>,
+        env: EnvWithHandlerCfg,
+    ) -> Result<(), BlockExecutionError> {
         let number = block.number;
         let validator = block.beneficiary;
         let header = &block.header;
@@ -405,10 +411,16 @@ where
 
         //TODO: isMajorityFork ?
 
-        self.verify_validators(header, evm)?;
+        self.verify_validators(header, env.clone())?;
 
         if number == 1 {
-            self.init_genesis_contracts(validator, system_txs, receipts, cumulative_gas_used, evm)?;
+            self.init_genesis_contracts(
+                validator,
+                system_txs,
+                receipts,
+                cumulative_gas_used,
+                env.clone(),
+            )?;
         }
 
         if self.parlia.chain_spec().fork(Hardfork::Feynman).active_at_timestamp(block.timestamp) {
@@ -417,7 +429,13 @@ where
         }
 
         if self.parlia.is_on_feynman(block.timestamp, parent.timestamp) {
-            self.init_feynman_contracts(validator, system_txs, receipts, cumulative_gas_used, evm)?;
+            self.init_feynman_contracts(
+                validator,
+                system_txs,
+                receipts,
+                cumulative_gas_used,
+                env.clone(),
+            )?;
         }
 
         // slash validator if it's not inturn
@@ -442,12 +460,12 @@ where
                     system_txs,
                     receipts,
                     cumulative_gas_used,
-                    evm,
+                    env.clone(),
                 )?;
             }
         }
 
-        self.distribute_incoming(header, system_txs, receipts, cumulative_gas_used, evm)?;
+        self.distribute_incoming(header, system_txs, receipts, cumulative_gas_used, env.clone())?;
 
         if self.parlia.chain_spec().fork(Hardfork::Plato).active_at_block(number) {
             self.distribute_finality_reward(
@@ -455,7 +473,7 @@ where
                 system_txs,
                 receipts,
                 cumulative_gas_used,
-                evm,
+                env.clone(),
             )?;
         }
 
@@ -469,15 +487,13 @@ where
                     system_txs,
                     receipts,
                     cumulative_gas_used,
-                    evm,
+                    env.clone(),
                 )?;
             }
         }
 
         if !system_txs.is_empty() {
-            return Err(BlockExecutionError::Validation(
-                BscBlockExecutionError::UnexpectedSystemTx.into(),
-            ))
+            return Err(BscBlockExecutionError::UnexpectedSystemTx.into())
         }
 
         Ok(())
@@ -527,7 +543,10 @@ where
         header: &Header,
         parent: &Header,
     ) -> Result<(), BlockExecutionError> {
-        let attestation = self.parlia.get_vote_attestation_from_header(header)?;
+        let attestation = self
+            .parlia
+            .get_vote_attestation_from_header(header)
+            .map_err(|_| BscBlockExecutionError::ProviderInnerError)?;
         if let Some(attestation) = attestation {
             if attestation.extra.len() > MAX_ATTESTATION_EXTRA_LENGTH {
                 return Err(BscBlockExecutionError::TooLargeAttestationExtraLen {
@@ -623,7 +642,10 @@ where
 
     fn verify_seal(&self, snap: &Snapshot, header: &Header) -> Result<(), BlockExecutionError> {
         let block_number = header.number;
-        let proposer = self.parlia.recover_proposer(header)?;
+        let proposer = self
+            .parlia
+            .recover_proposer(header)
+            .map_err(|_| BscBlockExecutionError::ProviderInnerError)?;
 
         if proposer != header.beneficiary {
             return Err(BscBlockExecutionError::WrongHeaderSigner {
@@ -641,7 +663,8 @@ where
             if *recent == proposer {
                 // Signer is among recent_proposers, only fail if the current block doesn't shift it
                 // out
-                let limit = self.get_recently_proposal_limit(header, snap.validators.len() as u64);
+                let limit =
+                    self.parlia.get_recently_proposal_limit(header, snap.validators.len() as u64);
                 if *seen > block_number - limit {
                     return Err(BscBlockExecutionError::SignerOverLimit { proposer }.into());
                 }
@@ -652,10 +675,9 @@ where
         if (is_inturn && header.difficulty != DIFF_INTURN) ||
             (!is_inturn && header.difficulty != DIFF_NOTURN)
         {
-            return Err(BscBlockExecutionError::ParliaConsensusError(
-                ParliaConsensusError::InvalidDifficulty { difficulty: header.difficulty },
-            )
-            .into());
+            return Err(
+                BscBlockExecutionError::InvalidDifficulty { difficulty: header.difficulty }.into()
+            );
         }
 
         Ok(())
@@ -673,7 +695,7 @@ where
         let mut block_hash = header.hash_slow();
         let mut skip_headers = Vec::new();
 
-        let mut snap: Option<Snapshot> = None;
+        let snap: Option<Snapshot>;
         loop {
             // Read from cache
             if let Some(cached) = cache.get(&block_hash) {
@@ -695,8 +717,10 @@ where
 
             // If we're at the genesis, snapshot the initial state.
             if block_number == 0 {
-                let (next_validators, bls_keys) =
-                    self.parse_validators_from_header(header.header())?;
+                let (next_validators, bls_keys) = self
+                    .parlia
+                    .parse_validators_from_header(&header)
+                    .map_err(|_| BscBlockExecutionError::ProviderInnerError)?;
                 snap = Some(Snapshot::new(
                     next_validators,
                     block_number,
@@ -720,7 +744,7 @@ where
             {
                 let hash = h.hash_slow();
                 if hash != header.parent_hash {
-                    return Err(BscBlockExecutionError::ParentUnknown { hash: block_hash });
+                    return Err(BscBlockExecutionError::ParentUnknown { hash: block_hash }.into());
                 }
                 block_number = h.number;
                 block_hash = hash;
@@ -728,17 +752,23 @@ where
             }
         }
 
-        if snap.is_none() {
-            return Err(BscBlockExecutionError::SnapshotNotFound.into())
-        }
-        let mut snap = snap.unwrap();
+        let mut snap = snap.ok_or_else(|| BscBlockExecutionError::SnapshotNotFound)?;
 
         // apply skip headers
         skip_headers.reverse();
         for header in skip_headers.iter() {
-            let validator = self.recover_proposer(header)?;
-            let (next_validators, bls_keys) = self.parse_validators_from_header(header)?;
-            let attestation = self.get_vote_attestation_from_header(header)?;
+            let validator = self
+                .parlia
+                .recover_proposer(header)
+                .map_err(|_| BscBlockExecutionError::ProviderInnerError)?;
+            let (next_validators, bls_keys) = self
+                .parlia
+                .parse_validators_from_header(header)
+                .map_err(|_| BscBlockExecutionError::ProviderInnerError)?;
+            let attestation = self
+                .parlia
+                .get_vote_attestation_from_header(header)
+                .map_err(|_| BscBlockExecutionError::ProviderInnerError)?;
             snap = snap
                 .apply(validator, header, next_validators, bls_keys, attestation)
                 .ok_or_else(|| BscBlockExecutionError::ApplySnapshotFailed)?;
@@ -812,13 +842,13 @@ where
         }
     }
 
-    fn verify_validators<Ext, DB>(
-        &self,
+    fn verify_validators(
+        &mut self,
         header: &Header,
-        evm: &mut Evm<'_, Ext, &mut State<DB>>,
+        env: EnvWithHandlerCfg,
     ) -> Result<(), BlockExecutionError> {
         let number = header.number;
-        let (mut validators, mut vote_addrs_map) = self.get_current_validators(number, evm);
+        let (mut validators, mut vote_addrs_map) = self.get_current_validators(number, env.clone());
 
         validators.sort();
         let validator_num = validators.len();
@@ -829,7 +859,7 @@ where
                     validator_bytes.extend_from_slice(v.as_ref());
                 }
 
-                validator_bytes.as_slice()
+                validator_bytes
             } else {
                 if self.parlia.is_on_luban(number) {
                     vote_addrs_map = Vec::with_capacity(validator_num);
@@ -844,10 +874,10 @@ where
                     validator_bytes.extend_from_slice(vote_addrs_map[i].as_ref());
                 }
 
-                validator_bytes.as_slice()
+                validator_bytes
             };
 
-        if !validator_bytes.eq(self
+        if !validator_bytes.as_slice().eq(self
             .parlia
             .get_validator_bytes_from_header(header)
             .unwrap()
@@ -859,88 +889,102 @@ where
         Ok(())
     }
 
-    fn get_current_validators<Ext, DB>(
-        &self,
+    fn get_current_validators(
+        &mut self,
         number: BlockNumber,
-        evm: &mut Evm<'_, Ext, &mut State<DB>>,
+        env: EnvWithHandlerCfg,
     ) -> (Vec<Address>, Vec<VoteAddress>) {
         if self.parlia.chain_spec().fork(Hardfork::Luban).active_at_block(number) {
             let (to, data) = self.parlia.get_current_validators_before_luban(number);
-            let output = self.eth_call(to, data, evm)?;
+            let output = self.eth_call(to, data, env.clone()).unwrap();
 
             (self.parlia.unpack_data_into_validator_set_before_luban(output.as_ref()), Vec::new())
         } else {
             let (to, data) = self.parlia.get_current_validators();
-            let output = self.eth_call(to, data, evm)?;
+            let output = self.eth_call(to, data, env.clone()).unwrap();
 
             self.parlia.unpack_data_into_validator_set(output.as_ref())
         }
     }
 
-    fn init_genesis_contracts<Ext, DB>(
-        &self,
+    fn init_genesis_contracts(
+        &mut self,
         validator: Address,
-        system_txs: &mut Vec<&TransactionSigned>,
+        system_txs: &mut Vec<TransactionSigned>,
         receipts: &mut Vec<Receipt>,
         cumulative_gas_used: &mut u64,
-        evm: &mut Evm<'_, Ext, &mut State<DB>>,
+        env: EnvWithHandlerCfg,
     ) -> Result<(), BlockExecutionError> {
-        let nonce = evm.db_mut().basic(validator).unwrap().unwrap().nonce;
-        self.parlia.init_genesis_contracts(nonce).iter().for_each(|tx| {
-            self.transact_system_tx(tx, validator, system_txs, receipts, cumulative_gas_used, evm)?;
-        });
+        let transactions = self.parlia.init_genesis_contracts();
+        for tx in transactions {
+            self.transact_system_tx(
+                tx,
+                validator,
+                system_txs,
+                receipts,
+                cumulative_gas_used,
+                env.clone(),
+            )?;
+        }
 
         Ok(())
     }
 
-    fn init_feynman_contracts<Ext, DB>(
-        &self,
+    fn init_feynman_contracts(
+        &mut self,
         validator: Address,
-        system_txs: &mut Vec<&TransactionSigned>,
+        system_txs: &mut Vec<TransactionSigned>,
         receipts: &mut Vec<Receipt>,
         cumulative_gas_used: &mut u64,
-        evm: &mut Evm<'_, Ext, &mut State<DB>>,
+        env: EnvWithHandlerCfg,
     ) -> Result<(), BlockExecutionError> {
-        let nonce = evm.db_mut().basic(validator).unwrap().unwrap().nonce;
-        self.parlia.init_feynman_contracts(nonce).iter().for_each(|tx| {
-            self.transact_system_tx(tx, validator, system_txs, receipts, cumulative_gas_used, evm)?;
-        });
+        let transactions = self.parlia.init_feynman_contracts();
+        for tx in transactions {
+            self.transact_system_tx(
+                tx,
+                validator,
+                system_txs,
+                receipts,
+                cumulative_gas_used,
+                env.clone(),
+            )?;
+        }
 
         Ok(())
     }
 
-    fn slash_spoiled_validator<Ext, DB>(
-        &self,
+    fn slash_spoiled_validator(
+        &mut self,
         validator: Address,
         spoiled_val: Address,
-        system_txs: &mut Vec<&TransactionSigned>,
+        system_txs: &mut Vec<TransactionSigned>,
         receipts: &mut Vec<Receipt>,
         cumulative_gas_used: &mut u64,
-        evm: &mut Evm<'_, Ext, &mut State<DB>>,
+        env: EnvWithHandlerCfg,
     ) -> Result<(), BlockExecutionError> {
-        let nonce = evm.db_mut().basic(validator).unwrap().unwrap().nonce;
         self.transact_system_tx(
-            &self.parlia.slash(nonce, spoiled_val),
+            self.parlia.slash(spoiled_val),
             validator,
             system_txs,
             receipts,
             cumulative_gas_used,
-            evm,
+            env.clone(),
         )?;
 
         Ok(())
     }
 
-    fn distribute_incoming<Ext, DB>(
-        &self,
+    fn distribute_incoming(
+        &mut self,
         header: &Header,
-        system_txs: &mut Vec<&TransactionSigned>,
+        system_txs: &mut Vec<TransactionSigned>,
         receipts: &mut Vec<Receipt>,
         cumulative_gas_used: &mut u64,
-        evm: &mut Evm<'_, Ext, &mut State<DB>>,
+        env: EnvWithHandlerCfg,
     ) -> Result<(), BlockExecutionError> {
         let validator = header.beneficiary;
 
+        let mut evm = self.executor.evm_config.evm_with_env(&mut self.state, env.clone());
         let mut block_reward = *evm.db_mut().drain_balances([SYSTEM_ADDRESS])?.first().unwrap();
         let mut balance_increment = HashMap::new();
         balance_increment.insert(validator, block_reward);
@@ -948,20 +992,21 @@ where
             .increment_balances(balance_increment)
             .map_err(|_| BlockValidationError::IncrementBalanceFailed)?;
 
+        let system_reward_balance =
+            evm.db_mut().basic(*SYSTEM_REWARD_CONTRACT).unwrap().unwrap().balance;
+        drop(evm);
+
         if !self.parlia.chain_spec().fork(Hardfork::Kepler).active_at_timestamp(header.timestamp) {
-            let system_reward_balance =
-                evm.db_mut().basic(*SYSTEM_REWARD_CONTRACT).unwrap().unwrap().balance;
-            if system_reward_balance.try_into().unwrap() < MAX_SYSTEM_REWARD {
+            if system_reward_balance > U256::from(MAX_SYSTEM_REWARD) {
                 let reward_to_system = block_reward >> SYSTEM_REWARD_PERCENT;
                 if reward_to_system > 0 {
-                    let nonce = evm.db_mut().basic(validator).unwrap().unwrap().nonce;
                     self.transact_system_tx(
-                        &self.parlia.distribute_to_system(nonce, reward_to_system),
+                        self.parlia.distribute_to_system(reward_to_system),
                         validator,
                         system_txs,
                         receipts,
                         cumulative_gas_used,
-                        evm,
+                        env.clone(),
                     )?;
                 }
 
@@ -969,26 +1014,25 @@ where
             }
         }
 
-        let nonce = self.db_mut().basic(validator).unwrap().unwrap().nonce;
         self.transact_system_tx(
-            &self.parlia.distribute_to_validator(nonce, validator, block_reward),
+            self.parlia.distribute_to_validator(validator, block_reward),
             validator,
             system_txs,
             receipts,
             cumulative_gas_used,
-            evm,
+            env.clone(),
         )?;
 
         Ok(())
     }
 
-    fn distribute_finality_reward<Ext, DB>(
-        &self,
+    fn distribute_finality_reward(
+        &mut self,
         header: &Header,
-        system_txs: &mut Vec<&TransactionSigned>,
+        system_txs: &mut Vec<TransactionSigned>,
         receipts: &mut Vec<Receipt>,
         cumulative_gas_used: &mut u64,
-        evm: &mut Evm<'_, Ext, &mut State<DB>>,
+        env: EnvWithHandlerCfg,
     ) -> Result<(), BlockExecutionError> {
         if header.number % self.parlia.epoch() != 0 {
             return Ok(())
@@ -1000,7 +1044,11 @@ where
         let start = (header.number - self.parlia.epoch()).max(1);
         for height in (start..header.number).rev() {
             let header = self.get_header_by_hash(height, header.parent_hash)?;
-            if let Some(attestation) = self.get_vote_attestation_from_header(&header)? {
+            if let Some(attestation) = self
+                .parlia
+                .get_vote_attestation_from_header(&header)
+                .map_err(|_| BscBlockExecutionError::ProviderInnerError)?
+            {
                 let justified_header = self.get_header_by_hash(
                     attestation.data.target_number,
                     attestation.data.target_hash,
@@ -1039,34 +1087,33 @@ where
         let weights: Vec<U256> =
             validators.iter().map(|val| accumulated_weights[val].clone()).collect();
 
-        let nonce = self.db_mut().basic(validator).unwrap().unwrap().nonce;
         self.transact_system_tx(
-            &self.parlia.distribute_finality_reward(nonce, validators, weights),
+            self.parlia.distribute_finality_reward(validators, weights),
             validator,
             system_txs,
             receipts,
             cumulative_gas_used,
-            evm,
+            env.clone(),
         )?;
 
         Ok(())
     }
 
-    fn update_validator_set_v2<Ext, DB>(
-        &self,
+    fn update_validator_set_v2(
+        &mut self,
         validator: Address,
-        system_txs: &mut Vec<&TransactionSigned>,
+        system_txs: &mut Vec<TransactionSigned>,
         receipts: &mut Vec<Receipt>,
         cumulative_gas_used: &mut u64,
-        evm: &mut Evm<'_, Ext, &mut State<DB>>,
+        env: EnvWithHandlerCfg,
     ) -> Result<(), BlockExecutionError> {
         let (to, data) = self.parlia.get_max_elected_validators();
-        let output = self.eth_call(to, data, evm)?;
+        let output = self.eth_call(to, data, env.clone())?;
         let max_elected_validators =
             self.parlia.unpack_data_into_max_elected_validators(output.as_ref());
 
         let (to, data) = self.parlia.get_validator_election_info();
-        let output = self.eth_call(to, data, evm)?;
+        let output = self.eth_call(to, data, env.clone())?;
         let (consensus_addrs, voting_powers, vote_addrs, total_length) =
             self.parlia.unpack_data_into_validator_election_info(output.as_ref());
 
@@ -1077,32 +1124,27 @@ where
             total_length,
             max_elected_validators,
         )
-        .ok_or(Err(BscBlockExecutionError::GetTopValidatorsFailed.into()))?;
+        .ok_or_else(|| BscBlockExecutionError::GetTopValidatorsFailed)?;
 
-        let nonce = evm.db_mut().basic(validator).unwrap().unwrap().nonce;
         self.transact_system_tx(
-            &self.parlia.update_validator_set_v2(
-                nonce,
-                e_validators,
-                e_voting_powers,
-                e_vote_addrs,
-            ),
+            self.parlia.update_validator_set_v2(e_validators, e_voting_powers, e_vote_addrs),
             validator,
             system_txs,
             receipts,
             cumulative_gas_used,
-            evm,
+            env.clone(),
         )?;
 
         Ok(())
     }
 
-    fn eth_call<Ext, DB>(
-        &self,
+    fn eth_call(
+        &mut self,
         to: Address,
         data: Bytes,
-        evm: &mut Evm<'_, Ext, &mut State<DB>>,
-    ) -> Result<&Bytes, BlockExecutionError> {
+        env: EnvWithHandlerCfg,
+    ) -> Result<Bytes, BlockExecutionError> {
+        let mut evm = self.executor.evm_config.evm_with_env(&mut self.state, env);
         let tx_env = evm.tx_mut();
 
         tx_env.caller = Address::default();
@@ -1128,26 +1170,32 @@ where
         // Execute call.
         let ResultAndState { result, .. } = evm.transact().map_err(move |e| {
             // Ensure hash is calculated for error log, if not already done
-            BlockValidationError::EVM { hash: B256::default(), error: e.into() }.into()
+            BlockValidationError::EVM { hash: B256::default(), error: e.into() }
         })?;
 
         if !result.is_success() {
             return Err(BscBlockExecutionError::EthCallFailed.into())
         }
 
-        result.output().ok_or_else(|| BscBlockExecutionError::EthCallFailed.into())
+        let output = result.output().ok_or_else(|| BscBlockExecutionError::EthCallFailed)?;
+        Ok(output.clone())
     }
 
-    fn transact_system_tx<Ext, DB>(
-        &self,
-        transaction: &Transaction,
+    fn transact_system_tx(
+        &mut self,
+        mut transaction: Transaction,
         sender: Address,
-        system_txs: &mut Vec<&TransactionSigned>,
+        system_txs: &mut Vec<TransactionSigned>,
         receipts: &mut Vec<Receipt>,
         cumulative_gas_used: &mut u64,
-        evm: &mut Evm<'_, Ext, &mut State<DB>>,
-    ) -> Result<ResultAndState, BlockExecutionError> {
-        if transaction.signature_hash() != system_txs[0].signature_hash() {
+        env: EnvWithHandlerCfg,
+    ) -> Result<(), BlockExecutionError> {
+        let mut evm = self.executor.evm_config.evm_with_env(&mut self.state, env);
+
+        let nonce = evm.db_mut().basic(sender).unwrap().unwrap().nonce;
+        transaction.set_nonce(nonce);
+        let hash = transaction.signature_hash();
+        if hash != system_txs[0].signature_hash() {
             return Err(BscBlockExecutionError::UnexpectedSystemTx.into());
         }
         system_txs.remove(0);
@@ -1177,8 +1225,7 @@ where
         // Execute transaction.
         let ResultAndState { result, state } = evm.transact().map_err(move |e| {
             // Ensure hash is calculated for error log, if not already done
-            BlockValidationError::EVM { hash: transaction.recalculate_hash(), error: e.into() }
-                .into()
+            BlockValidationError::EVM { hash, error: e.into() }
         })?;
 
         evm.db_mut().commit(state);
@@ -1192,17 +1239,19 @@ where
             // Success flag was added in `EIP-658: Embedding transaction status code in
             // receipts`.
             success: result.is_success(),
-            cumulative_gas_used,
+            cumulative_gas_used: *cumulative_gas_used,
             // convert to reth log
             logs: result.into_logs().into_iter().map(Into::into).collect(),
         });
+
+        Ok(())
     }
 }
 impl<EvmConfig, DB, P> Executor<DB> for BscBlockExecutor<EvmConfig, DB, P>
 where
     EvmConfig: ConfigureEvm,
     DB: Database<Error = ProviderError>,
-    P: HeaderProvider + ParliaSnapshotReader + ParliaSnapshotWriter,
+    P: ParliaProvider,
 {
     type Input<'a> = BlockExecutionInput<'a, BlockWithSenders>;
     type Output = BlockExecutionOutput<Receipt>;
@@ -1255,7 +1304,7 @@ impl<EvmConfig, DB, P> BatchExecutor<DB> for BscBatchExecutor<EvmConfig, DB, P>
 where
     EvmConfig: ConfigureEvm,
     DB: Database<Error = ProviderError>,
-    P: HeaderProvider + ParliaSnapshotReader + ParliaSnapshotWriter,
+    P: ParliaProvider,
 {
     type Input<'a> = BlockExecutionInput<'a, BlockWithSenders>;
     type Output = BatchBlockExecutionOutput;
@@ -1295,5 +1344,40 @@ where
 
     fn size_hint(&self) -> Option<usize> {
         Some(self.executor.state.bundle_state.size_hint())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use blst::min_pk::{PublicKey, Signature};
+    use reth_db::models::parlia::{VoteAddress, VoteData, VoteSignature};
+    use reth_primitives::{b256, hex};
+
+    #[test]
+    fn verify_vote_attestation() {
+        let vote_data = VoteData {
+            source_number: 1,
+            source_hash: b256!("0000000000000000000000000000000000000000000000000000000000000001"),
+            target_number: 2,
+            target_hash: b256!("0000000000000000000000000000000000000000000000000000000000000002"),
+        };
+
+        let vote_addrs = vec![
+            VoteAddress::from_slice(hex::decode("0x92134f208bc32515409e3e91e89691e2800724d6b15e667cfe11652c2daf77d3494b5d216e2ce5794cc253a6395f707d").unwrap().as_slice()),
+            VoteAddress::from_slice(hex::decode("0xb0c7b88a54614ec9a5d5ab487db071464364a599900928a10fb1237b44478412583ea062e6d03fd0a8334f539ded9302").unwrap().as_slice()),
+            VoteAddress::from_slice(hex::decode("0xb3d050e2cd6ce18fb45939d3406ae5904d1bbbdca1e72a73307a8c038af0e0d382c1614724cd1fe0dabcff82f3ff7d91").unwrap().as_slice()),
+        ];
+
+        let agg_signature = VoteSignature::from_slice(hex::decode("0x8b4aa0952e95b829596e5fbfe936195ba17cb21c83e1e69ac295ca166ed270e5ceb0cc285d51480288b6f9be2852ca7a1151364cbad69fafdbda8844189927ce0684ae5b4b0b8b42dbf1bca0957645f8dc53823554cc87d4e8adfa28d1dfec53").unwrap().as_slice());
+
+        let vote_addrs: Vec<PublicKey> =
+            vote_addrs.iter().map(|addr| PublicKey::from_bytes(addr.as_slice()).unwrap()).collect();
+        let vote_addrs: Vec<&PublicKey> = vote_addrs.iter().collect();
+
+        let sig = Signature::from_bytes(&agg_signature[..]).unwrap();
+        let err =
+            sig.aggregate_verify(true, &[vote_data.hash().as_slice()], &[], &vote_addrs, true);
+
+        println!("{:?}", err);
     }
 }

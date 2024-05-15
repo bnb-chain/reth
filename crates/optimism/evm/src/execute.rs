@@ -76,6 +76,9 @@ where
     type Executor<DB: Database<Error = ProviderError>> = OpBlockExecutor<EvmConfig, DB>;
 
     type BatchExecutor<DB: Database<Error = ProviderError>> = OpBatchExecutor<EvmConfig, DB>;
+
+    type ExtraProvider = ();
+
     fn executor<DB>(&self, db: DB) -> Self::Executor<DB>
     where
         DB: Database<Error = ProviderError>,

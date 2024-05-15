@@ -86,6 +86,9 @@ criterion.workspace = true
 pprof = { workspace = true, features = ["flamegraph", "frame-pointer", "criterion"] }
 
 [features]
+bsc = [
+    "revm/bsc",
+]
 default = ["c-kzg", "zstd-codec"]
 asm-keccak = ["alloy-primitives/asm-keccak"]
 arbitrary = [

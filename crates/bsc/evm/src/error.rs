@@ -129,6 +129,13 @@ pub enum BscBlockExecutionError {
         proposer: Address,
     },
 
+    /// Error for invalid block difficulty
+    #[error("invalid block difficulty: {difficulty}")]
+    InvalidDifficulty {
+        /// The block difficulty
+        difficulty: U256,
+    },
+
     /// Error type transparently wrapping ParliaConsensusError.
     #[error(transparent)]
     ParliaConsensusError(#[from] ParliaConsensusError),

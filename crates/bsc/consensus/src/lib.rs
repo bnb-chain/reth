@@ -379,7 +379,7 @@ impl Parlia {
         Ok(())
     }
 
-    fn get_recently_proposal_limit(&self, header: &Header, validator_count: u64) -> u64 {
+    pub fn get_recently_proposal_limit(&self, header: &Header, validator_count: u64) -> u64 {
         if self.chain_spec.fork(Hardfork::Luban).active_at_block(header.number) {
             validator_count * 2 / 3 + 1
         } else {
@@ -410,7 +410,7 @@ impl Parlia {
 
 // Assemble system tx
 impl Parlia {
-    pub fn init_genesis_contracts(&self, nonce: u64) -> Vec<Transaction> {
+    pub fn init_genesis_contracts(&self) -> Vec<Transaction> {
         let function = self.validator_abi.function("init").unwrap().first().unwrap();
         let input = function.abi_encode_input(&[]).unwrap();
 
@@ -426,11 +426,10 @@ impl Parlia {
 
         contracts
             .into_iter()
-            .enumerate()
-            .map(|(idx, contract)| {
+            .map(|contract| {
                 Transaction::Legacy(TxLegacy {
                     chain_id: Some(self.chain_spec.chain.id()),
-                    nonce: nonce + idx as u64,
+                    nonce: 0,
                     gas_limit: u64::MAX / 2,
                     gas_price: 0,
                     value: U256::ZERO,
@@ -441,7 +440,7 @@ impl Parlia {
             .collect()
     }
 
-    pub fn init_feynman_contracts(&self, nonce: u64) -> Vec<Transaction> {
+    pub fn init_feynman_contracts(&self) -> Vec<Transaction> {
         let function = self.stake_hub_abi.function("initialize").unwrap().first().unwrap();
         let input = function.abi_encode_input(&[]).unwrap();
 
@@ -455,11 +454,10 @@ impl Parlia {
 
         contracts
             .into_iter()
-            .enumerate()
-            .map(|(idx, contract)| {
+            .map(|contract| {
                 Transaction::Legacy(TxLegacy {
                     chain_id: Some(self.chain_spec.chain.id()),
-                    nonce: nonce + idx as u64,
+                    nonce: 0,
                     gas_limit: u64::MAX / 2,
                     gas_price: 0,
                     value: U256::ZERO,
@@ -470,13 +468,13 @@ impl Parlia {
             .collect()
     }
 
-    pub fn slash(&self, nonce: u64, address: Address) -> Transaction {
+    pub fn slash(&self, address: Address) -> Transaction {
         let function = self.slash_abi.function("slash").unwrap().first().unwrap();
         let input = function.abi_encode_input(&[DynSolValue::from(address)]).unwrap();
 
         Transaction::Legacy(TxLegacy {
             chain_id: Some(self.chain_spec.chain.id()),
-            nonce,
+            nonce: 0,
             gas_limit: u64::MAX / 2,
             gas_price: 0,
             value: U256::ZERO,
@@ -485,10 +483,10 @@ impl Parlia {
         })
     }
 
-    pub fn distribute_to_system(&self, nonce: u64, system_reward: u128) -> Transaction {
+    pub fn distribute_to_system(&self, system_reward: u128) -> Transaction {
         Transaction::Legacy(TxLegacy {
             chain_id: Some(self.chain_spec.chain.id()),
-            nonce,
+            nonce: 0,
             gas_limit: u64::MAX / 2,
             gas_price: 0,
             value: U256::from(system_reward),
@@ -497,18 +495,13 @@ impl Parlia {
         })
     }
 
-    pub fn distribute_to_validator(
-        &self,
-        nonce: u64,
-        address: Address,
-        block_reward: u128,
-    ) -> Transaction {
+    pub fn distribute_to_validator(&self, address: Address, block_reward: u128) -> Transaction {
         let function = self.validator_abi.function("deposit").unwrap().first().unwrap();
         let input = function.abi_encode_input(&[DynSolValue::from(address)]).unwrap();
 
         Transaction::Legacy(TxLegacy {
             chain_id: Some(self.chain_spec.chain.id()),
-            nonce,
+            nonce: 0,
             gas_limit: u64::MAX / 2,
             gas_price: 0,
             value: U256::from(block_reward),
@@ -519,7 +512,6 @@ impl Parlia {
 
     pub fn distribute_finality_reward(
         &self,
-        nonce: u64,
         validators: Vec<Address>,
         weights: Vec<U256>,
     ) -> Transaction {
@@ -534,7 +526,7 @@ impl Parlia {
 
         Transaction::Legacy(TxLegacy {
             chain_id: Some(self.chain_spec.chain.id()),
-            nonce,
+            nonce: 0,
             gas_limit: u64::MAX / 2,
             gas_price: 0,
             value: U256::ZERO,
@@ -545,7 +537,6 @@ impl Parlia {
 
     pub fn update_validator_set_v2(
         &self,
-        nonce: u64,
         validators: Vec<Address>,
         voting_powers: Vec<U256>,
         vote_addresses: Vec<Vec<u8>>,
@@ -566,7 +557,7 @@ impl Parlia {
 
         Transaction::Legacy(TxLegacy {
             chain_id: Some(self.chain_spec.chain.id()),
-            nonce,
+            nonce: 0,
             gas_limit: u64::MAX / 2,
             gas_price: 0,
             value: U256::ZERO,
@@ -717,7 +708,7 @@ impl Consensus for Parlia {
         }
 
         // Check extra data
-        self.check_header_extra(header).map_err(|_|ConsensusError::InvalidHeaderExtra)?;
+        self.check_header_extra(header).map_err(|_| ConsensusError::InvalidHeaderExtra)?;
 
         // Ensure that the mix digest is zero as we don't have fork protection currently
         if header.mix_hash != EMPTY_MIX_HASH {

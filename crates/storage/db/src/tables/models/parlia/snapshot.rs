@@ -5,7 +5,7 @@ use crate::{
 };
 use bytes::BufMut;
 use reth_codecs::{main_codec, Compact};
-use reth_primitives::{Address, BlockNumber, SealedHeader, B256};
+use reth_primitives::{Address, BlockNumber, Header, B256};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap},
@@ -71,7 +71,7 @@ impl Snapshot {
     pub fn apply(
         &mut self,
         validator: Address,
-        next_header: &SealedHeader,
+        next_header: &Header,
         mut next_validators: Vec<Address>,
         val_info_map: Option<HashMap<Address, ValidatorInfo>>,
         attestation: Option<VoteAttestation>,
@@ -82,7 +82,7 @@ impl Snapshot {
         }
 
         let mut snap = self.clone();
-        snap.block_hash = next_header.hash();
+        snap.block_hash = next_header.hash_slow();
         snap.block_number = block_number;
         let limit = (snap.validators.len() / 2 + 1) as u64;
         if block_number >= limit {
