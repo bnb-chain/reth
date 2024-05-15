@@ -1,7 +1,7 @@
 //! Error types for the Bsc EVM module.
 
 use reth_bsc_consensus::ParliaConsensusError;
-use reth_interfaces::executor::BlockExecutionError;
+use reth_interfaces::{executor::BlockExecutionError, provider::ProviderError};
 use reth_primitives::{Address, BlockHash, BlockNumber, GotExpected, GotExpectedBoxed, B256, U256};
 
 /// Bsc Block Executor Errors
@@ -39,14 +39,6 @@ pub enum BscBlockExecutionError {
         /// The block hash
         hash: B256,
     },
-
-    /// Error when encountering a provider inner error
-    #[error("provider inner error")]
-    ProviderInnerError,
-
-    /// Error when encountering a blst inner error
-    #[error("blst inner error")]
-    BLSTInnerError,
 
     /// Error when the parent hash of a block is not known.
     #[error("block parent [hash={hash}] is not known")]
@@ -136,9 +128,25 @@ pub enum BscBlockExecutionError {
         difficulty: U256,
     },
 
-    /// Error type transparently wrapping ParliaConsensusError.
-    #[error(transparent)]
-    ParliaConsensusError(#[from] ParliaConsensusError),
+    /// Error when encountering a blst inner error
+    #[error("blst inner error")]
+    BLSTInnerError,
+
+    /// Error when encountering a provider inner error
+    #[error("provider inner error: {error}")]
+    ProviderInnerError {
+        /// The provider error.
+        #[source]
+        error: Box<ProviderError>,
+    },
+
+    /// Error when encountering a parlia inner error
+    #[error("parlia inner error: {error}")]
+    ParliaConsensusInnerError {
+        /// The parlia error.
+        #[source]
+        error: Box<ParliaConsensusError>,
+    },
 }
 
 impl From<BscBlockExecutionError> for BlockExecutionError {

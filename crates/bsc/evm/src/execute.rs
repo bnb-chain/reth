@@ -543,10 +543,9 @@ where
         header: &Header,
         parent: &Header,
     ) -> Result<(), BlockExecutionError> {
-        let attestation = self
-            .parlia
-            .get_vote_attestation_from_header(header)
-            .map_err(|_| BscBlockExecutionError::ProviderInnerError)?;
+        let attestation = self.parlia.get_vote_attestation_from_header(header).map_err(|err| {
+            BscBlockExecutionError::ParliaConsensusInnerError { error: err.into() }
+        })?;
         if let Some(attestation) = attestation {
             if attestation.extra.len() > MAX_ATTESTATION_EXTRA_LENGTH {
                 return Err(BscBlockExecutionError::TooLargeAttestationExtraLen {
@@ -642,10 +641,9 @@ where
 
     fn verify_seal(&self, snap: &Snapshot, header: &Header) -> Result<(), BlockExecutionError> {
         let block_number = header.number;
-        let proposer = self
-            .parlia
-            .recover_proposer(header)
-            .map_err(|_| BscBlockExecutionError::ProviderInnerError)?;
+        let proposer = self.parlia.recover_proposer(header).map_err(|err| {
+            BscBlockExecutionError::ParliaConsensusInnerError { error: err.into() }
+        })?;
 
         if proposer != header.beneficiary {
             return Err(BscBlockExecutionError::WrongHeaderSigner {
@@ -705,10 +703,10 @@ where
 
             // Read from db
             if block_number % CHECKPOINT_INTERVAL == 0 {
-                if let Some(cached) = self
-                    .provider
-                    .get_parlia_snapshot(block_hash)
-                    .map_err(|_| BscBlockExecutionError::ProviderInnerError)?
+                if let Some(cached) =
+                    self.provider.get_parlia_snapshot(block_hash).map_err(|err| {
+                        BscBlockExecutionError::ProviderInnerError { error: err.into() }
+                    })?
                 {
                     snap = Some(cached);
                     break;
@@ -717,10 +715,10 @@ where
 
             // If we're at the genesis, snapshot the initial state.
             if block_number == 0 {
-                let (next_validators, bls_keys) = self
-                    .parlia
-                    .parse_validators_from_header(&header)
-                    .map_err(|_| BscBlockExecutionError::ProviderInnerError)?;
+                let (next_validators, bls_keys) =
+                    self.parlia.parse_validators_from_header(&header).map_err(|err| {
+                        BscBlockExecutionError::ParliaConsensusInnerError { error: err.into() }
+                    })?;
                 snap = Some(Snapshot::new(
                     next_validators,
                     block_number,
@@ -740,7 +738,7 @@ where
             } else if let Some(h) = self
                 .provider
                 .header_by_number(block_number - 1)
-                .map_err(|_| BscBlockExecutionError::ProviderInnerError)?
+                .map_err(|err| BscBlockExecutionError::ProviderInnerError { error: err.into() })?
             {
                 let hash = h.hash_slow();
                 if hash != header.parent_hash {
@@ -757,18 +755,17 @@ where
         // apply skip headers
         skip_headers.reverse();
         for header in skip_headers.iter() {
-            let validator = self
-                .parlia
-                .recover_proposer(header)
-                .map_err(|_| BscBlockExecutionError::ProviderInnerError)?;
-            let (next_validators, bls_keys) = self
-                .parlia
-                .parse_validators_from_header(header)
-                .map_err(|_| BscBlockExecutionError::ProviderInnerError)?;
-            let attestation = self
-                .parlia
-                .get_vote_attestation_from_header(header)
-                .map_err(|_| BscBlockExecutionError::ProviderInnerError)?;
+            let validator = self.parlia.recover_proposer(header).map_err(|err| {
+                BscBlockExecutionError::ParliaConsensusInnerError { error: err.into() }
+            })?;
+            let (next_validators, bls_keys) =
+                self.parlia.parse_validators_from_header(header).map_err(|err| {
+                    BscBlockExecutionError::ParliaConsensusInnerError { error: err.into() }
+                })?;
+            let attestation =
+                self.parlia.get_vote_attestation_from_header(header).map_err(|err| {
+                    BscBlockExecutionError::ParliaConsensusInnerError { error: err.into() }
+                })?;
             snap = snap
                 .apply(validator, header, next_validators, bls_keys, attestation)
                 .ok_or_else(|| BscBlockExecutionError::ApplySnapshotFailed)?;
@@ -778,7 +775,7 @@ where
         if snap.block_number % CHECKPOINT_INTERVAL == 0 {
             self.provider
                 .save_parlia_snapshot(snap.block_hash, snap.clone())
-                .map_err(|_| BscBlockExecutionError::ProviderInnerError)?;
+                .map_err(|err| BscBlockExecutionError::ProviderInnerError { error: err.into() })?;
         }
 
         Ok(snap)
@@ -802,7 +799,7 @@ where
             return Ok(self
                 .provider
                 .header_by_number(0)
-                .map_err(|_| BscBlockExecutionError::ProviderInnerError)?
+                .map_err(|err| BscBlockExecutionError::ProviderInnerError { error: err.into() })?
                 .ok_or_else(|| BscBlockExecutionError::UnknownHeader {
                     block_number: 0,
                     hash: Default::default(),
@@ -832,7 +829,7 @@ where
         let header = self
             .provider
             .header_by_number(block_number)
-            .map_err(|_| BscBlockExecutionError::ProviderInnerError)?
+            .map_err(|err| BscBlockExecutionError::ProviderInnerError { error: err.into() })?
             .ok_or_else(|| BscBlockExecutionError::UnknownHeader { block_number, hash })?;
 
         return if header.hash_slow() == hash {
@@ -1044,10 +1041,10 @@ where
         let start = (header.number - self.parlia.epoch()).max(1);
         for height in (start..header.number).rev() {
             let header = self.get_header_by_hash(height, header.parent_hash)?;
-            if let Some(attestation) = self
-                .parlia
-                .get_vote_attestation_from_header(&header)
-                .map_err(|_| BscBlockExecutionError::ProviderInnerError)?
+            if let Some(attestation) =
+                self.parlia.get_vote_attestation_from_header(&header).map_err(|err| {
+                    BscBlockExecutionError::ParliaConsensusInnerError { error: err.into() }
+                })?
             {
                 let justified_header = self.get_header_by_hash(
                     attestation.data.target_number,
