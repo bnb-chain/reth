@@ -401,6 +401,6 @@ similar-asserts = "1.5.0"
 test-fuzz = "5"
 
 [patch.crates-io]
-revm = { git = "https://github.com/bnb-chain/revm.git", rev = "deb253b" }
-revm-primitives = { git = "https://github.com/bnb-chain/revm.git", rev = "deb253b" }
+revm = { git = "https://github.com/bnb-chain/revm.git", rev = "2f38e6c" }
+revm-primitives = { git = "https://github.com/bnb-chain/revm.git", rev = "2f38e6c" }
 alloy-chains = { git = "https://github.com/alloy-rs/chains.git", rev = "906d6fb" }

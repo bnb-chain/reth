@@ -74,6 +74,9 @@ pub enum Hardfork {
     /// Fermat
     #[cfg(all(feature = "optimism", feature = "opbnb"))]
     Fermat,
+    /// Haber
+    #[cfg(all(feature = "optimism", feature = "opbnb"))]
+    Haber,
     // ArbOS20Atlas,
 
     // Upcoming
@@ -564,6 +567,8 @@ impl FromStr for Hardfork {
             "precontractforkblock" => Hardfork::PreContractForkBlock,
             #[cfg(all(feature = "optimism", feature = "opbnb"))]
             "fermat" => Hardfork::Fermat,
+            #[cfg(all(feature = "optimism", feature = "opbnb"))]
+            "haber" => Hardfork::Haber,
             #[cfg(feature = "optimism")]
             "canyon" => Hardfork::Canyon,
             #[cfg(feature = "optimism")]

@@ -530,6 +530,7 @@ pub static OPBNB_TESTNET: Lazy<Arc<ChainSpec>> = Lazy::new(|| {
             (Hardfork::Canyon, ForkCondition::Timestamp(1715753400)),
             (Hardfork::Cancun, ForkCondition::Timestamp(1715754600)),
             (Hardfork::Ecotone, ForkCondition::Timestamp(1715754600)),
+            (Hardfork::Haber, ForkCondition::Timestamp(1717048800)),
         ]),
         base_fee_params: BaseFeeParamsKind::Variable(
             vec![(Hardfork::London, BaseFeeParams::ethereum())].into(),
