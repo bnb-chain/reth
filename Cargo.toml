@@ -72,6 +72,7 @@ members = [
     "crates/transaction-pool/",
     "crates/trie/",
     "crates/trie-parallel/",
+    "crates/trie-prefetch/",
     "examples/node-custom-rpc/",
     "examples/beacon-api-sse/",
     "examples/node-event-hooks/",
@@ -273,6 +274,7 @@ reth-tracing = { path = "crates/tracing" }
 reth-transaction-pool = { path = "crates/transaction-pool" }
 reth-trie = { path = "crates/trie" }
 reth-trie-parallel = { path = "crates/trie-parallel" }
+reth-trie-prefetch = { path = "crates/trie-prefetch" }
 reth-optimism-consensus = { path = "crates/optimism/consensus" }
 reth-node-events = { path = "crates/node/events" }
 reth-testing-utils = { path = "testing/testing-utils" }

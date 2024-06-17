@@ -21,6 +21,7 @@ reth-provider.workspace = true
 reth-stages-api.workspace = true
 reth-trie = { workspace = true, features = ["metrics"] }
 reth-trie-parallel = { workspace = true, features = ["parallel"] }
+reth-trie-prefetch = { workspace = true, features = ["prefetch"] }
 reth-consensus.workspace = true
 
 # common
@@ -40,7 +41,7 @@ linked_hash_set = "0.1.4"
 [dev-dependencies]
 reth-db = { workspace = true, features = ["test-utils"] }
 reth-interfaces = { workspace = true, features = ["test-utils"] }
-reth-primitives = { workspace = true , features = ["test-utils"] }
+reth-primitives = { workspace = true, features = ["test-utils"] }
 reth-provider = { workspace = true, features = ["test-utils"] }
 reth-evm = { workspace = true, features = ["test-utils"] }
 reth-revm.workspace = true

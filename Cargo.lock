@@ -6891,6 +6891,7 @@ dependencies = [
  "reth-stages-api",
  "reth-trie",
  "reth-trie-parallel",
+ "reth-trie-prefetch",
  "tokio",
  "tracing",
 ]
@@ -8375,6 +8376,29 @@ dependencies = [
  "reth-provider",
  "reth-tasks",
  "reth-trie",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "reth-trie-prefetch"
+version = "0.2.0-beta.7"
+dependencies = [
+ "alloy-rlp",
+ "criterion",
+ "derive_more",
+ "metrics",
+ "proptest",
+ "rand 0.8.5",
+ "rayon",
+ "reth-db",
+ "reth-interfaces",
+ "reth-metrics",
+ "reth-primitives",
+ "reth-provider",
+ "reth-trie",
+ "reth-trie-parallel",
  "thiserror",
  "tokio",
  "tracing",

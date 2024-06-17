@@ -1,3 +1,17 @@
+use std::ops::RangeInclusive;
+
+use alloy_rlp::{BufMut, Encodable};
+use tracing::{debug, trace};
+
+use reth_db::transaction::DbTx;
+use reth_interfaces::trie::{StateRootError, StorageRootError};
+use reth_primitives::{
+    Address,
+    B256,
+    BlockNumber,
+    constants::EMPTY_ROOT_HASH, keccak256, trie::{HashBuilder, Nibbles, TrieAccount},
+};
+
 use crate::{
     hashed_cursor::{HashedCursorFactory, HashedStorageCursor},
     node_iter::{AccountNode, AccountNodeIter, StorageNode, StorageNodeIter},
@@ -8,18 +22,6 @@ use crate::{
     updates::{TrieKey, TrieOp, TrieUpdates},
     walker::TrieWalker,
 };
-use alloy_rlp::{BufMut, Encodable};
-use reth_db::transaction::DbTx;
-use reth_interfaces::trie::{StateRootError, StorageRootError};
-use reth_primitives::{
-    constants::EMPTY_ROOT_HASH,
-    keccak256,
-    trie::{HashBuilder, Nibbles, TrieAccount},
-    Address, BlockNumber, B256,
-};
-use std::ops::RangeInclusive;
-use tracing::{debug, trace};
-
 #[cfg(feature = "metrics")]
 use crate::metrics::{StateRootMetrics, TrieRootMetrics, TrieType};
 
@@ -290,9 +292,9 @@ where
                     hash_builder.add_leaf(Nibbles::unpack(hashed_address), &account_rlp);
 
                     // Decide if we need to return intermediate progress.
-                    let total_updates_len = trie_updates.len() +
-                        account_node_iter.walker.updates_len() +
-                        hash_builder.updates_len();
+                    let total_updates_len = trie_updates.len()
+                        + account_node_iter.walker.updates_len()
+                        + hash_builder.updates_len();
                     if retain_updates && total_updates_len as u64 >= self.threshold {
                         let (walker_stack, walker_updates) = account_node_iter.walker.split();
                         let (hash_builder, hash_builder_updates) = hash_builder.split();
@@ -310,7 +312,7 @@ where
                             Box::new(state),
                             hashed_entries_walked,
                             trie_updates,
-                        ))
+                        ));
                     }
                 }
             }
@@ -491,7 +493,7 @@ where
                 EMPTY_ROOT_HASH,
                 0,
                 TrieUpdates::from([(TrieKey::StorageTrie(self.hashed_address), TrieOp::Delete)]),
-            ))
+            ));
         }
 
         let mut tracker = TrieTracker::default();
@@ -545,36 +547,90 @@ where
         let storage_slots_walked = stats.leaves_added() as usize;
         Ok((root, storage_slots_walked, trie_updates))
     }
+
+    /// Walks the hashed storage table entries for a given address to prefetch the storage trie nodes.
+    ///
+    /// # Returns
+    ///
+    /// The number of walked entries.
+    pub fn prefetch(self) -> Result<usize, StorageRootError> {
+        trace!(target: "trie::storage_root", hashed_address = ?self.hashed_address, "prefetching storage root");
+
+        let mut hashed_storage_cursor = self.hashed_cursor_factory.hashed_storage_cursor()?;
+
+        // short circuit on empty storage
+        if hashed_storage_cursor.is_storage_empty(self.hashed_address)? {
+            return Ok(0);
+        }
+
+        let mut tracker = TrieTracker::default();
+        let trie_cursor = self.trie_cursor_factory.storage_tries_cursor(self.hashed_address)?;
+        let walker = TrieWalker::new(trie_cursor, self.prefix_set).with_updates(false);
+
+        let mut storage_node_iter =
+            StorageNodeIter::new(walker, hashed_storage_cursor, self.hashed_address);
+        while let Some(node) = storage_node_iter.try_next()? {
+            match node {
+                StorageNode::Branch(node) => {
+                    tracker.inc_branch();
+                }
+                StorageNode::Leaf(hashed_slot, value) => {
+                    tracker.inc_leaf();
+                }
+            }
+        }
+
+        let stats = tracker.finish();
+
+        #[cfg(feature = "metrics")]
+        self.metrics.record(stats);
+
+        trace!(
+            target: "trie::storage_root",
+            hashed_address = %self.hashed_address,
+            duration = ?stats.duration(),
+            branches_added = stats.branches_added(),
+            leaves_added = stats.leaves_added(),
+            "prefetched storage trie nodes"
+        );
+
+        let storage_slots_walked = stats.leaves_added() as usize;
+        Ok(storage_slots_walked)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::{
-        prefix_set::PrefixSetMut,
-        test_utils::{state_root, state_root_prehashed, storage_root, storage_root_prehashed},
-    };
-    use proptest::{prelude::ProptestConfig, proptest};
-    use reth_db::{
-        cursor::{DbCursorRO, DbCursorRW, DbDupCursorRO},
-        tables,
-        test_utils::TempDatabase,
-        transaction::DbTxMut,
-        DatabaseEnv,
-    };
-    use reth_primitives::{
-        hex_literal::hex,
-        proofs::triehash::KeccakHasher,
-        trie::{BranchNodeCompact, TrieMask},
-        Account, StorageEntry, U256,
-    };
-    use reth_provider::{test_utils::create_test_provider_factory, DatabaseProviderRW};
     use std::{
         collections::{BTreeMap, HashMap},
         ops::Mul,
         str::FromStr,
         sync::Arc,
     };
+
+    use proptest::{prelude::ProptestConfig, proptest};
+
+    use reth_db::{
+        cursor::{DbCursorRO, DbCursorRW, DbDupCursorRO},
+        DatabaseEnv,
+        tables,
+        test_utils::TempDatabase,
+        transaction::DbTxMut,
+    };
+    use reth_primitives::{
+        Account,
+        hex_literal::hex,
+        proofs::triehash::KeccakHasher,
+        StorageEntry, trie::{BranchNodeCompact, TrieMask}, U256,
+    };
+    use reth_provider::{DatabaseProviderRW, test_utils::create_test_provider_factory};
+
+    use crate::{
+        prefix_set::PrefixSetMut,
+        test_utils::{state_root, state_root_prehashed, storage_root, storage_root_prehashed},
+    };
+
+    use super::*;
 
     fn insert_account(
         tx: &impl DbTxMut,
