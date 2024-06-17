@@ -349,25 +349,14 @@ where
             static_file_producer,
             OriginalValuesKnown::Yes,
         )?;
-
         let db_write_duration = time.elapsed();
-        let total_duration = fetch_block_duration +
-            execution_duration +
-            write_preparation_duration +
-            db_write_duration;
-        let mut total_micros = total_duration.as_micros();
-        if total_micros == 0 {
-            // it should not happen, just for safety
-            total_micros = 1;
-        }
-        let mgasps = cumulative_gas as u128 / total_micros;
+
         debug!(
             target: "sync::stages::execution",
             block_fetch = ?fetch_block_duration,
             execution = ?execution_duration,
             write_preparation = ?write_preparation_duration,
             write = ?db_write_duration,
-            mgasps = ? mgasps,
             "Execution time"
         );
 
