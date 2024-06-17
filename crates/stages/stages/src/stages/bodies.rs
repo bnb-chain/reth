@@ -665,6 +665,7 @@ mod tests {
                     transactions: block.body.clone(),
                     ommers: block.ommers.clone(),
                     withdrawals: block.withdrawals.clone(),
+                    sidecars: None,
                     requests: block.requests.clone(),
                 },
             )

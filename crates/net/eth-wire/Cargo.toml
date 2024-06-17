@@ -70,6 +70,7 @@ arbitrary = [
     "dep:proptest-derive",
 ]
 optimism = ["reth-primitives/optimism"]
+bsc = ["reth-primitives/bsc"]
 
 [[test]]
 name = "fuzz_roundtrip"

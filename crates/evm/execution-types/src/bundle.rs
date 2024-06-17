@@ -1,5 +1,6 @@
 use reth_primitives::{
     logs_bloom,
+    parlia::Snapshot,
     revm::compat::{into_reth_acc, into_revm_acc},
     Account, Address, BlockNumber, Bloom, Bytecode, Log, Receipt, Receipts, Requests, StorageEntry,
     B256, U256,
@@ -34,6 +35,10 @@ pub struct ExecutionOutcome {
     /// A transaction may have zero or more requests, so the length of the inner vector is not
     /// guaranteed to be the same as the number of transactions.
     pub requests: Vec<Requests>,
+
+    // TODO: feature?
+    /// Parlia snapshots.
+    pub snapshots: Vec<Snapshot>,
 }
 
 /// Type used to initialize revms bundle state.
@@ -57,7 +62,21 @@ impl ExecutionOutcome {
         first_block: BlockNumber,
         requests: Vec<Requests>,
     ) -> Self {
-        Self { bundle, receipts, first_block, requests }
+        Self { bundle, receipts, first_block, requests, snapshots: vec![] }
+    }
+
+    /// Creates a new `ExecutionOutcome` with snapshots.
+    ///
+    /// This constructor initializes a new `ExecutionOutcome` instance with the provided
+    /// bundle state, receipts, first block number, EIP-7685 requests and snapshots.
+    pub const fn new_with_snapshots(
+        bundle: BundleState,
+        receipts: Receipts,
+        first_block: BlockNumber,
+        requests: Vec<Requests>,
+        snapshots: Vec<Snapshot>,
+    ) -> Self {
+        Self { bundle, receipts, first_block, requests, snapshots }
     }
 
     /// Creates a new `ExecutionOutcome` from initialization parameters.
@@ -99,7 +118,7 @@ impl ExecutionOutcome {
             contracts_init.into_iter().map(|(code_hash, bytecode)| (code_hash, bytecode.0)),
         );
 
-        Self { bundle, receipts, first_block, requests }
+        Self { bundle, receipts, first_block, requests, snapshots: vec![] }
     }
 
     /// Return revm bundle state.
@@ -385,6 +404,7 @@ mod tests {
             receipts: receipts.clone(),
             requests: requests.clone(),
             first_block,
+            snapshots: vec![],
         };
 
         // Assert that creating a new ExecutionOutcome using the constructor matches exec_res
@@ -447,6 +467,7 @@ mod tests {
             receipts,
             requests: vec![],
             first_block,
+            snapshots: vec![],
         };
 
         // Test before the first block
@@ -485,6 +506,7 @@ mod tests {
             receipts,
             requests: vec![],
             first_block,
+            snapshots: vec![],
         };
 
         // Get logs for block number 123
@@ -520,6 +542,7 @@ mod tests {
             receipts,                   // Include the created receipts
             requests: vec![],           // Empty vector for requests
             first_block,                // Set the first block number
+            snapshots: vec![],
         };
 
         // Get receipts for block number 123 and convert the result into a vector
@@ -570,6 +593,7 @@ mod tests {
             receipts,                   // Include the created receipts
             requests: vec![],           // Empty vector for requests
             first_block,                // Set the first block number
+            snapshots: vec![],
         };
 
         // Assert that the length of receipts in exec_res is 1
@@ -584,6 +608,7 @@ mod tests {
             receipts: receipts_empty,   // Include the empty receipts
             requests: vec![],           // Empty vector for requests
             first_block,                // Set the first block number
+            snapshots: vec![],
         };
 
         // Assert that the length of receipts in exec_res_empty_receipts is 0
@@ -619,6 +644,7 @@ mod tests {
             receipts: receipts.clone(),
             requests: vec![],
             first_block,
+            snapshots: vec![],
         };
 
         // Assert that the revert_to method returns true when reverting to the initial block number.
@@ -669,8 +695,13 @@ mod tests {
         let first_block = 123;
 
         // Create an ExecutionOutcome object.
-        let mut exec_res =
-            ExecutionOutcome { bundle: Default::default(), receipts, requests, first_block };
+        let mut exec_res = ExecutionOutcome {
+            bundle: Default::default(),
+            receipts,
+            requests,
+            first_block,
+            snapshots: vec![],
+        };
 
         // Extend the ExecutionOutcome object by itself.
         exec_res.extend(exec_res.clone());
@@ -685,6 +716,7 @@ mod tests {
                 },
                 requests: vec![Requests(vec![request]), Requests(vec![request])],
                 first_block: 123,
+                snapshots: vec![],
             }
         );
     }

@@ -32,8 +32,8 @@ use reth_db_api::{
     table::{Decode, DupSort, Encode, Table},
 };
 use reth_primitives::{
-    Account, Address, BlockHash, BlockNumber, Bytecode, Header, IntegerList, Receipt, Requests,
-    StorageEntry, TransactionSignedNoHash, TxHash, TxNumber, B256,
+    parlia::Snapshot, Account, Address, BlockHash, BlockNumber, Bytecode, Header, IntegerList,
+    Receipt, Requests, StorageEntry, TransactionSignedNoHash, TxHash, TxNumber, B256,
 };
 use reth_prune_types::{PruneCheckpoint, PruneSegment};
 use reth_stages_types::StageCheckpoint;
@@ -410,6 +410,9 @@ tables! {
 
     /// Stores generic chain state info, like the last finalized block.
     table ChainState<Key = ChainStateKey, Value = BlockNumber>;
+
+    /// Stores the parlia snapshot data by block hash.
+    table ParliaSnapshot<Key = BlockHash, Value = Snapshot>;
 }
 
 /// Keys for the `ChainState` table.

@@ -75,3 +75,6 @@ backon.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[features]
+bsc = []

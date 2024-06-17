@@ -4,7 +4,7 @@ pub use reth_network_peers::{NodeRecord, NodeRecordParseError, TrustedPeer};
 // OP bootnodes come from <https://github.com/ethereum-optimism/op-geth/blob/optimism/params/bootnodes.go>
 
 /// Ethereum Foundation Go Bootnodes
-pub static MAINNET_BOOTNODES : [&str; 4] = [
+pub static MAINNET_BOOTNODES: [&str; 4] = [
     "enode://d860a01f9722d78051619d1e2351aba3f43f943f6f00718d1b9baa4101932a1f5011f16bb2b1bb35db20d6fe28fa0bf09636d26a87d31de9ec6203eeedb1f666@18.138.108.67:30303",   // bootnode-aws-ap-southeast-1-001
     "enode://22a8232c3abc76a16ae9d6c3b164f98775fe226f0917b0ca871128a74a8e9630b458460865bab457221f1d448dd9791d24c4e5d88786180ac185df813a68d4de@3.209.45.79:30303",     // bootnode-aws-us-east-1-001
     "enode://2b252ab6a1d0f971d9722cb839a42cb81db019ba44c08754628ab4a823487071b5695317c8ccd085219c3a03af063495b2f1da8d18218da2d6a82981b45e6ffc@65.108.70.101:30303",   // bootnode-hetzner-hel
@@ -12,7 +12,7 @@ pub static MAINNET_BOOTNODES : [&str; 4] = [
 ];
 
 /// Ethereum Foundation Sepolia Bootnodes
-pub static SEPOLIA_BOOTNODES : [&str; 5] = [
+pub static SEPOLIA_BOOTNODES: [&str; 5] = [
     "enode://4e5e92199ee224a01932a377160aa432f31d0b351f84ab413a8e0a42f4f36476f8fb1cbe914af0d9aef0d51665c214cf653c651c4bbd9d5550a934f241f1682b@138.197.51.181:30303", // sepolia-bootnode-1-nyc3
     "enode://143e11fb766781d22d92a2e33f8f104cddae4411a122295ed1fdb6638de96a6ce65f5b7c964ba3763bba27961738fef7d3ecc739268f3e5e771fb4c87b6234ba@146.190.1.103:30303",  // sepolia-bootnode-1-sfo3
     "enode://8b61dc2d06c3f96fddcbebb0efb29d60d3598650275dc469c22229d3e5620369b0d3dedafd929835fe7f489618f19f456fe7c0df572bf2d914a9f4e006f783a9@170.64.250.88:30303",  // sepolia-bootnode-1-syd1
@@ -21,7 +21,7 @@ pub static SEPOLIA_BOOTNODES : [&str; 5] = [
 ];
 
 /// Görli Bootnodes
-pub static GOERLI_BOOTNODES : [&str; 7] = [
+pub static GOERLI_BOOTNODES: [&str; 7] = [
     // Upstream bootnodes
     "enode://011f758e6552d105183b1761c5e2dea0111bc20fd5f6422bc7f91e0fabbec9a6595caf6239b37feb773dddd3f87240d99d859431891e4a642cf2a0a9e6cbb98a@51.141.78.53:30303",
     "enode://176b9417f511d05b6b2cf3e34b756cf0a7096b3094572a8f6ef4cdcb9d1f9d00683bf0f83347eebdf3b81c3521c2332086d9592802230bf528eaf606a1d9677b@13.93.54.137:30303",
@@ -37,7 +37,7 @@ pub static GOERLI_BOOTNODES : [&str; 7] = [
 ];
 
 /// Ethereum Foundation Holesky Bootnodes
-pub static HOLESKY_BOOTNODES : [&str; 2] = [
+pub static HOLESKY_BOOTNODES: [&str; 2] = [
     "enode://ac906289e4b7f12df423d654c5a962b6ebe5b3a74cc9e06292a85221f9a64a6f1cfdd6b714ed6dacef51578f92b34c60ee91e9ede9c7f8fadc4d347326d95e2b@146.190.13.128:30303",
     "enode://a3435a0155a3e837c02f5e7f5662a2f1fbc25b48e4dc232016e1c51b544cb5b4510ef633ea3278c0e970fa8ad8141e2d4d0f9f95456c537ff05fdf9b31c15072@178.128.136.233:30303",
 ];
@@ -67,6 +67,26 @@ pub static OP_TESTNET_BOOTNODES: &[&str] = &[
     // Base
     "enode://548f715f3fc388a7c917ba644a2f16270f1ede48a5d88a4d14ea287cc916068363f3092e39936f1a3e7885198bef0e5af951f1d7b1041ce8ba4010917777e71f@18.210.176.114:30301",
     "enode://6f10052847a966a725c9f4adf6716f9141155b99a0fb487fea3f51498f4c2a2cb8d534e680ee678f9447db85b93ff7c74562762c3714783a7233ac448603b25f@107.21.251.55:30301",
+];
+
+#[cfg(feature = "bsc")]
+/// Bsc testnet boot nodes.
+pub static BSC_MAINNET_BOOTNODES: &[&str] = &[
+    "enode://433c8bfdf53a3e2268ccb1b829e47f629793291cbddf0c76ae626da802f90532251fc558e2e0d10d6725e759088439bf1cd4714716b03a259a35d4b2e4acfa7f@52.69.102.73:30311",
+    "enode://571bee8fb902a625942f10a770ccf727ae2ba1bab2a2b64e121594a99c9437317f6166a395670a00b7d93647eacafe598b6bbcef15b40b6d1a10243865a3e80f@35.73.84.120:30311",
+    "enode://fac42fb0ba082b7d1eebded216db42161163d42e4f52c9e47716946d64468a62da4ba0b1cac0df5e8bf1e5284861d757339751c33d51dfef318be5168803d0b5@18.203.152.54:30311",
+    "enode://3063d1c9e1b824cfbb7c7b6abafa34faec6bb4e7e06941d218d760acdd7963b274278c5c3e63914bd6d1b58504c59ec5522c56f883baceb8538674b92da48a96@34.250.32.100:30311",
+    "enode://ad78c64a4ade83692488aa42e4c94084516e555d3f340d9802c2bf106a3df8868bc46eae083d2de4018f40e8d9a9952c32a0943cd68855a9bc9fd07aac982a6d@34.204.214.24:30311",
+    "enode://5db798deb67df75d073f8e2953dad283148133acb520625ea804c9c4ad09a35f13592a762d8f89056248f3889f6dcc33490c145774ea4ff2966982294909b37a@107.20.191.97:30311",
+];
+
+#[cfg(feature = "bsc")]
+/// Bsc testnet boot nodes.
+pub static BSC_TESTNET_BOOTNODES: &[&str] = &[
+    "enode://0637d1e62026e0c8685b1db0ca1c767c78c95c3fab64abc468d1a64b12ca4b530b46b8f80c915aec96f74f7ffc5999e8ad6d1484476f420f0c10e3d42361914b@52.199.214.252:30311",
+    "enode://df1e8eb59e42cad3c4551b2a53e31a7e55a2fdde1287babd1e94b0836550b489ba16c40932e4dacb16cba346bd442c432265a299c4aca63ee7bb0f832b9f45eb@52.51.80.128:30311",
+    "enode://ecd664250ca19b1074dcfbfb48576a487cc18d052064222a363adacd2650f8e08fb3db9de7a7aecb48afa410eaeb3285e92e516ead01fb62598553aed91ee15e@3.209.122.123:30311",
+    "enode://665cf77ca26a8421cfe61a52ac312958308d4912e78ce8e0f61d6902e4494d4cc38f9b0dd1b23a427a7a5734e27e5d9729231426b06bb9c73b56a142f83f6b68@52.72.123.113:30311",
 ];
 
 /// Returns parsed mainnet nodes
@@ -111,6 +131,18 @@ pub fn base_nodes() -> Vec<NodeRecord> {
 /// Returns parsed op-stack base testnet nodes
 pub fn base_testnet_nodes() -> Vec<NodeRecord> {
     parse_nodes(OP_TESTNET_BOOTNODES)
+}
+
+#[cfg(feature = "bsc")]
+/// Returns parsed bsc mainnet nodes
+pub fn bsc_mainnet_nodes() -> Vec<NodeRecord> {
+    parse_nodes(BSC_MAINNET_BOOTNODES)
+}
+
+#[cfg(feature = "bsc")]
+/// Returns parsed bsc mainnet nodes
+pub fn bsc_testnet_nodes() -> Vec<NodeRecord> {
+    parse_nodes(BSC_TESTNET_BOOTNODES)
 }
 
 /// Parses all the nodes
@@ -200,7 +232,7 @@ mod tests {
         let url = "enode://6f8a80d14311c39f35f516fa664deaaaa13e85b2f7493f37f6144d86991ec012937307647bd3b9a82abe2974e1407241d54947bbb39763a4cac9f77166ad92a0@10.3.58.6:30303?discport=30301";
         let node: NodeRecord = url.parse().unwrap();
         assert_eq!(node, NodeRecord {
-            address: IpAddr::V4([10,3,58,6].into()),
+            address: IpAddr::V4([10, 3, 58, 6].into()),
             tcp_port: 30303,
             udp_port: 30301,
             id: "6f8a80d14311c39f35f516fa664deaaaa13e85b2f7493f37f6144d86991ec012937307647bd3b9a82abe2974e1407241d54947bbb39763a4cac9f77166ad92a0".parse().unwrap(),
@@ -223,7 +255,7 @@ mod tests {
 
     #[test]
     fn test_node_serialize() {
-        let node = NodeRecord{
+        let node = NodeRecord {
             address: IpAddr::V4([10, 3, 58, 6].into()),
             tcp_port: 30303u16,
             udp_port: 30301u16,
@@ -237,7 +269,7 @@ mod tests {
     fn test_node_deserialize() {
         let url = "\"enode://6f8a80d14311c39f35f516fa664deaaaa13e85b2f7493f37f6144d86991ec012937307647bd3b9a82abe2974e1407241d54947bbb39763a4cac9f77166ad92a0@10.3.58.6:30303?discport=30301\"";
         let node: NodeRecord = serde_json::from_str(url).expect("couldn't deserialize");
-        assert_eq!(node, NodeRecord{
+        assert_eq!(node, NodeRecord {
             address: IpAddr::V4([10, 3, 58, 6].into()),
             tcp_port: 30303u16,
             udp_port: 30301u16,

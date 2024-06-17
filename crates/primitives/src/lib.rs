@@ -40,12 +40,16 @@ mod request;
 /// Helpers for working with revm
 pub mod revm;
 pub use reth_static_file_types as static_file;
+mod blob_sidecar;
+pub mod parlia;
 mod storage;
+pub mod system_contracts;
 pub mod transaction;
 mod withdrawal;
+
 pub use account::{Account, Bytecode};
 #[cfg(any(test, feature = "arbitrary"))]
-pub use block::{generate_valid_header, valid_header_strategy};
+pub use block::{empty_sidecars_strategy, generate_valid_header, valid_header_strategy};
 pub use block::{
     Block, BlockBody, BlockHashOrNumber, BlockId, BlockNumHash, BlockNumberOrTag, BlockWithSenders,
     ForkBlock, RpcBlockHash, SealedBlock, SealedBlockWithSenders,
@@ -96,6 +100,8 @@ pub use transaction::{
 };
 
 pub use withdrawal::{Withdrawal, Withdrawals};
+
+pub use blob_sidecar::{BlobSidecar, BlobSidecars};
 
 // Re-exports
 pub use self::ruint::UintTryTo;
@@ -150,3 +156,15 @@ mod optimism {
 
 #[cfg(feature = "optimism")]
 pub use optimism::*;
+
+/// Bsc specific re-exports
+#[cfg(feature = "bsc")]
+mod bsc {
+    pub use crate::{
+        chain::{BSC_MAINNET, BSC_TESTNET},
+        net::{bsc_mainnet_nodes, bsc_testnet_nodes, BSC_MAINNET_BOOTNODES, BSC_TESTNET_BOOTNODES},
+    };
+}
+
+#[cfg(feature = "bsc")]
+pub use bsc::*;

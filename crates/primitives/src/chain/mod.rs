@@ -17,6 +17,9 @@ pub(crate) use spec::{
     BASE_SEPOLIA_BASE_FEE_PARAMS, OP_BASE_FEE_PARAMS, OP_SEPOLIA_BASE_FEE_PARAMS,
 };
 
+#[cfg(feature = "bsc")]
+pub use spec::{BSC_MAINNET, BSC_TESTNET};
+
 // The chain spec module.
 mod spec;
 // The chain info module.

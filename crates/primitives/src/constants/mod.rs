@@ -20,7 +20,12 @@ pub const RETH_CLIENT_VERSION: &str = concat!("reth/v", env!("CARGO_PKG_VERSION"
 pub const SELECTOR_LEN: usize = 4;
 
 /// Maximum extra data size in a block after genesis
+#[cfg(not(feature = "bsc"))]
 pub const MAXIMUM_EXTRA_DATA_SIZE: usize = 32;
+
+/// Maximum extra data size in a block after genesis
+#[cfg(feature = "bsc")]
+pub const MAXIMUM_EXTRA_DATA_SIZE: usize = 1024 * 1024;
 
 /// An EPOCH is a series of 32 slots.
 pub const EPOCH_SLOTS: u64 = 32;
@@ -58,6 +63,9 @@ pub const MIN_PROTOCOL_BASE_FEE_U256: U256 = U256::from_limbs([7u64, 0, 0, 0]);
 
 /// Initial base fee as defined in [EIP-1559](https://eips.ethereum.org/EIPS/eip-1559)
 pub const EIP1559_INITIAL_BASE_FEE: u64 = 1_000_000_000;
+
+/// Initial base fee of bsc
+pub const EIP1559_INITIAL_BASE_FEE_FOR_BSC: u64 = 0;
 
 /// Base fee max change denominator as defined in [EIP-1559](https://eips.ethereum.org/EIPS/eip-1559)
 pub const EIP1559_DEFAULT_BASE_FEE_MAX_CHANGE_DENOMINATOR: u64 = 8;
@@ -204,6 +212,10 @@ pub const EMPTY_TRANSACTIONS: B256 = EMPTY_ROOT_HASH;
 
 /// Withdrawals root of empty withdrawals set.
 pub const EMPTY_WITHDRAWALS: B256 = EMPTY_ROOT_HASH;
+
+/// Empty mix hash
+pub const EMPTY_MIX_HASH: B256 =
+    b256!("0000000000000000000000000000000000000000000000000000000000000000");
 
 /// The number of blocks to unwind during a reorg that already became a part of canonical chain.
 ///

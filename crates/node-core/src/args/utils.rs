@@ -12,6 +12,9 @@ use std::{
 
 use reth_primitives::DEV;
 
+#[cfg(feature = "bsc")]
+use reth_primitives::{BSC_MAINNET, BSC_TESTNET};
+
 #[cfg(feature = "optimism")]
 use reth_primitives::{BASE_MAINNET, BASE_SEPOLIA, OP_MAINNET, OP_SEPOLIA};
 
@@ -21,11 +24,14 @@ use reth_primitives::{OPBNB_MAINNET, OPBNB_TESTNET};
 #[cfg(not(feature = "optimism"))]
 use reth_primitives::{GOERLI, HOLESKY, MAINNET, SEPOLIA};
 
+#[cfg(feature = "bsc")]
+/// Chains supported by bsc. First value should be used as the default.
+pub const SUPPORTED_CHAINS: &[&str] = &["bsc", "bsc-testnet"];
 #[cfg(feature = "optimism")]
 /// Chains supported by op-reth. First value should be used as the default.
 pub const SUPPORTED_CHAINS: &[&str] =
     &["optimism", "optimism-sepolia", "base", "base-sepolia", "opbnb-mainnet", "opbnb-testnet"];
-#[cfg(not(feature = "optimism"))]
+#[cfg(all(not(feature = "optimism"), not(feature = "bsc")))]
 /// Chains supported by reth. First value should be used as the default.
 pub const SUPPORTED_CHAINS: &[&str] = &["mainnet", "sepolia", "goerli", "holesky", "dev"];
 
@@ -61,6 +67,10 @@ pub fn chain_spec_value_parser(s: &str) -> eyre::Result<Arc<ChainSpec>, eyre::Er
         "opbnb_mainnet" | "opbnb-mainnet" => OPBNB_MAINNET.clone(),
         #[cfg(all(feature = "optimism", feature = "opbnb"))]
         "opbnb_testnet" | "opbnb-testnet" => OPBNB_TESTNET.clone(),
+        #[cfg(feature = "bsc")]
+        "bsc" | "bsc-mainnet" => BSC_MAINNET.clone(),
+        #[cfg(feature = "bsc")]
+        "bsc-testnet" => BSC_TESTNET.clone(),
         _ => {
             let raw = fs::read_to_string(PathBuf::from(shellexpand::full(s)?.into_owned()))?;
             serde_json::from_str(&raw)?
@@ -70,7 +80,7 @@ pub fn chain_spec_value_parser(s: &str) -> eyre::Result<Arc<ChainSpec>, eyre::Er
 
 /// The help info for the --chain flag
 pub fn chain_help() -> String {
-    format!("The chain this node is running.\nPossible values are either a built-in chain or the path to a chain specification file.\n\nBuilt-in chains:\n    {}", SUPPORTED_CHAINS.join(", "))
+    format!("The chain this node is running.\nPossible values are either a built-in chain or the path to a chain specificafile.\n\nBuilt-in chains:\n    {}", SUPPORTED_CHAINS.join(", "))
 }
 
 /// Clap value parser for [`ChainSpec`]s.
@@ -101,6 +111,10 @@ pub fn genesis_value_parser(s: &str) -> eyre::Result<Arc<ChainSpec>, eyre::Error
         "opbnb_mainnet" | "opbnb-mainnet" => OPBNB_MAINNET.clone(),
         #[cfg(all(feature = "optimism", feature = "opbnb"))]
         "opbnb_testnet" | "opbnb-testnet" => OPBNB_TESTNET.clone(),
+        #[cfg(feature = "bsc")]
+        "bsc" | "bsc-mainnet" => BSC_MAINNET.clone(),
+        #[cfg(feature = "bsc")]
+        "bsc-testnet" => BSC_TESTNET.clone(),
         _ => {
             // try to read json from path first
             let raw = match fs::read_to_string(PathBuf::from(shellexpand::full(s)?.into_owned())) {

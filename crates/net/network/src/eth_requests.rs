@@ -167,6 +167,7 @@ where
                     transactions: block.body,
                     ommers: block.ommers,
                     withdrawals: block.withdrawals,
+                    sidecars: None,
                     requests: block.requests,
                 };
 

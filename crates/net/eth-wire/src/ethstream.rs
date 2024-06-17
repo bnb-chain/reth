@@ -4,6 +4,8 @@ use crate::{
     p2pstream::HANDSHAKE_TIMEOUT,
     CanDisconnect, DisconnectReason, EthMessage, EthVersion, ProtocolMessage, Status,
 };
+#[cfg(feature = "bsc")]
+use crate::{UpgradeStatus, UpgradeStatusExtension};
 use futures::{ready, Sink, SinkExt, StreamExt};
 use pin_project::pin_project;
 use reth_primitives::{
@@ -95,13 +97,13 @@ where
             Some(msg) => msg,
             None => {
                 self.inner.disconnect(DisconnectReason::DisconnectRequested).await?;
-                return Err(EthStreamError::EthHandshakeError(EthHandshakeError::NoResponse))
+                return Err(EthStreamError::EthHandshakeError(EthHandshakeError::NoResponse));
             }
         }?;
 
         if their_msg.len() > MAX_MESSAGE_SIZE {
             self.inner.disconnect(DisconnectReason::ProtocolBreach).await?;
-            return Err(EthStreamError::MessageTooBig(their_msg.len()))
+            return Err(EthStreamError::MessageTooBig(their_msg.len()));
         }
 
         let version = EthVersion::try_from(status.version)?;
@@ -110,7 +112,7 @@ where
             Err(err) => {
                 debug!("decode error in eth handshake: msg={their_msg:x}");
                 self.inner.disconnect(DisconnectReason::DisconnectRequested).await?;
-                return Err(EthStreamError::InvalidMessage(err))
+                return Err(EthStreamError::InvalidMessage(err));
             }
         };
 
@@ -127,7 +129,7 @@ where
                     return Err(EthHandshakeError::MismatchedGenesis(
                         GotExpected { expected: status.genesis, got: resp.genesis }.into(),
                     )
-                    .into())
+                    .into());
                 }
 
                 if status.version != resp.version {
@@ -136,7 +138,7 @@ where
                         got: resp.version,
                         expected: status.version,
                     })
-                    .into())
+                    .into());
                 }
 
                 if status.chain != resp.chain {
@@ -145,7 +147,7 @@ where
                         got: resp.chain,
                         expected: status.chain,
                     })
-                    .into())
+                    .into());
                 }
 
                 // TD at mainnet block #7753254 is 76 bits. If it becomes 100 million times
@@ -156,21 +158,83 @@ where
                         got: status.total_difficulty.bit_len(),
                         maximum: 100,
                     }
-                    .into())
+                    .into());
                 }
 
                 if let Err(err) =
                     fork_filter.validate(resp.forkid).map_err(EthHandshakeError::InvalidFork)
                 {
                     self.inner.disconnect(DisconnectReason::ProtocolBreach).await?;
-                    return Err(err.into())
+                    return Err(err.into());
                 }
 
-                // now we can create the `EthStream` because the peer has successfully completed
-                // the handshake
-                let stream = EthStream::new(version, self.inner);
+                // For BSC, UpgradeStatus message should be sent during handshake.
+                #[cfg(feature = "bsc")]
+                {
+                    if version > EthVersion::Eth66 {
+                        self.inner
+                            .send(
+                                alloy_rlp::encode(ProtocolMessage::from(
+                                    EthMessage::UpgradeStatus(UpgradeStatus {
+                                        extension: UpgradeStatusExtension {
+                                            disable_peer_tx_broadcast: false,
+                                        },
+                                    }),
+                                ))
+                                .into(),
+                            )
+                            .await?;
+                        let their_msg_res = self.inner.next().await;
+                        let their_msg = match their_msg_res {
+                            Some(msg) => msg,
+                            None => {
+                                self.inner
+                                    .disconnect(DisconnectReason::DisconnectRequested)
+                                    .await?;
+                                return Err(EthStreamError::EthHandshakeError(
+                                    EthHandshakeError::NoResponse,
+                                ));
+                            }
+                        }?;
+                        let msg =
+                            match ProtocolMessage::decode_message(version, &mut their_msg.as_ref())
+                            {
+                                Ok(m) => m,
+                                Err(err) => {
+                                    debug!("decode error in eth handshake: msg={their_msg:x}");
+                                    self.inner
+                                        .disconnect(DisconnectReason::DisconnectRequested)
+                                        .await?;
+                                    return Err(EthStreamError::InvalidMessage(err));
+                                }
+                            };
+                        match msg.message {
+                            EthMessage::UpgradeStatus(_) => {
+                                // TODO: support disable_peer_tx_broadcast flag
+                                let stream = EthStream::new(version, self.inner);
+                                Ok((stream, resp))
+                            }
+                            _ => {
+                                self.inner.disconnect(DisconnectReason::ProtocolBreach).await?;
+                                Err(EthStreamError::EthHandshakeError(
+                                    EthHandshakeError::NonStatusMessageInHandshake,
+                                ))
+                            }
+                        }
+                    } else {
+                        let stream = EthStream::new(version, self.inner);
+                        Ok((stream, resp))
+                    }
+                }
 
-                Ok((stream, resp))
+                #[cfg(not(feature = "bsc"))]
+                {
+                    // now we can create the `EthStream` because the peer has successfully completed
+                    // the handshake
+                    let stream = EthStream::new(version, self.inner);
+
+                    Ok((stream, resp))
+                }
             }
             _ => {
                 self.inner.disconnect(DisconnectReason::ProtocolBreach).await?;
@@ -261,7 +325,7 @@ where
         };
 
         if bytes.len() > MAX_MESSAGE_SIZE {
-            return Poll::Ready(Some(Err(EthStreamError::MessageTooBig(bytes.len()))))
+            return Poll::Ready(Some(Err(EthStreamError::MessageTooBig(bytes.len()))));
         }
 
         let msg = match ProtocolMessage::decode_message(*this.version, &mut bytes.as_ref()) {
@@ -277,14 +341,14 @@ where
                     %msg,
                     "failed to decode protocol message"
                 );
-                return Poll::Ready(Some(Err(EthStreamError::InvalidMessage(err))))
+                return Poll::Ready(Some(Err(EthStreamError::InvalidMessage(err))));
             }
         };
 
         if matches!(msg.message, EthMessage::Status(_)) {
             return Poll::Ready(Some(Err(EthStreamError::EthHandshakeError(
                 EthHandshakeError::StatusNotInHandshake,
-            ))))
+            ))));
         }
 
         Poll::Ready(Some(Ok(msg.message)))
@@ -313,7 +377,7 @@ where
             // allowing for its start_disconnect method to be called.
             //
             // self.project().inner.start_disconnect(DisconnectReason::ProtocolBreach);
-            return Err(EthStreamError::EthHandshakeError(EthHandshakeError::StatusNotInHandshake))
+            return Err(EthStreamError::EthHandshakeError(EthHandshakeError::StatusNotInHandshake));
         }
 
         self.project()

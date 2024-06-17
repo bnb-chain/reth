@@ -110,6 +110,10 @@ opbnb = [
     "reth-primitives/opbnb",
 ]
 
+bsc = [
+    "reth-primitives/bsc",
+]
+
 jemalloc = ["dep:tikv-jemalloc-ctl"]
 
 [build-dependencies]

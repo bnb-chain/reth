@@ -77,6 +77,7 @@ async fn test_get_body() {
             transactions: block.body,
             ommers: block.ommers,
             withdrawals: None,
+            sidecars: None,
             requests: None,
         };
         assert_eq!(blocks[0], expected);

@@ -285,7 +285,7 @@ mod tests {
         let expected = hex!("f850423884024190faa0f8514c4680ef27700751b08f37645309ce65a449616a3ea966bf39dd935bb27ba00d21840abff46b96c84b2ac9e10e4f5cdaeb5693cb665db62a2f3b02d2d57b5bc6845d43d2fd80");
         let status = Status {
             version: EthVersion::Eth66 as u8,
-            chain: Chain::from_named(NamedChain::BinanceSmartChain),
+            chain: Chain::from_named(NamedChain::BNBSmartChain),
             total_difficulty: U256::from(37851386u64),
             blockhash: B256::from_str(
                 "f8514c4680ef27700751b08f37645309ce65a449616a3ea966bf39dd935bb27b",
@@ -308,7 +308,7 @@ mod tests {
         let data = hex!("f850423884024190faa0f8514c4680ef27700751b08f37645309ce65a449616a3ea966bf39dd935bb27ba00d21840abff46b96c84b2ac9e10e4f5cdaeb5693cb665db62a2f3b02d2d57b5bc6845d43d2fd80");
         let expected = Status {
             version: EthVersion::Eth66 as u8,
-            chain: Chain::from_named(NamedChain::BinanceSmartChain),
+            chain: Chain::from_named(NamedChain::BNBSmartChain),
             total_difficulty: U256::from(37851386u64),
             blockhash: B256::from_str(
                 "f8514c4680ef27700751b08f37645309ce65a449616a3ea966bf39dd935bb27b",

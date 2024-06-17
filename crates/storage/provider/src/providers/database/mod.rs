@@ -3,17 +3,18 @@ use crate::{
     to_range,
     traits::{BlockSource, ReceiptProvider},
     BlockHashReader, BlockNumReader, BlockReader, ChainSpecProvider, DatabaseProviderFactory,
-    EvmEnvProvider, HeaderProvider, HeaderSyncGap, HeaderSyncGapProvider, ProviderError,
-    PruneCheckpointReader, RequestsProvider, StageCheckpointReader, StateProviderBox,
-    StaticFileProviderFactory, TransactionVariant, TransactionsProvider, WithdrawalsProvider,
+    EvmEnvProvider, HeaderProvider, HeaderSyncGap, HeaderSyncGapProvider, ParliaSnapshotReader,
+    ProviderError, PruneCheckpointReader, RequestsProvider, StageCheckpointReader,
+    StateProviderBox, StaticFileProviderFactory, TransactionVariant, TransactionsProvider,
+    WithdrawalsProvider,
 };
 use reth_db::{init_db, mdbx::DatabaseArguments, DatabaseEnv};
 use reth_db_api::{database::Database, models::StoredBlockBodyIndices};
 use reth_errors::{RethError, RethResult};
 use reth_evm::ConfigureEvmEnv;
 use reth_primitives::{
-    Address, Block, BlockHash, BlockHashOrNumber, BlockNumber, BlockWithSenders, ChainInfo,
-    ChainSpec, Header, Receipt, SealedBlock, SealedBlockWithSenders, SealedHeader,
+    parlia::Snapshot, Address, Block, BlockHash, BlockHashOrNumber, BlockNumber, BlockWithSenders,
+    ChainInfo, ChainSpec, Header, Receipt, SealedBlock, SealedBlockWithSenders, SealedHeader,
     StaticFileSegment, TransactionMeta, TransactionSigned, TransactionSignedNoHash, TxHash,
     TxNumber, Withdrawal, Withdrawals, B256, U256,
 };
@@ -586,6 +587,13 @@ impl<DB> Clone for ProviderFactory<DB> {
         }
     }
 }
+
+impl<DB: Database> ParliaSnapshotReader for ProviderFactory<DB> {
+    fn get_parlia_snapshot(&self, block_hash: B256) -> ProviderResult<Option<Snapshot>> {
+        self.provider()?.get_parlia_snapshot(block_hash)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

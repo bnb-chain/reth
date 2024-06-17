@@ -470,6 +470,7 @@ where
     /// Depending on the mode of the network:
     ///    - disconnect peer if in POS
     ///    - execute the closure if in POW
+    #[cfg(not(feature = "bsc"))]
     fn within_pow_or_disconnect<F>(&mut self, peer_id: PeerId, only_pow: F)
     where
         F: FnOnce(&mut Self),
@@ -486,14 +487,17 @@ where
     }
 
     /// Handles a received Message from the peer's session.
+    #[allow(clippy::needless_pass_by_ref_mut)]
     fn on_peer_message(&mut self, peer_id: PeerId, msg: PeerMessage) {
         match msg {
+            #[cfg(not(feature = "bsc"))]
             PeerMessage::NewBlockHashes(hashes) => {
                 self.within_pow_or_disconnect(peer_id, |this| {
                     // update peer's state, to track what blocks this peer has seen
                     this.swarm.state_mut().on_new_block_hashes(peer_id, hashes.0)
-                })
+                });
             }
+            #[cfg(not(feature = "bsc"))]
             PeerMessage::NewBlock(block) => {
                 self.within_pow_or_disconnect(peer_id, move |this| {
                     this.swarm.state_mut().on_new_block(peer_id, block.hash);
@@ -521,6 +525,10 @@ where
             }
             PeerMessage::Other(other) => {
                 debug!(target: "net", message_id=%other.id, "Ignoring unsupported message");
+            }
+            #[cfg(feature = "bsc")]
+            _ => {
+                trace!(target: "net", "Ignoring unsupported message");
             }
         }
     }

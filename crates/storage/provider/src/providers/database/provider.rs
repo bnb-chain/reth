@@ -8,10 +8,10 @@ use crate::{
     AccountReader, BlockExecutionWriter, BlockHashReader, BlockNumReader, BlockReader, BlockWriter,
     Chain, EvmEnvProvider, FinalizedBlockReader, FinalizedBlockWriter, HashingWriter,
     HeaderProvider, HeaderSyncGap, HeaderSyncGapProvider, HistoricalStateProvider, HistoryWriter,
-    LatestStateProvider, OriginalValuesKnown, ProviderError, PruneCheckpointReader,
-    PruneCheckpointWriter, RequestsProvider, StageCheckpointReader, StateProviderBox, StateWriter,
-    StatsReader, StorageReader, TransactionVariant, TransactionsProvider, TransactionsProviderExt,
-    WithdrawalsProvider,
+    LatestStateProvider, OriginalValuesKnown, ParliaSnapshotReader, ProviderError,
+    PruneCheckpointReader, PruneCheckpointWriter, RequestsProvider, StageCheckpointReader,
+    StateProviderBox, StateWriter, StatsReader, StorageReader, TransactionVariant,
+    TransactionsProvider, TransactionsProviderExt, WithdrawalsProvider,
 };
 use itertools::{izip, Itertools};
 use reth_db::{tables, BlockNumberList};
@@ -31,6 +31,7 @@ use reth_evm::ConfigureEvmEnv;
 use reth_network_p2p::headers::downloader::SyncTarget;
 use reth_primitives::{
     keccak256,
+    parlia::Snapshot,
     revm::{config::revm_spec, env::fill_block_env},
     Account, Address, Block, BlockHash, BlockHashOrNumber, BlockNumber, BlockWithSenders,
     ChainInfo, ChainSpec, GotExpected, Head, Header, Receipt, Requests, SealedBlock,
@@ -2846,6 +2847,12 @@ impl<TX: DbTxMut> FinalizedBlockWriter for DatabaseProvider<TX> {
         Ok(self
             .tx
             .put::<tables::ChainState>(tables::ChainStateKey::LastFinalizedBlock, block_number)?)
+    }
+}
+
+impl<TX: DbTx> ParliaSnapshotReader for DatabaseProvider<TX> {
+    fn get_parlia_snapshot(&self, block_hash: B256) -> ProviderResult<Option<Snapshot>> {
+        Ok(self.tx.get::<tables::ParliaSnapshot>(block_hash)?)
     }
 }
 

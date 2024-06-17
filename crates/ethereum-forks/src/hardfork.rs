@@ -40,10 +40,36 @@ pub enum Hardfork {
     Istanbul,
     /// Muir Glacier: <https://github.com/ethereum/execution-specs/blob/master/network-upgrades/mainnet-upgrades/muir-glacier.md>.
     MuirGlacier,
+    /// BSC `Ramanujan` hardfork
+    Ramanujan,
+    /// BSC `Niels` hardfork
+    Niels,
+    /// BSC `MirrorSync` hardfork
+    MirrorSync,
+    /// BSC `Bruno` hardfork
+    Bruno,
+    /// BSC `Euler` hardfork
+    Euler,
+    /// BSC `Nano` hardfork
+    Nano,
+    /// BSC `Moran` hardfork
+    Moran,
+    /// BSC `Gibbs` hardfork
+    Gibbs,
+    /// BSC `Planck` hardfork
+    Planck,
+    /// BSC `Luban` hardfork
+    Luban,
+    /// BSC `Plato` hardfork
+    Plato,
     /// Berlin: <https://github.com/ethereum/execution-specs/blob/master/network-upgrades/mainnet-upgrades/berlin.md>.
     Berlin,
     /// London: <https://github.com/ethereum/execution-specs/blob/master/network-upgrades/mainnet-upgrades/london.md>.
     London,
+    /// BSC `Hertz` hardfork
+    Hertz,
+    /// BSC `HertzFix` hardfork
+    HertzFix,
     /// Arrow Glacier: <https://github.com/ethereum/execution-specs/blob/master/network-upgrades/mainnet-upgrades/arrow-glacier.md>.
     ArrowGlacier,
     /// Gray Glacier: <https://github.com/ethereum/execution-specs/blob/master/network-upgrades/mainnet-upgrades/gray-glacier.md>.
@@ -58,6 +84,12 @@ pub enum Hardfork {
     Regolith,
     /// Shanghai: <https://github.com/ethereum/execution-specs/blob/master/network-upgrades/mainnet-upgrades/shanghai.md>.
     Shanghai,
+    /// BSC `Kepler` hardfork
+    Kepler,
+    /// BSC `Feynman` hardfork
+    Feynman,
+    /// BSC `FeynmanFix` hardfork
+    FeynmanFix,
     /// Canyon:
     /// <https://github.com/ethereum-optimism/specs/blob/main/specs/protocol/superchain-upgrades.md#canyon>.
     #[cfg(feature = "optimism")]
@@ -71,13 +103,12 @@ pub enum Hardfork {
     /// `PreContractForkBlock`
     #[cfg(all(feature = "optimism", feature = "opbnb"))]
     PreContractForkBlock,
-    /// Fermat
+    /// `Fermat`
     #[cfg(all(feature = "optimism", feature = "opbnb"))]
     Fermat,
-    /// Haber
-    #[cfg(all(feature = "optimism", feature = "opbnb"))]
-    Haber,
     // ArbOS20Atlas,
+    /// BSC `Haber` hardfork
+    Haber,
 
     // Upcoming
     /// Prague: <https://github.com/ethereum/execution-specs/blob/master/network-upgrades/mainnet-upgrades/prague.md>
@@ -110,22 +141,22 @@ impl Hardfork {
     /// Retrieves the activation block for the specified hardfork on the given chain.
     pub fn activation_block(&self, chain: Chain) -> Option<u64> {
         if chain == Chain::mainnet() {
-            return self.mainnet_activation_block()
+            return self.mainnet_activation_block();
         }
         if chain == Chain::sepolia() {
-            return self.sepolia_activation_block()
+            return self.sepolia_activation_block();
         }
         if chain == Chain::holesky() {
-            return self.holesky_activation_block()
+            return self.holesky_activation_block();
         }
 
         #[cfg(feature = "optimism")]
         {
             if chain == Chain::base_sepolia() {
-                return self.base_sepolia_activation_block()
+                return self.base_sepolia_activation_block();
             }
             if chain == Chain::base_mainnet() {
-                return self.base_mainnet_activation_block()
+                return self.base_mainnet_activation_block();
             }
         }
 
@@ -319,21 +350,21 @@ impl Hardfork {
     /// Retrieves the activation timestamp for the specified hardfork on the given chain.
     pub fn activation_timestamp(&self, chain: Chain) -> Option<u64> {
         if chain == Chain::mainnet() {
-            return self.mainnet_activation_timestamp()
+            return self.mainnet_activation_timestamp();
         }
         if chain == Chain::sepolia() {
-            return self.sepolia_activation_timestamp()
+            return self.sepolia_activation_timestamp();
         }
         if chain == Chain::holesky() {
-            return self.holesky_activation_timestamp()
+            return self.holesky_activation_timestamp();
         }
         #[cfg(feature = "optimism")]
         {
             if chain == Chain::base_sepolia() {
-                return self.base_sepolia_activation_timestamp()
+                return self.base_sepolia_activation_timestamp();
             }
             if chain == Chain::base_mainnet() {
-                return self.base_mainnet_activation_timestamp()
+                return self.base_mainnet_activation_timestamp();
             }
         }
 

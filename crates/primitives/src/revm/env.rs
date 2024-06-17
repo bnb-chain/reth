@@ -9,6 +9,9 @@ use alloy_eips::{eip4788::BEACON_ROOTS_ADDRESS, eip7002::WITHDRAWAL_REQUEST_PRED
 #[cfg(feature = "optimism")]
 use revm_primitives::OptimismFields;
 
+#[cfg(feature = "bsc")]
+use revm_primitives::env::BscFields;
+
 /// Fill block environment from Block.
 pub fn fill_block_env(
     block_env: &mut BlockEnv,
@@ -206,6 +209,8 @@ fn fill_tx_env_with_system_contract_call(
             // enveloped tx size.
             enveloped_tx: Some(Bytes::default()),
         },
+        #[cfg(feature = "bsc")]
+        bsc: BscFields { is_system_transaction: Some(false) },
     };
 
     // ensure the block gas limit is >= the tx

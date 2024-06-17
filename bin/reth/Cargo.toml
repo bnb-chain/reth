@@ -7,7 +7,7 @@ license.workspace = true
 homepage.workspace = true
 repository.workspace = true
 description = "Reth node implementation"
-default-run = "reth"
+default-run = "bsc-reth"
 
 [lints]
 workspace = true
@@ -65,6 +65,9 @@ reth-node-events.workspace = true
 reth-consensus.workspace = true
 reth-optimism-primitives.workspace = true
 reth-prune-types.workspace = true
+reth-node-bsc = { workspace = true, optional = true, features = [
+    "bsc",
+] }
 
 # crypto
 alloy-rlp.workspace = true
@@ -155,6 +158,15 @@ opbnb = [
     "reth-node-core/opbnb",
 ]
 
+bsc = [
+    "reth-rpc/bsc",
+    "reth-primitives/bsc",
+    "dep:reth-node-bsc",
+    "reth-node-core/bsc",
+    "reth-stages/bsc",
+    "reth-node-builder/bsc"
+]
+
 # no-op feature flag for switching between the `optimism` and default functionality in CI matrices
 ethereum = []
 
@@ -166,3 +178,8 @@ path = "src/main.rs"
 name = "op-reth"
 path = "src/optimism.rs"
 required-features = ["optimism"]
+
+[[bin]]
+name = "bsc-reth"
+path = "src/bsc.rs"
+required-features = ["bsc"]

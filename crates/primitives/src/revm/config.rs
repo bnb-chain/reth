@@ -25,6 +25,23 @@ pub fn revm_spec_by_timestamp_after_merge(
         }
     }
 
+    #[cfg(feature = "bsc")]
+    if chain_spec.is_bsc() {
+        if chain_spec.is_haber_active_at_timestamp(timestamp) {
+            return revm_primitives::HABER
+        } else if chain_spec.is_cancun_active_at_timestamp(timestamp) {
+            return revm_primitives::CANCUN
+        } else if chain_spec.fork(Hardfork::FeynmanFix).active_at_timestamp(timestamp) {
+            return revm_primitives::FEYNMAN_FIX
+        } else if chain_spec.fork(Hardfork::Feynman).active_at_timestamp(timestamp) {
+            return revm_primitives::FEYNMAN
+        } else if chain_spec.fork(Hardfork::Kepler).active_at_timestamp(timestamp) {
+            return revm_primitives::KEPLER
+        } else {
+            return revm_primitives::SHANGHAI
+        }
+    }
+
     if chain_spec.is_prague_active_at_timestamp(timestamp) {
         revm_primitives::PRAGUE
     } else if chain_spec.is_cancun_active_at_timestamp(timestamp) {
@@ -54,6 +71,70 @@ pub fn revm_spec(chain_spec: &ChainSpec, block: Head) -> revm_primitives::SpecId
             return revm_primitives::REGOLITH
         } else if chain_spec.fork(Hardfork::Bedrock).active_at_head(&block) {
             return revm_primitives::BEDROCK
+        }
+    }
+
+    #[cfg(feature = "bsc")]
+    if chain_spec.is_bsc() {
+        if chain_spec.fork(Hardfork::Haber).active_at_head(&block) {
+            return revm_primitives::HABER
+        } else if chain_spec.fork(Hardfork::Cancun).active_at_head(&block) {
+            return revm_primitives::CANCUN
+        } else if chain_spec.fork(Hardfork::FeynmanFix).active_at_head(&block) {
+            return revm_primitives::FEYNMAN_FIX
+        } else if chain_spec.fork(Hardfork::Feynman).active_at_head(&block) {
+            return revm_primitives::FEYNMAN
+        } else if chain_spec.fork(Hardfork::Kepler).active_at_head(&block) {
+            return revm_primitives::KEPLER
+        } else if chain_spec.fork(Hardfork::Shanghai).active_at_head(&block) {
+            return revm_primitives::SHANGHAI
+        } else if chain_spec.fork(Hardfork::HertzFix).active_at_head(&block) {
+            return revm_primitives::HERTZ_FIX
+        } else if chain_spec.fork(Hardfork::Hertz).active_at_head(&block) {
+            return revm_primitives::HERTZ
+        } else if chain_spec.fork(Hardfork::London).active_at_head(&block) {
+            return revm_primitives::LONDON
+        } else if chain_spec.fork(Hardfork::Berlin).active_at_head(&block) {
+            return revm_primitives::BERLIN
+        } else if chain_spec.fork(Hardfork::Plato).active_at_head(&block) {
+            return revm_primitives::PLATO
+        } else if chain_spec.fork(Hardfork::Luban).active_at_head(&block) {
+            return revm_primitives::LUBAN
+        } else if chain_spec.fork(Hardfork::Planck).active_at_head(&block) {
+            return revm_primitives::PLANCK
+        } else if chain_spec.fork(Hardfork::Gibbs).active_at_head(&block) {
+            // bsc mainnet and testnet have different order for Moran, Nano and Gibbs
+            return if chain_spec.fork(Hardfork::Moran).active_at_head(&block) {
+                revm_primitives::GIBBS
+            } else if chain_spec.fork(Hardfork::Nano).active_at_head(&block) {
+                revm_primitives::NANO
+            } else {
+                revm_primitives::EULER
+            }
+        } else if chain_spec.fork(Hardfork::Euler).active_at_head(&block) {
+            return revm_primitives::EULER
+        } else if chain_spec.fork(Hardfork::Bruno).active_at_head(&block) {
+            return revm_primitives::BRUNO
+        } else if chain_spec.fork(Hardfork::MirrorSync).active_at_head(&block) {
+            return revm_primitives::MIRROR_SYNC
+        } else if chain_spec.fork(Hardfork::Niels).active_at_head(&block) {
+            return revm_primitives::NIELS
+        } else if chain_spec.fork(Hardfork::Ramanujan).active_at_head(&block) {
+            return revm_primitives::RAMANUJAN
+        } else if chain_spec.fork(Hardfork::MuirGlacier).active_at_head(&block) {
+            return revm_primitives::MUIR_GLACIER
+        } else if chain_spec.fork(Hardfork::Istanbul).active_at_head(&block) {
+            return revm_primitives::ISTANBUL
+        } else if chain_spec.fork(Hardfork::Petersburg).active_at_head(&block) {
+            return revm_primitives::PETERSBURG
+        } else if chain_spec.fork(Hardfork::Constantinople).active_at_head(&block) {
+            return revm_primitives::CONSTANTINOPLE
+        } else if chain_spec.fork(Hardfork::Byzantium).active_at_head(&block) {
+            return revm_primitives::BYZANTIUM
+        } else if chain_spec.fork(Hardfork::Homestead).active_at_head(&block) {
+            return revm_primitives::HOMESTEAD
+        } else if chain_spec.fork(Hardfork::Frontier).active_at_head(&block) {
+            return revm_primitives::FRONTIER
         }
     }
 

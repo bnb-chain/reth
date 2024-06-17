@@ -34,3 +34,6 @@ pub use state::*;
 
 pub mod receipts;
 pub use receipts::*;
+
+pub mod upgrade_status;
+pub use upgrade_status::*;

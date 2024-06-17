@@ -241,6 +241,7 @@ where
     /// Invoked after a `NewBlock` message was received by the peer.
     ///
     /// This will keep track of blocks we know a peer has
+    #[cfg(not(feature = "bsc"))]
     pub(crate) fn on_new_block(&mut self, peer_id: PeerId, hash: B256) {
         // Mark the blocks as seen
         if let Some(peer) = self.active_peers.get_mut(&peer_id) {
@@ -249,6 +250,7 @@ where
     }
 
     /// Invoked for a `NewBlockHashes` broadcast message.
+    #[cfg(not(feature = "bsc"))]
     pub(crate) fn on_new_block_hashes(&mut self, peer_id: PeerId, hashes: Vec<BlockHashNumber>) {
         // Mark the blocks as seen
         if let Some(peer) = self.active_peers.get_mut(&peer_id) {

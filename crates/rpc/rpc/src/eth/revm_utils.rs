@@ -13,6 +13,8 @@ use reth_rpc_types::{
     state::{AccountOverride, StateOverride},
     BlockOverrides, TransactionRequest,
 };
+#[cfg(feature = "bsc")]
+use revm::primitives::BscFields;
 #[cfg(feature = "optimism")]
 use revm::primitives::{Bytes, OptimismFields};
 use revm::{
@@ -254,6 +256,7 @@ pub(crate) fn create_txn_env(
         Some(TxKind::Call(to)) => TransactTo::call(to),
         _ => TransactTo::create(),
     };
+    #[allow(clippy::needless_update)]
     let env = TxEnv {
         gas_limit: gas_limit.try_into().map_err(|_| RpcInvalidTransactionError::GasUintOverflow)?,
         nonce,
@@ -272,6 +275,9 @@ pub(crate) fn create_txn_env(
         max_fee_per_blob_gas,
         #[cfg(feature = "optimism")]
         optimism: OptimismFields { enveloped_tx: Some(Bytes::new()), ..Default::default() },
+        #[cfg(feature = "bsc")]
+        bsc: BscFields { is_system_transaction: Some(false) },
+        ..Default::default()
     };
 
     Ok(env)

@@ -11,7 +11,7 @@ use std::sync::Arc;
 static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 #[cfg(not(feature = "optimism"))]
-compile_error!("Cannot build the `op-reth` binary with the `optimism` feature flag disabled. Did you mean to build `reth`?");
+compile_error!("Cannot build the `op-reth` binary with the `optimism` feature flag disabled.");
 
 #[cfg(feature = "optimism")]
 fn main() {

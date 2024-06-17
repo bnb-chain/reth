@@ -1,7 +1,7 @@
 use crate::{
     constants::{
-        EIP1559_INITIAL_BASE_FEE, EMPTY_RECEIPTS, EMPTY_ROOT_HASH, EMPTY_TRANSACTIONS,
-        EMPTY_WITHDRAWALS,
+        EIP1559_INITIAL_BASE_FEE, EIP1559_INITIAL_BASE_FEE_FOR_BSC, EMPTY_RECEIPTS,
+        EMPTY_ROOT_HASH, EMPTY_TRANSACTIONS, EMPTY_WITHDRAWALS,
     },
     holesky_nodes,
     net::{goerli_nodes, mainnet_nodes, sepolia_nodes},
@@ -29,6 +29,109 @@ pub(crate) use crate::{
     },
     net::{base_nodes, base_testnet_nodes, op_nodes, op_testnet_nodes},
 };
+
+#[cfg(feature = "bsc")]
+pub(crate) use crate::net::{bsc_mainnet_nodes, bsc_testnet_nodes};
+
+/// The BSC mainnet spec
+#[cfg(feature = "bsc")]
+pub static BSC_MAINNET: Lazy<Arc<ChainSpec>> = Lazy::new(|| {
+    ChainSpec {
+        chain: Chain::from_named(NamedChain::BNBSmartChain),
+        genesis: serde_json::from_str(include_str!("../../res/genesis/bsc_mainnet.json"))
+            .expect("Can't deserialize BSC Mainnet genesis json"),
+        genesis_hash: Some(b256!(
+            "0d21840abff46b96c84b2ac9e10e4f5cdaeb5693cb665db62a2f3b02d2d57b5b"
+        )),
+        paris_block_and_final_difficulty: Some((0, U256::from(0))),
+        hardforks: BTreeMap::from([
+            (Hardfork::Frontier, ForkCondition::Block(0)),
+            (Hardfork::Homestead, ForkCondition::Block(0)),
+            (Hardfork::Tangerine, ForkCondition::Block(0)),
+            (Hardfork::SpuriousDragon, ForkCondition::Block(0)),
+            (Hardfork::Byzantium, ForkCondition::Block(0)),
+            (Hardfork::Constantinople, ForkCondition::Block(0)),
+            (Hardfork::Petersburg, ForkCondition::Block(0)),
+            (Hardfork::Istanbul, ForkCondition::Block(0)),
+            (Hardfork::MuirGlacier, ForkCondition::Block(0)),
+            (Hardfork::Ramanujan, ForkCondition::Block(0)),
+            (Hardfork::Niels, ForkCondition::Block(0)),
+            (Hardfork::MirrorSync, ForkCondition::Block(5184000)),
+            (Hardfork::Bruno, ForkCondition::Block(13082000)),
+            (Hardfork::Euler, ForkCondition::Block(18907621)),
+            (Hardfork::Nano, ForkCondition::Block(21962149)),
+            (Hardfork::Moran, ForkCondition::Block(22107423)),
+            (Hardfork::Gibbs, ForkCondition::Block(23846001)),
+            (Hardfork::Planck, ForkCondition::Block(27281024)),
+            (Hardfork::Luban, ForkCondition::Block(29020050)),
+            (Hardfork::Plato, ForkCondition::Block(30720096)),
+            (Hardfork::Berlin, ForkCondition::Block(31302048)),
+            (Hardfork::London, ForkCondition::Block(31302048)),
+            (Hardfork::Hertz, ForkCondition::Block(31302048)),
+            (Hardfork::HertzFix, ForkCondition::Block(34140700)),
+            (Hardfork::Shanghai, ForkCondition::Timestamp(1705996800)),
+            (Hardfork::Kepler, ForkCondition::Timestamp(1705996800)),
+            (Hardfork::Feynman, ForkCondition::Timestamp(1713419340)),
+            (Hardfork::FeynmanFix, ForkCondition::Timestamp(1713419340)),
+            (Hardfork::Cancun, ForkCondition::Timestamp(1718863500)),
+            (Hardfork::Haber, ForkCondition::Timestamp(1718863500)),
+        ]),
+        deposit_contract: None,
+        base_fee_params: BaseFeeParamsKind::Constant(BaseFeeParams::new(1, 1)),
+        prune_delete_limit: 3500,
+    }
+    .into()
+});
+
+/// The BSC testnet (chapel) spec
+#[cfg(feature = "bsc")]
+pub static BSC_TESTNET: Lazy<Arc<ChainSpec>> = Lazy::new(|| {
+    ChainSpec {
+        chain: Chain::from_named(NamedChain::BNBSmartChainTestnet),
+        genesis: serde_json::from_str(include_str!("../../res/genesis/bsc_testnet.json"))
+            .expect("Can't deserialize BSC Testnet genesis json"),
+        genesis_hash: Some(b256!(
+            "6d3c66c5357ec91d5c43af47e234a939b22557cbb552dc45bebbceeed90fbe34"
+        )),
+        paris_block_and_final_difficulty: Some((0, U256::from(0))),
+        hardforks: BTreeMap::from([
+            (Hardfork::Frontier, ForkCondition::Block(0)),
+            (Hardfork::Homestead, ForkCondition::Block(0)),
+            (Hardfork::Tangerine, ForkCondition::Block(0)),
+            (Hardfork::SpuriousDragon, ForkCondition::Block(0)),
+            (Hardfork::Byzantium, ForkCondition::Block(0)),
+            (Hardfork::Constantinople, ForkCondition::Block(0)),
+            (Hardfork::Petersburg, ForkCondition::Block(0)),
+            (Hardfork::Istanbul, ForkCondition::Block(0)),
+            (Hardfork::MuirGlacier, ForkCondition::Block(0)),
+            (Hardfork::Ramanujan, ForkCondition::Block(1010000)),
+            (Hardfork::Niels, ForkCondition::Block(1014369)),
+            (Hardfork::MirrorSync, ForkCondition::Block(5582500)),
+            (Hardfork::Bruno, ForkCondition::Block(13837000)),
+            (Hardfork::Euler, ForkCondition::Block(19203503)),
+            (Hardfork::Gibbs, ForkCondition::Block(22800220)),
+            (Hardfork::Nano, ForkCondition::Block(23482428)),
+            (Hardfork::Moran, ForkCondition::Block(23603940)),
+            (Hardfork::Planck, ForkCondition::Block(28196022)),
+            (Hardfork::Luban, ForkCondition::Block(29295050)),
+            (Hardfork::Plato, ForkCondition::Block(29861024)),
+            (Hardfork::Berlin, ForkCondition::Block(31103030)),
+            (Hardfork::London, ForkCondition::Block(31103030)),
+            (Hardfork::Hertz, ForkCondition::Block(31103030)),
+            (Hardfork::HertzFix, ForkCondition::Block(35682300)),
+            (Hardfork::Shanghai, ForkCondition::Timestamp(1702972800)),
+            (Hardfork::Kepler, ForkCondition::Timestamp(1702972800)),
+            (Hardfork::Feynman, ForkCondition::Timestamp(1710136800)),
+            (Hardfork::FeynmanFix, ForkCondition::Timestamp(1711342800)),
+            (Hardfork::Cancun, ForkCondition::Timestamp(1713330442)),
+            (Hardfork::Haber, ForkCondition::Timestamp(1716962820)),
+        ]),
+        deposit_contract: None,
+        base_fee_params: BaseFeeParamsKind::Constant(BaseFeeParams::new(1, 1)),
+        prune_delete_limit: 3500,
+    }
+    .into()
+});
 
 /// The Ethereum mainnet spec
 pub static MAINNET: Lazy<Arc<ChainSpec>> = Lazy::new(|| {
@@ -666,6 +769,20 @@ impl ChainSpec {
         )
     }
 
+    /// Returns `true` if this chain contains Bsc configuration.
+    #[inline]
+    pub fn is_bsc(&self) -> bool {
+        self.chain == Chain::bsc_mainnet() ||
+            self.chain == Chain::bsc_testnet() ||
+            self.chain == Chain::from_id(714)
+    }
+
+    /// Returns `true` if this chain is Bsc mainnet.
+    #[inline]
+    pub fn is_bsc_mainnet(&self) -> bool {
+        self.chain == Chain::bsc_mainnet()
+    }
+
     /// Returns `true` if this chain contains Optimism configuration.
     #[inline]
     #[cfg(feature = "optimism")]
@@ -758,8 +875,11 @@ impl ChainSpec {
     /// Get the initial base fee of the genesis block.
     pub fn initial_base_fee(&self) -> Option<u64> {
         // If the base fee is set in the genesis block, we use that instead of the default.
-        let genesis_base_fee =
-            self.genesis.base_fee_per_gas.map(|fee| fee as u64).unwrap_or(EIP1559_INITIAL_BASE_FEE);
+        let genesis_base_fee = if self.is_bsc() {
+            EIP1559_INITIAL_BASE_FEE_FOR_BSC
+        } else {
+            self.genesis.base_fee_per_gas.map(|fee| fee as u64).unwrap_or(EIP1559_INITIAL_BASE_FEE)
+        };
 
         // If London is activated at genesis, we set the initial base fee as per EIP-1559.
         self.fork(Hardfork::London).active_at_block(0).then_some(genesis_base_fee)
@@ -775,7 +895,7 @@ impl ChainSpec {
                 // given timestamp.
                 for (fork, params) in bf_params.iter().rev() {
                     if self.is_fork_active_at_timestamp(*fork, timestamp) {
-                        return *params
+                        return *params;
                     }
                 }
 
@@ -885,7 +1005,14 @@ impl ChainSpec {
 
     /// Get an iterator of all hardforks with their respective activation conditions.
     pub fn forks_iter(&self) -> impl Iterator<Item = (Hardfork, ForkCondition)> + '_ {
-        self.hardforks.iter().map(|(f, b)| (*f, *b))
+        let mut hardforks: Vec<(Hardfork, ForkCondition)> =
+            self.hardforks.iter().map(|(f, c)| (*f, *c)).collect();
+        hardforks.sort_by(|(f1, c1), (f2, c2)| match (c1, c2) {
+            (ForkCondition::Block(b1), ForkCondition::Block(b2)) => b1.cmp(b2),
+            (ForkCondition::Timestamp(t1), ForkCondition::Timestamp(t2)) => t1.cmp(t2),
+            _ => f1.cmp(f2),
+        });
+        hardforks.into_iter()
     }
 
     /// Convenience method to check if a fork is active at a given timestamp.
@@ -944,6 +1071,121 @@ impl ChainSpec {
         self.fork(Hardfork::Bedrock).active_at_block(block_number)
     }
 
+    /// Convenience method to check if [`Hardfork::Ramanujan`] is firstly active at a given block.
+    #[cfg(feature = "bsc")]
+    #[inline]
+    pub fn is_on_ramanujan_at_block(&self, block_number: u64) -> bool {
+        self.fork(Hardfork::Ramanujan).transitions_at_block(block_number)
+    }
+
+    /// Convenience method to check if [`Hardfork::Ramanujan`] is active at a given block.
+    #[cfg(feature = "bsc")]
+    #[inline]
+    pub fn is_ramanujan_active_at_block(&self, block_number: u64) -> bool {
+        self.is_fork_active_at_block(Hardfork::Ramanujan, block_number)
+    }
+
+    /// Convenience method to check if [`Hardfork::Euler`] is firstly active at a given block.
+    #[cfg(feature = "bsc")]
+    #[inline]
+    pub fn is_on_euler_at_block(&self, block_number: u64) -> bool {
+        self.fork(Hardfork::Euler).transitions_at_block(block_number)
+    }
+
+    /// Convenience method to check if [`Hardfork::Euler`] is active at a given block.
+    #[cfg(feature = "bsc")]
+    #[inline]
+    pub fn is_euler_active_at_block(&self, block_number: u64) -> bool {
+        self.is_fork_active_at_block(Hardfork::Euler, block_number)
+    }
+
+    /// Convenience method to check if [`Hardfork::Planck`] is firstly active at a given block.
+    #[cfg(feature = "bsc")]
+    #[inline]
+    pub fn is_on_planck_at_block(&self, block_number: u64) -> bool {
+        self.fork(Hardfork::Planck).transitions_at_block(block_number)
+    }
+
+    /// Convenience method to check if [`Hardfork::Planck`] is active at a given block.
+    #[cfg(feature = "bsc")]
+    #[inline]
+    pub fn is_planck_active_at_block(&self, block_number: u64) -> bool {
+        self.is_fork_active_at_block(Hardfork::Planck, block_number)
+    }
+
+    /// Convenience method to check if [`Hardfork::Luban`] is firstly active at a given block.
+    #[cfg(feature = "bsc")]
+    #[inline]
+    pub fn is_on_luban_at_block(&self, block_number: u64) -> bool {
+        self.fork(Hardfork::Luban).transitions_at_block(block_number)
+    }
+
+    /// Convenience method to check if [`Hardfork::Luban`] is active at a given block.
+    #[cfg(feature = "bsc")]
+    #[inline]
+    pub fn is_luban_active_at_block(&self, block_number: u64) -> bool {
+        self.is_fork_active_at_block(Hardfork::Luban, block_number)
+    }
+
+    /// Convenience method to check if [`Hardfork::Plato`] is firstly active at a given block.
+    #[cfg(feature = "bsc")]
+    #[inline]
+    pub fn is_on_plato_at_block(&self, block_number: u64) -> bool {
+        self.fork(Hardfork::Plato).transitions_at_block(block_number)
+    }
+
+    /// Convenience method to check if [`Hardfork::Plato`] is active at a given block.
+    #[cfg(feature = "bsc")]
+    #[inline]
+    pub fn is_plato_active_at_block(&self, block_number: u64) -> bool {
+        self.is_fork_active_at_block(Hardfork::Plato, block_number)
+    }
+
+    /// Convenience method to check if [`Hardfork::Kepler`] is firstly active at a given timestamp
+    /// and parent timestamp.
+    #[cfg(feature = "bsc")]
+    #[inline]
+    pub fn is_on_kepler_at_timestamp(&self, timestamp: u64, parent_timestamp: u64) -> bool {
+        self.fork(Hardfork::Kepler).transitions_at_timestamp(timestamp, parent_timestamp)
+    }
+
+    /// Convenience method to check if [`Hardfork::Kepler`] is active at a given timestamp.
+    #[cfg(feature = "bsc")]
+    #[inline]
+    pub fn is_kepler_active_at_timestamp(&self, timestamp: u64) -> bool {
+        self.is_fork_active_at_timestamp(Hardfork::Kepler, timestamp)
+    }
+
+    /// Convenience method to check if [`Hardfork::Feynman`] is firstly active at a given timestamp
+    /// and parent timestamp.
+    #[cfg(feature = "bsc")]
+    #[inline]
+    pub fn is_on_feynman_at_timestamp(&self, timestamp: u64, parent_timestamp: u64) -> bool {
+        self.fork(Hardfork::Feynman).transitions_at_timestamp(timestamp, parent_timestamp)
+    }
+
+    /// Convenience method to check if [`Hardfork::Feynman`] is active at a given timestamp.
+    #[cfg(feature = "bsc")]
+    #[inline]
+    pub fn is_feynman_active_at_timestamp(&self, timestamp: u64) -> bool {
+        self.is_fork_active_at_timestamp(Hardfork::Feynman, timestamp)
+    }
+
+    /// Convenience method to check if [`Hardfork::Haber`] is firstly active at a given timestamp
+    /// and parent timestamp.
+    #[cfg(feature = "bsc")]
+    #[inline]
+    pub fn is_on_haber_at_timestamp(&self, timestamp: u64, parent_timestamp: u64) -> bool {
+        self.fork(Hardfork::Haber).transitions_at_timestamp(timestamp, parent_timestamp)
+    }
+
+    /// Convenience method to check if [`Hardfork::Haber`] is active at a given timestamp.
+    #[cfg(feature = "bsc")]
+    #[inline]
+    pub fn is_haber_active_at_timestamp(&self, timestamp: u64) -> bool {
+        self.is_fork_active_at_timestamp(Hardfork::Haber, timestamp)
+    }
+
     /// Creates a [`ForkFilter`] for the block described by [Head].
     pub fn fork_filter(&self, head: Head) -> ForkFilter {
         let forks = self.forks_iter().filter_map(|(_, condition)| {
@@ -980,7 +1222,7 @@ impl ChainSpec {
                 } else {
                     // we can return here because this block fork is not active, so we set the
                     // `next` value
-                    return ForkId { hash: forkhash, next: block }
+                    return ForkId { hash: forkhash, next: block };
                 }
             }
         }
@@ -1006,7 +1248,7 @@ impl ChainSpec {
                 // can safely return here because we have already handled all block forks and
                 // have handled all active timestamp forks, and set the next value to the
                 // timestamp that is known but not active yet
-                return ForkId { hash: forkhash, next: timestamp }
+                return ForkId { hash: forkhash, next: timestamp };
             }
         }
 
@@ -1021,7 +1263,7 @@ impl ChainSpec {
                 // to satisfy every timestamp ForkCondition, we find the last ForkCondition::Block
                 // if one exists, and include its block_num in the returned Head
                 if let Some(last_block_num) = self.last_block_fork_before_merge_or_timestamp() {
-                    return Head { timestamp, number: last_block_num, ..Default::default() }
+                    return Head { timestamp, number: last_block_num, ..Default::default() };
                 }
                 Head { timestamp, ..Default::default() }
             }
@@ -1049,17 +1291,17 @@ impl ChainSpec {
                     ForkCondition::TTD { fork_block, .. } => {
                         // handle Sepolia merge netsplit case
                         if fork_block.is_some() {
-                            return *fork_block
+                            return *fork_block;
                         }
                         // ensure curr_cond is indeed ForkCondition::Block and return block_num
                         if let ForkCondition::Block(block_num) = curr_cond {
-                            return Some(block_num)
+                            return Some(block_num);
                         }
                     }
                     ForkCondition::Timestamp(_) => {
                         // ensure curr_cond is indeed ForkCondition::Block and return block_num
                         if let ForkCondition::Block(block_num) = curr_cond {
-                            return Some(block_num)
+                            return Some(block_num);
                         }
                     }
                     ForkCondition::Block(_) | ForkCondition::Never => continue,
@@ -1091,6 +1333,10 @@ impl ChainSpec {
             C::BaseGoerli | C::BaseSepolia => Some(base_testnet_nodes()),
             #[cfg(feature = "optimism")]
             C::OptimismSepolia | C::OptimismGoerli | C::OptimismKovan => Some(op_testnet_nodes()),
+            #[cfg(feature = "bsc")]
+            C::BNBSmartChain => Some(bsc_mainnet_nodes()),
+            #[cfg(feature = "bsc")]
+            C::BNBSmartChainTestnet => Some(bsc_testnet_nodes()),
             _ => None,
         }
     }
@@ -1517,6 +1763,13 @@ impl ForkCondition {
         matches!(self, Self::Timestamp(time) if timestamp >= *time)
     }
 
+    /// Checks if the given block is the first block that satisfies the fork condition.
+    ///
+    /// This will return false for any condition that is not timestamp based.
+    pub const fn transitions_at_timestamp(&self, timestamp: u64, parent_timestamp: u64) -> bool {
+        matches!(self, Self::Timestamp(time) if timestamp >= *time && parent_timestamp < *time)
+    }
+
     /// Checks whether the fork condition is satisfied at the given head block.
     ///
     /// This will return true if:
@@ -1666,7 +1919,7 @@ impl Display for DisplayHardforks {
         format(
             "Pre-merge hard forks (block based)",
             &self.pre_merge,
-            self.with_merge.is_empty(),
+            self.with_merge.is_empty() && self.post_merge.is_empty(),
             f,
         )?;
 
@@ -3564,5 +3817,25 @@ Post-merge hard forks (timestamp based):
         assert!(chain_spec.is_fork_active_at_timestamp(Hardfork::Canyon, 30));
         assert!(chain_spec.is_fork_active_at_timestamp(Hardfork::Ecotone, 40));
         assert!(chain_spec.is_fork_active_at_timestamp(Hardfork::Fjord, 50));
+    }
+
+    #[test]
+    #[cfg(feature = "bsc")]
+    fn bsc_mainnet_genesis() {
+        let genesis = BSC_MAINNET.genesis_header();
+        assert_eq!(
+            genesis.hash_slow(),
+            b256!("0d21840abff46b96c84b2ac9e10e4f5cdaeb5693cb665db62a2f3b02d2d57b5b")
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "bsc")]
+    fn bsc_testnet_genesis() {
+        let genesis = BSC_TESTNET.genesis_header();
+        assert_eq!(
+            genesis.hash_slow(),
+            b256!("6d3c66c5357ec91d5c43af47e234a939b22557cbb552dc45bebbceeed90fbe34")
+        );
     }
 }

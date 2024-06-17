@@ -96,3 +96,8 @@ optimism = [
     "dep:reth-evm-optimism",
     "reth-evm-optimism/optimism",
 ]
+
+
+bsc = [
+    "reth-primitives/bsc",
+]

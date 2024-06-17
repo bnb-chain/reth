@@ -5,7 +5,7 @@ use crate::{
     DatabaseError,
 };
 use reth_codecs::{main_codec, Compact};
-use reth_primitives::{Address, B256, *};
+use reth_primitives::{parlia::Snapshot, Address, B256, *};
 use reth_prune_types::{PruneCheckpoint, PruneSegment};
 use reth_stages_types::StageCheckpoint;
 use reth_trie_common::{StoredNibbles, StoredNibblesSubKey, *};
@@ -176,6 +176,25 @@ impl Decode for ClientVersion {
     }
 }
 
+impl Compress for Snapshot {
+    type Compressed = Vec<u8>;
+
+    fn compress(self) -> Self::Compressed {
+        serde_cbor::to_vec(&self).expect("Failed to serialize Snapshot")
+    }
+
+    fn compress_to_buf<B: BufMut + AsMut<[u8]>>(self, buf: &mut B) {
+        let compressed = self.compress();
+        buf.put_slice(&compressed);
+    }
+}
+
+impl Decompress for Snapshot {
+    fn decompress<B: AsRef<[u8]>>(value: B) -> Result<Self, DatabaseError> {
+        serde_cbor::from_slice(value.as_ref()).map_err(|_| DatabaseError::Decode)
+    }
+}
+
 /// Implements compression for Compact type.
 macro_rules! impl_compression_for_compact {
     ($($name:tt),+) => {
@@ -298,7 +317,9 @@ add_wrapper_struct!((ClientVersion, CompactClientVersion));
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::Rng;
     use reth_primitives::{
+        parlia::{ValidatorInfo, VoteAddress, VoteData},
         Account, Header, Receipt, ReceiptWithBloom, SealedHeader, TxEip1559, TxEip2930, TxEip4844,
         TxLegacy, Withdrawals,
     };
@@ -308,6 +329,7 @@ mod tests {
         HeadersCheckpoint, IndexHistoryCheckpoint, StageCheckpoint, StageUnitCheckpoint,
         StorageHashingCheckpoint,
     };
+    use std::collections::{BTreeMap, HashMap};
 
     // each value in the database has an extra field named flags that encodes metadata about other
     // fields in the value, e.g. offset and length.
@@ -379,5 +401,39 @@ mod tests {
             assert_eq!(TxLegacy::bitflag_encoded_bytes(), 3);
             assert_eq!(Withdrawals::bitflag_encoded_bytes(), 0);
         }
+    }
+
+    #[test]
+    fn compress_snapshot() {
+        let mut rng = rand::thread_rng();
+
+        let mut snap = Snapshot {
+            epoch_num: rng.gen::<u64>(),
+            block_number: rng.gen::<u64>(),
+            block_hash: B256::random(),
+            validators: vec![Address::random()],
+            validators_map: HashMap::new(),
+            recent_proposers: BTreeMap::new(),
+            vote_data: VoteData::default(),
+        };
+        snap.validators_map.insert(
+            snap.validators[0],
+            ValidatorInfo { index: 1, vote_addr: VoteAddress::random() },
+        );
+        snap.recent_proposers.insert(1, snap.validators[0]);
+        snap.vote_data = VoteData {
+            source_number: rng.gen::<u64>(),
+            source_hash: B256::random(),
+            target_number: rng.gen::<u64>(),
+            target_hash: B256::random(),
+        };
+        println!("original snapshot: {:?}", snap);
+
+        let compressed = snap.clone().compress();
+        println!("compressed snapshot: {:?}", compressed);
+
+        let decompressed = Snapshot::decompress(&compressed).unwrap();
+        println!("decompressed snapshot: {:?}", decompressed);
+        assert_eq!(snap, decompressed);
     }
 }

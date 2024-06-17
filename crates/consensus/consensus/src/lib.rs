@@ -325,6 +325,21 @@ pub enum ConsensusError {
     #[error("blob gas used mismatch: {0}")]
     BlobGasUsedDiff(GotExpected<u64>),
 
+    /// Error for invalid block difficulty
+    #[error("invalid block difficulty: {difficulty}")]
+    InvalidDifficulty {
+        /// The block difficulty
+        difficulty: U256,
+    },
+
+    /// Error for invalid mix hash
+    #[error("invalid mix digest")]
+    InvalidMixHash,
+
+    /// Error for invalid header extra
+    #[error("invalid header extra")]
+    InvalidHeaderExtra,
+
     /// Error for a transaction that violates consensus.
     #[error(transparent)]
     InvalidTransaction(#[from] InvalidTransactionError),

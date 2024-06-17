@@ -1,5 +1,7 @@
 //! Configuration files.
 
+#[cfg(feature = "bsc")]
+use reth_bsc_consensus::ParliaConfig;
 use reth_network::{PeersConfig, SessionsConfig};
 use reth_prune_types::PruneModes;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -25,6 +27,9 @@ pub struct Config {
     pub peers: PeersConfig,
     /// Configuration for peer sessions.
     pub sessions: SessionsConfig,
+    #[cfg(feature = "bsc")]
+    /// Configuration for parlia consensus.
+    pub parlia: ParliaConfig,
 }
 
 impl Config {
