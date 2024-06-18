@@ -1,15 +1,14 @@
 //! Ethereum Node types config.
 
-use crate::{EthEngineTypes, EthEvmConfig};
 use reth_basic_payload_builder::{BasicPayloadJobGenerator, BasicPayloadJobGeneratorConfig};
 use reth_evm_ethereum::execute::EthExecutorProvider;
 use reth_network::NetworkHandle;
 use reth_node_builder::{
+    BuilderContext,
     components::{
         ComponentsBuilder, ExecutorBuilder, NetworkBuilder, PayloadServiceBuilder, PoolBuilder,
     },
-    node::{FullNodeTypes, NodeTypes},
-    BuilderContext, Node, PayloadBuilderConfig,
+    node::{FullNodeTypes, NodeTypes}, Node, PayloadBuilderConfig,
 };
 use reth_payload_builder::{PayloadBuilderHandle, PayloadBuilderService};
 use reth_provider::CanonStateSubscriptions;
@@ -18,6 +17,8 @@ use reth_transaction_pool::{
     blobstore::DiskFileBlobStore, EthTransactionPool, TransactionPool,
     TransactionValidationTaskExecutor,
 };
+
+use crate::{EthEngineTypes, EthEvmConfig};
 
 /// Type configuration for a regular Ethereum node.
 #[derive(Debug, Default, Clone, Copy)]
@@ -77,7 +78,7 @@ where
     Node: FullNodeTypes,
 {
     type EVM = EthEvmConfig;
-    type Executor = EthExecutorProvider<Self::EVM>;
+    type Executor = EthExecutorProvider<Node::Provider, Self::EVM>;
 
     async fn build_evm(
         self,
@@ -85,7 +86,7 @@ where
     ) -> eyre::Result<(Self::EVM, Self::Executor)> {
         let chain_spec = ctx.chain_spec();
         let evm_config = EthEvmConfig::default();
-        let executor = EthExecutorProvider::new(chain_spec, evm_config);
+        let executor = EthExecutorProvider::new(chain_spec, evm_config, ctx.provider().clone());
 
         Ok((evm_config, executor))
     }

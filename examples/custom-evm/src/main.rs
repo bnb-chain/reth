@@ -2,27 +2,28 @@
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
+use std::sync::Arc;
+
 use reth::{
-    builder::{components::ExecutorBuilder, BuilderContext, NodeBuilder},
+    builder::{BuilderContext, components::ExecutorBuilder, NodeBuilder},
     primitives::{
         address,
-        revm_primitives::{CfgEnvWithHandlerCfg, Env, PrecompileResult, TxEnv},
-        Address, Bytes, U256,
+        Address,
+        Bytes, revm_primitives::{CfgEnvWithHandlerCfg, Env, PrecompileResult, TxEnv}, U256,
     },
     revm::{
-        handler::register::EvmHandler,
-        inspector_handle_register,
-        precompile::{Precompile, PrecompileSpecId, Precompiles},
-        Database, Evm, EvmBuilder, GetInspector,
+        Database,
+        Evm,
+        EvmBuilder,
+        GetInspector, handler::register::EvmHandler, inspector_handle_register, precompile::{Precompile, Precompiles, PrecompileSpecId},
     },
     tasks::TaskManager,
 };
 use reth_node_api::{ConfigureEvm, ConfigureEvmEnv, FullNodeTypes};
 use reth_node_core::{args::RpcServerArgs, node_config::NodeConfig};
-use reth_node_ethereum::{EthEvmConfig, EthExecutorProvider, EthereumNode};
+use reth_node_ethereum::{EthereumNode, EthEvmConfig, EthExecutorProvider};
 use reth_primitives::{Chain, ChainSpec, Genesis, Header, TransactionSigned};
 use reth_tracing::{RethTracer, Tracer};
-use std::sync::Arc;
 
 /// Custom EVM configuration
 #[derive(Debug, Clone, Copy, Default)]
@@ -111,7 +112,7 @@ where
     Node: FullNodeTypes,
 {
     type EVM = MyEvmConfig;
-    type Executor = EthExecutorProvider<Self::EVM>;
+    type Executor = EthExecutorProvider<Node::Provider, Self::EVM>;
 
     async fn build_evm(
         self,
@@ -119,7 +120,7 @@ where
     ) -> eyre::Result<(Self::EVM, Self::Executor)> {
         Ok((
             MyEvmConfig::default(),
-            EthExecutorProvider::new(ctx.chain_spec(), MyEvmConfig::default()),
+            EthExecutorProvider::new(ctx.chain_spec(), MyEvmConfig::default(), None),
         ))
     }
 }

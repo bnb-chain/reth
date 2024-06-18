@@ -1,49 +1,80 @@
 //! Ethereum block executor.
 
-use crate::{
-    dao_fork::{DAO_HARDFORK_BENEFICIARY, DAO_HARDKFORK_ACCOUNTS},
-    verify::verify_receipts,
-    EthEvmConfig,
+use std::marker::PhantomData;
+use std::sync::Arc;
+
+use revm_primitives::{
+    BlockEnv,
+    CfgEnvWithHandlerCfg, db::{Database, DatabaseCommit}, EnvWithHandlerCfg, ResultAndState,
 };
+use tracing::debug;
+
 use reth_evm::{
+    ConfigureEvm,
     execute::{
         BatchBlockExecutionOutput, BatchExecutor, BlockExecutionInput, BlockExecutionOutput,
         BlockExecutorProvider, Executor,
     },
-    ConfigureEvm,
 };
 use reth_interfaces::{
     executor::{BlockExecutionError, BlockValidationError},
     provider::ProviderError,
 };
 use reth_primitives::{
-    BlockNumber, BlockWithSenders, ChainSpec, GotExpected, Hardfork, Header, PruneModes, Receipt,
-    Receipts, Withdrawals, MAINNET, U256,
+    BlockNumber, BlockWithSenders, ChainSpec, GotExpected, Hardfork, Header, MAINNET, PruneModes,
+    Receipt, Receipts, U256, Withdrawals,
 };
+use reth_provider::DatabaseProviderFactory;
+use reth_provider::DatabaseProviderFactory;
+use reth_provider::DatabaseProviderFactory;
+use reth_provider::DatabaseProviderFactory;
+use reth_provider::DatabaseProviderFactory;
+use reth_provider::DatabaseProviderFactory;
+use reth_provider::DatabaseProviderFactory;
+use reth_provider::DatabaseProviderFactory;
+use reth_provider::DatabaseProviderFactory;
+use reth_provider::providers::ConsistentDbView;
+use reth_provider::providers::ConsistentDbView;
+use reth_provider::providers::ConsistentDbView;
+use reth_provider::providers::ConsistentDbView;
+use reth_provider::providers::ConsistentDbView;
+use reth_provider::providers::ConsistentDbView;
+use reth_provider::providers::ConsistentDbView;
+use reth_provider::providers::ConsistentDbView;
 use reth_revm::{
     batch::{BlockBatchRecord, BlockExecutorStats},
     db::states::bundle_state::BundleRetention,
-    state_change::{apply_beacon_root_contract_call, post_block_balance_increments},
-    Evm, State,
+    Evm,
+    State, state_change::{apply_beacon_root_contract_call, post_block_balance_increments},
 };
-use revm_primitives::{
-    db::{Database, DatabaseCommit},
-    BlockEnv, CfgEnvWithHandlerCfg, EnvWithHandlerCfg, ResultAndState,
+
+use crate::{
+    dao_fork::{DAO_HARDFORK_BENEFICIARY, DAO_HARDKFORK_ACCOUNTS},
+    EthEvmConfig,
+    verify::verify_receipts,
 };
-use std::sync::Arc;
-use tracing::debug;
+
+use reth_provider::DatabaseProviderFactory;
+use reth_provider::DatabaseProviderFactory;
+use reth_provider::DatabaseProviderFactory;
+use reth_provider::DatabaseProviderFactory;
+use reth_provider::DatabaseProviderFactory;
+use reth_provider::DatabaseProviderFactory;
 
 /// Provides executors to execute regular ethereum blocks
 #[derive(Debug, Clone)]
-pub struct EthExecutorProvider<EvmConfig = EthEvmConfig> {
+pub struct EthExecutorProvider<P, PDB, EvmConfig = EthEvmConfig> {
     chain_spec: Arc<ChainSpec>,
     evm_config: EvmConfig,
+    provider: Option<P>,
+    /// The database type used by the provider.
+    db: PhantomData<PDB>,
 }
 
-impl EthExecutorProvider {
+impl<P, PDB> EthExecutorProvider<P, PDB> {
     /// Creates a new default ethereum executor provider.
     pub fn ethereum(chain_spec: Arc<ChainSpec>) -> Self {
-        Self::new(chain_spec, Default::default())
+        Self::new(chain_spec, Default::default(), None)
     }
 
     /// Returns a new provider for the mainnet.
@@ -52,18 +83,19 @@ impl EthExecutorProvider {
     }
 }
 
-impl<EvmConfig> EthExecutorProvider<EvmConfig> {
+impl<P, PDB, EvmConfig> EthExecutorProvider<P, PDB, EvmConfig> {
     /// Creates a new executor provider.
-    pub fn new(chain_spec: Arc<ChainSpec>, evm_config: EvmConfig) -> Self {
-        Self { chain_spec, evm_config }
+    pub fn new(chain_spec: Arc<ChainSpec>, evm_config: EvmConfig, provider: Option<P>) -> Self {
+        Self { chain_spec, evm_config, provider, db: Default::default() }
     }
 }
 
-impl<EvmConfig> EthExecutorProvider<EvmConfig>
+impl<P, PDB, EvmConfig> EthExecutorProvider<P, PDB, EvmConfig>
 where
+    P: Clone,
     EvmConfig: ConfigureEvm,
 {
-    fn eth_executor<DB>(&self, db: DB) -> EthBlockExecutor<EvmConfig, DB>
+    fn eth_executor<DB>(&self, db: DB) -> EthBlockExecutor<EvmConfig, DB, P, PDB>
     where
         DB: Database<Error = ProviderError>,
     {
@@ -71,17 +103,21 @@ where
             self.chain_spec.clone(),
             self.evm_config.clone(),
             State::builder().with_database(db).with_bundle_update().without_state_clear().build(),
+            self.provider.clone(),
         )
     }
 }
 
-impl<EvmConfig> BlockExecutorProvider for EthExecutorProvider<EvmConfig>
+impl<P, PDB, EvmConfig> BlockExecutorProvider for EthExecutorProvider<P, PDB, EvmConfig>
 where
+    P: Send + Sync + Clone + Unpin + 'static,
+    PDB: Send + Sync + Clone + Unpin + 'static,
     EvmConfig: ConfigureEvm,
 {
-    type Executor<DB: Database<Error = ProviderError>> = EthBlockExecutor<EvmConfig, DB>;
+    type Executor<DB: Database<Error = ProviderError>> = EthBlockExecutor<EvmConfig, DB, P, PDB>;
 
-    type BatchExecutor<DB: Database<Error = ProviderError>> = EthBatchExecutor<EvmConfig, DB>;
+    type BatchExecutor<DB: Database<Error = ProviderError>> =
+        EthBatchExecutor<EvmConfig, DB, P, PDB>;
 
     fn executor<DB>(&self, db: DB) -> Self::Executor<DB>
     where
@@ -105,16 +141,22 @@ where
 
 /// Helper container type for EVM with chain spec.
 #[derive(Debug, Clone)]
-struct EthEvmExecutor<EvmConfig> {
+struct EthEvmExecutor<EvmConfig, P, PDB> {
     /// The chainspec
     chain_spec: Arc<ChainSpec>,
     /// How to create an EVM.
     evm_config: EvmConfig,
+    /// Extra provider
+    provider: Option<P>,
+    /// The database type used by the provider.
+    db: PhantomData<PDB>,
 }
 
-impl<EvmConfig> EthEvmExecutor<EvmConfig>
+impl<EvmConfig, P, PDB> EthEvmExecutor<EvmConfig, P, PDB>
 where
     EvmConfig: ConfigureEvm,
+    P: DatabaseProviderFactory<PDB>,
+    PDB: reth_db::database::Database,
 {
     /// Executes the transactions in the block and returns the receipts.
     ///
@@ -140,6 +182,12 @@ where
             &mut evm,
         )?;
 
+        // enable prefetch
+        // let prefetch = match self.provider {
+        //     Some(provider) => ConsistentDbView::new_with_latest_tip(provider.clone())?,
+        //     None => None,
+        // };
+
         // execute transactions
         let mut cumulative_gas_used = 0;
         let mut receipts = Vec::with_capacity(block.body.len());
@@ -152,7 +200,7 @@ where
                     transaction_gas_limit: transaction.gas_limit(),
                     block_available_gas,
                 }
-                .into())
+                .into());
             }
 
             EvmConfig::fill_tx_env(evm.tx_mut(), transaction, *sender);
@@ -194,7 +242,7 @@ where
                 gas: GotExpected { got: cumulative_gas_used, expected: block.gas_used },
                 gas_spent_by_tx: receipts.gas_spent_by_tx()?,
             }
-            .into())
+            .into());
         }
 
         Ok((receipts, cumulative_gas_used))
@@ -207,17 +255,30 @@ where
 /// - Create a new instance of the executor.
 /// - Execute the block.
 #[derive(Debug)]
-pub struct EthBlockExecutor<EvmConfig, DB> {
+pub struct EthBlockExecutor<EvmConfig, DB, P, PDB> {
     /// Chain specific evm config that's used to execute a block.
-    executor: EthEvmExecutor<EvmConfig>,
+    executor: EthEvmExecutor<EvmConfig, P, PDB>,
     /// The state to use for execution
     state: State<DB>,
 }
 
-impl<EvmConfig, DB> EthBlockExecutor<EvmConfig, DB> {
+impl<EvmConfig, DB, P, PDB> EthBlockExecutor<EvmConfig, DB, P, PDB> {
     /// Creates a new Ethereum block executor.
-    pub fn new(chain_spec: Arc<ChainSpec>, evm_config: EvmConfig, state: State<DB>) -> Self {
-        Self { executor: EthEvmExecutor { chain_spec, evm_config }, state }
+    pub fn new(
+        chain_spec: Arc<ChainSpec>,
+        evm_config: EvmConfig,
+        state: State<DB>,
+        provider: Option<P>,
+    ) -> Self {
+        Self {
+            executor: EthEvmExecutor {
+                chain_spec,
+                evm_config,
+                provider,
+                db: PhantomData::<reth_db::database::Database>::default(),
+            },
+            state,
+        }
     }
 
     #[inline]
@@ -232,7 +293,7 @@ impl<EvmConfig, DB> EthBlockExecutor<EvmConfig, DB> {
     }
 }
 
-impl<EvmConfig, DB> EthBlockExecutor<EvmConfig, DB>
+impl<EvmConfig, DB, P, PDB> EthBlockExecutor<EvmConfig, DB, P, PDB>
 where
     EvmConfig: ConfigureEvm,
     DB: Database<Error = ProviderError>,
@@ -291,7 +352,7 @@ where
                 receipts.iter(),
             ) {
                 debug!(target: "evm", %error, ?receipts, "receipts verification failed");
-                return Err(error)
+                return Err(error);
             };
         }
 
@@ -345,7 +406,7 @@ where
     }
 }
 
-impl<EvmConfig, DB> Executor<DB> for EthBlockExecutor<EvmConfig, DB>
+impl<EvmConfig, DB, P, PDB> Executor<DB> for EthBlockExecutor<EvmConfig, DB, P, PDB>
 where
     EvmConfig: ConfigureEvm,
     DB: Database<Error = ProviderError>,
@@ -376,17 +437,17 @@ where
 ///
 /// State changes are tracked until the executor is finalized.
 #[derive(Debug)]
-pub struct EthBatchExecutor<EvmConfig, DB> {
+pub struct EthBatchExecutor<EvmConfig, DB, P, PDB> {
     /// The executor used to execute single blocks
     ///
     /// All state changes are committed to the [State].
-    executor: EthBlockExecutor<EvmConfig, DB>,
+    executor: EthBlockExecutor<EvmConfig, DB, P, PDB>,
     /// Keeps track of the batch and records receipts based on the configured prune mode
     batch_record: BlockBatchRecord,
     stats: BlockExecutorStats,
 }
 
-impl<EvmConfig, DB> EthBatchExecutor<EvmConfig, DB> {
+impl<EvmConfig, DB, P, PDB> EthBatchExecutor<EvmConfig, DB, P, PDB> {
     /// Returns mutable reference to the state that wraps the underlying database.
     #[allow(unused)]
     fn state_mut(&mut self) -> &mut State<DB> {
@@ -394,7 +455,7 @@ impl<EvmConfig, DB> EthBatchExecutor<EvmConfig, DB> {
     }
 }
 
-impl<EvmConfig, DB> BatchExecutor<DB> for EthBatchExecutor<EvmConfig, DB>
+impl<EvmConfig, DB, P, PDB> BatchExecutor<DB> for EthBatchExecutor<EvmConfig, DB, P, PDB>
 where
     EvmConfig: ConfigureEvm,
     DB: Database<Error = ProviderError>,
@@ -442,16 +503,18 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::collections::HashMap;
+
     use reth_primitives::{
-        bytes,
-        constants::{BEACON_ROOTS_ADDRESS, SYSTEM_ADDRESS},
-        keccak256, Account, Block, Bytes, ChainSpecBuilder, ForkCondition, B256,
+        Account,
+        B256,
+        Block, bytes, Bytes, ChainSpecBuilder, constants::{BEACON_ROOTS_ADDRESS, SYSTEM_ADDRESS}, ForkCondition, keccak256,
     };
     use reth_revm::{
         database::StateProviderDatabase, test_utils::StateProviderTest, TransitionState,
     };
-    use std::collections::HashMap;
+
+    use super::*;
 
     static BEACON_ROOT_CONTRACT_CODE: Bytes = bytes!("3373fffffffffffffffffffffffffffffffffffffffe14604d57602036146024575f5ffd5b5f35801560495762001fff810690815414603c575f5ffd5b62001fff01545f5260205ff35b5f5ffd5b62001fff42064281555f359062001fff015500");
 
@@ -475,7 +538,12 @@ mod tests {
     }
 
     fn executor_provider(chain_spec: Arc<ChainSpec>) -> EthExecutorProvider<EthEvmConfig> {
-        EthExecutorProvider { chain_spec, evm_config: Default::default() }
+        EthExecutorProvider {
+            chain_spec,
+            evm_config: Default::default(),
+            provider: None,
+            db: Default::default(),
+        }
     }
 
     #[test]
