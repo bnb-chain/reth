@@ -490,6 +490,7 @@ where
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use reth_db::test_utils::create_test_rw_db;
 
     use reth_primitives::{
         Account,
@@ -498,6 +499,10 @@ mod tests {
     };
     use reth_revm::{
         database::StateProviderDatabase, test_utils::StateProviderTest, TransitionState,
+    };
+    use reth_provider::{
+        test_utils::{blocks::BlockchainTestData, create_test_provider_factory_with_chain_spec},
+        ProviderFactory,
     };
 
     use super::*;
@@ -523,7 +528,7 @@ mod tests {
         db
     }
 
-    fn executor_provider(chain_spec: Arc<ChainSpec>) -> EthExecutorProvider<PDB, EthEvmConfig> {
+    fn executor_provider<P, PDB>(chain_spec: Arc<ChainSpec>) -> EthExecutorProvider<P, PDB, EthEvmConfig> {
         EthExecutorProvider {
             chain_spec,
             evm_config: Default::default(),
@@ -546,7 +551,9 @@ mod tests {
                 .build(),
         );
 
-        let provider = executor_provider(chain_spec);
+        let test_p = create_test_provider_factory_with_chain_spec(chain_spec.clone());
+        let test_pdb = create_test_rw_db();
+        let provider = executor_provider::<test_p, test_pdb>(chain_spec);
 
         // attempt to execute a block without parent beacon block root, expect err
         let err = provider
