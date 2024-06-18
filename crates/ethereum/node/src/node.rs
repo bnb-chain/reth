@@ -78,7 +78,7 @@ where
     Node: FullNodeTypes,
 {
     type EVM = EthEvmConfig;
-    type Executor = EthExecutorProvider<Node::Provider, Self::EVM>;
+    type Executor = EthExecutorProvider<Node::Provider, Node::DB, Self::EVM>;
 
     async fn build_evm(
         self,

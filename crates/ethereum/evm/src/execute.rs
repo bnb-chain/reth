@@ -1,65 +1,41 @@
 //! Ethereum block executor.
 
-use std::marker::PhantomData;
-use std::sync::Arc;
+use std::{marker::PhantomData, sync::Arc};
 
 use revm_primitives::{
-    BlockEnv,
-    CfgEnvWithHandlerCfg, db::{Database, DatabaseCommit}, EnvWithHandlerCfg, ResultAndState,
+    db::{Database, DatabaseCommit},
+    BlockEnv, CfgEnvWithHandlerCfg, EnvWithHandlerCfg, ResultAndState,
 };
 use tracing::debug;
 
 use reth_evm::{
-    ConfigureEvm,
     execute::{
         BatchBlockExecutionOutput, BatchExecutor, BlockExecutionInput, BlockExecutionOutput,
         BlockExecutorProvider, Executor,
     },
+    ConfigureEvm,
 };
 use reth_interfaces::{
     executor::{BlockExecutionError, BlockValidationError},
     provider::ProviderError,
 };
 use reth_primitives::{
-    BlockNumber, BlockWithSenders, ChainSpec, GotExpected, Hardfork, Header, MAINNET, PruneModes,
-    Receipt, Receipts, U256, Withdrawals,
+    BlockNumber, BlockWithSenders, ChainSpec, GotExpected, Hardfork, Header, PruneModes, Receipt,
+    Receipts, Withdrawals, MAINNET, U256,
 };
-use reth_provider::DatabaseProviderFactory;
-use reth_provider::DatabaseProviderFactory;
-use reth_provider::DatabaseProviderFactory;
-use reth_provider::DatabaseProviderFactory;
-use reth_provider::DatabaseProviderFactory;
-use reth_provider::DatabaseProviderFactory;
-use reth_provider::DatabaseProviderFactory;
-use reth_provider::DatabaseProviderFactory;
-use reth_provider::DatabaseProviderFactory;
-use reth_provider::providers::ConsistentDbView;
-use reth_provider::providers::ConsistentDbView;
-use reth_provider::providers::ConsistentDbView;
-use reth_provider::providers::ConsistentDbView;
-use reth_provider::providers::ConsistentDbView;
-use reth_provider::providers::ConsistentDbView;
-use reth_provider::providers::ConsistentDbView;
-use reth_provider::providers::ConsistentDbView;
+use reth_provider::{providers::ConsistentDbView, DatabaseProviderFactory};
 use reth_revm::{
     batch::{BlockBatchRecord, BlockExecutorStats},
     db::states::bundle_state::BundleRetention,
-    Evm,
-    State, state_change::{apply_beacon_root_contract_call, post_block_balance_increments},
+    state_change::{apply_beacon_root_contract_call, post_block_balance_increments},
+    Evm, State,
 };
 
 use crate::{
     dao_fork::{DAO_HARDFORK_BENEFICIARY, DAO_HARDKFORK_ACCOUNTS},
-    EthEvmConfig,
     verify::verify_receipts,
+    EthEvmConfig,
 };
-
-use reth_provider::DatabaseProviderFactory;
-use reth_provider::DatabaseProviderFactory;
-use reth_provider::DatabaseProviderFactory;
-use reth_provider::DatabaseProviderFactory;
-use reth_provider::DatabaseProviderFactory;
-use reth_provider::DatabaseProviderFactory;
 
 /// Provides executors to execute regular ethereum blocks
 #[derive(Debug, Clone)]
@@ -68,7 +44,7 @@ pub struct EthExecutorProvider<P, PDB, EvmConfig = EthEvmConfig> {
     evm_config: EvmConfig,
     provider: Option<P>,
     /// The database type used by the provider.
-    db: PhantomData<PDB>,
+    _db: PhantomData<PDB>,
 }
 
 impl<P, PDB> EthExecutorProvider<P, PDB> {
@@ -86,7 +62,7 @@ impl<P, PDB> EthExecutorProvider<P, PDB> {
 impl<P, PDB, EvmConfig> EthExecutorProvider<P, PDB, EvmConfig> {
     /// Creates a new executor provider.
     pub fn new(chain_spec: Arc<ChainSpec>, evm_config: EvmConfig, provider: Option<P>) -> Self {
-        Self { chain_spec, evm_config, provider, db: Default::default() }
+        Self { chain_spec, evm_config, provider, _db: PhantomData::<PDB>::default() }
     }
 }
 
@@ -149,7 +125,7 @@ struct EthEvmExecutor<EvmConfig, P, PDB> {
     /// Extra provider
     provider: Option<P>,
     /// The database type used by the provider.
-    db: PhantomData<PDB>,
+    _db: PhantomData<PDB>,
 }
 
 impl<EvmConfig, P, PDB> EthEvmExecutor<EvmConfig, P, PDB>
@@ -275,7 +251,7 @@ impl<EvmConfig, DB, P, PDB> EthBlockExecutor<EvmConfig, DB, P, PDB> {
                 chain_spec,
                 evm_config,
                 provider,
-                db: PhantomData::<reth_db::database::Database>::default(),
+                _db: PhantomData::<PDB>::default(),
             },
             state,
         }
@@ -506,9 +482,9 @@ mod tests {
     use std::collections::HashMap;
 
     use reth_primitives::{
-        Account,
-        B256,
-        Block, bytes, Bytes, ChainSpecBuilder, constants::{BEACON_ROOTS_ADDRESS, SYSTEM_ADDRESS}, ForkCondition, keccak256,
+        bytes,
+        constants::{BEACON_ROOTS_ADDRESS, SYSTEM_ADDRESS},
+        keccak256, Account, Block, Bytes, ChainSpecBuilder, ForkCondition, B256,
     };
     use reth_revm::{
         database::StateProviderDatabase, test_utils::StateProviderTest, TransitionState,
@@ -542,7 +518,7 @@ mod tests {
             chain_spec,
             evm_config: Default::default(),
             provider: None,
-            db: Default::default(),
+            _db: Default::default(),
         }
     }
 
