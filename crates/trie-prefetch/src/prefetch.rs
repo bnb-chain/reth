@@ -48,7 +48,7 @@ impl<DB, Provider> TriePrefetcher<DB, Provider> {
 impl<DB, Provider> TriePrefetcher<DB, Provider>
 where
     DB: Database,
-    Provider: DatabaseProviderFactory<DB> + Send + Sync,
+    Provider: DatabaseProviderFactory<DB>  + Send + Sync,
 {
     pub fn prefetch(&self, hashed_state: HashedPostState) -> Result<usize, TriePrefetchError> {
         let mut tracker = TrieTracker::default();

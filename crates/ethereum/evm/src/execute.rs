@@ -203,8 +203,8 @@ where
 
             // prefetch
             if let Some(ref prefetcher) = prefetcher {
-                let bundle_state = evm.db_mut().take_bundle().clone();
-                let _ = prefetcher.prefetch(HashedPostState::from_bundle_state(&bundle_state.state)).map_or(||BlockExecutionError::UnavailableForTest);
+                let hashed_state = HashedPostState::from_state(state);
+                let _ = prefetcher.prefetch(hashed_state);
             }
 
             // append gas used
