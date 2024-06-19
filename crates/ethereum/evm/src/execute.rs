@@ -3,38 +3,38 @@
 use std::{marker::PhantomData, sync::Arc};
 
 use revm_primitives::{
-    BlockEnv,
-    CfgEnvWithHandlerCfg, db::{Database, DatabaseCommit}, EnvWithHandlerCfg, ResultAndState,
+    db::{Database, DatabaseCommit},
+    BlockEnv, CfgEnvWithHandlerCfg, EnvWithHandlerCfg, ResultAndState,
 };
 use tracing::debug;
 
 use reth_evm::{
-    ConfigureEvm,
     execute::{
         BatchBlockExecutionOutput, BatchExecutor, BlockExecutionInput, BlockExecutionOutput,
         BlockExecutorProvider, Executor,
     },
+    ConfigureEvm,
 };
 use reth_interfaces::{
     executor::{BlockExecutionError, BlockValidationError},
     provider::ProviderError,
 };
 use reth_primitives::{
-    BlockNumber, BlockWithSenders, ChainSpec, GotExpected, Hardfork, Header, MAINNET, PruneModes,
-    Receipt, Receipts, U256, Withdrawals,
+    BlockNumber, BlockWithSenders, ChainSpec, GotExpected, Hardfork, Header, PruneModes, Receipt,
+    Receipts, Withdrawals, MAINNET, U256,
 };
-use reth_provider::{DatabaseProviderFactory, providers::ConsistentDbView};
+use reth_provider::{providers::ConsistentDbView, DatabaseProviderFactory};
 use reth_revm::{
     batch::{BlockBatchRecord, BlockExecutorStats},
     db::states::bundle_state::BundleRetention,
-    Evm,
-    State, state_change::{apply_beacon_root_contract_call, post_block_balance_increments},
+    state_change::{apply_beacon_root_contract_call, post_block_balance_increments},
+    Evm, State,
 };
 
 use crate::{
     dao_fork::{DAO_HARDFORK_BENEFICIARY, DAO_HARDKFORK_ACCOUNTS},
-    EthEvmConfig,
     verify::verify_receipts,
+    EthEvmConfig,
 };
 
 /// Provides executors to execute regular ethereum blocks
@@ -489,21 +489,17 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-    use reth_db::test_utils::create_test_rw_db;
-
+    use reth_db::{test_utils::TempDatabase, DatabaseEnv};
     use reth_primitives::{
-        Account,
-        B256,
-        Block, bytes, Bytes, ChainSpecBuilder, constants::{BEACON_ROOTS_ADDRESS, SYSTEM_ADDRESS}, ForkCondition, keccak256,
+        bytes,
+        constants::{BEACON_ROOTS_ADDRESS, SYSTEM_ADDRESS},
+        keccak256, Account, Block, Bytes, ChainSpecBuilder, ForkCondition, B256,
     };
+    use reth_provider::ProviderFactory;
     use reth_revm::{
         database::StateProviderDatabase, test_utils::StateProviderTest, TransitionState,
     };
-    use reth_provider::{
-        test_utils::{blocks::BlockchainTestData, create_test_provider_factory_with_chain_spec},
-        ProviderFactory,
-    };
+    use std::collections::HashMap;
 
     use super::*;
 
@@ -528,7 +524,7 @@ mod tests {
         db
     }
 
-    fn executor_provider<P, PDB>(chain_spec: Arc<ChainSpec>) -> EthExecutorProvider<P, PDB, EthEvmConfig> {
+    fn executor_provider<P, PDB>(chain_spec: Arc<ChainSpec>) -> EthExecutorProvider<P, PDB> {
         EthExecutorProvider {
             chain_spec,
             evm_config: Default::default(),
@@ -551,9 +547,10 @@ mod tests {
                 .build(),
         );
 
-        let test_p = create_test_provider_factory_with_chain_spec(chain_spec.clone());
-        let test_pdb = create_test_rw_db();
-        let provider = executor_provider::<test_p, test_pdb>(chain_spec);
+        let provider = executor_provider::<
+            ProviderFactory<Arc<TempDatabase<DatabaseEnv>>>,
+            Arc<TempDatabase<DatabaseEnv>>,
+        >(chain_spec);
 
         // attempt to execute a block without parent beacon block root, expect err
         let err = provider
@@ -648,7 +645,10 @@ mod tests {
                 .build(),
         );
 
-        let provider = executor_provider(chain_spec);
+        let provider = executor_provider::<
+            ProviderFactory<Arc<TempDatabase<DatabaseEnv>>>,
+            Arc<TempDatabase<DatabaseEnv>>,
+        >(chain_spec);
 
         // attempt to execute an empty block with parent beacon block root, this should not fail
         provider
@@ -685,7 +685,10 @@ mod tests {
                 .build(),
         );
 
-        let provider = executor_provider(chain_spec);
+        let provider = executor_provider::<
+            ProviderFactory<Arc<TempDatabase<DatabaseEnv>>>,
+            Arc<TempDatabase<DatabaseEnv>>,
+        >(chain_spec);
 
         // construct the header for block one
         let header = Header {
@@ -730,7 +733,10 @@ mod tests {
 
         let mut header = chain_spec.genesis_header();
 
-        let provider = executor_provider(chain_spec);
+        let provider = executor_provider::<
+            ProviderFactory<Arc<TempDatabase<DatabaseEnv>>>,
+            Arc<TempDatabase<DatabaseEnv>>,
+        >(chain_spec);
 
         let mut executor =
             provider.batch_executor(StateProviderDatabase::new(&db), PruneModes::none());
@@ -810,7 +816,10 @@ mod tests {
                 .build(),
         );
 
-        let provider = executor_provider(chain_spec);
+        let provider = executor_provider::<
+            ProviderFactory<Arc<TempDatabase<DatabaseEnv>>>,
+            Arc<TempDatabase<DatabaseEnv>>,
+        >(chain_spec);
 
         // execute header
         let mut executor =

@@ -27,3 +27,4 @@ tracing.workspace = true
 
 [dev-dependencies]
 reth-revm = { workspace = true, features = ["test-utils"] }
+reth-db = { workspace = true, features = ["test-utils"] }
