@@ -50,7 +50,7 @@ where
     DB: Database,
     Provider: DatabaseProviderFactory<DB> + Send + Sync,
 {
-    pub fn prefetch(self, hashed_state: HashedPostState) -> Result<usize, TriePrefetchError> {
+    pub fn prefetch(&self, hashed_state: HashedPostState) -> Result<usize, TriePrefetchError> {
         let mut tracker = TrieTracker::default();
         let prefix_sets = hashed_state.construct_prefix_sets();
         let storage_root_targets = StorageRootTargets::new(

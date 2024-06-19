@@ -23,14 +23,15 @@ use reth_primitives::{
     BlockNumber, BlockWithSenders, ChainSpec, GotExpected, Hardfork, Header, PruneModes, Receipt,
     Receipts, Withdrawals, MAINNET, U256,
 };
-use reth_provider::{providers::ConsistentDbView, DatabaseProviderFactory, BundleStateWithReceipts};
+use reth_provider::{
+    providers::ConsistentDbView, DatabaseProviderFactory,
+};
 use reth_revm::{
     batch::{BlockBatchRecord, BlockExecutorStats},
-    db::states::bundle_state::BundleRetention,
+    db::{states::bundle_state::BundleRetention},
     state_change::{apply_beacon_root_contract_call, post_block_balance_increments},
     Evm, State,
 };
-use reth_revm::db::BundleState;
 
 use crate::{
     dao_fork::{DAO_HARDFORK_BENEFICIARY, DAO_HARDKFORK_ACCOUNTS},
@@ -157,7 +158,7 @@ where
         DB: Database<Error = ProviderError>,
     {
         // enable prefetch
-        let prefetcher = if let Some(provider) =  self.provider.clone() {
+        let prefetcher = if let Some(provider) = self.provider.clone() {
             let consistent_view = ConsistentDbView::new_with_latest_tip(provider)?;
             Some(reth_trie_prefetch::prefetch::TriePrefetcher::new(consistent_view))
         } else {
@@ -201,14 +202,9 @@ where
             evm.db_mut().commit(state);
 
             // prefetch
-            if let Some(trie_prefetcher) = prefetcher.clone() {
-                let bundle_state = BundleStateWithReceipts::new(
-                    BundleState::from(state),
-                    Receipts::from_block_receipt(receipts),
-                    block.number,
-                );
-                let hashed_state = bundle_state.hash_state_slow();
-                trie_prefetcher.prefetch(hashed_state);
+            if let Some(ref prefetcher) = prefetcher {
+                let bundle_state = evm.db_mut().take_bundle().clone();
+                let _ = prefetcher.prefetch(HashedPostState::from_bundle_state(&bundle_state.state)).map_or(||BlockExecutionError::UnavailableForTest);
             }
 
             // append gas used
