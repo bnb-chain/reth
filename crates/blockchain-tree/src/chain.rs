@@ -14,8 +14,8 @@ use reth_db::database::Database;
 use reth_evm::execute::{BlockExecutionOutput, BlockExecutorProvider, Executor};
 use reth_interfaces::{
     blockchain_tree::{
-        BlockAttachment,
-        BlockValidationKind, error::{BlockchainTreeError, InsertBlockErrorKind},
+        error::{BlockchainTreeError, InsertBlockErrorKind},
+        BlockAttachment, BlockValidationKind,
     },
     RethResult,
 };
@@ -24,13 +24,12 @@ use reth_primitives::{
     U256,
 };
 use reth_provider::{
-    BundleStateDataProvider,
-    BundleStateWithReceipts, Chain, ProviderError, providers::{BundleStateProvider, ConsistentDbView}, StateRootProvider,
+    providers::{BundleStateProvider, ConsistentDbView},
+    BundleStateDataProvider, BundleStateWithReceipts, Chain, ProviderError, StateRootProvider,
 };
 use reth_revm::database::StateProviderDatabase;
 use reth_trie::updates::TrieUpdates;
 use reth_trie_parallel::parallel_root::ParallelStateRoot;
-use reth_trie_prefetch::prefetch::TriePrefetcher;
 
 use crate::BundleStateDataRef;
 
@@ -209,9 +208,6 @@ impl AppendableChain {
             .state_provider_by_block_number(canonical_fork.number)?;
 
         let provider = BundleStateProvider::new(state_provider, bundle_state_data_provider);
-
-        let prefetcher = TriePrefetcher::new(consistent_view);
-
         let db = StateProviderDatabase::new(&provider);
         let executor = externals.executor_factory.executor(db);
         let block_hash = block.hash();

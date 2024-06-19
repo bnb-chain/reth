@@ -23,19 +23,22 @@ use reth_primitives::{
     BlockNumber, BlockWithSenders, ChainSpec, GotExpected, Hardfork, Header, PruneModes, Receipt,
     Receipts, Withdrawals, MAINNET, U256,
 };
-use reth_provider::{providers::ConsistentDbView, DatabaseProviderFactory};
+use reth_provider::{providers::ConsistentDbView, DatabaseProviderFactory, BundleStateWithReceipts};
 use reth_revm::{
     batch::{BlockBatchRecord, BlockExecutorStats},
     db::states::bundle_state::BundleRetention,
     state_change::{apply_beacon_root_contract_call, post_block_balance_increments},
     Evm, State,
 };
+use reth_revm::db::BundleState;
 
 use crate::{
     dao_fork::{DAO_HARDFORK_BENEFICIARY, DAO_HARDKFORK_ACCOUNTS},
     verify::verify_receipts,
     EthEvmConfig,
 };
+
+use reth_trie::HashedPostState;
 
 /// Provides executors to execute regular ethereum blocks
 #[derive(Debug, Clone)]
@@ -135,7 +138,7 @@ struct EthEvmExecutor<EvmConfig, P, PDB> {
 impl<EvmConfig, P, PDB> EthEvmExecutor<EvmConfig, P, PDB>
 where
     EvmConfig: ConfigureEvm,
-    P: DatabaseProviderFactory<PDB>,
+    P: DatabaseProviderFactory<PDB> + Clone,
     PDB: reth_db::database::Database,
 {
     /// Executes the transactions in the block and returns the receipts.
@@ -153,6 +156,14 @@ where
     where
         DB: Database<Error = ProviderError>,
     {
+        // enable prefetch
+        let prefetcher = if let Some(provider) =  self.provider.clone() {
+            let consistent_view = ConsistentDbView::new_with_latest_tip(provider)?;
+            Some(reth_trie_prefetch::prefetch::TriePrefetcher::new(consistent_view))
+        } else {
+            None
+        };
+
         // apply pre execution changes
         apply_beacon_root_contract_call(
             &self.chain_spec,
@@ -161,12 +172,6 @@ where
             block.parent_beacon_block_root,
             &mut evm,
         )?;
-
-        // enable prefetch
-        // let prefetch = match self.provider {
-        //     Some(provider) => ConsistentDbView::new_with_latest_tip(provider.clone())?,
-        //     None => None,
-        // };
 
         // execute transactions
         let mut cumulative_gas_used = 0;
@@ -194,6 +199,17 @@ where
                 }
             })?;
             evm.db_mut().commit(state);
+
+            // prefetch
+            if let Some(trie_prefetcher) = prefetcher.clone() {
+                let bundle_state = BundleStateWithReceipts::new(
+                    BundleState::from(state),
+                    Receipts::from_block_receipt(receipts),
+                    block.number,
+                );
+                let hashed_state = bundle_state.hash_state_slow();
+                trie_prefetcher.prefetch(hashed_state);
+            }
 
             // append gas used
             cumulative_gas_used += result.gas_used();
@@ -277,7 +293,7 @@ impl<EvmConfig, DB, P, PDB> EthBlockExecutor<EvmConfig, DB, P, PDB>
 where
     EvmConfig: ConfigureEvm,
     DB: Database<Error = ProviderError>,
-    P: DatabaseProviderFactory<PDB>,
+    P: DatabaseProviderFactory<PDB> + Clone,
     PDB: reth_db::database::Database,
 {
     /// Configures a new evm configuration and block environment for the given block.
@@ -392,7 +408,7 @@ impl<EvmConfig, DB, P, PDB> Executor<DB> for EthBlockExecutor<EvmConfig, DB, P, 
 where
     EvmConfig: ConfigureEvm,
     DB: Database<Error = ProviderError>,
-    P: DatabaseProviderFactory<PDB>,
+    P: DatabaseProviderFactory<PDB> + Clone,
     PDB: reth_db::database::Database,
 {
     type Input<'a> = BlockExecutionInput<'a, BlockWithSenders>;
@@ -443,7 +459,7 @@ impl<EvmConfig, DB, P, PDB> BatchExecutor<DB> for EthBatchExecutor<EvmConfig, DB
 where
     EvmConfig: ConfigureEvm,
     DB: Database<Error = ProviderError>,
-    P: DatabaseProviderFactory<PDB>,
+    P: DatabaseProviderFactory<PDB> + Clone,
     PDB: reth_db::database::Database,
 {
     type Input<'a> = BlockExecutionInput<'a, BlockWithSenders>;

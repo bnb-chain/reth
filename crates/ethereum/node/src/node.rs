@@ -86,7 +86,7 @@ where
     ) -> eyre::Result<(Self::EVM, Self::Executor)> {
         let chain_spec = ctx.chain_spec();
         let evm_config = EthEvmConfig::default();
-        let executor = EthExecutorProvider::new(chain_spec, evm_config, ctx.provider().clone());
+        let executor = EthExecutorProvider::new(chain_spec, evm_config, Some(ctx.provider().clone()));
 
         Ok((evm_config, executor))
     }

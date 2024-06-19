@@ -25,7 +25,7 @@ pub trait Prefetch {
     fn prefetch(self, hashed_state: HashedPostState) -> Result<usize, Self::Error>;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TriePrefetcher<DB, Provider> {
     /// Consistent view of the database.
     view: ConsistentDbView<DB, Provider>,
@@ -50,7 +50,7 @@ where
     DB: Database,
     Provider: DatabaseProviderFactory<DB> + Send + Sync,
 {
-    fn prefetch(self, hashed_state: HashedPostState) -> Result<usize, TriePrefetchError> {
+    pub fn prefetch(self, hashed_state: HashedPostState) -> Result<usize, TriePrefetchError> {
         let mut tracker = TrieTracker::default();
         let prefix_sets = hashed_state.construct_prefix_sets();
         let storage_root_targets = StorageRootTargets::new(

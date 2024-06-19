@@ -6891,7 +6891,6 @@ dependencies = [
  "reth-stages-api",
  "reth-trie",
  "reth-trie-parallel",
- "reth-trie-prefetch",
  "tokio",
  "tracing",
 ]
@@ -7326,6 +7325,8 @@ dependencies = [
  "reth-primitives",
  "reth-provider",
  "reth-revm",
+ "reth-trie",
+ "reth-trie-prefetch",
  "revm-primitives",
  "tracing",
 ]
