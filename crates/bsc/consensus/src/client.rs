@@ -32,7 +32,7 @@ pub struct ParliaClient {
 }
 
 impl ParliaClient {
-    pub(crate) fn new(storage: Storage, fetch_client: FetchClient) -> Self {
+    pub(crate) const fn new(storage: Storage, fetch_client: FetchClient) -> Self {
         Self { storage, fetch_client }
     }
 
@@ -110,8 +110,7 @@ impl HeadersClient for ParliaClient {
         let this = self.clone();
         Box::pin(async move {
             let result = this.fetch_headers(request.clone()).await;
-            if result.is_ok() {
-                let headers = result.clone().unwrap();
+            if let Ok(headers) = result {
                 if headers.len() as u64 == request.limit {
                     return Ok(WithPeerId::new(PeerId::random(), headers));
                 }
@@ -132,8 +131,8 @@ impl BodiesClient for ParliaClient {
         let this = self.clone();
         Box::pin(async move {
             let result = this.fetch_bodies(hashes.clone()).await;
-            if result.is_ok() {
-                return Ok(WithPeerId::new(PeerId::random(), result.unwrap()));
+            if let Ok(blocks) = result {
+                return Ok(WithPeerId::new(PeerId::random(), blocks));
             }
             this.fetch_client.get_block_bodies_with_priority(hashes.clone(), priority).await
         })

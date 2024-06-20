@@ -256,7 +256,7 @@ where
         let event_sender: EventSender<NetworkEvent> = Default::default();
 
         let (engine_task_tx, engine_task_rx) = mpsc::unbounded_channel();
-        let mutex_engine_rx = Arc::new(Mutex::new(engine_task_rx));
+        let mutex_engine_rx = Arc::new(tokio::sync::Mutex::new(engine_task_rx));
 
         let handle = NetworkHandle::new(
             Arc::clone(&num_active_peers),
@@ -531,8 +531,8 @@ where
                     this.block_import.on_new_block(peer_id, block.clone());
                     // notify task engine
                     this.notify_engine_task(EngineMessage::NewBlock(BlockEvent {
-                        hash: block.hash.clone(),
-                        block: block.block.clone(),
+                        hash: block.hash,
+                        block: block.block,
                     }));
                 });
             }

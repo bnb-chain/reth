@@ -54,7 +54,7 @@ impl NetworkHandle {
         num_active_peers: Arc<AtomicUsize>,
         listener_address: Arc<Mutex<SocketAddr>>,
         to_manager_tx: UnboundedSender<NetworkHandleMessage>,
-        engine_rx: Arc<Mutex<UnboundedReceiver<EngineMessage>>>,
+        engine_rx: Arc<tokio::sync::Mutex<UnboundedReceiver<EngineMessage>>>,
         secret_key: SecretKey,
         local_peer_id: PeerId,
         peers: PeersHandle,
@@ -102,7 +102,7 @@ impl NetworkHandle {
     /// Returns a sharable [`UnboundedReceiver<EngineMessage>`] that can be cloned and shared.
     ///
     /// The Engine message is used to communicate between the network and the `EngineTask`.
-    pub fn get_to_engine_rx(&self) -> Arc<Mutex<UnboundedReceiver<EngineMessage>>> {
+    pub fn get_to_engine_rx(&self) -> Arc<tokio::sync::Mutex<UnboundedReceiver<EngineMessage>>> {
         self.inner.engine_rx.clone()
     }
 
@@ -391,7 +391,7 @@ struct NetworkInner {
     /// Sender half of the message channel to the [`crate::NetworkManager`].
     to_manager_tx: UnboundedSender<NetworkHandleMessage>,
     /// The receiver of the message channel to the Task Engine.
-    engine_rx: Arc<Mutex<UnboundedReceiver<EngineMessage>>>,
+    engine_rx: Arc<tokio::sync::Mutex<UnboundedReceiver<EngineMessage>>>,
     /// The local address that accepts incoming connections.
     listener_address: Arc<Mutex<SocketAddr>>,
     /// The secret key used for authenticating sessions.

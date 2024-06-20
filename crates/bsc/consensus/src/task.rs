@@ -1,5 +1,5 @@
 use crate::{client::ParliaClient, Parlia, Storage};
-use parking_lot::Mutex;
+use tokio::sync::Mutex;
 use reth_beacon_consensus::{BeaconEngineMessage, ForkchoiceStatus};
 use reth_chainspec::ChainSpec;
 use reth_engine_primitives::EngineTypes;
@@ -77,7 +77,7 @@ impl<Engine: EngineTypes + 'static> ParliaEngineTask<Engine> {
         block_fetcher: ParliaClient,
     ) -> Self {
         let (fork_choice_tx, fork_choice_rx) = mpsc::unbounded_channel();
-        let mut this = Self {
+        let this = Self {
             chain_spec,
             consensus,
             to_engine,
@@ -94,7 +94,7 @@ impl<Engine: EngineTypes + 'static> ParliaEngineTask<Engine> {
     }
 
     /// Start listening to the network block event
-    fn start_block_event_listening(&mut self) {
+    fn start_block_event_listening(&self) {
         let engine_rx = self.network_block_event_rx.clone();
         let mut interval = interval(Duration::from_secs(10));
         let storage = self.storage.clone();
@@ -103,16 +103,15 @@ impl<Engine: EngineTypes + 'static> ParliaEngineTask<Engine> {
         let fork_choice_tx = self.fork_choice_tx.clone();
         tokio::spawn(async move {
             loop {
-                let mut engine_rx_guard = engine_rx.lock();
+                let read_storage = storage.read().await;
+                let best_header = read_storage.best_header.clone();
+                drop(read_storage);
+                let mut engine_rx_guard = engine_rx.lock().await;
                 let mut info = BlockInfo {
                     block_hash: BlockHashOrNumber::from(0),
                     block_number: 0,
                     block: None,
                 };
-                let read_storage = storage.read().await;
-                let best_header = read_storage.best_header.clone();
-                drop(read_storage);
-
                 tokio::select! {
                     msg = engine_rx_guard.recv() => {
                         if msg.is_none() {
@@ -151,6 +150,7 @@ impl<Engine: EngineTypes + 'static> ParliaEngineTask<Engine> {
                         return
                     },
                 }
+                
                 // skip if number is lower than best number
                 if info.block_number <= best_header.number {
                     continue;
@@ -214,12 +214,12 @@ impl<Engine: EngineTypes + 'static> ParliaEngineTask<Engine> {
         info!(target: "consensus::parlia", "started listening to network block event")
     }
 
-    fn start_fork_choice_update_notifier(&mut self) {
+    fn start_fork_choice_update_notifier(&self) {
         let fork_choice_rx = self.fork_choice_rx.clone();
         let to_engine = self.to_engine.clone();
         tokio::spawn(async move {
             loop {
-                let mut fork_choice_rx_guard = fork_choice_rx.lock();
+                let mut fork_choice_rx_guard = fork_choice_rx.lock().await;
                 tokio::select! {
                     msg = fork_choice_rx_guard.recv() => {
                         if msg.is_none() {

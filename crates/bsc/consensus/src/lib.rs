@@ -10,7 +10,7 @@ use alloy_json_abi::JsonAbi;
 use alloy_rlp::Decodable;
 use lazy_static::lazy_static;
 use lru::LruCache;
-use parking_lot::{Mutex, RwLock};
+use parking_lot::RwLock;
 use reth_chainspec::ChainSpec;
 use reth_consensus::{Consensus, ConsensusError, PostExecutionInput};
 use reth_primitives::{
@@ -33,7 +33,7 @@ use std::{
 };
 use tokio::sync::{
     mpsc::{UnboundedReceiver, UnboundedSender},
-    RwLockReadGuard, RwLockWriteGuard,
+    RwLockReadGuard, RwLockWriteGuard, Mutex,
 };
 use tracing::{log::debug, trace};
 
