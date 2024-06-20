@@ -17,7 +17,7 @@ use reth_evm::{
     ConfigureEvm,
 };
 use reth_primitives::{
-    parlia::{Snapshot, VoteAddress, ParliaConfig, CHECKPOINT_INTERVAL},
+    parlia::{ParliaConfig, Snapshot, VoteAddress, CHECKPOINT_INTERVAL},
     system_contracts::get_upgrade_system_contracts,
     Address, BlockNumber, BlockWithSenders, Bytes, Header, Receipt, Transaction, TransactionSigned,
     B256, BSC_MAINNET, U256,

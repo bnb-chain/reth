@@ -1,6 +1,6 @@
 //! Configuration files.
-use reth_primitives::parlia::ParliaConfig;
 use reth_network::{PeersConfig, SessionsConfig};
+use reth_primitives::parlia::ParliaConfig;
 use reth_prune_types::PruneModes;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::{

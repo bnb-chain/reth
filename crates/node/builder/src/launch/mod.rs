@@ -19,8 +19,6 @@ use reth_blockchain_tree::{
 
 #[cfg(feature = "bsc")]
 use reth_bsc_consensus::ParliaEngineBuilder;
-#[cfg(feature = "bsc")]
-use reth_primitives::parlia::ParliaConfig;
 use reth_consensus::Consensus;
 use reth_consensus_debug_client::{DebugConsensusClient, EtherscanBlockProvider, RpcBlockProvider};
 use reth_exex::ExExManagerHandle;
@@ -33,6 +31,8 @@ use reth_node_core::{
     version::{CARGO_PKG_VERSION, CLIENT_CODE, NAME_CLIENT, VERGEN_GIT_SHA},
 };
 use reth_node_events::{cl::ConsensusLayerHealthEvents, node};
+#[cfg(feature = "bsc")]
+use reth_primitives::parlia::ParliaConfig;
 
 use reth_primitives::format_ether;
 use reth_provider::providers::BlockchainProvider;
@@ -286,7 +286,8 @@ where
                     consensus_engine_tx.clone(),
                     engine_rx,
                     network_client.clone(),
-                ).build();
+                )
+                .build();
                 let pipeline = crate::setup::build_networked_pipeline(
                     &ctx.toml_config().stages,
                     network_client.clone(),
@@ -320,7 +321,7 @@ where
                     pipeline_exex_handle,
                 )
                 .await?;
-    
+
                 (pipeline, Either::Right(network_client.clone()))
             }
         };
