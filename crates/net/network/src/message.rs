@@ -5,10 +5,10 @@
 
 use futures::FutureExt;
 use reth_eth_wire::{
-    capability::RawCapabilityMessage, message::RequestPair, BlockBodies, BlockHeaders, EthMessage,
-    GetBlockBodies, GetBlockHeaders, GetNodeData, GetPooledTransactions, GetReceipts, NewBlock,
-    NewBlockHashes, NewPooledTransactionHashes, NodeData, PooledTransactions, Receipts,
-    SharedTransactions, Transactions, BlockHashNumber,
+    capability::RawCapabilityMessage, message::RequestPair, BlockBodies, BlockHashNumber,
+    BlockHeaders, EthMessage, GetBlockBodies, GetBlockHeaders, GetNodeData, GetPooledTransactions,
+    GetReceipts, NewBlock, NewBlockHashes, NewPooledTransactionHashes, NodeData,
+    PooledTransactions, Receipts, SharedTransactions, Transactions,
 };
 use reth_network_p2p::error::{RequestError, RequestResult};
 use reth_network_peers::PeerId;
@@ -361,7 +361,7 @@ pub struct BlockHashesEvent {
 
 /// internal message to engine task
 #[derive(Debug, Clone)]
-pub struct BlockEvent{
+pub struct BlockEvent {
     /// Hash of the block
     pub hash: B256,
     /// Raw received message

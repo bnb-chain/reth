@@ -1,26 +1,27 @@
-use crate::client::ParliaClient;
-use crate::{Parlia, Storage};
+use crate::{client::ParliaClient, Parlia, Storage};
 use parking_lot::Mutex;
 use reth_beacon_consensus::{BeaconEngineMessage, ForkchoiceStatus};
+use reth_chainspec::ChainSpec;
 use reth_engine_primitives::EngineTypes;
 use reth_network::message::EngineMessage;
 use reth_network_p2p::{headers::client::HeadersClient, priority::Priority};
-use reth_chainspec::ChainSpec;
 use reth_primitives::{Block, BlockBody, BlockHashOrNumber, B256};
 use reth_rpc_types::engine::ForkchoiceState;
-use std::time::{SystemTime, UNIX_EPOCH};
 use std::{
     fmt,
     sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
-use tokio::sync::{
-    mpsc::{self, UnboundedReceiver, UnboundedSender},
-    oneshot,
+use tokio::{
+    signal,
+    sync::{
+        mpsc::{self, UnboundedReceiver, UnboundedSender},
+        oneshot,
+    },
+    time::{interval, Duration},
 };
-use tokio::time::{interval, Duration};
-use tokio::signal;
-use tracing::{debug, trace, error, info};
+use tracing::{debug, error, info, trace};
 
 /// All message variants that can be sent to beacon engine.
 #[derive(Debug)]
@@ -30,7 +31,7 @@ enum ForkChoiceMessage {
 }
 /// internal message to beacon engine
 #[derive(Debug, Clone)]
-struct HashEvent{
+struct HashEvent {
     /// Hash of the block
     hash: B256,
 }
@@ -64,7 +65,7 @@ pub struct ParliaEngineTask<Engine: EngineTypes> {
 }
 
 // === impl ParliaEngineTask ===
-impl<Engine: EngineTypes+ 'static> ParliaEngineTask<Engine> {
+impl<Engine: EngineTypes + 'static> ParliaEngineTask<Engine> {
     /// Creates a new instance of the task
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
@@ -156,7 +157,7 @@ impl<Engine: EngineTypes+ 'static> ParliaEngineTask<Engine> {
                 }
 
                 let mut header_option = match info.block.clone() {
-                    Some(block) => {Some(block.header)},
+                    Some(block) => Some(block.header),
                     None => None,
                 };
 
@@ -203,10 +204,9 @@ impl<Engine: EngineTypes+ 'static> ParliaEngineTask<Engine> {
                     );
                 }
                 drop(storage);
-                let result = fork_choice_tx.send(ForkChoiceMessage::NewBlock(HashEvent{
-                    hash: sealed_header.hash(),
-                }));
-                if result.is_err(){
+                let result = fork_choice_tx
+                    .send(ForkChoiceMessage::NewBlock(HashEvent { hash: sealed_header.hash() }));
+                if result.is_err() {
                     error!(target: "consensus::parlia", "Failed to send new block event to fork choice");
                 }
             }
@@ -245,7 +245,7 @@ impl<Engine: EngineTypes+ 'static> ParliaEngineTask<Engine> {
                                     tx,
                                 });
                                 debug!(target: "consensus::parlia", ?state, "Sent fork choice update");
-            
+
                                 match rx.await.unwrap() {
                                     Ok(fcu_response) => {
                                         match fcu_response.forkchoice_status() {

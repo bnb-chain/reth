@@ -23,8 +23,13 @@ use crate::{
     eth_requests::IncomingEthRequest,
     import::{BlockImport, BlockImportOutcome, BlockValidation},
     listener::ConnectionListener,
-    message::{NewBlockMessage, PeerMessage, PeerRequest, PeerRequestSender},
-    metrics::{DisconnectMetrics, NetworkMetrics, NETWORK_POOL_TRANSACTIONS_SCOPE, NETWORK_PEER_SCOPE},
+    message::{
+        BlockEvent, BlockHashesEvent, EngineMessage, NewBlockMessage, PeerMessage, PeerRequest,
+        PeerRequestSender,
+    },
+    metrics::{
+        DisconnectMetrics, NetworkMetrics, NETWORK_PEER_SCOPE, NETWORK_POOL_TRANSACTIONS_SCOPE,
+    },
     network::{NetworkHandle, NetworkHandleMessage},
     peers::{PeersHandle, PeersManager},
     poll_nested_stream_with_budget,
@@ -63,7 +68,6 @@ use std::{
 use tokio::sync::mpsc::{self, error::TrySendError};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{debug, error, trace, warn};
-use crate::message::{EngineMessage, BlockHashesEvent, BlockEvent};
 
 #[cfg_attr(doc, aquamarine::aquamarine)]
 /// Manages the _entire_ state of the network.
@@ -399,7 +403,7 @@ where
         }
     }
 
-    /// Sends an event to the [`EngineTask`](crate::bsc::consensus::ParliaEngineTask) if 
+    /// Sends an event to the [`EngineTask`](crate::bsc::consensus::ParliaEngineTask) if
     /// configured.
     fn notify_engine_task(&self, event: EngineMessage) {
         if let Some(ref tx) = self.to_engine {
@@ -514,7 +518,7 @@ where
                     // update peer's state, to track what blocks this peer has seen
                     this.swarm.state_mut().on_new_block_hashes(peer_id, hashes.clone().0);
                     // notify task engine
-                    this.notify_engine_task(EngineMessage::NewBlockHashes(BlockHashesEvent{
+                    this.notify_engine_task(EngineMessage::NewBlockHashes(BlockHashesEvent {
                         hashes: hashes.clone().into(),
                     }));
                 });
@@ -526,7 +530,7 @@ where
                     // start block import process
                     this.block_import.on_new_block(peer_id, block.clone());
                     // notify task engine
-                    this.notify_engine_task(EngineMessage::NewBlock(BlockEvent{
+                    this.notify_engine_task(EngineMessage::NewBlock(BlockEvent {
                         hash: block.hash.clone(),
                         block: block.block.clone(),
                     }));
@@ -537,7 +541,7 @@ where
                 // update peer's state, to track what blocks this peer has seen
                 self.swarm.state_mut().on_new_block_hashes(peer_id, hashes.clone().0);
                 // notify task engine
-                self.notify_engine_task(EngineMessage::NewBlockHashes(BlockHashesEvent{
+                self.notify_engine_task(EngineMessage::NewBlockHashes(BlockHashesEvent {
                     hashes: hashes.into(),
                 }));
             }
@@ -547,7 +551,7 @@ where
                 // start block import process
                 self.block_import.on_new_block(peer_id, block.clone());
                 // notify task engine
-                self.notify_engine_task(EngineMessage::NewBlock(BlockEvent{
+                self.notify_engine_task(EngineMessage::NewBlock(BlockEvent {
                     hash: block.hash,
                     block: block.block,
                 }));

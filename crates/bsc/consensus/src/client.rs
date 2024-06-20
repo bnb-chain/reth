@@ -8,7 +8,7 @@ use reth_network_p2p::{
     priority::Priority,
 };
 use reth_network_peers::{PeerId, WithPeerId};
-use reth_primitives::{BlockBody, BlockHashOrNumber, Header, HeadersDirection, B256, SealedHeader};
+use reth_primitives::{BlockBody, BlockHashOrNumber, Header, HeadersDirection, SealedHeader, B256};
 use std::fmt::Debug;
 use tracing::trace;
 
@@ -22,8 +22,8 @@ type InnerFetchHeaderResult = Result<Vec<Header>, InnerFetchError>;
 type InnerFetchBodyResult = Result<Vec<BlockBody>, InnerFetchError>;
 
 /// A client for fetching headers and bodies from the network.
-/// This client will first try to fetch from the local storage, and if the data is not found, it will
-/// fetch from the network.
+/// This client will first try to fetch from the local storage, and if the data is not found, it
+/// will fetch from the network.
 #[derive(Debug, Clone)]
 pub struct ParliaClient {
     /// cached header and body
@@ -60,14 +60,16 @@ impl ParliaClient {
                 match direction {
                     HeadersDirection::Falling => block = header.parent_hash.into(),
                     HeadersDirection::Rising => {
-                        if !headers.is_empty() && headers.last().cloned().unwrap().hash() != header.parent_hash {
+                        if !headers.is_empty() &&
+                            headers.last().cloned().unwrap().hash() != header.parent_hash
+                        {
                             break;
                         }
                         let next = header.number + 1;
                         block = next.into()
                     }
                 }
-                
+
                 headers.push(header.clone());
             } else {
                 break;

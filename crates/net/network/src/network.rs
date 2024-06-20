@@ -1,7 +1,13 @@
 use crate::{
-    config::NetworkMode, discovery::DiscoveryEvent, manager::NetworkEvent, message::PeerRequest,
-    peers::PeersHandle, protocol::RlpxSubProtocol, swarm::NetworkConnectionState,
-    transactions::TransactionsHandle, FetchClient,
+    config::NetworkMode,
+    discovery::DiscoveryEvent,
+    manager::NetworkEvent,
+    message::{EngineMessage, PeerRequest},
+    peers::PeersHandle,
+    protocol::RlpxSubProtocol,
+    swarm::NetworkConnectionState,
+    transactions::TransactionsHandle,
+    FetchClient,
 };
 use enr::Enr;
 use parking_lot::Mutex;
@@ -25,11 +31,10 @@ use std::{
     },
 };
 use tokio::sync::{
-    mpsc::{self, UnboundedSender, UnboundedReceiver},
-    oneshot
+    mpsc::{self, UnboundedReceiver, UnboundedSender},
+    oneshot,
 };
 use tokio_stream::wrappers::UnboundedReceiverStream;
-use crate::message::EngineMessage;
 
 /// A _shareable_ network frontend. Used to interact with the network.
 ///
@@ -95,7 +100,7 @@ impl NetworkHandle {
     }
 
     /// Returns a sharable [`UnboundedReceiver<EngineMessage>`] that can be cloned and shared.
-    /// 
+    ///
     /// The Engine message is used to communicate between the network and the `EngineTask`.
     pub fn get_to_engine_rx(&self) -> Arc<Mutex<UnboundedReceiver<EngineMessage>>> {
         self.inner.engine_rx.clone()

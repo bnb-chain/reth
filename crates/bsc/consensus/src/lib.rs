@@ -6,24 +6,16 @@
 // The `bsc` feature must be enabled to use this crate.
 #![cfg(feature = "bsc")]
 
-use std::{
-    collections::{HashMap, VecDeque},
-    fmt::{Debug, Formatter},
-    num::NonZeroUsize,
-    sync::Arc,
-    time::SystemTime,
-};
-use parking_lot::Mutex;
 use alloy_json_abi::JsonAbi;
 use alloy_rlp::Decodable;
 use lazy_static::lazy_static;
 use lru::LruCache;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use reth_chainspec::ChainSpec;
 use reth_consensus::{Consensus, ConsensusError, PostExecutionInput};
 use reth_primitives::{
     constants::EMPTY_MIX_HASH,
-    parlia::{Snapshot, VoteAddress, VoteAttestation, ParliaConfig},
+    parlia::{ParliaConfig, Snapshot, VoteAddress, VoteAttestation},
     Address, BlockWithSenders, GotExpected, Header, SealedBlock, SealedHeader, B256,
     EMPTY_OMMER_ROOT_HASH, U256,
 };
@@ -32,16 +24,24 @@ use secp256k1::{
     Message, SECP256K1,
 };
 use sha3::{Digest, Keccak256};
-use tracing::log::debug;
-use tokio::sync::mpsc::{UnboundedSender,UnboundedReceiver};
-use tokio::sync::{RwLockReadGuard, RwLockWriteGuard};
-use tracing::trace;
+use std::{
+    collections::{HashMap, VecDeque},
+    fmt::{Debug, Formatter},
+    num::NonZeroUsize,
+    sync::Arc,
+    time::SystemTime,
+};
+use tokio::sync::{
+    mpsc::{UnboundedReceiver, UnboundedSender},
+    RwLockReadGuard, RwLockWriteGuard,
+};
+use tracing::{log::debug, trace};
 
 use reth_beacon_consensus::BeaconEngineMessage;
 use reth_engine_primitives::EngineTypes;
+use reth_network::{fetch::FetchClient, message::EngineMessage};
 use reth_primitives::{BlockBody, BlockHash, BlockHashOrNumber, BlockNumber};
 use reth_provider::BlockReaderIdExt;
-use reth_network::{message::EngineMessage, fetch::FetchClient};
 
 mod util;
 pub use util::*;
@@ -63,8 +63,8 @@ use reth_consensus_common::validation::{
 
 mod validation;
 pub use validation::{validate_4844_header_of_bsc, validate_block_post_execution};
-mod system_tx;
 mod client;
+mod system_tx;
 use client::*;
 mod task;
 use task::*;
@@ -579,9 +579,9 @@ pub struct ParliaEngineBuilder<Client, Engine: EngineTypes> {
 // === impl ParliaEngineBuilder ===
 
 impl<Client, Engine> ParliaEngineBuilder<Client, Engine>
-    where
-        Client: BlockReaderIdExt,
-        Engine: EngineTypes + 'static,
+where
+    Client: BlockReaderIdExt,
+    Engine: EngineTypes + 'static,
 {
     /// Creates a new builder instance to configure all parts.
     pub fn new(
@@ -611,9 +611,7 @@ impl<Client, Engine> ParliaEngineBuilder<Client, Engine>
 
     /// Consumes the type and returns all components
     #[track_caller]
-    pub fn build(
-        self,
-    ) -> (ParliaClient, ParliaEngineTask<Engine>) {
+    pub fn build(self) -> (ParliaClient, ParliaEngineTask<Engine>) {
         let Self {
             chain_spec,
             cfg,
@@ -744,15 +742,11 @@ struct LimitedHashSet<K, V> {
 }
 
 impl<K, V> LimitedHashSet<K, V>
-    where
-        K: std::hash::Hash + Eq + Clone,
+where
+    K: std::hash::Hash + Eq + Clone,
 {
     fn new(capacity: usize) -> Self {
-        Self {
-            map: HashMap::new(),
-            queue: VecDeque::new(),
-            capacity,
-        }
+        Self { map: HashMap::new(), queue: VecDeque::new(), capacity }
     }
 
     fn put(&mut self, key: K, value: V) {
@@ -809,8 +803,14 @@ mod tests {
         assert_eq!(storage.hash_to_number.get(&block.hash()), Some(&block.number));
         assert_eq!(storage.bodies.get(&block.hash()), Some(&BlockBody::default()));
         assert_eq!(storage.block_hash(block.number), Some(block.hash()));
-        assert_eq!(storage.header_by_hash_or_number(BlockHashOrNumber::Hash(block.hash())), Some(block.clone()));
-        assert_eq!(storage.header_by_hash_or_number(BlockHashOrNumber::Number(block.number)), Some(block.clone()));
+        assert_eq!(
+            storage.header_by_hash_or_number(BlockHashOrNumber::Hash(block.hash())),
+            Some(block.clone())
+        );
+        assert_eq!(
+            storage.header_by_hash_or_number(BlockHashOrNumber::Number(block.number)),
+            Some(block.clone())
+        );
         assert_eq!(storage.best_block, block.number);
         assert_eq!(storage.best_hash, block.hash());
         assert_eq!(storage.best_header, block);
@@ -822,8 +822,14 @@ mod tests {
         assert_eq!(storage.best_header, header);
         assert_eq!(storage.headers.get(&header.number), Some(&header));
         assert_eq!(storage.hash_to_number.get(&header.hash()), Some(&header.number));
-        assert_eq!(storage.header_by_hash_or_number(BlockHashOrNumber::Hash(header.hash())), Some(header.clone()));
-        assert_eq!(storage.header_by_hash_or_number(BlockHashOrNumber::Number(header.number)), Some(header.clone()));
+        assert_eq!(
+            storage.header_by_hash_or_number(BlockHashOrNumber::Hash(header.hash())),
+            Some(header.clone())
+        );
+        assert_eq!(
+            storage.header_by_hash_or_number(BlockHashOrNumber::Number(header.number)),
+            Some(header.clone())
+        );
         assert_eq!(storage.best_block, header.number);
         assert_eq!(storage.best_hash, header.hash());
         assert_eq!(storage.best_header, header);
