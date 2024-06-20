@@ -342,7 +342,7 @@ impl fmt::Debug for PeerRequestSender {
     }
 }
 
-/// All message variants that can be sent to TaskEngine.
+/// All message variants that can be sent to `TaskEngine`.
 #[derive(Debug)]
 pub enum EngineMessage {
     /// Announce new block hashes

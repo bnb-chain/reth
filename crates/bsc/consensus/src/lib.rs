@@ -626,7 +626,7 @@ impl<Client, Engine> ParliaEngineBuilder<Client, Engine>
         let parlia_client = ParliaClient::new(storage.clone(), fetch_client);
         let task = ParliaEngineTask::new(
             chain_spec.clone(),
-            Parlia::new(chain_spec.clone(), cfg),
+            Parlia::new(chain_spec, cfg),
             to_engine,
             network_block_event_rx,
             storage,
@@ -766,7 +766,7 @@ impl<K, V> LimitedHashSet<K, V>
     }
 
     fn get(&self, key: &K) -> Option<&V> {
-        self.map.get(key).map(|v| v)
+        self.map.get(key)
     }
 
     fn iter(&self) -> impl Iterator<Item = (&K, &V)> {

@@ -121,12 +121,12 @@ impl<Engine: EngineTypes+ 'static> ParliaEngineTask<Engine> {
                             EngineMessage::NewBlockHashes(event) => match event.hashes.last() {
                                 None => continue,
                                 Some(block_hash) => {
-                                    info.block_hash = BlockHashOrNumber::Hash(block_hash.hash.clone());
+                                    info.block_hash = BlockHashOrNumber::Hash(block_hash.hash);
                                     info.block_number = block_hash.number;
                                 }
                             },
                             EngineMessage::NewBlock(event) => {
-                                info.block_hash = BlockHashOrNumber::Hash(event.hash.clone());
+                                info.block_hash = BlockHashOrNumber::Hash(event.hash);
                                 info.block_number = event.block.block.number;
                                 info.block = Some(event.block.block.clone());
                             }
@@ -164,7 +164,7 @@ impl<Engine: EngineTypes+ 'static> ParliaEngineTask<Engine> {
                     debug!(target: "consensus::parlia", { block_hash = ?info.block_hash }, "Fetching new header");
                     // fetch header and verify
                     let fetch_header_result = block_fetcher
-                        .get_header_with_priority(info.block_hash.into(), Priority::High)
+                        .get_header_with_priority(info.block_hash, Priority::High)
                         .await;
                     if fetch_header_result.is_err() {
                         trace!(target: "consensus::parlia", "Failed to fetch header");
@@ -229,7 +229,7 @@ impl<Engine: EngineTypes+ 'static> ParliaEngineTask<Engine> {
                             ForkChoiceMessage::NewBlock(event) => {
                                 // notify beacon engine
                                 let state = ForkchoiceState {
-                                    head_block_hash: event.hash.clone(),
+                                    head_block_hash: event.hash,
                                     // safe(justified) and finalized hash will be determined in the parlia consensus engine and stored in the snapshot after the block sync
                                     safe_block_hash: B256::ZERO,
                                     finalized_block_hash: B256::ZERO,

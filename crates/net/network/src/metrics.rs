@@ -12,7 +12,7 @@ pub(crate) const NETWORK_POOL_TRANSACTIONS_SCOPE: &str = "network.pool.transacti
 /// Scope for monitoring transactions sent from the manager to the tx manager
 pub(crate) const NETWORK_PEER_SCOPE: &str = "network.peer.message";
 
-/// Metrics for the entire network, handled by NetworkManager
+/// Metrics for the entire network, handled by `NetworkManager`
 #[derive(Metrics)]
 #[metrics(scope = "network")]
 pub struct NetworkMetrics {

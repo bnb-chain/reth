@@ -258,7 +258,7 @@ where
             Arc::clone(&num_active_peers),
             Arc::new(Mutex::new(listener_addr)),
             to_manager_tx,
-            mutex_engine_rx.clone(),
+            mutex_engine_rx,
             secret_key,
             local_peer_id,
             peers_handle,
@@ -538,7 +538,7 @@ where
                 self.swarm.state_mut().on_new_block_hashes(peer_id, hashes.clone().0);
                 // notify task engine
                 self.notify_engine_task(EngineMessage::NewBlockHashes(BlockHashesEvent{
-                    hashes: hashes.clone().into(),
+                    hashes: hashes.into(),
                 }));
             }
             #[cfg(feature = "bsc")]
@@ -548,8 +548,8 @@ where
                 self.block_import.on_new_block(peer_id, block.clone());
                 // notify task engine
                 self.notify_engine_task(EngineMessage::NewBlock(BlockEvent{
-                    hash: block.hash.clone(),
-                    block: block.block.clone(),
+                    hash: block.hash,
+                    block: block.block,
                 }));
             }
             PeerMessage::PooledTransactions(msg) => {

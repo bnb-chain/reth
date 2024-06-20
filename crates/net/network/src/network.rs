@@ -96,7 +96,7 @@ impl NetworkHandle {
 
     /// Returns a sharable [`UnboundedReceiver<EngineMessage>`] that can be cloned and shared.
     /// 
-    /// The Engine message is used to communicate between the network and the EngineTask.
+    /// The Engine message is used to communicate between the network and the `EngineTask`.
     pub fn get_to_engine_rx(&self) -> Arc<Mutex<UnboundedReceiver<EngineMessage>>> {
         self.inner.engine_rx.clone()
     }

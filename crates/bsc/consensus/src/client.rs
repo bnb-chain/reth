@@ -108,10 +108,10 @@ impl HeadersClient for ParliaClient {
         let this = self.clone();
         Box::pin(async move {
             let result = this.fetch_headers(request.clone()).await;
-            if !result.is_err() {
+            if result.is_ok() {
                 let headers = result.clone().unwrap();
                 if headers.len() as u64 == request.limit {
-                    return Ok(WithPeerId::new(PeerId::random(), headers.clone()));
+                    return Ok(WithPeerId::new(PeerId::random(), headers));
                 }
             }
             this.fetch_client.get_headers_with_priority(request.clone(), priority).await
@@ -130,8 +130,8 @@ impl BodiesClient for ParliaClient {
         let this = self.clone();
         Box::pin(async move {
             let result = this.fetch_bodies(hashes.clone()).await;
-            if !result.is_err() {
-                return Ok(WithPeerId::new(PeerId::random(), result.unwrap().clone()));
+            if result.is_ok() {
+                return Ok(WithPeerId::new(PeerId::random(), result.unwrap()));
             }
             this.fetch_client.get_block_bodies_with_priority(hashes.clone(), priority).await
         })

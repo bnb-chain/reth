@@ -1,5 +1,4 @@
 //! Configuration files.
-#[cfg(feature = "bsc")]
 use reth_primitives::parlia::ParliaConfig;
 use reth_network::{PeersConfig, SessionsConfig};
 use reth_prune_types::PruneModes;

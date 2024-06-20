@@ -304,7 +304,7 @@ where
 
                 (pipeline, Either::Right(client))
             }
-            #[cfg(all(not(feature = "bsc")))]
+            #[cfg(not(feature = "bsc"))]
             {
                 let pipeline = crate::setup::build_networked_pipeline(
                     &ctx.toml_config().stages,
