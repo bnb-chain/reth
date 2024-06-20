@@ -16,6 +16,11 @@ use reth_blockchain_tree::{
     noop::NoopBlockchainTree, BlockchainTree, BlockchainTreeConfig, ShareableBlockchainTree,
     TreeExternals,
 };
+
+#[cfg(feature = "bsc")]
+use reth_bsc_consensus::ParliaEngineBuilder;
+#[cfg(feature = "bsc")]
+use reth_primitives::parlia::ParliaConfig;
 use reth_consensus::Consensus;
 use reth_consensus_debug_client::{DebugConsensusClient, EtherscanBlockProvider, RpcBlockProvider};
 use reth_exex::ExExManagerHandle;
@@ -271,22 +276,53 @@ where
 
             (pipeline, Either::Left(client))
         } else {
-            let pipeline = crate::setup::build_networked_pipeline(
-                &ctx.toml_config().stages,
-                network_client.clone(),
-                consensus.clone(),
-                ctx.provider_factory().clone(),
-                ctx.task_executor(),
-                sync_metrics_tx,
-                ctx.prune_config(),
-                max_block,
-                static_file_producer,
-                node_adapter.components.block_executor().clone(),
-                pipeline_exex_handle,
-            )
-            .await?;
+            #[cfg(feature = "bsc")]
+            {
+                let engine_rx = node_adapter.components.network().get_to_engine_rx();
+                let (client, _) = ParliaEngineBuilder::new(
+                    ctx.chain_spec(),
+                    ParliaConfig::default(),
+                    blockchain_db.clone(),
+                    consensus_engine_tx.clone(),
+                    engine_rx,
+                    network_client.clone(),
+                ).build();
+                let pipeline = crate::setup::build_networked_pipeline(
+                    &ctx.toml_config().stages,
+                    network_client.clone(),
+                    consensus.clone(),
+                    ctx.provider_factory().clone(),
+                    ctx.task_executor(),
+                    sync_metrics_tx,
+                    ctx.prune_config(),
+                    max_block,
+                    static_file_producer,
+                    node_adapter.components.block_executor().clone(),
+                    pipeline_exex_handle,
+                )
+                .await?;
 
-            (pipeline, Either::Right(network_client.clone()))
+                (pipeline, Either::Right(client))
+            }
+            #[cfg(all(not(feature = "bsc")))]
+            {
+                let pipeline = crate::setup::build_networked_pipeline(
+                    &ctx.toml_config().stages,
+                    network_client.clone(),
+                    consensus.clone(),
+                    ctx.provider_factory().clone(),
+                    ctx.task_executor(),
+                    sync_metrics_tx,
+                    ctx.prune_config(),
+                    max_block,
+                    static_file_producer,
+                    node_adapter.components.block_executor().clone(),
+                    pipeline_exex_handle,
+                )
+                .await?;
+    
+                (pipeline, Either::Right(network_client.clone()))
+            }
         };
 
         let pipeline_events = pipeline.events();

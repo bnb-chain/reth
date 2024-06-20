@@ -15,7 +15,7 @@ BUILD_PATH = "target"
 ifeq ($(OS),Windows_NT)
     FEATURES ?=
 else
-    FEATURES ?= jemalloc asm-keccak
+    FEATURES ?= jemalloc asm-keccak bsc
 endif
 
 # Cargo profile for builds. Default is for local builds, CI uses an override.
@@ -49,6 +49,14 @@ install: ## Build and install the reth binary under `~/.cargo/bin`.
 		--features "$(FEATURES)" \
 		--profile "$(PROFILE)" \
 		$(CARGO_INSTALL_EXTRA_FLAGS)
+
+.PHONY: install-bsc
+install-bsc: ## Build and install the reth binary under `~/.cargo/bin`.
+	cargo install --path bin/reth --bin bsc-reth --force --locked \
+		--features "$(FEATURES)" \
+		--profile "$(PROFILE)" \
+		$(CARGO_INSTALL_EXTRA_FLAGS)
+
 
 .PHONY: install-op
 install-op: ## Build and install the op-reth binary under `~/.cargo/bin`.

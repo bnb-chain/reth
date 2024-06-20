@@ -61,7 +61,8 @@ pub enum BlockImportError {
 pub struct ProofOfStakeBlockImport;
 
 impl BlockImport for ProofOfStakeBlockImport {
-    fn on_new_block(&mut self, _peer_id: PeerId, _incoming_block: NewBlockMessage) {}
+    fn on_new_block(&mut self, _peer_id: PeerId, _incoming_block: NewBlockMessage) {
+    }
 
     fn poll(&mut self, _cx: &mut Context<'_>) -> Poll<BlockImportOutcome> {
         Poll::Pending

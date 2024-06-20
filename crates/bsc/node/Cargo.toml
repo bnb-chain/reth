@@ -23,6 +23,7 @@ reth-transaction-pool.workspace = true
 reth-network.workspace = true
 reth-evm-bsc.workspace = true
 reth-bsc-consensus.workspace = true
+reth-primitives.workspace = true
 reth-config.workspace = true
 
 # misc
@@ -44,7 +45,8 @@ reth-evm-bsc.workspace = true
 
 [features]
 bsc = [
-    "reth-config/bsc",
     "reth-network/bsc",
     "reth-evm-bsc/bsc",
+    "reth-primitives/bsc",
+    "reth-config/bsc",
 ]

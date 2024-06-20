@@ -121,7 +121,7 @@ pub mod config;
 mod discovery;
 pub mod error;
 pub mod eth_requests;
-mod fetch;
+pub mod fetch;
 mod flattened_response;
 pub mod import;
 mod listener;

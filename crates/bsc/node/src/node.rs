@@ -2,7 +2,8 @@
 
 use crate::EthEngineTypes;
 use reth_basic_payload_builder::{BasicPayloadJobGenerator, BasicPayloadJobGeneratorConfig};
-use reth_bsc_consensus::{Parlia, ParliaConfig};
+use reth_bsc_consensus::Parlia;
+use reth_primitives::parlia::ParliaConfig;
 use reth_evm_bsc::{BscEvmConfig, BscExecutorProvider};
 use reth_network::NetworkHandle;
 use reth_node_builder::{

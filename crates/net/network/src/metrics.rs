@@ -9,7 +9,10 @@ use reth_primitives::TxType;
 /// Scope for monitoring transactions sent from the manager to the tx manager
 pub(crate) const NETWORK_POOL_TRANSACTIONS_SCOPE: &str = "network.pool.transactions";
 
-/// Metrics for the entire network, handled by `NetworkManager`
+/// Scope for monitoring transactions sent from the manager to the tx manager
+pub(crate) const NETWORK_PEER_SCOPE: &str = "network.peer.message";
+
+/// Metrics for the entire network, handled by NetworkManager
 #[derive(Metrics)]
 #[metrics(scope = "network")]
 pub struct NetworkMetrics {
