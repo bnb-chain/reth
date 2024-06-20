@@ -672,7 +672,7 @@ impl Storage {
     }
 }
 
-/// In-memory storage for the chain the parlia engin task cache.
+/// In-memory storage for the chain the parlia engine task cache.
 #[derive(Debug)]
 pub(crate) struct StorageInner {
     /// Headers buffered for download.
