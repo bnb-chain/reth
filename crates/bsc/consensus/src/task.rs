@@ -139,10 +139,11 @@ impl<Engine: EngineTypes+ 'static> ParliaEngineTask<Engine> {
                             .expect("Time went backwards")
                             .as_secs()
                             - best_header.timestamp
-                            > 10 && best_header.number != 0
+                            < 10 || best_header.number == 0
                         {
-                            info.block_hash = BlockHashOrNumber::Number(best_header.number+1);
+                            continue;
                         }
+                        info.block_hash = BlockHashOrNumber::Number(best_header.number+1);
                     }
                     _ = signal::ctrl_c() => {
                         info!(target: "consensus::parlia", "block event listener shutting down...");
