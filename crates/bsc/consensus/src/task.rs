@@ -1,5 +1,4 @@
 use crate::{client::ParliaClient, Parlia, Storage};
-use tokio::sync::Mutex;
 use reth_beacon_consensus::{BeaconEngineMessage, ForkchoiceStatus};
 use reth_chainspec::ChainSpec;
 use reth_engine_primitives::EngineTypes;
@@ -12,6 +11,7 @@ use std::{
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
+use tokio::sync::Mutex;
 
 use tokio::{
     signal,
@@ -150,7 +150,7 @@ impl<Engine: EngineTypes + 'static> ParliaEngineTask<Engine> {
                         return
                     },
                 }
-                
+
                 // skip if number is lower than best number
                 if info.block_number <= best_header.number {
                     continue;
