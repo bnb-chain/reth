@@ -54,7 +54,12 @@ impl HashedPostState {
         }
         this
     }
-    
+
+    /// Constructs a `HashedPostState` from a given state.
+    ///
+    /// This function takes a `HashMap` of `Address` and `Account` as input, representing the state changes.
+    /// For each account in the changes, it hashes the address and inserts it into the `accounts` field of the `HashedPostState`.
+    /// It also creates a `HashedStorage` for each account, based on the account's storage, and inserts it into the `storages` field of the `HashedPostState`.
     pub fn from_state<'a>(changes: HashMap<Address, reth_primitives::revm_primitives::Account>) -> Self {
         let mut this = Self::default();
         for (address, account) in changes {

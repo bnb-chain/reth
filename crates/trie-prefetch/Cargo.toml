@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
-description = "Prefetch trie nodes when executing block"
+description = "Prefetch trie storages when executing block"
 
 [lints]
 workspace = true
@@ -19,6 +19,7 @@ reth-trie.workspace = true
 reth-interfaces.workspace = true
 reth-provider.workspace = true
 reth-trie-parallel.workspace = true
+reth-tasks.workspace = true
 
 # alloy
 alloy-rlp.workspace = true

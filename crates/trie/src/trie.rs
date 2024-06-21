@@ -548,13 +548,13 @@ where
         Ok((root, storage_slots_walked, trie_updates))
     }
 
-    /// Walks the hashed storage table entries for a given address to prefetch the storage trie nodes.
+    /// Walks the hashed storage table entries for a given address to prefetch the storage tries.
     ///
     /// # Returns
     ///
     /// The number of walked entries.
     pub fn prefetch(self) -> Result<usize, StorageRootError> {
-        trace!(target: "trie::storage_root", hashed_address = ?self.hashed_address, "prefetching storage root");
+        trace!(target: "trie::storage_root", hashed_address = ?self.hashed_address, "prefetching storage tries");
 
         let mut hashed_storage_cursor = self.hashed_cursor_factory.hashed_storage_cursor()?;
 
@@ -571,10 +571,10 @@ where
             StorageNodeIter::new(walker, hashed_storage_cursor, self.hashed_address);
         while let Some(node) = storage_node_iter.try_next()? {
             match node {
-                StorageNode::Branch(node) => {
+                StorageNode::Branch(_) => {
                     tracker.inc_branch();
                 }
-                StorageNode::Leaf(hashed_slot, value) => {
+                StorageNode::Leaf(_, _) => {
                     tracker.inc_leaf();
                 }
             }
@@ -591,7 +591,7 @@ where
             duration = ?stats.duration(),
             branches_added = stats.branches_added(),
             leaves_added = stats.leaves_added(),
-            "prefetched storage trie nodes"
+            "prefetched storage tries"
         );
 
         let storage_slots_walked = stats.leaves_added() as usize;

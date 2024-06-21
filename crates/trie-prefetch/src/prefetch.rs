@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
@@ -7,8 +8,6 @@ use tracing::trace;
 
 use reth_db::database::Database;
 use reth_interfaces::trie::StorageRootError;
-use reth_primitives::{Address, B256, U256};
-use reth_primitives::revm_primitives::{AccountInfo, Bytecode};
 use reth_provider::{DatabaseProviderFactory, ProviderError, providers::ConsistentDbView};
 use reth_trie::{HashedPostState, StorageRoot};
 use reth_trie::hashed_cursor::{HashedCursorFactory, HashedPostStateCursorFactory};
@@ -18,39 +17,48 @@ use reth_trie::stats::TrieTracker;
 use reth_trie::trie_cursor::TrieCursorFactory;
 use reth_trie::walker::TrieWalker;
 use reth_trie_parallel::StorageRootTargets;
+use reth_tasks::pool::BlockingTaskPool;
+use rayon::ThreadPoolBuilder;
 
-pub trait Prefetch {
-    type Error;
-
-    fn prefetch(self, hashed_state: HashedPostState) -> Result<usize, Self::Error>;
-}
-
+/// Prefetch trie storage when executing transactions.
 #[derive(Debug, Clone)]
-pub struct TriePrefetcher<DB, Provider> {
+pub struct TriePrefetch<DB, Provider> {
     /// Consistent view of the database.
     view: ConsistentDbView<DB, Provider>,
+    /// Blocking task pool.
+    blocking_pool: BlockingTaskPool,
     /// State trie metrics.
     #[cfg(feature = "metrics")]
     metrics: TrieRootMetrics,
 }
 
-impl<DB, Provider> TriePrefetcher<DB, Provider> {
-    /// Create new trie prefetcher.
+impl<DB, Provider> TriePrefetch<DB, Provider>
+where
+    DB: Database + 'static,
+    Provider: DatabaseProviderFactory<DB> + Send + Sync + 'static
+{
+    /// Create new TriePrefetch instance.
     pub fn new(view: ConsistentDbView<DB, Provider>) -> Self {
+        let blocking_pool = BlockingTaskPool::new(ThreadPoolBuilder::default().build().unwrap());
         Self {
             view,
+            blocking_pool,
             #[cfg(feature = "metrics")]
             metrics: TrieRootMetrics::default(),
         }
     }
-}
 
-impl<DB, Provider> TriePrefetcher<DB, Provider>
-where
-    DB: Database,
-    Provider: DatabaseProviderFactory<DB>  + Send + Sync,
-{
-    pub fn prefetch(&self, hashed_state: HashedPostState) -> Result<usize, TriePrefetchError> {
+    /// Spawn an async task to prefetch trie storage for the given hashed state.
+    pub fn prefetch(self: Arc<Self>, hashed_state: HashedPostState) -> Result<(), TriePrefetchError> {
+        let self_clone = Arc::clone(&self);
+        let _ = self.blocking_pool.spawn_fifo(move || -> Result<(), TriePrefetchError> {
+            self_clone.prefetch_once(hashed_state)
+        });
+        Ok(())
+    }
+
+    /// Prefetch trie storage for the given hashed state.
+    fn prefetch_once(&self, hashed_state: HashedPostState) -> Result<(), TriePrefetchError> {
         let mut tracker = TrieTracker::default();
         let prefix_sets = hashed_state.construct_prefix_sets();
         let storage_root_targets = StorageRootTargets::new(
@@ -59,6 +67,7 @@ where
         );
         let hashed_state_sorted = hashed_state.into_sorted();
 
+        trace!(target: "trie::trie_prefetch", "start prefetching trie storages");
         let mut storage_roots = storage_root_targets
             .into_par_iter()
             .map(|(hashed_address, prefix_set)| {
@@ -76,8 +85,7 @@ where
             })
             .collect::<Result<HashMap<_, _>, TriePrefetchError>>()?;
 
-        trace!(target: "trie::trie_prefetcher", "prefetching trie root");
-
+        trace!(target: "trie::trie_prefetch", "prefetching account tries");
         let provider_ro = self.view.provider_ro()?;
         let hashed_cursor_factory =
             HashedPostStateCursorFactory::new(provider_ro.tx_ref(), &hashed_state_sorted);
@@ -92,14 +100,13 @@ where
             TrieWalker::new(trie_cursor, prefix_sets.account_prefix_set).with_updates(false);
         let mut account_node_iter = AccountNodeIter::new(walker, hashed_account_cursor);
 
-        let mut storage_nodes_walked = 0usize;
         while let Some(node) = account_node_iter.try_next().map_err(ProviderError::Database)? {
             match node {
-                AccountNode::Branch(node) => {
+                AccountNode::Branch(_) => {
                     tracker.inc_branch();
                 }
-                AccountNode::Leaf(hashed_address, account) => {
-                    let entries_number = match storage_roots.remove(&hashed_address) {
+                AccountNode::Leaf(hashed_address, _) => {
+                    match storage_roots.remove(&hashed_address) {
                         Some(result) => result,
                         // Since we do not store all intermediate nodes in the database, there might
                         // be a possibility of re-adding a non-modified leaf to the hash builder.
@@ -112,7 +119,6 @@ where
                         )
                         .prefetch()?,
                     };
-                    storage_nodes_walked += entries_number;
                     tracker.inc_leaf();
                 }
             }
@@ -121,20 +127,18 @@ where
         let stats = tracker.finish();
 
         trace!(
-            target: "trie::trie_prefetcher",
+            target: "trie::trie_prefetch",
             duration = ?stats.duration(),
             branches_added = stats.branches_added(),
             leaves_added = stats.leaves_added(),
-            "prefetched trie root"
+            "prefetched trie storages"
         );
 
-        let trie_nodes_walked =
-            (stats.leaves_added() + stats.branches_added()) as usize + storage_nodes_walked;
-        Ok(trie_nodes_walked)
+        Ok(())
     }
 }
 
-/// Error during trie prefetch.
+/// Error during prefetching trie storage.
 #[derive(Error, Debug)]
 pub enum TriePrefetchError {
     /// Error while calculating storage root.

@@ -46,6 +46,7 @@ use reth_trie::HashedPostState;
 pub struct EthExecutorProvider<P, PDB, EvmConfig = EthEvmConfig> {
     chain_spec: Arc<ChainSpec>,
     evm_config: EvmConfig,
+    /// Extra provider
     provider: Option<P>,
     /// The database type used by the provider.
     _db: PhantomData<PDB>,
@@ -139,8 +140,8 @@ struct EthEvmExecutor<EvmConfig, P, PDB> {
 impl<EvmConfig, P, PDB> EthEvmExecutor<EvmConfig, P, PDB>
 where
     EvmConfig: ConfigureEvm,
-    P: DatabaseProviderFactory<PDB> + Clone,
-    PDB: reth_db::database::Database,
+    P: DatabaseProviderFactory<PDB> + Send+ Sync + Clone + 'static,
+    PDB: reth_db::database::Database + 'static,
 {
     /// Executes the transactions in the block and returns the receipts.
     ///
@@ -157,14 +158,14 @@ where
     where
         DB: Database<Error = ProviderError>,
     {
-        // enable prefetch
-        let prefetcher = if let Some(provider) = self.provider.clone() {
+        // Create TriePrefetch if there is an extra provider
+        let trie_prefetch = if let Some(provider) = self.provider.clone() {
             let consistent_view = ConsistentDbView::new_with_latest_tip(provider)?;
-            Some(reth_trie_prefetch::prefetch::TriePrefetcher::new(consistent_view))
+            Some(Arc::new(reth_trie_prefetch::prefetch::TriePrefetch::new(consistent_view)))
         } else {
             None
         };
-
+        
         // apply pre execution changes
         apply_beacon_root_contract_call(
             &self.chain_spec,
@@ -199,14 +200,15 @@ where
                     error: err.into(),
                 }
             })?;
-            evm.db_mut().commit(state);
+            evm.db_mut().commit(state.clone());
 
-            // prefetch
-            if let Some(ref prefetcher) = prefetcher {
+            // If a TriePrefetch is available, use it to prefetch the state
+            if let Some(prefetch) = trie_prefetch.clone() {
                 let hashed_state = HashedPostState::from_state(state);
-                let _ = prefetcher.prefetch(hashed_state);
+                // ignore the error, as it's not critical
+                let _ = prefetch.prefetch(hashed_state);
             }
-
+            
             // append gas used
             cumulative_gas_used += result.gas_used();
 
@@ -289,8 +291,8 @@ impl<EvmConfig, DB, P, PDB> EthBlockExecutor<EvmConfig, DB, P, PDB>
 where
     EvmConfig: ConfigureEvm,
     DB: Database<Error = ProviderError>,
-    P: DatabaseProviderFactory<PDB> + Clone,
-    PDB: reth_db::database::Database,
+    P: DatabaseProviderFactory<PDB> + Send + Sync + Clone + 'static,
+    PDB: reth_db::database::Database + 'static,
 {
     /// Configures a new evm configuration and block environment for the given block.
     ///
@@ -404,8 +406,8 @@ impl<EvmConfig, DB, P, PDB> Executor<DB> for EthBlockExecutor<EvmConfig, DB, P, 
 where
     EvmConfig: ConfigureEvm,
     DB: Database<Error = ProviderError>,
-    P: DatabaseProviderFactory<PDB> + Clone,
-    PDB: reth_db::database::Database,
+    P: DatabaseProviderFactory<PDB> + Send + Sync + Clone + 'static,
+    PDB: reth_db::database::Database + 'static,
 {
     type Input<'a> = BlockExecutionInput<'a, BlockWithSenders>;
     type Output = BlockExecutionOutput<Receipt>;
@@ -455,8 +457,8 @@ impl<EvmConfig, DB, P, PDB> BatchExecutor<DB> for EthBatchExecutor<EvmConfig, DB
 where
     EvmConfig: ConfigureEvm,
     DB: Database<Error = ProviderError>,
-    P: DatabaseProviderFactory<PDB> + Clone,
-    PDB: reth_db::database::Database,
+    P: DatabaseProviderFactory<PDB> + Send + Sync + Clone + 'static,
+    PDB: reth_db::database::Database + 'static,
 {
     type Input<'a> = BlockExecutionInput<'a, BlockWithSenders>;
     type Output = BatchBlockExecutionOutput;
