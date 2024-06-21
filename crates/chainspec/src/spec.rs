@@ -603,6 +603,12 @@ pub static OPBNB_MAINNET: Lazy<Arc<ChainSpec>> = Lazy::new(|| {
             (Hardfork::Bedrock, ForkCondition::Block(0)),
             (Hardfork::Regolith, ForkCondition::Timestamp(0)),
             (Hardfork::Fermat, ForkCondition::Timestamp(1701151200)),
+            (Hardfork::Shanghai, ForkCondition::Timestamp(1718870400)), /* Jun-20-2024 08:00 AM
+                                                                         * +UTC */
+            (Hardfork::Canyon, ForkCondition::Timestamp(1718870400)), // Jun-20-2024 08:00 AM +UTC
+            (Hardfork::Cancun, ForkCondition::Timestamp(1718871600)), // Jun-20-2024 08:20 AM +UTC
+            (Hardfork::Ecotone, ForkCondition::Timestamp(1718871600)), // Jun-20-2024 08:20 AM +UTC
+            (Hardfork::Haber, ForkCondition::Timestamp(1718871600)),  // Jun-20-2024 08:20 AM +UTC
         ]),
         base_fee_params: BaseFeeParamsKind::Variable(
             vec![(Hardfork::London, BaseFeeParams::ethereum())].into(),
