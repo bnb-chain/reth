@@ -8,7 +8,7 @@ use reth_network_p2p::{
     priority::Priority,
 };
 use reth_network_peers::{PeerId, WithPeerId};
-use reth_primitives::{BlockBody, BlockHashOrNumber, Header, HeadersDirection, SealedHeader, B256};
+use reth_primitives::{BlockBody, Header, HeadersDirection, SealedHeader, B256};
 use std::fmt::Debug;
 use tracing::trace;
 
@@ -42,17 +42,7 @@ impl ParliaClient {
         let storage = self.storage.read().await;
         let HeadersRequest { start, limit, direction } = request;
         let mut headers = Vec::<SealedHeader>::new();
-
-        let mut block: BlockHashOrNumber = match start {
-            BlockHashOrNumber::Hash(start) => start.into(),
-            BlockHashOrNumber::Number(num) => {
-                if let Some(hash) = storage.block_hash(num) {
-                    hash.into()
-                } else {
-                    return Err(InnerFetchError::HeaderNotFound);
-                }
-            }
-        };
+        let mut block = start;
 
         for _ in 0..limit {
             // fetch from storage
@@ -111,9 +101,7 @@ impl HeadersClient for ParliaClient {
         Box::pin(async move {
             let result = this.fetch_headers(request.clone()).await;
             if let Ok(headers) = result {
-                if headers.len() as u64 == request.limit {
-                    return Ok(WithPeerId::new(PeerId::random(), headers));
-                }
+                return Ok(WithPeerId::new(PeerId::random(), headers));
             }
             this.fetch_client.get_headers_with_priority(request.clone(), priority).await
         })
@@ -132,9 +120,7 @@ impl BodiesClient for ParliaClient {
         Box::pin(async move {
             let result = this.fetch_bodies(hashes.clone()).await;
             if let Ok(blocks) = result {
-                if blocks.len() == hashes.len() {
-                    return Ok(WithPeerId::new(PeerId::random(), blocks));
-                }
+                return Ok(WithPeerId::new(PeerId::random(), blocks));
             }
             this.fetch_client.get_block_bodies_with_priority(hashes.clone(), priority).await
         })

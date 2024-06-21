@@ -691,11 +691,6 @@ pub(crate) struct StorageInner {
 // === impl StorageInner ===
 
 impl StorageInner {
-    /// Returns the block hash for the given block number if it exists.
-    pub(crate) fn block_hash(&self, num: u64) -> Option<BlockHash> {
-        self.headers.get(&num).map(|header| header.hash())
-    }
-
     /// Returns the matching header if it exists.
     pub(crate) fn header_by_hash_or_number(
         &self,

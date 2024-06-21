@@ -148,6 +148,7 @@ impl<Engine: EngineTypes + 'static> ParliaEngineTask<Engine> {
                             continue;
                         }
                         info.block_hash = BlockHashOrNumber::Number(best_header.number+1);
+                        info.block_number = best_header.number+1;
                     }
                     _ = signal::ctrl_c() => {
                         info!(target: "consensus::parlia", "block event listener shutting down...");
@@ -156,6 +157,8 @@ impl<Engine: EngineTypes + 'static> ParliaEngineTask<Engine> {
                 }
 
                 // skip if number is lower than best number
+                // TODO: if there is a big number incoming, will cause the sync broken, need a
+                // better solution to handle this
                 if info.block_number <= best_header.number {
                     continue;
                 }
