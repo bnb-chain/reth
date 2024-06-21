@@ -63,7 +63,7 @@ impl ParliaClient {
                         if !headers.is_empty() &&
                             headers.last().cloned().unwrap().hash() != header.parent_hash
                         {
-                            break;
+                            return Err(InnerFetchError::HeaderNotFound);
                         }
                         let next = header.number + 1;
                         block = next.into()
@@ -72,7 +72,7 @@ impl ParliaClient {
 
                 headers.push(header.clone());
             } else {
-                break;
+                return Err(InnerFetchError::HeaderNotFound);
             }
         }
 
@@ -132,7 +132,9 @@ impl BodiesClient for ParliaClient {
         Box::pin(async move {
             let result = this.fetch_bodies(hashes.clone()).await;
             if let Ok(blocks) = result {
-                return Ok(WithPeerId::new(PeerId::random(), blocks));
+                if blocks.len() == hashes.len() {
+                    return Ok(WithPeerId::new(PeerId::random(), blocks));
+                }
             }
             this.fetch_client.get_block_bodies_with_priority(hashes.clone(), priority).await
         })

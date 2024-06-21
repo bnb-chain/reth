@@ -611,7 +611,7 @@ where
 
     /// Consumes the type and returns all components
     #[track_caller]
-    pub fn build(self) -> (ParliaClient, ParliaEngineTask<Engine>) {
+    pub fn build(self) -> ParliaClient {
         let Self {
             chain_spec,
             cfg,
@@ -622,7 +622,7 @@ where
             _client,
         } = self;
         let parlia_client = ParliaClient::new(storage.clone(), fetch_client);
-        let task = ParliaEngineTask::new(
+        ParliaEngineTask::start(
             chain_spec.clone(),
             Parlia::new(chain_spec, cfg),
             to_engine,
@@ -630,7 +630,7 @@ where
             storage,
             parlia_client.clone(),
         );
-        (parlia_client, task)
+        parlia_client
     }
 }
 
@@ -692,10 +692,7 @@ pub(crate) struct StorageInner {
 impl StorageInner {
     /// Returns the block hash for the given block number if it exists.
     pub(crate) fn block_hash(&self, num: u64) -> Option<BlockHash> {
-        self.hash_to_number
-            .iter()
-            .find(|(_, &v)| v == num) // find the entry where value matches num
-            .map(|(k, _)| *k) // extract the key (BlockHash) from the found entry
+        self.headers.get(&num).map(|header| header.hash())
     }
 
     /// Returns the matching header if it exists.
@@ -761,10 +758,6 @@ where
 
     fn get(&self, key: &K) -> Option<&V> {
         self.map.get(key)
-    }
-
-    fn iter(&self) -> impl Iterator<Item = (&K, &V)> {
-        self.queue.iter().filter_map(|key| self.map.get_key_value(key))
     }
 }
 
@@ -844,11 +837,5 @@ mod tests {
         assert_eq!(set.get(&1), None);
         assert_eq!(set.get(&2), Some(&2));
         assert_eq!(set.get(&3), Some(&3));
-
-        // test iter
-        let mut iter = set.iter();
-        assert_eq!(iter.next(), Some((&2, &2)));
-        assert_eq!(iter.next(), Some((&3, &3)));
-        assert_eq!(iter.next(), None);
     }
 }

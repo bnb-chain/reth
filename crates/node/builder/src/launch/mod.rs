@@ -276,10 +276,24 @@ where
 
             (pipeline, Either::Left(client))
         } else {
+            let pipeline = crate::setup::build_networked_pipeline(
+                &ctx.toml_config().stages,
+                network_client.clone(),
+                consensus.clone(),
+                ctx.provider_factory().clone(),
+                ctx.task_executor(),
+                sync_metrics_tx,
+                ctx.prune_config(),
+                max_block,
+                static_file_producer,
+                node_adapter.components.block_executor().clone(),
+                pipeline_exex_handle,
+            )
+            .await?;
             #[cfg(feature = "bsc")]
             {
                 let engine_rx = node_adapter.components.network().get_to_engine_rx();
-                let (client, _) = ParliaEngineBuilder::new(
+                let client = ParliaEngineBuilder::new(
                     ctx.chain_spec(),
                     ParliaConfig::default(),
                     blockchain_db.clone(),
@@ -288,40 +302,10 @@ where
                     network_client.clone(),
                 )
                 .build();
-                let pipeline = crate::setup::build_networked_pipeline(
-                    &ctx.toml_config().stages,
-                    network_client.clone(),
-                    consensus.clone(),
-                    ctx.provider_factory().clone(),
-                    ctx.task_executor(),
-                    sync_metrics_tx,
-                    ctx.prune_config(),
-                    max_block,
-                    static_file_producer,
-                    node_adapter.components.block_executor().clone(),
-                    pipeline_exex_handle,
-                )
-                .await?;
-
                 (pipeline, Either::Right(client))
             }
             #[cfg(not(feature = "bsc"))]
             {
-                let pipeline = crate::setup::build_networked_pipeline(
-                    &ctx.toml_config().stages,
-                    network_client.clone(),
-                    consensus.clone(),
-                    ctx.provider_factory().clone(),
-                    ctx.task_executor(),
-                    sync_metrics_tx,
-                    ctx.prune_config(),
-                    max_block,
-                    static_file_producer,
-                    node_adapter.components.block_executor().clone(),
-                    pipeline_exex_handle,
-                )
-                .await?;
-
                 (pipeline, Either::Right(network_client.clone()))
             }
         };

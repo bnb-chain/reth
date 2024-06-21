@@ -50,14 +50,6 @@ install: ## Build and install the reth binary under `~/.cargo/bin`.
 		--profile "$(PROFILE)" \
 		$(CARGO_INSTALL_EXTRA_FLAGS)
 
-.PHONY: install-bsc
-install-bsc: ## Build and install the reth binary under `~/.cargo/bin`.
-	cargo install --path bin/reth --bin bsc-reth --force --locked \
-		--features "$(FEATURES)" \
-		--profile "$(PROFILE)" \
-		$(CARGO_INSTALL_EXTRA_FLAGS)
-
-
 .PHONY: install-op
 install-op: ## Build and install the op-reth binary under `~/.cargo/bin`.
 	cargo install --path bin/reth --bin op-reth --force --locked \

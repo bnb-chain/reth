@@ -22,6 +22,7 @@ use tokio::{
     time::{interval, Duration},
 };
 use tracing::{debug, error, info, trace};
+use reth_network_p2p::download::DownloadClient;
 
 /// All message variants that can be sent to beacon engine.
 #[derive(Debug)]
@@ -45,7 +46,7 @@ struct BlockInfo {
 }
 
 /// A Future that listens for new headers and puts into storage
-pub struct ParliaEngineTask<Engine: EngineTypes> {
+pub(crate) struct ParliaEngineTask<Engine: EngineTypes> {
     /// The configured chain spec
     chain_spec: Arc<ChainSpec>,
     /// The coneensus instance
@@ -68,14 +69,14 @@ pub struct ParliaEngineTask<Engine: EngineTypes> {
 impl<Engine: EngineTypes + 'static> ParliaEngineTask<Engine> {
     /// Creates a new instance of the task
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new(
+    pub(crate) fn start(
         chain_spec: Arc<ChainSpec>,
         consensus: Parlia,
         to_engine: UnboundedSender<BeaconEngineMessage<Engine>>,
         network_block_event_rx: Arc<Mutex<UnboundedReceiver<EngineMessage>>>,
         storage: Storage,
         block_fetcher: ParliaClient,
-    ) -> Self {
+    ) {
         let (fork_choice_tx, fork_choice_rx) = mpsc::unbounded_channel();
         let this = Self {
             chain_spec,
@@ -90,7 +91,6 @@ impl<Engine: EngineTypes + 'static> ParliaEngineTask<Engine> {
 
         this.start_block_event_listening();
         this.start_fork_choice_update_notifier();
-        this
     }
 
     /// Start listening to the network block event
@@ -227,7 +227,7 @@ impl<Engine: EngineTypes + 'static> ParliaEngineTask<Engine> {
                         }
                         match msg.unwrap() {
                             ForkChoiceMessage::NewBlock(event) => {
-                                // notify beacon engine
+                                // notify parlia engine
                                 let state = ForkchoiceState {
                                     head_block_hash: event.hash,
                                     // safe(justified) and finalized hash will be determined in the parlia consensus engine and stored in the snapshot after the block sync
