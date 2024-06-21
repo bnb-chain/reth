@@ -19,10 +19,9 @@ use tokio::{
         mpsc::{self, UnboundedReceiver, UnboundedSender},
         oneshot,
     },
-    time::{interval, Duration},
+    time::{interval, timeout, Duration},
 };
 use tracing::{debug, error, info, trace};
-use reth_network_p2p::download::DownloadClient;
 
 /// All message variants that can be sent to beacon engine.
 #[derive(Debug)]
@@ -53,6 +52,7 @@ pub(crate) struct ParliaEngineTask<Engine: EngineTypes> {
     consensus: Parlia,
     /// The client used to fetch headers
     block_fetcher: ParliaClient,
+    fetch_header_timeout_duration: u64,
     /// Shared storage to insert new headers
     storage: Storage,
     /// The engine to send messages to the beacon engine
@@ -76,6 +76,7 @@ impl<Engine: EngineTypes + 'static> ParliaEngineTask<Engine> {
         network_block_event_rx: Arc<Mutex<UnboundedReceiver<EngineMessage>>>,
         storage: Storage,
         block_fetcher: ParliaClient,
+        fetch_header_timeout_duration: u64,
     ) {
         let (fork_choice_tx, fork_choice_rx) = mpsc::unbounded_channel();
         let this = Self {
@@ -85,6 +86,7 @@ impl<Engine: EngineTypes + 'static> ParliaEngineTask<Engine> {
             network_block_event_rx,
             storage,
             block_fetcher,
+            fetch_header_timeout_duration,
             fork_choice_tx,
             fork_choice_rx: Arc::new(Mutex::new(fork_choice_rx)),
         };
@@ -101,6 +103,8 @@ impl<Engine: EngineTypes + 'static> ParliaEngineTask<Engine> {
         let block_fetcher = self.block_fetcher.clone();
         let consensus = self.consensus.clone();
         let fork_choice_tx = self.fork_choice_tx.clone();
+        let fetch_header_timeout_duration = Duration::from_secs(self.fetch_header_timeout_duration);
+
         tokio::spawn(async move {
             loop {
                 let read_storage = storage.read().await;
@@ -164,9 +168,18 @@ impl<Engine: EngineTypes + 'static> ParliaEngineTask<Engine> {
                 if header_option.is_none() {
                     debug!(target: "consensus::parlia", { block_hash = ?info.block_hash }, "Fetching new header");
                     // fetch header and verify
-                    let fetch_header_result = block_fetcher
-                        .get_header_with_priority(info.block_hash, Priority::High)
-                        .await;
+                    let fetch_header_result = match timeout(
+                        fetch_header_timeout_duration,
+                        block_fetcher.get_header_with_priority(info.block_hash, Priority::High),
+                    )
+                    .await
+                    {
+                        Ok(result) => result,
+                        Err(_) => {
+                            trace!(target: "consensus::parlia", "Fetch header timeout");
+                            continue
+                        }
+                    };
                     if fetch_header_result.is_err() {
                         trace!(target: "consensus::parlia", "Failed to fetch header");
                         continue

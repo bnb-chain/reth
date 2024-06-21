@@ -624,11 +624,12 @@ where
         let parlia_client = ParliaClient::new(storage.clone(), fetch_client);
         ParliaEngineTask::start(
             chain_spec.clone(),
-            Parlia::new(chain_spec, cfg),
+            Parlia::new(chain_spec, cfg.clone()),
             to_engine,
             network_block_event_rx,
             storage,
             parlia_client.clone(),
+            cfg.period,
         );
         parlia_client
     }
