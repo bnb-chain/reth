@@ -193,6 +193,13 @@ impl<Engine: EngineTypes + 'static> ParliaEngineTask<Engine> {
                 }
                 let latest_header = header_option.unwrap();
 
+                // skip if parent hash is not equal to best hash
+                if latest_header.number == best_header.number + 1 &&
+                    latest_header.parent_hash != best_header.hash()
+                {
+                    continue;
+                }
+
                 // verify header
                 let sealed_header = latest_header.clone().seal_slow();
                 let is_valid_header = match consensus.validate_header(&sealed_header) {
