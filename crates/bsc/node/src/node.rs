@@ -14,7 +14,6 @@ use reth_node_builder::{
     BuilderContext, Node, PayloadBuilderConfig,
 };
 use reth_payload_builder::{PayloadBuilderHandle, PayloadBuilderService};
-use reth_primitives::parlia::ParliaConfig;
 use reth_provider::CanonStateSubscriptions;
 use reth_tracing::tracing::{debug, info};
 use reth_transaction_pool::{
@@ -92,11 +91,10 @@ where
     ) -> eyre::Result<(Self::EVM, Self::Executor)> {
         let chain_spec = ctx.chain_spec();
         let evm_config = BscEvmConfig::default();
-        //  TODO: parlia config
         let executor = BscExecutorProvider::new(
             chain_spec,
             evm_config,
-            ParliaConfig::default(),
+            ctx.reth_config().parlia.clone(),
             ctx.provider().clone(),
         );
 

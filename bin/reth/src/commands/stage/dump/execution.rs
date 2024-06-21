@@ -150,13 +150,17 @@ async fn unwind_and_copy<DB: Database>(
 }
 
 /// Try to re-execute the stage without committing
-async fn dry_run<DB: Database>(
+async fn dry_run<DB: Database + 'static>(
     output_provider_factory: ProviderFactory<DB>,
     to: u64,
     from: u64,
 ) -> eyre::Result<()> {
     info!(target: "reth::cli", "Executing stage. [dry-run]");
 
+    #[cfg(feature = "bsc")]
+    let executor =
+        block_executor!(output_provider_factory.chain_spec(), output_provider_factory.clone());
+    #[cfg(not(feature = "bsc"))]
     let executor = block_executor!(output_provider_factory.chain_spec());
     let mut exec_stage = ExecutionStage::new_with_executor(executor);
 

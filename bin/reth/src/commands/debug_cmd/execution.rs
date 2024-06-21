@@ -84,6 +84,9 @@ impl Command {
         let prune_modes = config.prune.clone().map(|prune| prune.segments).unwrap_or_default();
 
         let (tip_tx, tip_rx) = watch::channel(B256::ZERO);
+        #[cfg(feature = "bsc")]
+        let executor = block_executor!(provider_factory.chain_spec(), provider_factory.clone());
+        #[cfg(not(feature = "bsc"))]
         let executor = block_executor!(provider_factory.chain_spec());
 
         let pipeline = Pipeline::builder()

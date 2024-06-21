@@ -120,6 +120,9 @@ impl Command {
         let consensus: Arc<dyn Consensus> =
             Arc::new(EthBeaconConsensus::new(provider_factory.chain_spec()));
 
+        #[cfg(feature = "bsc")]
+        let executor = block_executor!(provider_factory.chain_spec(), provider_factory.clone());
+        #[cfg(not(feature = "bsc"))]
         let executor = block_executor!(provider_factory.chain_spec());
 
         // configure blockchain tree
@@ -268,6 +271,11 @@ impl Command {
                     SealedBlockWithSenders::new(block.clone(), senders).unwrap();
 
                 let db = StateProviderDatabase::new(blockchain_db.latest()?);
+                #[cfg(feature = "bsc")]
+                let executor =
+                    block_executor!(provider_factory.chain_spec(), provider_factory.clone())
+                        .executor(db);
+                #[cfg(not(feature = "bsc"))]
                 let executor = block_executor!(provider_factory.chain_spec()).executor(db);
 
                 let BlockExecutionOutput { state, receipts, requests, .. } =

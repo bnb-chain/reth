@@ -168,6 +168,10 @@ impl Command {
                     None,
                 ),
                 StageEnum::Execution => {
+                    #[cfg(feature = "bsc")]
+                    let executor =
+                        block_executor!(provider_factory.chain_spec(), provider_factory.clone());
+                    #[cfg(not(feature = "bsc"))]
                     let executor = block_executor!(provider_factory.chain_spec());
                     (
                         Box::new(ExecutionStage::new(

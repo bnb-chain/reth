@@ -197,6 +197,9 @@ where
         .expect("failed to set download range");
 
     let (tip_tx, tip_rx) = watch::channel(B256::ZERO);
+    #[cfg(feature = "bsc")]
+    let executor = block_executor!(provider_factory.chain_spec(), provider_factory.clone());
+    #[cfg(not(feature = "bsc"))]
     let executor = block_executor!(provider_factory.chain_spec());
 
     let max_block = file_client.max_block().unwrap_or(0);

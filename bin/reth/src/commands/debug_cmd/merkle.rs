@@ -101,6 +101,10 @@ impl Command {
             )
             .await?;
 
+        #[cfg(feature = "bsc")]
+        let executor_provider =
+            block_executor!(provider_factory.chain_spec(), provider_factory.clone());
+        #[cfg(not(feature = "bsc"))]
         let executor_provider = block_executor!(provider_factory.chain_spec());
 
         // Initialize the fetch client
