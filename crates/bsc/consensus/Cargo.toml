@@ -59,4 +59,7 @@ reth-provider = { workspace = true, features = ["test-utils"] }
 rand = "0.8.5"
 
 [features]
-bsc = ["reth-primitives/bsc"]
+bsc = [
+    "reth-primitives/bsc",
+    "reth-consensus-common/bsc"
+]
