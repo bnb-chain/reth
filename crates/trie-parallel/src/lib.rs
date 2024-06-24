@@ -7,7 +7,6 @@
 )]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
-mod storage_root_targets;
 pub use storage_root_targets::StorageRootTargets;
 
 /// Parallel trie calculation stats.
@@ -24,3 +23,6 @@ pub mod parallel_root;
 /// Parallel state root metrics.
 #[cfg(feature = "metrics")]
 pub mod metrics;
+
+/// Target accounts with corresponding prefix sets for storage root calculation.
+pub mod storage_root_targets;

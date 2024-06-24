@@ -7340,10 +7340,14 @@ dependencies = [
 name = "reth-evm-ethereum"
 version = "0.2.0-beta.7"
 dependencies = [
+ "reth-db",
  "reth-evm",
  "reth-interfaces",
  "reth-primitives",
+ "reth-provider",
  "reth-revm",
+ "reth-trie",
+ "reth-trie-prefetch",
  "revm-primitives",
  "tracing",
 ]
@@ -8396,6 +8400,30 @@ dependencies = [
  "reth-provider",
  "reth-tasks",
  "reth-trie",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "reth-trie-prefetch"
+version = "0.2.0-beta.7"
+dependencies = [
+ "alloy-rlp",
+ "criterion",
+ "derive_more",
+ "metrics",
+ "proptest",
+ "rand 0.8.5",
+ "rayon",
+ "reth-db",
+ "reth-interfaces",
+ "reth-metrics",
+ "reth-primitives",
+ "reth-provider",
+ "reth-tasks",
+ "reth-trie",
+ "reth-trie-parallel",
  "thiserror",
  "tokio",
  "tracing",

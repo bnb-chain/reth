@@ -16,6 +16,8 @@ reth-primitives.workspace = true
 revm-primitives.workspace = true
 revm.workspace = true
 reth-interfaces.workspace = true
+#reth-trie = { workspace = true, features = ["metrics"] }
+#reth-trie-parallel = { workspace = true, features = ["prefetch"] }
 
 futures-util.workspace = true
 parking_lot = { workspace = true, optional = true }

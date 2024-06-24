@@ -13,6 +13,10 @@
 )]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
+pub use progress::{IntermediateStateRootState, StateRootProgress};
+pub use state::*;
+pub use trie::{StateRoot, StorageRoot};
+
 /// The implementation of a container for storing intermediate changes to a trie.
 /// The container indicates when the trie has been modified.
 pub mod prefix_set;
@@ -31,22 +35,16 @@ pub mod node_iter;
 
 /// In-memory hashed state.
 mod state;
-pub use state::*;
-
 /// Merkle proof generation.
 pub mod proof;
 
 /// The implementation of the Merkle Patricia Trie.
 mod trie;
-pub use trie::{StateRoot, StorageRoot};
-
 /// Buffer for trie updates.
 pub mod updates;
 
 /// Utilities for state root checkpoint progress.
 mod progress;
-pub use progress::{IntermediateStateRootState, StateRootProgress};
-
 /// Trie calculation stats.
 pub mod stats;
 

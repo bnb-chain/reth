@@ -1,9 +1,10 @@
 //! Traits for execution.
 
-use reth_interfaces::{executor::BlockExecutionError, provider::ProviderError};
-use reth_primitives::{BlockNumber, BlockWithSenders, PruneModes, Receipt, Receipts, U256};
 use revm::db::BundleState;
 use revm_primitives::db::Database;
+
+use reth_interfaces::{executor::BlockExecutionError, provider::ProviderError};
+use reth_primitives::{BlockNumber, BlockWithSenders, PruneModes, Receipt, Receipts, U256};
 
 /// A general purpose executor trait that executes on an input (e.g. blocks) and produces an output
 /// (e.g. state changes and receipts).
@@ -178,10 +179,13 @@ pub trait BlockExecutorProvider: Send + Sync + Clone + Unpin + 'static {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use reth_primitives::Block;
-    use revm::db::{CacheDB, EmptyDBTyped};
     use std::marker::PhantomData;
+
+    use revm::db::{CacheDB, EmptyDBTyped};
+
+    use reth_primitives::Block;
+
+    use super::*;
 
     #[derive(Clone, Default)]
     struct TestExecutorProvider;

@@ -16,6 +16,10 @@ reth-evm.workspace = true
 reth-primitives.workspace = true
 reth-revm.workspace = true
 reth-interfaces.workspace = true
+reth-provider.workspace = true
+reth-db.workspace = true
+reth-trie.workspace = true
+reth-trie-prefetch = { workspace = true, features = ["prefetch"] }
 
 # Ethereum
 revm-primitives.workspace = true
@@ -25,3 +29,4 @@ tracing.workspace = true
 
 [dev-dependencies]
 reth-revm = { workspace = true, features = ["test-utils"] }
+reth-db = { workspace = true, features = ["test-utils"] }

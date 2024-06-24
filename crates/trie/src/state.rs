@@ -21,6 +21,7 @@ use std::{
     collections::{hash_map, HashMap, HashSet},
     ops::RangeInclusive,
 };
+use revm::primitives::AccountStatus;
 
 /// Representation of in-memory hashed state.
 #[derive(PartialEq, Eq, Clone, Default, Debug)]
@@ -45,6 +46,28 @@ impl HashedPostState {
 
             let hashed_storage = HashedStorage::from_iter(
                 account.status.was_destroyed(),
+                account.storage.iter().map(|(key, value)| {
+                    (keccak256(B256::new(key.to_be_bytes())), value.present_value)
+                }),
+            );
+            this.storages.insert(hashed_address, hashed_storage);
+        }
+        this
+    }
+
+    /// Constructs a `HashedPostState` from a given state.
+    ///
+    /// This function takes a `HashMap` of `Address` and `Account` as input, representing the state changes.
+    /// For each account in the changes, it hashes the address and inserts it into the `accounts` field of the `HashedPostState`.
+    /// It also creates a `HashedStorage` for each account, based on the account's storage, and inserts it into the `storages` field of the `HashedPostState`.
+    pub fn from_state<'a>(changes: HashMap<Address, reth_primitives::revm_primitives::Account>) -> Self {
+        let mut this = Self::default();
+        for (address, account) in changes {
+            let hashed_address = keccak256(address);
+            this.accounts.insert(hashed_address, Some(account.info.clone()).map(into_reth_acc));
+
+            let hashed_storage = HashedStorage::from_iter(
+                account.status == AccountStatus::SelfDestructed,
                 account.storage.iter().map(|(key, value)| {
                     (keccak256(B256::new(key.to_be_bytes())), value.present_value)
                 }),

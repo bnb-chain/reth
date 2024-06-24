@@ -3,8 +3,12 @@
 //! A [`Chain`] contains the state of accounts for the chain after execution of its constituent
 //! blocks, as well as a list of the blocks the chain is composed of.
 
-use super::externals::TreeExternals;
-use crate::BundleStateDataRef;
+use std::{
+    collections::BTreeMap,
+    ops::{Deref, DerefMut},
+    time::Instant,
+};
+
 use reth_consensus::{Consensus, ConsensusError};
 use reth_db::database::Database;
 use reth_evm::execute::{BlockExecutionOutput, BlockExecutorProvider, Executor};
@@ -26,11 +30,10 @@ use reth_provider::{
 use reth_revm::database::StateProviderDatabase;
 use reth_trie::updates::TrieUpdates;
 use reth_trie_parallel::parallel_root::ParallelStateRoot;
-use std::{
-    collections::BTreeMap,
-    ops::{Deref, DerefMut},
-    time::Instant,
-};
+
+use crate::BundleStateDataRef;
+
+use super::externals::TreeExternals;
 
 /// A chain in the blockchain tree that has functionality to execute blocks and append them to
 /// itself.
@@ -205,7 +208,6 @@ impl AppendableChain {
             .state_provider_by_block_number(canonical_fork.number)?;
 
         let provider = BundleStateProvider::new(state_provider, bundle_state_data_provider);
-
         let db = StateProviderDatabase::new(&provider);
         let executor = externals.executor_factory.executor(db);
         let block_hash = block.hash();
@@ -238,7 +240,7 @@ impl AppendableChain {
                 return Err(ConsensusError::BodyStateRootDiff(
                     GotExpected { got: state_root, expected: block.state_root }.into(),
                 )
-                .into())
+                .into());
             }
 
             tracing::debug!(
