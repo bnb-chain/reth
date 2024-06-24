@@ -166,7 +166,7 @@ bsc = [
     "dep:reth-node-bsc",
     "reth-node-core/bsc",
     "reth-stages/bsc",
-    "reth-node-builder/bsc"
+    "reth-node-builder/bsc",
 ]
 
 # no-op feature flag for switching between the `optimism` and default functionality in CI matrices

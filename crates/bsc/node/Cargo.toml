@@ -49,4 +49,5 @@ bsc = [
     "reth-evm-bsc/bsc",
     "reth-primitives/bsc",
     "reth-config/bsc",
+    "reth-bsc-consensus/bsc",
 ]
