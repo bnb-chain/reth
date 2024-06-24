@@ -92,6 +92,20 @@ pub static BSC_TESTNET_BOOTNODES: &[&str] = &[
     "enode://665cf77ca26a8421cfe61a52ac312958308d4912e78ce8e0f61d6902e4494d4cc38f9b0dd1b23a427a7a5734e27e5d9729231426b06bb9c73b56a142f83f6b68@52.72.123.113:30311",
 ];
 
+#[cfg(all(feature = "optimism", feature = "opbnb"))]
+/// OPBNB testnet boot nodes.
+pub static OPBNB_MAINNET_BOOTNODES: &[&str] = &[
+    "enode://db109c6cac5c8b6225edd3176fc3764c58e0720950fe94c122c80978e706a9c9e976629b718e48b6306ea0f9126e5394d3424c9716c5703549e2e7eba216353b@52.193.218.151:30304",
+    "enode://afe18782053bb31fb7ea41e1acf659ab9bd1eec181fb97331f0a6b61871a469b4f75138f903c977796be1cc2a3c985d33150a396e878d3cd6e4723b6040ff9c0@52.195.105.192:30304",
+];
+
+#[cfg(all(feature = "optimism", feature = "opbnb"))]
+/// OPBNB testnet boot nodes.
+pub static OPBNB_TESTNET_BOOTNODES: &[&str] = &[
+    "enode://217cfe091047a1c3f490e96d51e2f3bd90517a9be77b8a6033b31833a193aa6c33b6d07088c4980f462162635ffbccaa413dc28cb14c4f2b96af0dd97292411f@13.112.117.88:30304",
+    "enode://38c8913f87d64179bac23514ddb56a17f5b28f7e253b3825a10a2c8b9553c5df7d3b6c83a96948ad0466f384bf63236fd5e6bed6d6402156749b6b0899c82d47@54.199.235.83:30304",
+];
+
 /// Returns parsed mainnet nodes
 pub fn mainnet_nodes() -> Vec<NodeRecord> {
     parse_nodes(&MAINNET_BOOTNODES[..])
@@ -122,6 +136,18 @@ pub fn op_nodes() -> Vec<NodeRecord> {
 /// Returns parsed op-stack testnet nodes
 pub fn op_testnet_nodes() -> Vec<NodeRecord> {
     parse_nodes(OP_TESTNET_BOOTNODES)
+}
+
+#[cfg(all(feature = "optimism", feature = "opbnb"))]
+/// Returns parsed opbnb testnet nodes
+pub fn opbnb_testnet_nodes() -> Vec<NodeRecord> {
+    parse_nodes(OPBNB_TESTNET_BOOTNODES)
+}
+
+#[cfg(all(feature = "optimism", feature = "opbnb"))]
+/// Returns parsed opbnb mainnet nodes
+pub fn opbnb_mainnet_nodes() -> Vec<NodeRecord> {
+    parse_nodes(OPBNB_MAINNET_BOOTNODES)
 }
 
 #[cfg(feature = "optimism")]

@@ -131,7 +131,12 @@ mod optimism {
         BASE_MAINNET, BASE_SEPOLIA, OP_MAINNET, OP_SEPOLIA,
     };
     #[cfg(feature = "opbnb")]
-    pub use reth_chainspec::{OPBNB_MAINNET, OPBNB_TESTNET};
+    pub use reth_chainspec::{
+        net::{
+            opbnb_testnet_nodes, opbnb_mainnet_nodes,
+        },
+        OPBNB_MAINNET, OPBNB_TESTNET,
+    };
 }
 
 #[cfg(feature = "optimism")]
