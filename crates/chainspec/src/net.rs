@@ -93,7 +93,7 @@ pub static BSC_TESTNET_BOOTNODES: &[&str] = &[
 ];
 
 #[cfg(all(feature = "optimism", feature = "opbnb"))]
-/// OPBNB testnet boot nodes.
+/// OPBNB mainnet boot nodes.
 pub static OPBNB_MAINNET_BOOTNODES: &[&str] = &[
     "enode://db109c6cac5c8b6225edd3176fc3764c58e0720950fe94c122c80978e706a9c9e976629b718e48b6306ea0f9126e5394d3424c9716c5703549e2e7eba216353b@52.193.218.151:30304",
     "enode://afe18782053bb31fb7ea41e1acf659ab9bd1eec181fb97331f0a6b61871a469b4f75138f903c977796be1cc2a3c985d33150a396e878d3cd6e4723b6040ff9c0@52.195.105.192:30304",
