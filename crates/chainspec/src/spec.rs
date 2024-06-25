@@ -146,9 +146,7 @@ pub static BSC_TESTNET: Lazy<Arc<ChainSpec>> = Lazy::new(|| {
 });
 
 #[cfg(all(feature = "optimism", feature = "opbnb"))]
-pub(crate) use crate::net::{
-    opbnb_testnet_nodes, opbnb_mainnet_nodes,
-};
+pub(crate) use crate::net::{opbnb_testnet_nodes, opbnb_mainnet_nodes};
 
 /// The Ethereum mainnet spec
 pub static MAINNET: Lazy<Arc<ChainSpec>> = Lazy::new(|| {
