@@ -447,6 +447,7 @@ mod tests {
                 body,
                 ommers,
                 withdrawals: None,
+                sidecars: None,
                 requests: None,
             },
             parent,

@@ -4,8 +4,8 @@ use futures::{future::Either, Stream, StreamExt};
 use reth_errors::{ProviderError, ProviderResult};
 use reth_evm::ConfigureEvm;
 use reth_primitives::{
-    Block, BlockHashOrNumber, BlockWithSenders, Receipt, SealedBlock, SealedBlockWithSenders,
-    TransactionSigned, TransactionSignedEcRecovered, B256,
+    BlobSidecars, Block, BlockHashOrNumber, BlockWithSenders, Receipt, SealedBlock,
+    SealedBlockWithSenders, TransactionSigned, TransactionSignedEcRecovered, B256,
 };
 use reth_provider::{
     BlockReader, CanonStateNotification, Chain, EvmEnvProvider, StateProviderFactory,
@@ -44,6 +44,9 @@ type BlockWithSendersResponseSender = oneshot::Sender<ProviderResult<Option<Bloc
 /// The type that can send the response to the requested receipts of a block.
 type ReceiptsResponseSender = oneshot::Sender<ProviderResult<Option<Arc<Vec<Receipt>>>>>;
 
+/// The type that can send the response to the requested sidecars of a block.
+type SidecarsResponseSender = oneshot::Sender<ProviderResult<Option<BlobSidecars>>>;
+
 /// The type that can send the response to a requested env
 type EnvResponseSender = oneshot::Sender<ProviderResult<(CfgEnvWithHandlerCfg, BlockEnv)>>;
 
@@ -56,6 +59,8 @@ type BlockLruCache<L> = MultiConsumerLruCache<
 
 type ReceiptsLruCache<L> =
     MultiConsumerLruCache<B256, Arc<Vec<Receipt>>, L, ReceiptsResponseSender>;
+
+type SidecarsLruCache<L> = MultiConsumerLruCache<B256, BlobSidecars, L, SidecarsResponseSender>;
 
 type EnvLruCache<L> =
     MultiConsumerLruCache<B256, (CfgEnvWithHandlerCfg, BlockEnv), L, EnvResponseSender>;
@@ -85,6 +90,7 @@ impl EthStateCache {
             provider,
             full_block_cache: BlockLruCache::new(max_blocks, "blocks"),
             receipts_cache: ReceiptsLruCache::new(max_receipts, "receipts"),
+            sidecars_cache: SidecarsLruCache::new(max_receipts, "sidecars"),
             evm_env_cache: EnvLruCache::new(max_envs, "evm_env"),
             action_tx: to_service.clone(),
             action_rx: UnboundedReceiverStream::new(rx),
@@ -250,6 +256,13 @@ impl EthStateCache {
         Ok(block.zip(receipts))
     }
 
+    /// Fetches sidecars for the given block hash.
+    pub async fn get_sidecars(&self, block_hash: B256) -> ProviderResult<Option<BlobSidecars>> {
+        let (response_tx, rx) = oneshot::channel();
+        let _ = self.to_service.send(CacheAction::GetSidecars { block_hash, response_tx });
+        rx.await.map_err(|_| ProviderError::CacheServiceUnavailable)?
+    }
+
     /// Requests the evm env config for the block hash.
     ///
     /// Returns an error if the corresponding header (required for populating the envs) was not
@@ -287,17 +300,21 @@ pub(crate) struct EthStateCacheService<
     LimitBlocks = ByLength,
     LimitReceipts = ByLength,
     LimitEnvs = ByLength,
+    LimitSidecars = ByLength,
 > where
     LimitBlocks: Limiter<B256, BlockWithSenders>,
     LimitReceipts: Limiter<B256, Arc<Vec<Receipt>>>,
     LimitEnvs: Limiter<B256, (CfgEnvWithHandlerCfg, BlockEnv)>,
+    LimitSidecars: Limiter<B256, BlobSidecars>,
 {
     /// The type used to lookup data from disk
     provider: Provider,
     /// The LRU cache for full blocks grouped by their hash.
     full_block_cache: BlockLruCache<LimitBlocks>,
-    /// The LRU cache for full blocks grouped by their hash.
+    /// The LRU cache for receipts grouped by their hash.
     receipts_cache: ReceiptsLruCache<LimitReceipts>,
+    /// The LRU cache for receipts grouped by their hash.
+    sidecars_cache: SidecarsLruCache<LimitSidecars>,
     /// The LRU cache for revm environments
     evm_env_cache: EnvLruCache<LimitEnvs>,
     /// Sender half of the action channel.
@@ -496,6 +513,28 @@ where
                                 }));
                             }
                         }
+                        CacheAction::GetSidecars { block_hash, response_tx } => {
+                            // check if block is cached
+                            if let Some(sidecars) = this.sidecars_cache.get(&block_hash).cloned() {
+                                let _ = response_tx.send(Ok(Some(sidecars)));
+                                continue
+                            }
+
+                            // block is not in the cache, request it if this is the first consumer
+                            if this.sidecars_cache.queue(block_hash, response_tx) {
+                                let provider = this.provider.clone();
+                                let action_tx = this.action_tx.clone();
+                                let rate_limiter = this.rate_limiter.clone();
+                                this.action_task_spawner.spawn_blocking(Box::pin(async move {
+                                    // Acquire permit
+                                    let _permit = rate_limiter.acquire().await;
+                                    let res = provider.sidecars_by_block(block_hash.into());
+
+                                    let _ = action_tx
+                                        .send(CacheAction::SidecarsResult { block_hash, res });
+                                }));
+                            }
+                        }
                         CacheAction::GetEnv { block_hash, response_tx } => {
                             // check if env data is cached
                             if let Some(env) = this.evm_env_cache.get(&block_hash).cloned() {
@@ -561,6 +600,19 @@ where
                                 this.evm_env_cache.insert(block_hash, data);
                             }
                         }
+                        CacheAction::SidecarsResult { block_hash, res } => {
+                            if let Some(queued) = this.sidecars_cache.remove(&block_hash) {
+                                // send the response to queued senders
+                                for tx in queued {
+                                    let _ = tx.send(res.clone());
+                                }
+                            }
+
+                            // cache good env data
+                            if let Ok(Some(data)) = res {
+                                this.sidecars_cache.insert(block_hash, data);
+                            }
+                        }
                         CacheAction::CacheNewCanonicalChain { chain_change } => {
                             for block in chain_change.blocks {
                                 this.on_new_block(block.hash(), Ok(Some(block.unseal())));
@@ -608,6 +660,8 @@ enum CacheAction {
     EnvResult { block_hash: B256, res: Box<ProviderResult<(CfgEnvWithHandlerCfg, BlockEnv)>> },
     CacheNewCanonicalChain { chain_change: ChainChange },
     RemoveReorgedChain { chain_change: ChainChange },
+    GetSidecars { block_hash: B256, response_tx: SidecarsResponseSender },
+    SidecarsResult { block_hash: B256, res: ProviderResult<Option<BlobSidecars>> },
 }
 
 struct BlockReceipts {

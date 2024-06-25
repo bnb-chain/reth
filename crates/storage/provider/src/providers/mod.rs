@@ -60,6 +60,7 @@ use chain_info::ChainInfoTracker;
 mod consistent_view;
 use alloy_rpc_types_engine::ForkchoiceState;
 pub use consistent_view::{ConsistentDbView, ConsistentViewError};
+use reth_storage_api::SidecarsProvider;
 
 /// The main type for interacting with the blockchain.
 ///
@@ -479,6 +480,18 @@ where
 
     fn latest_withdrawal(&self) -> ProviderResult<Option<Withdrawal>> {
         self.database.latest_withdrawal()
+    }
+}
+
+impl<DB> SidecarsProvider for BlockchainProvider<DB>
+where
+    DB: Database,
+{
+    fn sidecars_by_block(
+        &self,
+        id: BlockHashOrNumber,
+    ) -> ProviderResult<Option<reth_primitives::BlobSidecars>> {
+        self.database.sidecars_by_block(id)
     }
 }
 

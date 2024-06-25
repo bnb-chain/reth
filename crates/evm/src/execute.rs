@@ -250,6 +250,7 @@ mod tests {
             body: vec![],
             ommers: vec![],
             withdrawals: None,
+            sidecars: None,
             requests: None,
         };
         let block = BlockWithSenders::new(block, Default::default()).unwrap();

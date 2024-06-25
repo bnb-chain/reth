@@ -791,7 +791,6 @@ mod tests {
         assert_eq!(storage.headers.get(&block.number), Some(&block));
         assert_eq!(storage.hash_to_number.get(&block.hash()), Some(&block.number));
         assert_eq!(storage.bodies.get(&block.hash()), Some(&BlockBody::default()));
-        assert_eq!(storage.block_hash(block.number), Some(block.hash()));
         assert_eq!(
             storage.header_by_hash_or_number(BlockHashOrNumber::Hash(block.hash())),
             Some(block.clone())

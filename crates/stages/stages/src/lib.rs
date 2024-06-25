@@ -1,3 +1,4 @@
+#![feature(duration_constructors)]
 //! Staged syncing primitives for reth.
 //!
 //! This crate contains the syncing primitives [`Pipeline`] and [`Stage`], as well as all stages
