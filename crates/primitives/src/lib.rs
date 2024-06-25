@@ -13,7 +13,7 @@
     html_favicon_url = "https://avatars0.githubusercontent.com/u/97369466?s=256",
     issue_tracker_base_url = "https://github.com/paradigmxyz/reth/issues/"
 )]
-//#![cfg_attr(not(test), warn(unused_crate_dependencies))] TODO:FIXME
+//#![cfg_attr(not(test), warn(unused_crate_dependencies))]
 // TODO: remove when https://github.com/proptest-rs/proptest/pull/427 is merged
 #![allow(unknown_lints, non_local_definitions)]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
@@ -43,7 +43,7 @@ pub mod system_contracts;
 pub mod transaction;
 
 #[cfg(any(test, feature = "arbitrary"))]
-pub use block::{empty_sidecars_strategy, generate_valid_header, valid_header_strategy};
+pub use block::{generate_valid_header, valid_header_strategy};
 pub use block::{
     Block, BlockBody, BlockHashOrNumber, BlockId, BlockNumHash, BlockNumberOrTag, BlockWithSenders,
     ForkBlock, RpcBlockHash, SealedBlock, SealedBlockWithSenders,

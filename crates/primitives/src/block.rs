@@ -27,14 +27,6 @@ prop_compose! {
     }
 }
 
-#[cfg(any(feature = "arbitrary", test))]
-prop_compose! {
-    /// Set the sidecars to `None` in the block body when generating arbitrary test.
-    pub fn empty_sidecars_strategy()(_ in 0..1) -> Option<BlobSidecars> {
-        None
-    }
-}
-
 /// Ethereum full block.
 ///
 /// Withdrawals can be optionally included at the end of the RLP encoded message.
@@ -561,12 +553,8 @@ pub struct BlockBody {
     pub withdrawals: Option<Withdrawals>,
     // only for bsc
     /// Tx sidecars for the block.
-    // #[cfg_attr(any(test, feature = "arbitrary"), proptest(strategy =
-    // "empty_sidecars_strategy()"))]
     pub sidecars: Option<BlobSidecars>,
     /// Requests in the block.
-    // #[cfg_attr(any(test, feature = "arbitrary"), proptest(strategy =
-    // "empty_requests_strategy()"))]
     pub requests: Option<Requests>,
 }
 
