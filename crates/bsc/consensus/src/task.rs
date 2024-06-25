@@ -269,7 +269,14 @@ impl<Engine: EngineTypes + 'static> ParliaEngineTask<Engine> {
                                 });
                                 debug!(target: "consensus::parlia", ?state, "Sent fork choice update");
 
-                                match rx.await.unwrap() {
+                                let rx_result = match rx.await {
+                                    Ok(result) => result,
+                                    Err(err)=> {
+                                        error!(target: "consensus::parlia", ?err, "Fork choice update response failed");
+                                        continue
+                                    }
+                                };
+                                match rx_result {
                                     Ok(fcu_response) => {
                                         match fcu_response.forkchoice_status() {
                                             ForkchoiceStatus::Valid => {
