@@ -132,7 +132,7 @@ mod optimism {
     };
     #[cfg(feature = "opbnb")]
     pub use reth_chainspec::{
-        net::{opbnb_testnet_nodes, opbnb_mainnet_nodes},
+        net::{opbnb_mainnet_nodes, opbnb_testnet_nodes},
         OPBNB_MAINNET, OPBNB_TESTNET,
     };
 }
