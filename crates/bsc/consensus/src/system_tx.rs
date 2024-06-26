@@ -1,11 +1,14 @@
-use crate::{
-    Parlia, BSC_GOVERNOR_CONTRACT, BSC_TIMELOCK_CONTRACT, CROSS_CHAIN_CONTRACT, GOV_TOKEN_CONTRACT,
-    LIGHT_CLIENT_CONTRACT, RELAYER_HUB_CONTRACT, RELAYER_INCENTIVIZE_CONTRACT, SLASH_CONTRACT,
-    STAKE_HUB_CONTRACT, SYSTEM_REWARD_CONTRACT, TOKEN_HUB_CONTRACT, TOKEN_RECOVER_PORTAL_CONTRACT,
-    VALIDATOR_CONTRACT,
-};
+use crate::Parlia;
 use alloy_dyn_abi::{DynSolValue, JsonAbiExt};
-use reth_primitives::{Address, Bytes, Transaction, TxKind, TxLegacy, U256};
+use reth_primitives::{
+    system_contracts::{
+        CROSS_CHAIN_CONTRACT, GOVERNOR_CONTRACT, GOV_TOKEN_CONTRACT, LIGHT_CLIENT_CONTRACT,
+        RELAYER_HUB_CONTRACT, RELAYER_INCENTIVIZE_CONTRACT, SLASH_CONTRACT, STAKE_HUB_CONTRACT,
+        SYSTEM_REWARD_CONTRACT, TIMELOCK_CONTRACT, TOKEN_HUB_CONTRACT,
+        TOKEN_RECOVER_PORTAL_CONTRACT, VALIDATOR_CONTRACT,
+    },
+    Address, Bytes, Transaction, TxKind, TxLegacy, U256,
+};
 
 /// Assemble system tx
 impl Parlia {
@@ -14,13 +17,13 @@ impl Parlia {
         let input = function.abi_encode_input(&[]).unwrap();
 
         let contracts = vec![
-            *VALIDATOR_CONTRACT,
-            *SLASH_CONTRACT,
-            *LIGHT_CLIENT_CONTRACT,
-            *RELAYER_HUB_CONTRACT,
-            *TOKEN_HUB_CONTRACT,
-            *RELAYER_INCENTIVIZE_CONTRACT,
-            *CROSS_CHAIN_CONTRACT,
+            VALIDATOR_CONTRACT,
+            SLASH_CONTRACT,
+            LIGHT_CLIENT_CONTRACT,
+            RELAYER_HUB_CONTRACT,
+            TOKEN_HUB_CONTRACT,
+            RELAYER_INCENTIVIZE_CONTRACT,
+            CROSS_CHAIN_CONTRACT,
         ];
 
         contracts
@@ -33,7 +36,7 @@ impl Parlia {
                     gas_price: 0,
                     value: U256::ZERO,
                     input: Bytes::from(input.clone()),
-                    to: TxKind::Call(contract),
+                    to: TxKind::Call(contract.parse().unwrap()),
                 })
             })
             .collect()
@@ -44,11 +47,11 @@ impl Parlia {
         let input = function.abi_encode_input(&[]).unwrap();
 
         let contracts = vec![
-            *STAKE_HUB_CONTRACT,
-            *BSC_GOVERNOR_CONTRACT,
-            *GOV_TOKEN_CONTRACT,
-            *BSC_TIMELOCK_CONTRACT,
-            *TOKEN_RECOVER_PORTAL_CONTRACT,
+            STAKE_HUB_CONTRACT,
+            GOVERNOR_CONTRACT,
+            GOV_TOKEN_CONTRACT,
+            TIMELOCK_CONTRACT,
+            TOKEN_RECOVER_PORTAL_CONTRACT,
         ];
 
         contracts
@@ -61,7 +64,7 @@ impl Parlia {
                     gas_price: 0,
                     value: U256::ZERO,
                     input: Bytes::from(input.clone()),
-                    to: TxKind::Call(contract),
+                    to: TxKind::Call(contract.parse().unwrap()),
                 })
             })
             .collect()
@@ -78,7 +81,7 @@ impl Parlia {
             gas_price: 0,
             value: U256::ZERO,
             input: Bytes::from(input),
-            to: TxKind::Call(*SLASH_CONTRACT),
+            to: TxKind::Call(SLASH_CONTRACT.parse().unwrap()),
         })
     }
 
@@ -90,7 +93,7 @@ impl Parlia {
             gas_price: 0,
             value: U256::from(system_reward),
             input: Bytes::default(),
-            to: TxKind::Call(*SYSTEM_REWARD_CONTRACT),
+            to: TxKind::Call(SYSTEM_REWARD_CONTRACT.parse().unwrap()),
         })
     }
 
@@ -105,7 +108,7 @@ impl Parlia {
             gas_price: 0,
             value: U256::from(block_reward),
             input: Bytes::from(input),
-            to: TxKind::Call(*VALIDATOR_CONTRACT),
+            to: TxKind::Call(VALIDATOR_CONTRACT.parse().unwrap()),
         })
     }
 
@@ -130,7 +133,7 @@ impl Parlia {
             gas_price: 0,
             value: U256::ZERO,
             input: Bytes::from(input),
-            to: TxKind::Call(*VALIDATOR_CONTRACT),
+            to: TxKind::Call(VALIDATOR_CONTRACT.parse().unwrap()),
         })
     }
 
@@ -161,7 +164,7 @@ impl Parlia {
             gas_price: 0,
             value: U256::ZERO,
             input: Bytes::from(input),
-            to: TxKind::Call(*VALIDATOR_CONTRACT),
+            to: TxKind::Call(VALIDATOR_CONTRACT.parse().unwrap()),
         })
     }
 }

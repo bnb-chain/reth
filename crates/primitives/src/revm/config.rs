@@ -30,15 +30,17 @@ pub fn revm_spec_by_timestamp_after_merge(
 
     #[cfg(feature = "bsc")]
     if chain_spec.is_bsc() {
-        if chain_spec.is_haber_active_at_timestamp(timestamp) {
+        if chain_spec.is_haber_fix_active_at_timestamp(timestamp) {
+            return revm_primitives::HABER_FIX
+        } else if chain_spec.is_haber_active_at_timestamp(timestamp) {
             return revm_primitives::HABER
         } else if chain_spec.is_cancun_active_at_timestamp(timestamp) {
             return revm_primitives::CANCUN
-        } else if chain_spec.fork(Hardfork::FeynmanFix).active_at_timestamp(timestamp) {
+        } else if chain_spec.is_feynman_fix_active_at_timestamp(timestamp) {
             return revm_primitives::FEYNMAN_FIX
-        } else if chain_spec.fork(Hardfork::Feynman).active_at_timestamp(timestamp) {
+        } else if chain_spec.is_feynman_active_at_timestamp(timestamp) {
             return revm_primitives::FEYNMAN
-        } else if chain_spec.fork(Hardfork::Kepler).active_at_timestamp(timestamp) {
+        } else if chain_spec.is_kepler_active_at_timestamp(timestamp) {
             return revm_primitives::KEPLER
         } else {
             return revm_primitives::SHANGHAI
@@ -79,7 +81,9 @@ pub fn revm_spec(chain_spec: &ChainSpec, block: Head) -> revm_primitives::SpecId
 
     #[cfg(feature = "bsc")]
     if chain_spec.is_bsc() {
-        if chain_spec.fork(Hardfork::Haber).active_at_head(&block) {
+        if chain_spec.fork(Hardfork::HaberFix).active_at_head(&block) {
+            return revm_primitives::HABER_FIX
+        } else if chain_spec.fork(Hardfork::Haber).active_at_head(&block) {
             return revm_primitives::HABER
         } else if chain_spec.fork(Hardfork::Cancun).active_at_head(&block) {
             return revm_primitives::CANCUN

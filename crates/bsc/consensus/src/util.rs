@@ -1,45 +1,9 @@
 use crate::EXTRA_SEAL_LEN;
 use alloy_rlp::Encodable;
-use lazy_static::lazy_static;
 use reth_primitives::{
-    keccak256, Address, BufMut, BytesMut, Header, TransactionSigned, B256, B64, U256,
+    keccak256, system_contracts::SYSTEM_CONTRACTS_SET, Address, BufMut, BytesMut, Header,
+    TransactionSigned, B256, B64, U256,
 };
-use std::str::FromStr;
-
-lazy_static! {
-    // preset contracts
-    pub static ref VALIDATOR_CONTRACT: Address =  Address::from_str("0x0000000000000000000000000000000000001000").unwrap();
-    pub static ref SLASH_CONTRACT: Address =  Address::from_str("0x0000000000000000000000000000000000001001").unwrap();
-    pub static ref SYSTEM_REWARD_CONTRACT: Address = Address::from_str("0x0000000000000000000000000000000000001002").unwrap();
-    pub static ref LIGHT_CLIENT_CONTRACT: Address =  Address::from_str("0x0000000000000000000000000000000000001003").unwrap();
-    pub static ref TOKEN_HUB_CONTRACT: Address =  Address::from_str("0x0000000000000000000000000000000000001004").unwrap();
-    pub static ref RELAYER_INCENTIVIZE_CONTRACT: Address =  Address::from_str("0x0000000000000000000000000000000000001005").unwrap();
-    pub static ref RELAYER_HUB_CONTRACT: Address =  Address::from_str("0x0000000000000000000000000000000000001006").unwrap();
-    pub static ref GOV_HUB_CONTRACT: Address =  Address::from_str("0x0000000000000000000000000000000000001007").unwrap();
-    pub static ref CROSS_CHAIN_CONTRACT: Address =  Address::from_str("0x0000000000000000000000000000000000002000").unwrap();
-    pub static ref STAKE_HUB_CONTRACT: Address =  Address::from_str("0x0000000000000000000000000000000000002002").unwrap();
-    pub static ref BSC_GOVERNOR_CONTRACT: Address =  Address::from_str("0x0000000000000000000000000000000000002004").unwrap();
-    pub static ref GOV_TOKEN_CONTRACT: Address =  Address::from_str("0x0000000000000000000000000000000000002005").unwrap();
-    pub static ref BSC_TIMELOCK_CONTRACT: Address =  Address::from_str("0x0000000000000000000000000000000000002006").unwrap();
-    pub static ref TOKEN_RECOVER_PORTAL_CONTRACT: Address =  Address::from_str("0x0000000000000000000000000000000000003000").unwrap();
-
-    pub static ref SYSTEM_CONTRACTS: Vec<Address> = vec![
-        *VALIDATOR_CONTRACT,
-        *SLASH_CONTRACT,
-        *SYSTEM_REWARD_CONTRACT,
-        *LIGHT_CLIENT_CONTRACT,
-        *TOKEN_HUB_CONTRACT,
-        *RELAYER_INCENTIVIZE_CONTRACT,
-        *RELAYER_HUB_CONTRACT,
-        *GOV_HUB_CONTRACT,
-        *CROSS_CHAIN_CONTRACT,
-        *STAKE_HUB_CONTRACT,
-        *BSC_GOVERNOR_CONTRACT,
-        *GOV_TOKEN_CONTRACT,
-        *BSC_TIMELOCK_CONTRACT,
-        *TOKEN_RECOVER_PORTAL_CONTRACT,
-    ];
-}
 
 const SECONDS_PER_DAY: u64 = 86400; // 24 * 60 * 60
 
@@ -66,7 +30,7 @@ pub fn is_system_transaction(tx: &TransactionSigned, sender: Address, header: &H
 
 /// whether the contract is system or not
 pub fn is_invoke_system_contract(addr: &Address) -> bool {
-    SYSTEM_CONTRACTS.contains(addr)
+    SYSTEM_CONTRACTS_SET.contains(addr)
 }
 
 pub fn hash_with_chain_id(header: &Header, chain_id: u64) -> B256 {
@@ -165,5 +129,14 @@ mod tests {
         let hash = hash_with_chain_id(&header, 97);
         println!("encode hash: {:?}", hex::encode(hash.as_slice()));
         assert_eq!(hex::encode(hash.as_slice()), expected_hash);
+    }
+
+    #[test]
+    fn test_is_system_contract() {
+        let addr1 = address!("0000000000000000000000000000000000001000");
+        let addr2 = address!("0000000000000000000000000000000000001100");
+
+        assert_eq!(super::is_invoke_system_contract(&addr1), true);
+        assert_eq!(super::is_invoke_system_contract(&addr2), false);
     }
 }

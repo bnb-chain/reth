@@ -1,7 +1,10 @@
-use crate::{Parlia, VoteAddress, STAKE_HUB_CONTRACT, VALIDATOR_CONTRACT};
+use crate::{Parlia, VoteAddress};
 use alloy_dyn_abi::{DynSolValue, FunctionExt, JsonAbiExt};
 use lazy_static::lazy_static;
-use reth_primitives::{Address, BlockNumber, Bytes, U256};
+use reth_primitives::{
+    system_contracts::{STAKE_HUB_CONTRACT, VALIDATOR_CONTRACT},
+    Address, BlockNumber, Bytes, U256,
+};
 
 lazy_static! {
     pub static ref VALIDATOR_SET_ABI: &'static str = r#"
@@ -5871,7 +5874,7 @@ impl Parlia {
             self.validator_abi_before_luban.function("getValidators").unwrap().first().unwrap()
         };
 
-        (*VALIDATOR_CONTRACT, Bytes::from(function.abi_encode_input(&[]).unwrap()))
+        (VALIDATOR_CONTRACT.parse().unwrap(), Bytes::from(function.abi_encode_input(&[]).unwrap()))
     }
 
     pub fn unpack_data_into_validator_set_before_luban(&self, data: &[u8]) -> Vec<Address> {
@@ -5892,7 +5895,7 @@ impl Parlia {
     pub fn get_current_validators(&self) -> (Address, Bytes) {
         let function = self.validator_abi.function("getMiningValidators").unwrap().first().unwrap();
 
-        (*VALIDATOR_CONTRACT, Bytes::from(function.abi_encode_input(&[]).unwrap()))
+        (VALIDATOR_CONTRACT.parse().unwrap(), Bytes::from(function.abi_encode_input(&[]).unwrap()))
     }
 
     pub fn unpack_data_into_validator_set(&self, data: &[u8]) -> (Vec<Address>, Vec<VoteAddress>) {
@@ -5922,7 +5925,7 @@ impl Parlia {
             self.stake_hub_abi.function("getValidatorElectionInfo").unwrap().first().unwrap();
 
         (
-            *STAKE_HUB_CONTRACT,
+            STAKE_HUB_CONTRACT.parse().unwrap(),
             Bytes::from(
                 function
                     .abi_encode_input(&[
@@ -5961,7 +5964,7 @@ impl Parlia {
         let function =
             self.stake_hub_abi.function("maxElectedValidators").unwrap().first().unwrap();
 
-        (*STAKE_HUB_CONTRACT, Bytes::from(function.abi_encode_input(&[]).unwrap()))
+        (STAKE_HUB_CONTRACT.parse().unwrap(), Bytes::from(function.abi_encode_input(&[]).unwrap()))
     }
 
     pub fn unpack_data_into_max_elected_validators(&self, data: &[u8]) -> U256 {

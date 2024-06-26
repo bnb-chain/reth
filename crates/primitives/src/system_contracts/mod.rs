@@ -12,23 +12,57 @@ use revm_primitives::hex;
 use std::collections::HashMap;
 use thiserror::Error;
 
-const VALIDATOR_CONTRACT: &str = "0x0000000000000000000000000000000000001000";
-const SLASH_CONTRACT: &str = "0x0000000000000000000000000000000000001001";
-const SYSTEM_REWARD_CONTRACT: &str = "0x0000000000000000000000000000000000001002";
-const LIGHT_CLIENT_CONTRACT: &str = "0x0000000000000000000000000000000000001003";
-const TOKEN_HUB_CONTRACT: &str = "0x0000000000000000000000000000000000001004";
-const RELAYER_INCENTIVIZE_CONTRACT: &str = "0x0000000000000000000000000000000000001005";
-const RELAYER_HUB_CONTRACT: &str = "0x0000000000000000000000000000000000001006";
-const GOV_HUB_CONTRACT: &str = "0x0000000000000000000000000000000000001007";
-const TOKEN_MANAGER_CONTRACT: &str = "0x0000000000000000000000000000000000001008";
-const CROSS_CHAIN_CONTRACT: &str = "0x0000000000000000000000000000000000002000";
-const STAKING_CONTRACT: &str = "0x0000000000000000000000000000000000002001";
-const STAKE_HUB_CONTRACT: &str = "0x0000000000000000000000000000000000002002";
-const STAKE_CREDIT_CONTRACT: &str = "0x0000000000000000000000000000000000002003";
-const GOVERNOR_CONTRACT: &str = "0x0000000000000000000000000000000000002004";
-const GOV_TOKEN_CONTRACT: &str = "0x0000000000000000000000000000000000002005";
-const TIMELOCK_CONTRACT: &str = "0x0000000000000000000000000000000000002006";
-const TOKEN_RECOVER_PORTAL_CONTRACT: &str = "0x0000000000000000000000000000000000003000";
+pub const VALIDATOR_CONTRACT: &str = "0x0000000000000000000000000000000000001000";
+pub const SLASH_CONTRACT: &str = "0x0000000000000000000000000000000000001001";
+pub const SYSTEM_REWARD_CONTRACT: &str = "0x0000000000000000000000000000000000001002";
+pub const LIGHT_CLIENT_CONTRACT: &str = "0x0000000000000000000000000000000000001003";
+pub const TOKEN_HUB_CONTRACT: &str = "0x0000000000000000000000000000000000001004";
+pub const RELAYER_INCENTIVIZE_CONTRACT: &str = "0x0000000000000000000000000000000000001005";
+pub const RELAYER_HUB_CONTRACT: &str = "0x0000000000000000000000000000000000001006";
+pub const GOV_HUB_CONTRACT: &str = "0x0000000000000000000000000000000000001007";
+pub const TOKEN_MANAGER_CONTRACT: &str = "0x0000000000000000000000000000000000001008";
+pub const CROSS_CHAIN_CONTRACT: &str = "0x0000000000000000000000000000000000002000";
+pub const STAKING_CONTRACT: &str = "0x0000000000000000000000000000000000002001";
+pub const STAKE_HUB_CONTRACT: &str = "0x0000000000000000000000000000000000002002";
+pub const STAKE_CREDIT_CONTRACT: &str = "0x0000000000000000000000000000000000002003";
+pub const GOVERNOR_CONTRACT: &str = "0x0000000000000000000000000000000000002004";
+pub const GOV_TOKEN_CONTRACT: &str = "0x0000000000000000000000000000000000002005";
+pub const TIMELOCK_CONTRACT: &str = "0x0000000000000000000000000000000000002006";
+pub const TOKEN_RECOVER_PORTAL_CONTRACT: &str = "0x0000000000000000000000000000000000003000";
+
+lazy_static! {
+    pub static ref SYSTEM_CONTRACTS_SET: Vec<Address> = vec![
+        VALIDATOR_CONTRACT.parse().unwrap(),
+        SLASH_CONTRACT.parse().unwrap(),
+        SYSTEM_REWARD_CONTRACT.parse().unwrap(),
+        LIGHT_CLIENT_CONTRACT.parse().unwrap(),
+        TOKEN_HUB_CONTRACT.parse().unwrap(),
+        RELAYER_INCENTIVIZE_CONTRACT.parse().unwrap(),
+        RELAYER_HUB_CONTRACT.parse().unwrap(),
+        GOV_HUB_CONTRACT.parse().unwrap(),
+        TOKEN_MANAGER_CONTRACT.parse().unwrap(),
+        CROSS_CHAIN_CONTRACT.parse().unwrap(),
+        STAKING_CONTRACT.parse().unwrap(),
+        STAKE_HUB_CONTRACT.parse().unwrap(),
+        STAKE_CREDIT_CONTRACT.parse().unwrap(),
+        GOVERNOR_CONTRACT.parse().unwrap(),
+        GOV_TOKEN_CONTRACT.parse().unwrap(),
+        TIMELOCK_CONTRACT.parse().unwrap(),
+        TOKEN_RECOVER_PORTAL_CONTRACT.parse().unwrap(),
+    ];
+
+    /// mainnet system contracts: hardfork -> address -> Bytecode
+    pub(crate) static ref BSC_MAINNET_CONTRACTS: HashMap<Hardfork, HashMap<String, Option<Bytecode>>> =
+        read_all_system_contracts(BSC_MAINNET.as_ref());
+
+    /// testnet system contracts: hardfork -> address -> Bytecode
+    pub(crate) static ref BSC_TESTNET_CONTRACTS: HashMap<Hardfork, HashMap<String, Option<Bytecode>>> =
+        read_all_system_contracts(BSC_TESTNET.as_ref());
+
+    /// qa system contracts: hardfork -> address -> Bytecode
+    pub(crate) static ref BSC_QA_CONTRACTS: HashMap<Hardfork, HashMap<String, Option<Bytecode>>> =
+        read_all_system_contracts(BSC_TESTNET.as_ref());
+}
 
 /// System contracts with their names as keys and addresses as values.
 #[derive(Debug)]
@@ -103,21 +137,7 @@ pub enum SystemContractError {
     FailToUpdate,
 }
 
-lazy_static! {
-    /// mainnet system contracts: hardfork -> address -> Bytecode
-    pub(crate) static ref BSC_MAINNET_CONTRACTS: HashMap<Hardfork, HashMap<String, Option<Bytecode>>> =
-        read_all_system_contracts(BSC_MAINNET.as_ref());
-
-    /// testnet system contracts: hardfork -> address -> Bytecode
-    pub(crate) static ref BSC_TESTNET_CONTRACTS: HashMap<Hardfork, HashMap<String, Option<Bytecode>>> =
-        read_all_system_contracts(BSC_TESTNET.as_ref());
-
-    /// qa system contracts: hardfork -> address -> Bytecode
-    pub(crate) static ref BSC_QA_CONTRACTS: HashMap<Hardfork, HashMap<String, Option<Bytecode>>> =
-        read_all_system_contracts(BSC_TESTNET.as_ref());
-}
-
-/// Return hardforks which contain upgrads of system contracts.
+/// Return hardforks which contain upgrades of system contracts.
 fn hardforks_with_system_contracts() -> Vec<Hardfork> {
     vec![
         Hardfork::Bruno,
@@ -133,6 +153,7 @@ fn hardforks_with_system_contracts() -> Vec<Hardfork> {
         Hardfork::Planck,
         Hardfork::Plato,
         Hardfork::Ramanujan,
+        Hardfork::HaberFix,
     ]
 }
 
@@ -152,6 +173,7 @@ fn hardfork_to_dir_name(hardfork: &Hardfork) -> Result<String, SystemContractErr
         Hardfork::Planck => "planck",
         Hardfork::Plato => "plato",
         Hardfork::Ramanujan => "ramanujan",
+        Hardfork::HaberFix => "haber_fix",
         _ => {
             return Err(SystemContractError::InvalidHardfork);
         }

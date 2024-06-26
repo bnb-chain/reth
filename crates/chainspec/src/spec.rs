@@ -87,6 +87,7 @@ pub static BSC_MAINNET: Lazy<Arc<ChainSpec>> = Lazy::new(|| {
             (Hardfork::FeynmanFix, ForkCondition::Timestamp(1713419340)),
             (Hardfork::Cancun, ForkCondition::Timestamp(1718863500)),
             (Hardfork::Haber, ForkCondition::Timestamp(1718863500)),
+            (Hardfork::HaberFix, ForkCondition::Timestamp(1720591588)),
         ]),
         deposit_contract: None,
         base_fee_params: BaseFeeParamsKind::Constant(BaseFeeParams::new(1, 1)),
@@ -137,6 +138,7 @@ pub static BSC_TESTNET: Lazy<Arc<ChainSpec>> = Lazy::new(|| {
             (Hardfork::FeynmanFix, ForkCondition::Timestamp(1711342800)),
             (Hardfork::Cancun, ForkCondition::Timestamp(1713330442)),
             (Hardfork::Haber, ForkCondition::Timestamp(1716962820)),
+            (Hardfork::HaberFix, ForkCondition::Timestamp(1719986788)),
         ]),
         deposit_contract: None,
         base_fee_params: BaseFeeParamsKind::Constant(BaseFeeParams::new(1, 1)),
@@ -1002,6 +1004,21 @@ impl ChainSpec {
         self.is_fork_active_at_timestamp(Hardfork::Feynman, timestamp)
     }
 
+    /// Convenience method to check if [`Hardfork::FeynmanFix`] is firstly active at a given
+    /// timestamp and parent timestamp.
+    #[cfg(feature = "bsc")]
+    #[inline]
+    pub fn is_on_feynman_fix_at_timestamp(&self, timestamp: u64, parent_timestamp: u64) -> bool {
+        self.fork(Hardfork::FeynmanFix).transitions_at_timestamp(timestamp, parent_timestamp)
+    }
+
+    /// Convenience method to check if [`Hardfork::FeynmanFix`] is active at a given timestamp.
+    #[cfg(feature = "bsc")]
+    #[inline]
+    pub fn is_feynman_fix_active_at_timestamp(&self, timestamp: u64) -> bool {
+        self.is_fork_active_at_timestamp(Hardfork::FeynmanFix, timestamp)
+    }
+
     /// Convenience method to check if [`Hardfork::Haber`] is firstly active at a given timestamp
     /// and parent timestamp.
     #[cfg(feature = "bsc")]
@@ -1015,6 +1032,21 @@ impl ChainSpec {
     #[inline]
     pub fn is_haber_active_at_timestamp(&self, timestamp: u64) -> bool {
         self.is_fork_active_at_timestamp(Hardfork::Haber, timestamp)
+    }
+
+    /// Convenience method to check if [`Hardfork::HaberFix`] is firstly active at a given timestamp
+    /// and parent timestamp.
+    #[cfg(feature = "bsc")]
+    #[inline]
+    pub fn is_on_haber_fix_at_timestamp(&self, timestamp: u64, parent_timestamp: u64) -> bool {
+        self.fork(Hardfork::HaberFix).transitions_at_timestamp(timestamp, parent_timestamp)
+    }
+
+    /// Convenience method to check if [`Hardfork::HaberFix`] is active at a given timestamp.
+    #[cfg(feature = "bsc")]
+    #[inline]
+    pub fn is_haber_fix_active_at_timestamp(&self, timestamp: u64) -> bool {
+        self.is_fork_active_at_timestamp(Hardfork::HaberFix, timestamp)
     }
 
     /// Creates a [`ForkFilter`] for the block described by [Head].

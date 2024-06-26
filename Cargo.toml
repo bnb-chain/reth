@@ -506,12 +506,11 @@ test-fuzz = "5"
 iai-callgrind = "0.11"
 
 [patch.crates-io]
-revm = { git = "https://github.com/bnb-chain/revm", rev = "63b8ab893c6f1d2984131017de9872b2809b615b" }
-revm-interpreter = { git = "https://github.com/bnb-chain/revm", rev = "63b8ab893c6f1d2984131017de9872b2809b615b" }
-revm-precompile = { git = "https://github.com/bnb-chain/revm", rev = "63b8ab893c6f1d2984131017de9872b2809b615b" }
-revm-primitives = { git = "https://github.com/bnb-chain/revm", rev = "63b8ab893c6f1d2984131017de9872b2809b615b" }
+revm = { git = "https://github.com/bnb-chain/revm", rev = "dfca3edd9732372e19dea88462eaece1e74824f1" }
+revm-interpreter = { git = "https://github.com/bnb-chain/revm", rev = "dfca3edd9732372e19dea88462eaece1e74824f1" }
+revm-precompile = { git = "https://github.com/bnb-chain/revm", rev = "dfca3edd9732372e19dea88462eaece1e74824f1" }
+revm-primitives = { git = "https://github.com/bnb-chain/revm", rev = "dfca3edd9732372e19dea88462eaece1e74824f1" }
 alloy-chains = { git = "https://github.com/bnb-chain/alloy-chains-rs.git", rev = "b7c5379cf47345181f8dce350acafb958f47152a" }
 
-
 [patch."https://github.com/bluealloy/revm"]
-revm = { git = "https://github.com/bnb-chain/revm", rev = "63b8ab893c6f1d2984131017de9872b2809b615b" }
+revm = { git = "https://github.com/bnb-chain/revm", rev = "dfca3edd9732372e19dea88462eaece1e74824f1" }

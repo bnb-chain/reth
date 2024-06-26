@@ -116,6 +116,8 @@ pub enum Hardfork {
     // ArbOS20Atlas,
     /// BSC `Haber` hardfork
     Haber,
+    /// BSC `Haber` hardfork
+    HaberFix,
 
     // Upcoming
     /// Prague: <https://github.com/ethereum/execution-specs/blob/master/network-upgrades/mainnet-upgrades/prague.md>

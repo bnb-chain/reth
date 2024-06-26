@@ -2,14 +2,14 @@ use crate::{BscBlockExecutionError, BscBlockExecutor};
 use bitset::BitSet;
 use reth_bsc_consensus::{
     get_top_validators_by_voting_power, is_breathe_block, ElectedValidators, ValidatorElectionInfo,
-    COLLECT_ADDITIONAL_VOTES_REWARD_RATIO, DIFF_INTURN, MAX_SYSTEM_REWARD, SYSTEM_REWARD_CONTRACT,
-    SYSTEM_REWARD_PERCENT,
+    COLLECT_ADDITIONAL_VOTES_REWARD_RATIO, DIFF_INTURN, MAX_SYSTEM_REWARD, SYSTEM_REWARD_PERCENT,
 };
 use reth_errors::{BlockExecutionError, BlockValidationError, ProviderError};
 use reth_evm::ConfigureEvm;
 use reth_primitives::{
     hex,
     parlia::{Snapshot, VoteAddress, VoteAttestation},
+    system_contracts::SYSTEM_REWARD_CONTRACT,
     Address, BlockWithSenders, GotExpected, Header, Receipt, TransactionSigned, U256,
 };
 use reth_provider::ParliaProvider;
@@ -287,8 +287,12 @@ where
             .increment_balances(balance_increment)
             .map_err(|_| BlockValidationError::IncrementBalanceFailed)?;
 
-        let system_reward_balance =
-            self.state.basic(*SYSTEM_REWARD_CONTRACT).unwrap().unwrap_or_default().balance;
+        let system_reward_balance = self
+            .state
+            .basic(SYSTEM_REWARD_CONTRACT.parse().unwrap())
+            .unwrap()
+            .unwrap_or_default()
+            .balance;
         if !self.parlia().chain_spec().is_kepler_active_at_timestamp(header.timestamp) &&
             system_reward_balance < U256::from(MAX_SYSTEM_REWARD)
         {
