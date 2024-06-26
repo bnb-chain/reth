@@ -36,7 +36,7 @@ RUN cargo build --profile $BUILD_PROFILE --features "$FEATURES" --locked --bin o
 
 # ARG is not resolved in COPY so we have to hack around it by copying the
 # binary to a temporary location
-RUN cp /app/target/$BUILD_PROFILE/op-reth /app/bsc-reth
+RUN cp /app/target/$BUILD_PROFILE/op-reth /app/op-reth
 
 # Use Ubuntu as the release image
 FROM ubuntu AS runtime
@@ -49,4 +49,4 @@ COPY --from=builder /app/bsc-reth /usr/local/bin
 COPY LICENSE-* ./
 
 EXPOSE 30303 30303/udp 9001 8545 8546
-ENTRYPOINT ["/usr/local/bin/bsc-reth"]
+ENTRYPOINT ["/usr/local/bin/op-reth"]
