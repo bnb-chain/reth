@@ -213,7 +213,7 @@ fn read_all_system_contracts(
             };
 
             let body = match contract_file.contents_utf8() {
-                Some(body) => body.to_string(),
+                Some(body) => body.trim().to_string(),
                 _ => panic!("fail to open file"),
             };
 
