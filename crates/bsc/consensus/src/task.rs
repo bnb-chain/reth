@@ -52,7 +52,7 @@ pub(crate) struct ParliaEngineTask<Engine: EngineTypes> {
     consensus: Parlia,
     /// The client used to fetch headers
     block_fetcher: ParliaClient,
-    fetch_header_timeout_duration: u64,
+    block_interval: u64,
     /// Shared storage to insert new headers
     storage: Storage,
     /// The engine to send messages to the beacon engine
@@ -76,7 +76,7 @@ impl<Engine: EngineTypes + 'static> ParliaEngineTask<Engine> {
         network_block_event_rx: Arc<Mutex<UnboundedReceiver<EngineMessage>>>,
         storage: Storage,
         block_fetcher: ParliaClient,
-        fetch_header_timeout_duration: u64,
+        block_interval: u64,
     ) {
         let (fork_choice_tx, fork_choice_rx) = mpsc::unbounded_channel();
         let this = Self {
@@ -86,7 +86,7 @@ impl<Engine: EngineTypes + 'static> ParliaEngineTask<Engine> {
             network_block_event_rx,
             storage,
             block_fetcher,
-            fetch_header_timeout_duration,
+            block_interval,
             fork_choice_tx,
             fork_choice_rx: Arc::new(Mutex::new(fork_choice_rx)),
         };
@@ -98,12 +98,13 @@ impl<Engine: EngineTypes + 'static> ParliaEngineTask<Engine> {
     /// Start listening to the network block event
     fn start_block_event_listening(&self) {
         let engine_rx = self.network_block_event_rx.clone();
-        let mut interval = interval(Duration::from_secs(10));
+        let block_interval = self.block_interval;
+        let mut interval = interval(Duration::from_secs(block_interval));
         let storage = self.storage.clone();
         let block_fetcher = self.block_fetcher.clone();
         let consensus = self.consensus.clone();
         let fork_choice_tx = self.fork_choice_tx.clone();
-        let fetch_header_timeout_duration = Duration::from_secs(self.fetch_header_timeout_duration);
+        let fetch_header_timeout_duration = Duration::from_secs(block_interval);
 
         tokio::spawn(async move {
             loop {
@@ -157,8 +158,6 @@ impl<Engine: EngineTypes + 'static> ParliaEngineTask<Engine> {
                 }
 
                 // skip if number is lower than best number
-                // TODO: if there is a big number incoming, will cause the sync broken, need a
-                // better solution to handle this
                 if info.block_number <= best_header.number {
                     continue;
                 }
@@ -203,9 +202,17 @@ impl<Engine: EngineTypes + 'static> ParliaEngineTask<Engine> {
                     continue;
                 }
 
-                // verify header
+                // verify header and timestamp
+                // predict timestamp is the best header timestamp plus the block interval times the
+                // difference between the latest header number and the best header number
+                // the timestamp of latest header should be bigger than the predicted timestamp and
+                // less than the current timestamp.
+                let predicted_timestamp = best_header.timestamp +
+                    block_interval * (latest_header.number - best_header.number);
                 let sealed_header = latest_header.clone().seal_slow();
-                let is_valid_header = match consensus.validate_header(&sealed_header) {
+                let is_valid_header = match consensus
+                    .validate_header_with_predicted_timestamp(&sealed_header, predicted_timestamp)
+                {
                     Ok(_) => true,
                     Err(err) => {
                         debug!(target: "consensus::parlia", %err, "Parlia verify header failed");

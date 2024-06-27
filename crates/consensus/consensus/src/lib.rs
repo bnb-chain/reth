@@ -210,6 +210,15 @@ pub enum ConsensusError {
     #[error("mismatched parent hash: {0}")]
     ParentHashMismatch(GotExpectedBoxed<B256>),
 
+    /// Error when the block timestamp is not expected compared to the predicted timestamp.
+    #[error("block timestamp {timestamp} is not expected compared to {predicted_timestamp}")]
+    TimestampNotExpected {
+        /// The block's timestamp.
+        timestamp: u64,
+        /// The predicted timestamp.
+        predicted_timestamp: u64,
+    },
+
     /// Error when the block timestamp is in the future compared to our clock time.
     #[error("block timestamp {timestamp} is in the future compared to our clock time {present_timestamp}")]
     TimestampIsInFuture {

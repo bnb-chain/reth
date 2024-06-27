@@ -434,6 +434,28 @@ impl Parlia {
 
 /// Header and Block validation
 impl Parlia {
+    fn validate_header_with_predicted_timestamp(
+        &self,
+        header: &SealedHeader,
+        predicted_timestamp: u64,
+    ) -> Result<(), ConsensusError> {
+        if header.timestamp < predicted_timestamp {
+            return Err(ConsensusError::TimestampNotExpected {
+                timestamp: header.timestamp,
+                predicted_timestamp,
+            });
+        }
+        let present_timestamp =
+            SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
+        if predicted_timestamp > present_timestamp {
+            return Err(ConsensusError::TimestampIsInFuture {
+                timestamp: predicted_timestamp,
+                present_timestamp,
+            });
+        }
+        self.validate_header(header)
+    }
+
     fn validate_header(&self, header: &SealedHeader) -> Result<(), ConsensusError> {
         // Don't waste time checking blocks from the future
         let present_timestamp =
