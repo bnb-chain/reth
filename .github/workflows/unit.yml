@@ -51,7 +51,7 @@ jobs:
         run: |
           cargo nextest run \
             --locked --features "asm-keccak ${{ matrix.network }} opbnb" \
-            --workspace --exclude examples --exclude ef-tests --exclude reth-node-ethereum \
+            --workspace --exclude ef-tests --exclude reth-node-ethereum \
             --partition hash:${{ matrix.partition }}/3 \
             -E "!kind(test)"
       - if: matrix.network == 'bsc'
@@ -59,8 +59,8 @@ jobs:
         run: |
           cargo nextest run \
             --locked --features "asm-keccak ${{ matrix.network }}" \
-            --workspace --exclude examples --exclude exex-rollup --exclude ef-tests --exclude reth-beacon-consensus \
-            --exclude reth-blockchain-tree --exclude reth-node-ethereum --exclude reth-rpc-engine-api --exclude example-exex-rollup \
+            --workspace --exclude examples --exclude example-exex-rollup --exclude ef-tests --exclude reth-beacon-consensus \
+            --exclude reth-blockchain-tree --exclude reth-node-ethereum --exclude reth-rpc-engine-api \
             --partition hash:${{ matrix.partition }}/3 \
             -E "!kind(test)"
 

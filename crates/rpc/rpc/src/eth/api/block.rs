@@ -9,9 +9,9 @@ use crate::{
 };
 use reth_evm::ConfigureEvm;
 use reth_network_api::NetworkInfo;
-use reth_primitives::{BlockId, TransactionMeta};
+use reth_primitives::{BlockId, TransactionMeta, B256};
 use reth_provider::{BlockReaderIdExt, ChainSpecProvider, EvmEnvProvider, StateProviderFactory};
-use reth_rpc_types::{AnyTransactionReceipt, Header, Index, RichBlock};
+use reth_rpc_types::{AnyTransactionReceipt, BlockSidecar, Header, Index, RichBlock};
 use reth_rpc_types_compat::block::{from_block, uncle_block_from_header};
 use reth_transaction_pool::TransactionPool;
 use std::sync::Arc;
@@ -213,5 +213,70 @@ where
     ) -> EthResult<Option<Header>> {
         let header = self.rpc_block(block_id, false).await?.map(|block| block.inner.header);
         Ok(header)
+    }
+
+    /// Returns the sidecars for the given block id.
+    pub(crate) async fn rpc_block_sidecars(
+        &self,
+        block_id: BlockId,
+    ) -> EthResult<Option<Vec<BlockSidecar>>> {
+        if block_id.is_pending() {
+            // todo
+            return Ok(None);
+        }
+
+        let sidecars = if let Some(block_hash) = self.provider().block_hash_for_id(block_id)? {
+            self.cache().get_sidecars(block_hash).await?
+        } else {
+            None
+        };
+
+        // If no block and receipts found, return None
+        let Some(sidecars) = sidecars else {
+            return Ok(None);
+        };
+
+        let block_sidecars = sidecars
+            .into_iter()
+            .map(|o| BlockSidecar {
+                blob_sidecar: o.blob_transaction_sidecar,
+                block_number: o.block_number.to(),
+                block_hash: o.block_hash,
+                tx_index: o.tx_index,
+                tx_hash: o.tx_hash,
+            })
+            .collect();
+
+        Ok(Some(block_sidecars))
+    }
+
+    /// Returns the sidecar for the given transaction hash.
+    pub(crate) async fn rpc_transaction_sidecar(
+        &self,
+        hash: B256,
+    ) -> EthResult<Option<BlockSidecar>> {
+        let meta = match self.provider().transaction_by_hash_with_meta(hash)? {
+            Some((_, meta)) => meta,
+            None => return Ok(None),
+        };
+
+        // If no block and receipts found, return None
+        let Some(sidecars) = self.cache().get_sidecars(meta.block_hash).await? else {
+            return Ok(None);
+        };
+
+        return if let Some(index) = sidecars.iter().position(|o| o.tx_hash == hash) {
+            let block_sidecar = BlockSidecar {
+                blob_sidecar: sidecars[index].blob_transaction_sidecar.clone(),
+                block_number: sidecars[index].block_number.to(),
+                block_hash: sidecars[index].block_hash,
+                tx_index: sidecars[index].tx_index,
+                tx_hash: sidecars[index].tx_hash,
+            };
+
+            Ok(Some(block_sidecar))
+        } else {
+            Ok(None)
+        }
     }
 }

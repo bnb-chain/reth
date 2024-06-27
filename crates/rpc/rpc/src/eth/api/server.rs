@@ -22,7 +22,7 @@ use reth_rpc_api::EthApiServer;
 use reth_rpc_types::{
     serde_helpers::JsonStorageKey,
     state::{EvmOverrides, StateOverride},
-    AccessListWithGasUsed, AnyTransactionReceipt, BlockOverrides, Bundle,
+    AccessListWithGasUsed, AnyTransactionReceipt, BlockOverrides, BlockSidecar, Bundle,
     EIP1186AccountProofResponse, EthCallResponse, FeeHistory, Header, Index, RichBlock,
     StateContext, SyncStatus, TransactionRequest, Work,
 };
@@ -420,6 +420,18 @@ where
             }
             _ => e.into(),
         })?)
+    }
+
+    /// Handler for: `eth_getBlobSidecars`
+    async fn get_blob_sidecars(&self, block_id: BlockId) -> Result<Option<Vec<BlockSidecar>>> {
+        trace!(target: "rpc::eth", ?block_id, "Serving eth_getBlobSidecars");
+        Ok(Self::rpc_block_sidecars(self, block_id).await?)
+    }
+
+    /// Handler for: `eth_getBlockSidecarByTxHash`
+    async fn get_block_sidecar_by_tx_hash(&self, hash: B256) -> Result<Option<BlockSidecar>> {
+        trace!(target: "rpc::eth", ?hash, "Serving eth_getBlockSidecarByTxHash");
+        Ok(Self::rpc_transaction_sidecar(self, hash).await?)
     }
 }
 
