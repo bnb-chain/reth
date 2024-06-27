@@ -5,8 +5,10 @@ use reth_engine_primitives::EngineTypes;
 use reth_network::message::EngineMessage;
 use reth_network_p2p::{headers::client::HeadersClient, priority::Priority};
 use reth_primitives::{Block, BlockBody, BlockHashOrNumber, B256};
+use reth_provider::BlockReaderIdExt;
 use reth_rpc_types::engine::ForkchoiceState;
 use std::{
+    clone::Clone,
     fmt,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -45,13 +47,16 @@ struct BlockInfo {
 }
 
 /// A Future that listens for new headers and puts into storage
-pub(crate) struct ParliaEngineTask<Engine: EngineTypes> {
+pub(crate) struct ParliaEngineTask<Engine: EngineTypes, Client: BlockReaderIdExt> {
     /// The configured chain spec
     chain_spec: Arc<ChainSpec>,
     /// The coneensus instance
     consensus: Parlia,
+    /// The client used to read the block and header from the inserted chain
+    client: Client,
     /// The client used to fetch headers
     block_fetcher: ParliaClient,
+    /// The interval of the block producing
     block_interval: u64,
     /// Shared storage to insert new headers
     storage: Storage,
@@ -66,12 +71,15 @@ pub(crate) struct ParliaEngineTask<Engine: EngineTypes> {
 }
 
 // === impl ParliaEngineTask ===
-impl<Engine: EngineTypes + 'static> ParliaEngineTask<Engine> {
+impl<Engine: EngineTypes + 'static, Client: BlockReaderIdExt + Clone + 'static>
+    ParliaEngineTask<Engine, Client>
+{
     /// Creates a new instance of the task
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn start(
         chain_spec: Arc<ChainSpec>,
         consensus: Parlia,
+        client: Client,
         to_engine: UnboundedSender<BeaconEngineMessage<Engine>>,
         network_block_event_rx: Arc<Mutex<UnboundedReceiver<EngineMessage>>>,
         storage: Storage,
@@ -82,6 +90,7 @@ impl<Engine: EngineTypes + 'static> ParliaEngineTask<Engine> {
         let this = Self {
             chain_spec,
             consensus,
+            client,
             to_engine,
             network_block_event_rx,
             storage,
@@ -100,7 +109,9 @@ impl<Engine: EngineTypes + 'static> ParliaEngineTask<Engine> {
         let engine_rx = self.network_block_event_rx.clone();
         let block_interval = self.block_interval;
         let mut interval = interval(Duration::from_secs(block_interval));
+        let chain_spec = self.chain_spec.clone();
         let storage = self.storage.clone();
+        let client = self.client.clone();
         let block_fetcher = self.block_fetcher.clone();
         let consensus = self.consensus.clone();
         let fork_choice_tx = self.fork_choice_tx.clone();
@@ -202,13 +213,19 @@ impl<Engine: EngineTypes + 'static> ParliaEngineTask<Engine> {
                     continue;
                 }
 
+                let trusted_header = client
+                    .latest_header()
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| chain_spec.sealed_genesis_header());
+
                 // verify header and timestamp
-                // predict timestamp is the best header timestamp plus the block interval times the
-                // difference between the latest header number and the best header number
-                // the timestamp of latest header should be bigger than the predicted timestamp and
-                // less than the current timestamp.
-                let predicted_timestamp = best_header.timestamp +
-                    block_interval * (latest_header.number - best_header.number);
+                // predict timestamp is the trusted header timestamp plus the block interval times
+                // the difference between the latest header number and the trusted
+                // header number the timestamp of latest header should be bigger
+                // than the predicted timestamp and less than the current timestamp.
+                let predicted_timestamp = trusted_header.timestamp +
+                    block_interval * (latest_header.number - trusted_header.number);
                 let sealed_header = latest_header.clone().seal_slow();
                 let is_valid_header = match consensus
                     .validate_header_with_predicted_timestamp(&sealed_header, predicted_timestamp)
@@ -315,13 +332,16 @@ impl<Engine: EngineTypes + 'static> ParliaEngineTask<Engine> {
     }
 }
 
-impl<Engine: EngineTypes> fmt::Debug for ParliaEngineTask<Engine> {
+impl<Engine: EngineTypes, Client: BlockReaderIdExt> fmt::Debug
+    for ParliaEngineTask<Engine, Client>
+{
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("chain_spec")
             .field("chain_spec", &self.chain_spec)
             .field("consensus", &self.consensus)
             .field("storage", &self.storage)
             .field("block_fetcher", &self.block_fetcher)
+            .field("block_interval", &self.block_interval)
             .finish_non_exhaustive()
     }
 }
