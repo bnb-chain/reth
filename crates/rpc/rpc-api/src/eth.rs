@@ -3,8 +3,8 @@ use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use reth_primitives::{Address, BlockId, BlockNumberOrTag, Bytes, B256, B64, U256, U64};
 use reth_rpc_types::{
     serde_helpers::JsonStorageKey, state::StateOverride, AccessListWithGasUsed,
-    AnyTransactionReceipt, BlockOverrides, Bundle, EIP1186AccountProofResponse, EthCallResponse,
-    FeeHistory, Header, Index, RichBlock, StateContext, SyncStatus, Transaction,
+    AnyTransactionReceipt, BlockOverrides, BlockSidecar, Bundle, EIP1186AccountProofResponse,
+    EthCallResponse, FeeHistory, Header, Index, RichBlock, StateContext, SyncStatus, Transaction,
     TransactionRequest, Work,
 };
 
@@ -308,4 +308,12 @@ pub trait EthApi {
         keys: Vec<JsonStorageKey>,
         block_number: Option<BlockId>,
     ) -> RpcResult<EIP1186AccountProofResponse>;
+
+    /// Returns the Sidecars of a given block number or hash.
+    #[method(name = "getBlobSidecars")]
+    async fn get_blob_sidecars(&self, block_id: BlockId) -> RpcResult<Option<Vec<BlockSidecar>>>;
+
+    /// Returns a sidecar of a given blob transaction
+    #[method(name = "getBlockSidecarByTxHash")]
+    async fn get_block_sidecar_by_tx_hash(&self, hash: B256) -> RpcResult<Option<BlockSidecar>>;
 }

@@ -123,6 +123,7 @@ impl<DB: Database, D: BodyDownloader> Stage<DB> for BodyStage<D> {
         let mut tx_block_cursor = tx.cursor_write::<tables::TransactionBlocks>()?;
         let mut ommers_cursor = tx.cursor_write::<tables::BlockOmmers>()?;
         let mut withdrawals_cursor = tx.cursor_write::<tables::BlockWithdrawals>()?;
+        let mut sidecars_cursor = tx.cursor_write::<tables::BlockSidecars>()?;
         let mut requests_cursor = tx.cursor_write::<tables::BlockRequests>()?;
 
         // Get id for the next tx_num of zero if there are no transactions.
@@ -236,6 +237,13 @@ impl<DB: Database, D: BodyDownloader> Stage<DB> for BodyStage<D> {
                         }
                     }
 
+                    // Write sidecars if any
+                    if let Some(sidecars) = block.sidecars {
+                        if !sidecars.is_empty() {
+                            sidecars_cursor.append(block_number, sidecars)?;
+                        }
+                    }
+
                     // Write requests if any
                     if let Some(requests) = block.requests {
                         if !requests.0.is_empty() {
@@ -277,6 +285,7 @@ impl<DB: Database, D: BodyDownloader> Stage<DB> for BodyStage<D> {
         let mut body_cursor = tx.cursor_write::<tables::BlockBodyIndices>()?;
         let mut ommers_cursor = tx.cursor_write::<tables::BlockOmmers>()?;
         let mut withdrawals_cursor = tx.cursor_write::<tables::BlockWithdrawals>()?;
+        let mut sidecars_cursor = tx.cursor_write::<tables::BlockSidecars>()?;
         let mut requests_cursor = tx.cursor_write::<tables::BlockRequests>()?;
         // Cursors to unwind transitions
         let mut tx_block_cursor = tx.cursor_write::<tables::TransactionBlocks>()?;
@@ -295,6 +304,11 @@ impl<DB: Database, D: BodyDownloader> Stage<DB> for BodyStage<D> {
             // Delete the withdrawals entry if any
             if withdrawals_cursor.seek_exact(number)?.is_some() {
                 withdrawals_cursor.delete_current()?;
+            }
+
+            // Delete the sidecars entry if any
+            if sidecars_cursor.seek_exact(number)?.is_some() {
+                sidecars_cursor.delete_current()?;
             }
 
             // Delete the requests entry if any
@@ -665,7 +679,7 @@ mod tests {
                     transactions: block.body.clone(),
                     ommers: block.ommers.clone(),
                     withdrawals: block.withdrawals.clone(),
-                    sidecars: None,
+                    sidecars: block.sidecars.clone(),
                     requests: block.requests.clone(),
                 },
             )
@@ -945,6 +959,7 @@ mod tests {
                             body: body.transactions,
                             ommers: body.ommers,
                             withdrawals: body.withdrawals,
+                            sidecars: body.sidecars,
                             requests: body.requests,
                         }));
                     }

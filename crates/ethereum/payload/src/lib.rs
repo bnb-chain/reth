@@ -230,7 +230,8 @@ where
             requests_root,
         };
 
-        let block = Block { header, body: vec![], ommers: vec![], withdrawals, requests };
+        let block =
+            Block { header, body: vec![], ommers: vec![], withdrawals, sidecars: None, requests };
         let sealed_block = block.seal_slow();
 
         Ok(EthBuiltPayload::new(attributes.payload_id(), sealed_block, U256::ZERO))
@@ -514,7 +515,8 @@ where
     };
 
     // seal the block
-    let block = Block { header, body: executed_txs, ommers: vec![], withdrawals, requests };
+    let block =
+        Block { header, body: executed_txs, ommers: vec![], withdrawals, sidecars: None, requests };
 
     let sealed_block = block.seal_slow();
     debug!(target: "payload_builder", ?sealed_block, "sealed built block");

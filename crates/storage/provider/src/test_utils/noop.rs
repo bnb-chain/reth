@@ -17,6 +17,7 @@ use reth_primitives::{
 };
 use reth_prune_types::{PruneCheckpoint, PruneSegment};
 use reth_stages_types::{StageCheckpoint, StageId};
+use reth_storage_api::SidecarsProvider;
 use reth_storage_errors::provider::ProviderResult;
 use reth_trie::{updates::TrieUpdates, AccountProof};
 use revm::{
@@ -451,6 +452,15 @@ impl WithdrawalsProvider for NoopProvider {
         Ok(None)
     }
     fn latest_withdrawal(&self) -> ProviderResult<Option<Withdrawal>> {
+        Ok(None)
+    }
+}
+
+impl SidecarsProvider for NoopProvider {
+    fn sidecars_by_block(
+        &self,
+        _id: BlockHashOrNumber,
+    ) -> ProviderResult<Option<reth_primitives::BlobSidecars>> {
         Ok(None)
     }
 }

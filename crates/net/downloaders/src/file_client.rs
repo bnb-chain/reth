@@ -234,7 +234,7 @@ impl FromReader for FileClient {
                         transactions: block.body,
                         ommers: block.ommers,
                         withdrawals: block.withdrawals,
-                        sidecars: None,
+                        sidecars: block.sidecars,
                         requests: block.requests,
                     },
                 );
