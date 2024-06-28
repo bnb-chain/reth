@@ -280,7 +280,8 @@ where
                     consensus_engine_tx.clone(),
                     engine_rx,
                     network_client.clone(),
-                ).build(ctx.node_config().debug.tip.is_none());
+                ).
+                build(ctx.node_config().debug.tip.is_none());
                 (pipeline, Either::Right(client))
             }
             #[cfg(not(feature = "bsc"))]
