@@ -637,7 +637,7 @@ where
 
     /// Consumes the type and returns all components
     #[track_caller]
-    pub fn build(self) -> ParliaClient {
+    pub fn build(self, start_engine_task: bool) -> ParliaClient {
         let Self {
             chain_spec,
             cfg,
@@ -648,16 +648,18 @@ where
             client,
         } = self;
         let parlia_client = ParliaClient::new(storage.clone(), fetch_client);
-        ParliaEngineTask::start(
-            chain_spec.clone(),
-            Parlia::new(chain_spec, cfg.clone()),
-            client,
-            to_engine,
-            network_block_event_rx,
-            storage,
-            parlia_client.clone(),
-            cfg.period,
-        );
+        if start_engine_task {
+            ParliaEngineTask::start(
+                chain_spec.clone(),
+                Parlia::new(chain_spec, cfg.clone()),
+                client,
+                to_engine,
+                network_block_event_rx,
+                storage,
+                parlia_client.clone(),
+                cfg.period,
+            );
+        }
         parlia_client
     }
 }
