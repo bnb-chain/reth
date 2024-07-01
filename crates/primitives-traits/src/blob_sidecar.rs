@@ -1,14 +1,15 @@
 #![allow(missing_docs)]
 
-use alloy_eips::eip4844::{Blob, BlobTransactionSidecar, Bytes48};
+use alloy_eips::eip4844::{Blob, BlobTransactionSidecar, Bytes48, BYTES_PER_BLOB};
 use alloy_primitives::B256;
 use alloy_rlp::{Decodable, Encodable, RlpDecodableWrapper, RlpEncodableWrapper};
-use bytes::BufMut;
-use reth_codecs::{derive_arbitrary, Compact};
+use bytes::{Buf, BufMut};
+use derive_more::{Deref, DerefMut, From, IntoIterator};
+use reth_codecs::{derive_arbitrary, main_codec, Compact};
 use revm_primitives::U256;
 use serde::{Deserialize, Serialize};
-use std::ops::{Deref, DerefMut};
 
+#[main_codec(no_arbitrary)]
 #[derive_arbitrary]
 #[derive(
     Debug,
@@ -16,8 +17,10 @@ use std::ops::{Deref, DerefMut};
     PartialEq,
     Eq,
     Default,
-    Serialize,
-    Deserialize,
+    Deref,
+    DerefMut,
+    From,
+    IntoIterator,
     RlpEncodableWrapper,
     RlpDecodableWrapper,
 )]
@@ -39,56 +42,6 @@ impl BlobSidecars {
     #[inline]
     pub fn size(&self) -> usize {
         self.len() * std::mem::size_of::<BlobSidecar>()
-    }
-
-    /// Get an iterator over the `BlobSidecars`.
-    pub fn iter(&self) -> std::slice::Iter<'_, BlobSidecar> {
-        self.0.iter()
-    }
-
-    /// Get a mutable iterator over the `BlobSidecars`.
-    pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, BlobSidecar> {
-        self.0.iter_mut()
-    }
-
-    /// Convert [Self] into raw vec of `sidecars`.
-    pub fn into_inner(self) -> Vec<BlobSidecar> {
-        self.0
-    }
-}
-
-impl IntoIterator for BlobSidecars {
-    type Item = BlobSidecar;
-    type IntoIter = std::vec::IntoIter<BlobSidecar>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.0.into_iter()
-    }
-}
-
-impl AsRef<[BlobSidecar]> for BlobSidecars {
-    fn as_ref(&self) -> &[BlobSidecar] {
-        &self.0
-    }
-}
-
-impl Deref for BlobSidecars {
-    type Target = Vec<BlobSidecar>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl DerefMut for BlobSidecars {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-impl From<Vec<BlobSidecar>> for BlobSidecars {
-    fn from(sidecars: Vec<BlobSidecar>) -> Self {
-        Self(sidecars)
     }
 }
 
@@ -175,31 +128,84 @@ impl Compact for BlobSidecar {
     where
         B: BufMut + AsMut<[u8]>,
     {
-        let mut size = 0;
-        size += self.blob_transaction_sidecar.blobs.to_compact(buf);
-        size += self.blob_transaction_sidecar.commitments.to_compact(buf);
-        size += self.blob_transaction_sidecar.proofs.to_compact(buf);
-        size += self.block_number.to_compact(buf);
-        size += self.block_hash.to_compact(buf);
-        size += self.tx_index.to_compact(buf);
-        size += self.tx_hash.to_compact(buf);
-        size
+        let mut len = 0;
+
+        buf.put_u16(self.blob_transaction_sidecar.blobs.len() as u16);
+        len += 2;
+        for item in self.blob_transaction_sidecar.blobs {
+            len += item.to_compact(buf);
+        }
+
+        buf.put_u16(self.blob_transaction_sidecar.commitments.len() as u16);
+        len += 2;
+        for item in self.blob_transaction_sidecar.commitments {
+            len += item.to_compact(buf);
+        }
+
+        buf.put_u16(self.blob_transaction_sidecar.proofs.len() as u16);
+        len += 2;
+        for item in self.blob_transaction_sidecar.proofs {
+            len += item.to_compact(buf);
+        }
+
+        buf.put_slice(self.block_number.as_le_slice());
+        len += 32;
+
+        buf.put_slice(self.block_hash.as_slice());
+        len += 32;
+
+        buf.put_u64(self.tx_index);
+        len += 8;
+
+        buf.put_slice(self.tx_hash.as_slice());
+        len += 32;
+
+        len
     }
 
-    fn from_compact(buf: &[u8], len: usize) -> (Self, &[u8]) {
-        let (blobs, buf) = Vec::<Blob>::from_compact(buf, len);
-        let (commitments, buf) = Vec::<Bytes48>::from_compact(buf, len);
-        let (proofs, buf) = Vec::<Bytes48>::from_compact(buf, len);
+    fn from_compact(mut buf: &[u8], _len: usize) -> (Self, &[u8]) {
+        let blobs_len = buf.get_u16() as usize;
+        let mut blobs = Vec::with_capacity(blobs_len);
+        for _ in 0..blobs_len {
+            let (item, rest) = Blob::from_compact(buf, BYTES_PER_BLOB);
+            blobs.push(item);
+            buf = rest;
+        }
 
-        let blob_transaction_sidecar = BlobTransactionSidecar { blobs, commitments, proofs };
+        let commitments_len = buf.get_u16() as usize;
+        let mut commitments = Vec::with_capacity(commitments_len);
+        for _ in 0..commitments_len {
+            let (item, rest) = Bytes48::from_compact(buf, 48);
+            commitments.push(item);
+            buf = rest;
+        }
 
-        let (block_number, buf) = U256::from_compact(buf, len);
-        let (block_hash, buf) = B256::from_compact(buf, len);
-        let (tx_index, buf) = u64::from_compact(buf, len);
-        let (tx_hash, buf) = B256::from_compact(buf, len);
+        let proofs_len = buf.get_u16() as usize;
+        let mut proofs = Vec::with_capacity(proofs_len);
+        for _ in 0..proofs_len {
+            let (item, rest) = Bytes48::from_compact(buf, 48);
+            proofs.push(item);
+            buf = rest;
+        }
 
-        let blob_sidecar =
-            Self { blob_transaction_sidecar, block_number, block_hash, tx_index, tx_hash };
+        let block_number = U256::from_le_slice(&buf[..32]);
+        buf = &buf[32..];
+
+        let block_hash = B256::from_slice(&buf[..32]);
+        buf = &buf[32..];
+
+        let tx_index = buf.get_u64();
+
+        let tx_hash = B256::from_slice(&buf[..32]);
+        buf = &buf[32..];
+
+        let blob_sidecar = Self {
+            blob_transaction_sidecar: BlobTransactionSidecar { blobs, commitments, proofs },
+            block_number,
+            block_hash,
+            tx_index,
+            tx_hash,
+        };
 
         (blob_sidecar, buf)
     }
@@ -208,16 +214,15 @@ impl Compact for BlobSidecar {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::U256;
     use alloy_rlp::Decodable;
 
     #[test]
-    fn rlp_encode_blob_sidecar() {
+    fn test_blob_sidecar_rlp() {
         let blob_sidecar = BlobSidecar {
             blob_transaction_sidecar: BlobTransactionSidecar {
                 blobs: vec![],
-                commitments: vec![],
-                proofs: vec![],
+                commitments: vec![Default::default()],
+                proofs: vec![Default::default()],
             },
             block_number: U256::from(rand::random::<u64>()),
             block_hash: B256::random(),
@@ -229,6 +234,26 @@ mod tests {
         blob_sidecar.encode(&mut encoded);
 
         let decoded = BlobSidecar::decode(&mut encoded.as_slice()).unwrap();
+        assert_eq!(blob_sidecar, decoded);
+    }
+
+    #[test]
+    fn test_blob_sidecar_compact() {
+        let blob_sidecar = BlobSidecar {
+            blob_transaction_sidecar: BlobTransactionSidecar {
+                blobs: vec![],
+                commitments: vec![Default::default()],
+                proofs: vec![Default::default()],
+            },
+            block_number: U256::from(rand::random::<u64>()),
+            block_hash: B256::random(),
+            tx_index: rand::random::<u64>(),
+            tx_hash: B256::random(),
+        };
+
+        let mut buf = vec![];
+        let len = blob_sidecar.clone().to_compact(&mut buf);
+        let (decoded, _) = BlobSidecar::from_compact(&buf, len);
         assert_eq!(blob_sidecar, decoded);
     }
 }

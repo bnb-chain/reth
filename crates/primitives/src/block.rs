@@ -45,6 +45,9 @@ pub struct Block {
     pub ommers: Vec<Header>,
     /// Block withdrawals.
     pub withdrawals: Option<Withdrawals>,
+    // only for bsc
+    /// Tx sidecars for the block.
+    pub sidecars: Option<BlobSidecars>,
     /// Block requests.
     pub requests: Option<Requests>,
 }
@@ -57,6 +60,7 @@ impl Block {
             body: self.body,
             ommers: self.ommers,
             withdrawals: self.withdrawals,
+            sidecars: self.sidecars,
             requests: self.requests,
         }
     }
@@ -70,6 +74,7 @@ impl Block {
             body: self.body,
             ommers: self.ommers,
             withdrawals: self.withdrawals,
+            sidecars: self.sidecars,
             requests: self.requests,
         }
     }
@@ -188,6 +193,7 @@ impl<'a> arbitrary::Arbitrary<'a> for Block {
             // for now just generate empty requests, see HACK above
             requests: u.arbitrary()?,
             withdrawals: u.arbitrary()?,
+            sidecars: None,
         })
     }
 }
@@ -288,6 +294,9 @@ pub struct SealedBlock {
     pub ommers: Vec<Header>,
     /// Block withdrawals.
     pub withdrawals: Option<Withdrawals>,
+    // only for bsc
+    /// Tx sidecars for the block.
+    pub sidecars: Option<BlobSidecars>,
     /// Block requests.
     pub requests: Option<Requests>,
 }
@@ -296,8 +305,8 @@ impl SealedBlock {
     /// Create a new sealed block instance using the sealed header and block body.
     #[inline]
     pub fn new(header: SealedHeader, body: BlockBody) -> Self {
-        let BlockBody { transactions, ommers, withdrawals, requests, .. } = body;
-        Self { header, body: transactions, ommers, withdrawals, requests }
+        let BlockBody { transactions, ommers, withdrawals, sidecars, requests } = body;
+        Self { header, body: transactions, ommers, withdrawals, sidecars, requests }
     }
 
     /// Header hash.
@@ -321,7 +330,7 @@ impl SealedBlock {
                 transactions: self.body,
                 ommers: self.ommers,
                 withdrawals: self.withdrawals,
-                sidecars: None,
+                sidecars: self.sidecars,
                 requests: self.requests,
             },
         )
@@ -415,6 +424,7 @@ impl SealedBlock {
             body: self.body,
             ommers: self.ommers,
             withdrawals: self.withdrawals,
+            sidecars: self.sidecars,
             requests: self.requests,
         }
     }
@@ -567,6 +577,7 @@ impl BlockBody {
             body: self.transactions.clone(),
             ommers: self.ommers.clone(),
             withdrawals: self.withdrawals.clone(),
+            sidecars: self.sidecars.clone(),
             requests: self.requests.clone(),
         }
     }
@@ -615,7 +626,7 @@ impl From<Block> for BlockBody {
             transactions: block.body,
             ommers: block.ommers,
             withdrawals: block.withdrawals,
-            sidecars: None,
+            sidecars: block.sidecars,
             requests: block.requests,
         }
     }

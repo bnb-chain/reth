@@ -32,8 +32,8 @@ use reth_db_api::{
     table::{Decode, DupSort, Encode, Table},
 };
 use reth_primitives::{
-    parlia::Snapshot, Account, Address, BlockHash, BlockNumber, Bytecode, Header, Receipt,
-    Requests, StorageEntry, TransactionSignedNoHash, TxHash, TxNumber, B256,
+    parlia::Snapshot, Account, Address, BlobSidecars, BlockHash, BlockNumber, Bytecode, Header,
+    Receipt, Requests, StorageEntry, TransactionSignedNoHash, TxHash, TxNumber, B256,
 };
 use reth_primitives_traits::IntegerList;
 use reth_prune_types::{PruneCheckpoint, PruneSegment};
@@ -414,6 +414,9 @@ tables! {
 
     /// Stores the parlia snapshot data by block hash.
     table ParliaSnapshot<Key = BlockHash, Value = Snapshot>;
+
+    /// Stores block sidecars, indexed by block number.
+    table BlockSidecars<Key = BlockNumber, Value = BlobSidecars>;
 }
 
 /// Keys for the `ChainState` table.

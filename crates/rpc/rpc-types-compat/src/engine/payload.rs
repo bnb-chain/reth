@@ -68,6 +68,7 @@ pub fn try_payload_v1_to_block(payload: ExecutionPayloadV1) -> Result<Block, Pay
         body: transactions,
         ommers: Default::default(),
         withdrawals: None,
+        sidecars: None,
         requests: None,
     })
 }

@@ -31,6 +31,7 @@ use reth_primitives::{
     U256,
 };
 use reth_stages_types::{PipelineTarget, StageId};
+use reth_storage_api::SidecarsProvider;
 use reth_storage_errors::provider::{ProviderError, ProviderResult};
 use std::{
     collections::{hash_map::Entry, BTreeMap, HashMap},
@@ -1488,6 +1489,16 @@ impl WithdrawalsProvider for StaticFileProvider {
     }
 
     fn latest_withdrawal(&self) -> ProviderResult<Option<Withdrawal>> {
+        // Required data not present in static_files
+        Err(ProviderError::UnsupportedProvider)
+    }
+}
+
+impl SidecarsProvider for StaticFileProvider {
+    fn sidecars_by_block(
+        &self,
+        _id: BlockHashOrNumber,
+    ) -> ProviderResult<Option<reth_primitives::BlobSidecars>> {
         // Required data not present in static_files
         Err(ProviderError::UnsupportedProvider)
     }

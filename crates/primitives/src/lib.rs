@@ -37,7 +37,6 @@ mod receipt;
 /// Helpers for working with revm
 pub mod revm;
 pub use reth_static_file_types as static_file;
-mod blob_sidecar;
 pub mod parlia;
 pub mod system_contracts;
 pub mod transaction;
@@ -60,8 +59,8 @@ pub use receipt::{
     gas_spent_by_transactions, Receipt, ReceiptWithBloom, ReceiptWithBloomRef, Receipts,
 };
 pub use reth_primitives_traits::{
-    logs_bloom, Account, Bytecode, GotExpected, GotExpectedBoxed, Log, Request, Requests,
-    StorageEntry, Withdrawal, Withdrawals,
+    logs_bloom, Account, BlobSidecar, BlobSidecars, Bytecode, GotExpected, GotExpectedBoxed, Log,
+    Request, Requests, StorageEntry, Withdrawal, Withdrawals,
 };
 pub use static_file::StaticFileSegment;
 
@@ -81,8 +80,6 @@ pub use transaction::{
     TxHashOrNumber, TxLegacy, TxType, EIP1559_TX_TYPE_ID, EIP2930_TX_TYPE_ID, EIP4844_TX_TYPE_ID,
     LEGACY_TX_TYPE_ID,
 };
-
-pub use blob_sidecar::{BlobSidecar, BlobSidecars};
 
 // Re-exports
 pub use self::ruint::UintTryTo;
