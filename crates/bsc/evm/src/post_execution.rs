@@ -13,7 +13,7 @@ use reth_primitives::{
     Address, BlockWithSenders, GotExpected, Header, Receipt, TransactionSigned, U256,
 };
 use reth_provider::ParliaProvider;
-use reth_revm::{bsc::SYSTEM_ADDRESS, db::AccountStatus};
+use reth_revm::bsc::SYSTEM_ADDRESS;
 use revm_primitives::{db::Database, EnvWithHandlerCfg};
 use std::collections::HashMap;
 use tracing::log::debug;
@@ -269,17 +269,17 @@ where
             .state
             .load_cache_account(SYSTEM_ADDRESS)
             .map_err(|err| BscBlockExecutionError::ProviderInnerError { error: err.into() })?;
-        if system_account.status == AccountStatus::LoadedNotExisting ||
-            system_account.status == AccountStatus::DestroyedAgain
-        {
-            return Ok(());
-        }
-
         let (mut block_reward, transition) = system_account.drain_balance();
-        self.state.apply_transition(vec![(SYSTEM_ADDRESS, transition)]);
         if block_reward == 0 {
+            if header.number == 1 {
+                // We have to apply the transition to the system account
+                // even if the block reward is 0
+                // because the system account is initialized in genesis.
+                self.state.apply_transition(vec![(SYSTEM_ADDRESS, transition)]);
+            }
             return Ok(());
         }
+        self.state.apply_transition(vec![(SYSTEM_ADDRESS, transition)]);
 
         let mut balance_increment = HashMap::new();
         balance_increment.insert(validator, block_reward);
