@@ -62,7 +62,7 @@ impl StateWriter for ExecutionOutcome {
         if !self.snapshots.is_empty() {
             let mut snapshot_cursor = tx.cursor_write::<tables::ParliaSnapshot>()?;
             for snap in self.snapshots {
-                snapshot_cursor.insert(snap.block_hash, snap)?;
+                snapshot_cursor.upsert(snap.block_hash, snap)?;
             }
         }
 

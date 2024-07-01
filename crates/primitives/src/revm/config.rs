@@ -112,12 +112,16 @@ pub fn revm_spec(chain_spec: &ChainSpec, block: Head) -> revm_primitives::SpecId
         } else if chain_spec.fork(Hardfork::Gibbs).active_at_head(&block) {
             // bsc mainnet and testnet have different order for Moran, Nano and Gibbs
             return if chain_spec.fork(Hardfork::Moran).active_at_head(&block) {
-                revm_primitives::GIBBS
+                revm_primitives::MORAN
             } else if chain_spec.fork(Hardfork::Nano).active_at_head(&block) {
                 revm_primitives::NANO
             } else {
                 revm_primitives::EULER
             }
+        } else if chain_spec.fork(Hardfork::Moran).active_at_head(&block) {
+            return revm_primitives::MORAN
+        } else if chain_spec.fork(Hardfork::Nano).active_at_head(&block) {
+            return revm_primitives::NANO
         } else if chain_spec.fork(Hardfork::Euler).active_at_head(&block) {
             return revm_primitives::EULER
         } else if chain_spec.fork(Hardfork::Bruno).active_at_head(&block) {
