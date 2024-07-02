@@ -21,6 +21,7 @@ use reth_primitives::{
 };
 use reth_prune_types::{PruneCheckpoint, PruneSegment};
 use reth_stages_types::{StageCheckpoint, StageId};
+use reth_storage_api::SidecarsProvider;
 use reth_storage_errors::provider::ProviderResult;
 use revm::primitives::{BlockEnv, CfgEnvWithHandlerCfg};
 use std::{
@@ -35,7 +36,6 @@ mod metrics;
 mod provider;
 
 pub use provider::{DatabaseProvider, DatabaseProviderRO, DatabaseProviderRW};
-use reth_storage_api::SidecarsProvider;
 
 /// A common provider that fetches data from a database or static file.
 ///
@@ -475,8 +475,17 @@ impl<DB> SidecarsProvider for ProviderFactory<DB>
 where
     DB: Database,
 {
-    fn sidecars_by_block(&self, id: BlockHashOrNumber) -> ProviderResult<Option<BlobSidecars>> {
-        self.provider()?.sidecars_by_block(id)
+    fn sidecars(&self, block_hash: &BlockHash) -> ProviderResult<Option<BlobSidecars>> {
+        self.provider()?.sidecars(block_hash)
+    }
+
+    fn sidecars_by_number(&self, num: BlockNumber) -> ProviderResult<Option<BlobSidecars>> {
+        self.static_file_provider.get_with_static_file_or_database(
+            StaticFileSegment::Sidecars,
+            num,
+            |static_file| static_file.sidecars_by_number(num),
+            || self.provider()?.sidecars_by_number(num),
+        )
     }
 }
 

@@ -289,7 +289,7 @@ impl PendingBlockEnv {
             requests_root,
         };
 
-        // TODO: add sidecars
+        // sidecars should be queried by `eth_getBlobSidecars`
         let sidecars = None;
 
         // seal the block

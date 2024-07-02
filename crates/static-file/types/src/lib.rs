@@ -32,6 +32,9 @@ pub struct HighestStaticFiles {
     /// Highest static file block of transactions, inclusive.
     /// If [`None`], no static file is available.
     pub transactions: Option<BlockNumber>,
+    /// Highest static file block of sidecars, inclusive.
+    /// If [`None`], no static file is available.
+    pub sidecars: Option<BlockNumber>,
 }
 
 impl HighestStaticFiles {
@@ -41,6 +44,7 @@ impl HighestStaticFiles {
             StaticFileSegment::Headers => self.headers,
             StaticFileSegment::Transactions => self.transactions,
             StaticFileSegment::Receipts => self.receipts,
+            StaticFileSegment::Sidecars => self.sidecars,
         }
     }
 
@@ -50,6 +54,7 @@ impl HighestStaticFiles {
             StaticFileSegment::Headers => &mut self.headers,
             StaticFileSegment::Transactions => &mut self.transactions,
             StaticFileSegment::Receipts => &mut self.receipts,
+            StaticFileSegment::Sidecars => &mut self.sidecars,
         }
     }
 

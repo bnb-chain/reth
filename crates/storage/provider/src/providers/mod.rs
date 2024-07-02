@@ -19,8 +19,8 @@ use reth_db_api::{
 };
 use reth_evm::ConfigureEvmEnv;
 use reth_primitives::{
-    parlia::Snapshot, Account, Address, Block, BlockHash, BlockHashOrNumber, BlockId, BlockNumHash,
-    BlockNumber, BlockNumberOrTag, BlockWithSenders, Header, Receipt, SealedBlock,
+    parlia::Snapshot, Account, Address, BlobSidecars, Block, BlockHash, BlockHashOrNumber, BlockId,
+    BlockNumHash, BlockNumber, BlockNumberOrTag, BlockWithSenders, Header, Receipt, SealedBlock,
     SealedBlockWithSenders, SealedHeader, TransactionMeta, TransactionSigned,
     TransactionSignedNoHash, TxHash, TxNumber, Withdrawal, Withdrawals, B256, U256,
 };
@@ -487,11 +487,12 @@ impl<DB> SidecarsProvider for BlockchainProvider<DB>
 where
     DB: Database,
 {
-    fn sidecars_by_block(
-        &self,
-        id: BlockHashOrNumber,
-    ) -> ProviderResult<Option<reth_primitives::BlobSidecars>> {
-        self.database.sidecars_by_block(id)
+    fn sidecars(&self, block_hash: &BlockHash) -> ProviderResult<Option<BlobSidecars>> {
+        self.database.sidecars(block_hash)
+    }
+
+    fn sidecars_by_number(&self, num: BlockNumber) -> ProviderResult<Option<BlobSidecars>> {
+        self.database.sidecars_by_number(num)
     }
 }
 

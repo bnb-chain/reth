@@ -221,7 +221,6 @@ where
         block_id: BlockId,
     ) -> EthResult<Option<Vec<BlockSidecar>>> {
         if block_id.is_pending() {
-            // todo
             return Ok(None);
         }
 
@@ -231,7 +230,7 @@ where
             None
         };
 
-        // If no block and receipts found, return None
+        // If no block and sidecars found, return None
         let Some(sidecars) = sidecars else {
             return Ok(None);
         };

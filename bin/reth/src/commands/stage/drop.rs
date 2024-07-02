@@ -78,7 +78,6 @@ impl Command {
                 tx.clear::<tables::BlockOmmers>()?;
                 tx.clear::<tables::BlockWithdrawals>()?;
                 tx.clear::<tables::BlockRequests>()?;
-                tx.clear::<tables::BlockSidecars>()?;
                 tx.put::<tables::StageCheckpoints>(
                     StageId::Bodies.to_string(),
                     Default::default(),

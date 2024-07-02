@@ -1,16 +1,8 @@
-use reth_db::tables;
 use reth_db_api::database::Database;
-use reth_primitives::BlockNumber;
 use reth_provider::DatabaseProviderRW;
-use reth_prune_types::PruneLimiter;
 use reth_stages_api::{
     ExecInput, ExecOutput, Stage, StageCheckpoint, StageError, StageId, UnwindInput, UnwindOutput,
 };
-use std::time::Duration;
-use tracing::trace;
-
-// TODO: make it a configuration
-const BLOCKS_KEPT: u64 = u64::MAX;
 
 /// The finish stage.
 ///
@@ -20,34 +12,7 @@ const BLOCKS_KEPT: u64 = u64::MAX;
 #[non_exhaustive]
 pub struct FinishStage;
 
-impl FinishStage {
-    /// prune sidecars older than `BLOCKS_KEPT` blocks
-    pub fn prune_sidecars<DB: Database>(
-        &self,
-        provider: &DatabaseProviderRW<DB>,
-        current_block: BlockNumber,
-    ) {
-        if BLOCKS_KEPT == u64::MAX {
-            return
-        }
-
-        let current_block = current_block - BLOCKS_KEPT;
-        let start_prune = if current_block > 1_000_000 { current_block - 1_000_000 } else { 0 };
-
-        let block_range = start_prune..current_block;
-        let mut limiter = PruneLimiter::default().set_time_limit(Duration::from_secs(3600));
-        if let Ok((pruned, done)) = provider.prune_table_with_range::<tables::BlockSidecars>(
-            block_range,
-            &mut limiter,
-            |_| false,
-            |_| {},
-        ) {
-            trace!(target: "pruner", %pruned, %done, "Pruned sidecars");
-        } else {
-            trace!(target: "pruner", "Pruning sidecars failed");
-        };
-    }
-}
+impl FinishStage {}
 
 impl<DB: Database> Stage<DB> for FinishStage {
     fn id(&self) -> StageId {
@@ -56,13 +21,9 @@ impl<DB: Database> Stage<DB> for FinishStage {
 
     fn execute(
         &mut self,
-        provider: &DatabaseProviderRW<DB>,
+        _provider: &DatabaseProviderRW<DB>,
         input: ExecInput,
     ) -> Result<ExecOutput, StageError> {
-        if let Some(target_number) = input.target {
-            self.prune_sidecars(provider, target_number);
-        }
-
         Ok(ExecOutput { checkpoint: StageCheckpoint::new(input.target()), done: true })
     }
 

@@ -59,7 +59,7 @@ impl TryFrom<alloy_rpc_types::Block> for Block {
             withdrawals: block.withdrawals.map(Into::into),
             // todo(onbjerg): we don't know if this is added to rpc yet, so for now we leave it as
             // empty.
-            sidecars: None, // TODO(roshan)
+            sidecars: None,
             requests: None,
         })
     }

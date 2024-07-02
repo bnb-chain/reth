@@ -9,6 +9,9 @@ pub use headers::Headers;
 mod receipts;
 pub use receipts::Receipts;
 
+mod sidecars;
+pub use sidecars::Sidecars;
+
 use alloy_primitives::BlockNumber;
 use reth_db::{RawKey, RawTable};
 use reth_db_api::{cursor::DbCursorRO, database::Database, table::Table, transaction::DbTx};
@@ -62,7 +65,7 @@ pub(crate) fn prepare_jar<DB: Database, const COLUMNS: usize>(
     prepare_compression: impl Fn() -> ProviderResult<Rows<COLUMNS>>,
 ) -> ProviderResult<NippyJar<SegmentHeader>> {
     let tx_range = match segment {
-        StaticFileSegment::Headers => None,
+        StaticFileSegment::Headers | StaticFileSegment::Sidecars => None,
         StaticFileSegment::Receipts | StaticFileSegment::Transactions => {
             Some(provider.transaction_range_by_block_range(block_range.clone())?.into())
         }

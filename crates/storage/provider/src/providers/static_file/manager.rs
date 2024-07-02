@@ -12,7 +12,9 @@ use parking_lot::RwLock;
 use reth_chainspec::ChainInfo;
 use reth_db::{
     lockfile::StorageLock,
-    static_file::{iter_static_files, HeaderMask, ReceiptMask, StaticFileCursor, TransactionMask},
+    static_file::{
+        iter_static_files, HeaderMask, ReceiptMask, SidecarMask, StaticFileCursor, TransactionMask,
+    },
     tables,
 };
 use reth_db_api::{
@@ -25,10 +27,10 @@ use reth_nippy_jar::NippyJar;
 use reth_primitives::{
     keccak256,
     static_file::{find_fixed_range, HighestStaticFiles, SegmentHeader, SegmentRangeInclusive},
-    Address, Block, BlockHash, BlockHashOrNumber, BlockNumber, BlockWithSenders, Header, Receipt,
-    SealedBlock, SealedBlockWithSenders, SealedHeader, StaticFileSegment, TransactionMeta,
-    TransactionSigned, TransactionSignedNoHash, TxHash, TxNumber, Withdrawal, Withdrawals, B256,
-    U256,
+    Address, BlobSidecars, Block, BlockHash, BlockHashOrNumber, BlockNumber, BlockWithSenders,
+    Header, Receipt, SealedBlock, SealedBlockWithSenders, SealedHeader, StaticFileSegment,
+    TransactionMeta, TransactionSigned, TransactionSignedNoHash, TxHash, TxNumber, Withdrawal,
+    Withdrawals, B256, U256,
 };
 use reth_stages_types::{PipelineTarget, StageId};
 use reth_storage_api::SidecarsProvider;
@@ -632,6 +634,7 @@ impl StaticFileProvider {
                     highest_tx,
                     highest_block,
                 )?,
+                StaticFileSegment::Sidecars => None,
             } {
                 update_unwind_target(unwind);
             }
@@ -690,7 +693,7 @@ impl StaticFileProvider {
         let checkpoint_block_number = provider
             .get_stage_checkpoint(match segment {
                 StaticFileSegment::Headers => StageId::Headers,
-                StaticFileSegment::Transactions => StageId::Bodies,
+                StaticFileSegment::Transactions | StaticFileSegment::Sidecars => StageId::Bodies,
                 StaticFileSegment::Receipts => StageId::Execution,
             })?
             .unwrap_or_default()
@@ -722,6 +725,8 @@ impl StaticFileProvider {
             let mut writer = self.latest_writer(segment)?;
             if segment.is_headers() {
                 writer.prune_headers(highest_static_file_block - checkpoint_block_number)?;
+            } else if segment.is_sidecars() {
+                panic!("Sidecars should not be checked for invariants")
             } else if let Some(block) = provider.block_body_indices(checkpoint_block_number)? {
                 let number = highest_static_file_entry - block.last_tx_num();
                 if segment.is_receipts() {
@@ -755,6 +760,7 @@ impl StaticFileProvider {
             headers: self.get_highest_static_file_block(StaticFileSegment::Headers),
             receipts: self.get_highest_static_file_block(StaticFileSegment::Receipts),
             transactions: self.get_highest_static_file_block(StaticFileSegment::Transactions),
+            sidecars: self.get_highest_static_file_block(StaticFileSegment::Sidecars),
         }
     }
 
@@ -801,7 +807,9 @@ impl StaticFileProvider {
             StaticFileSegment::Headers => {
                 self.get_segment_provider_from_block(segment, start, None)
             }
-            StaticFileSegment::Transactions | StaticFileSegment::Receipts => {
+            StaticFileSegment::Transactions |
+            StaticFileSegment::Receipts |
+            StaticFileSegment::Sidecars => {
                 self.get_segment_provider_from_transaction(segment, start, None)
             }
         };
@@ -871,7 +879,9 @@ impl StaticFileProvider {
             StaticFileSegment::Headers => {
                 self.get_segment_provider_from_block(segment, start, None)
             }
-            StaticFileSegment::Transactions | StaticFileSegment::Receipts => {
+            StaticFileSegment::Transactions |
+            StaticFileSegment::Receipts |
+            StaticFileSegment::Sidecars => {
                 self.get_segment_provider_from_transaction(segment, start, None)
             }
         };
@@ -915,7 +925,9 @@ impl StaticFileProvider {
     {
         // If there is, check the maximum block or transaction number of the segment.
         let static_file_upper_bound = match segment {
-            StaticFileSegment::Headers => self.get_highest_static_file_block(segment),
+            StaticFileSegment::Headers | StaticFileSegment::Sidecars => {
+                self.get_highest_static_file_block(segment)
+            }
             StaticFileSegment::Transactions | StaticFileSegment::Receipts => {
                 self.get_highest_static_file_tx(segment)
             }
@@ -958,9 +970,9 @@ impl StaticFileProvider {
         // If there is, check the maximum block or transaction number of the segment.
         if let Some(static_file_upper_bound) = match segment {
             StaticFileSegment::Headers => self.get_highest_static_file_block(segment),
-            StaticFileSegment::Transactions | StaticFileSegment::Receipts => {
-                self.get_highest_static_file_tx(segment)
-            }
+            StaticFileSegment::Transactions |
+            StaticFileSegment::Receipts |
+            StaticFileSegment::Sidecars => self.get_highest_static_file_tx(segment),
         } {
             if block_or_tx_range.start <= static_file_upper_bound {
                 let end = block_or_tx_range.end.min(static_file_upper_bound + 1);
@@ -1495,12 +1507,30 @@ impl WithdrawalsProvider for StaticFileProvider {
 }
 
 impl SidecarsProvider for StaticFileProvider {
-    fn sidecars_by_block(
-        &self,
-        _id: BlockHashOrNumber,
-    ) -> ProviderResult<Option<reth_primitives::BlobSidecars>> {
-        // Required data not present in static_files
-        Err(ProviderError::UnsupportedProvider)
+    fn sidecars(&self, block_hash: &BlockHash) -> ProviderResult<Option<BlobSidecars>> {
+        self.find_static_file(StaticFileSegment::Sidecars, |jar_provider| {
+            Ok(jar_provider
+                .cursor()?
+                .get_two::<SidecarMask<BlobSidecars, BlockHash>>(block_hash.into())?
+                .and_then(|(sc, hash)| {
+                    if &hash == block_hash {
+                        return Some(sc)
+                    }
+                    None
+                }))
+        })
+    }
+
+    fn sidecars_by_number(&self, num: BlockNumber) -> ProviderResult<Option<BlobSidecars>> {
+        self.get_segment_provider_from_block(StaticFileSegment::Sidecars, num, None)
+            .and_then(|provider| provider.sidecars_by_number(num))
+            .or_else(|err| {
+                if let ProviderError::MissingStaticFileBlock(_, _) = err {
+                    Ok(None)
+                } else {
+                    Err(err)
+                }
+            })
     }
 }
 

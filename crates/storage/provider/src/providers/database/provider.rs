@@ -9,9 +9,9 @@ use crate::{
     Chain, EvmEnvProvider, FinalizedBlockReader, FinalizedBlockWriter, HashingWriter,
     HeaderProvider, HeaderSyncGap, HeaderSyncGapProvider, HistoricalStateProvider, HistoryWriter,
     LatestStateProvider, OriginalValuesKnown, ParliaSnapshotReader, ProviderError,
-    PruneCheckpointReader, PruneCheckpointWriter, RequestsProvider, StageCheckpointReader,
-    StateProviderBox, StateWriter, StatsReader, StorageReader, TransactionVariant,
-    TransactionsProvider, TransactionsProviderExt, WithdrawalsProvider,
+    PruneCheckpointReader, PruneCheckpointWriter, RequestsProvider, SidecarsProvider,
+    StageCheckpointReader, StateProviderBox, StateWriter, StatsReader, StorageReader,
+    TransactionVariant, TransactionsProvider, TransactionsProviderExt, WithdrawalsProvider,
 };
 use itertools::{izip, Itertools};
 use reth_chainspec::{ChainInfo, ChainSpec};
@@ -43,7 +43,6 @@ use reth_primitives::{
 };
 use reth_prune_types::{PruneCheckpoint, PruneLimiter, PruneModes, PruneSegment};
 use reth_stages_types::{StageCheckpoint, StageId};
-use reth_storage_api::SidecarsProvider;
 use reth_storage_errors::provider::{ProviderResult, RootMismatch};
 use reth_trie::{
     prefix_set::{PrefixSet, PrefixSetMut, TriePrefixSets},
@@ -399,7 +398,6 @@ impl<TX: DbTx> DatabaseProvider<TX> {
         let headers = headers_range(range)?;
         let mut ommers_cursor = self.tx.cursor_read::<tables::BlockOmmers>()?;
         let mut withdrawals_cursor = self.tx.cursor_read::<tables::BlockWithdrawals>()?;
-        let mut sidecars_cursor = self.tx.cursor_read::<tables::BlockSidecars>()?;
         let mut requests_cursor = self.tx.cursor_read::<tables::BlockRequests>()?;
         let mut block_body_cursor = self.tx.cursor_read::<tables::BlockBodyIndices>()?;
 
@@ -428,12 +426,6 @@ impl<TX: DbTx> DatabaseProvider<TX> {
                     } else {
                         None
                     };
-                let sidecars =
-                    if self.chain_spec.is_cancun_active_at_timestamp(header_ref.timestamp) {
-                        Some(sidecars_cursor.seek_exact(header_ref.number)?.unwrap_or_default().1)
-                    } else {
-                        None
-                    };
                 let requests =
                     if self.chain_spec.is_prague_active_at_timestamp(header_ref.timestamp) {
                         Some(requests_cursor.seek_exact(header_ref.number)?.unwrap_or_default().1)
@@ -448,6 +440,13 @@ impl<TX: DbTx> DatabaseProvider<TX> {
                             .seek_exact(header_ref.number)?
                             .map(|(_, o)| o.ommers)
                             .unwrap_or_default()
+                    };
+
+                let sidecars =
+                    if self.chain_spec.is_cancun_active_at_timestamp(header_ref.timestamp) {
+                        self.static_file_provider.sidecars(&header_ref.hash_slow())?
+                    } else {
+                        None
                     };
 
                 if let Ok(b) =
@@ -908,7 +907,6 @@ impl<TX: DbTxMut + DbTx> DatabaseProvider<TX> {
         let block_ommers = self.get_or_take::<tables::BlockOmmers, TAKE>(range.clone())?;
         let block_withdrawals =
             self.get_or_take::<tables::BlockWithdrawals, TAKE>(range.clone())?;
-        let block_sidecars = self.get_or_take::<tables::BlockSidecars, TAKE>(range.clone())?;
         let block_requests = self.get_or_take::<tables::BlockRequests, TAKE>(range.clone())?;
 
         let block_tx = self.get_take_block_transaction_range::<TAKE>(range.clone())?;
@@ -933,11 +931,9 @@ impl<TX: DbTxMut + DbTx> DatabaseProvider<TX> {
         // Ommers can be empty for some blocks
         let mut block_ommers_iter = block_ommers.into_iter();
         let mut block_withdrawals_iter = block_withdrawals.into_iter();
-        let mut block_sidecars_iter = block_sidecars.into_iter();
         let mut block_requests_iter = block_requests.into_iter();
         let mut block_ommers = block_ommers_iter.next();
         let mut block_withdrawals = block_withdrawals_iter.next();
-        let mut block_sidecars = block_sidecars_iter.next();
         let mut block_requests = block_requests_iter.next();
 
         let mut blocks = Vec::new();
@@ -972,20 +968,6 @@ impl<TX: DbTxMut + DbTx> DatabaseProvider<TX> {
                 withdrawals = None
             }
 
-            // sidecars can be missing
-            let cancun_is_active = self.chain_spec.is_cancun_active_at_timestamp(header.timestamp);
-            let mut sidecars = Some(BlobSidecars::default());
-            if cancun_is_active {
-                if let Some((block_number, _)) = block_sidecars.as_ref() {
-                    if *block_number == main_block_number {
-                        sidecars = Some(block_sidecars.take().unwrap().1);
-                        block_sidecars = block_sidecars_iter.next();
-                    }
-                }
-            } else {
-                sidecars = None
-            }
-
             // requests can be missing
             let prague_is_active = self.chain_spec.is_prague_active_at_timestamp(header.timestamp);
             let mut requests = Some(Requests::default());
@@ -999,6 +981,13 @@ impl<TX: DbTxMut + DbTx> DatabaseProvider<TX> {
             } else {
                 requests = None;
             }
+
+            // sidecars can be missing
+            let sidecars = if self.chain_spec.is_cancun_active_at_timestamp(header.timestamp) {
+                self.static_file_provider.sidecars(&header.hash())?
+            } else {
+                None
+            };
 
             blocks.push(SealedBlockWithSenders {
                 block: SealedBlock { header, body, ommers, withdrawals, sidecars, requests },
@@ -1523,7 +1512,6 @@ impl<TX: DbTx> BlockReader for DatabaseProvider<TX> {
         if let Some(number) = self.convert_hash_or_number(id)? {
             if let Some(header) = self.header_by_number(number)? {
                 let withdrawals = self.withdrawals_by_block(number.into(), header.timestamp)?;
-                let sidecars = self.sidecars_by_block(number.into())?;
                 let ommers = self.ommers(number.into())?.unwrap_or_default();
                 let requests = self.requests_by_block(number.into(), header.timestamp)?;
                 // If the body indices are not found, this means that the transactions either do not
@@ -1534,6 +1522,8 @@ impl<TX: DbTx> BlockReader for DatabaseProvider<TX> {
                     Some(transactions) => transactions,
                     None => return Ok(None),
                 };
+
+                let sidecars = self.sidecars(&self.block_hash(number)?.unwrap_or_default())?;
 
                 return Ok(Some(Block {
                     header,
@@ -1598,7 +1588,6 @@ impl<TX: DbTx> BlockReader for DatabaseProvider<TX> {
 
         let ommers = self.ommers(block_number.into())?.unwrap_or_default();
         let withdrawals = self.withdrawals_by_block(block_number.into(), header.timestamp)?;
-        let sidecars = self.sidecars_by_block(block_number.into())?;
         let requests = self.requests_by_block(block_number.into(), header.timestamp)?;
 
         // Get the block body
@@ -1629,6 +1618,8 @@ impl<TX: DbTx> BlockReader for DatabaseProvider<TX> {
                 TransactionVariant::WithHash => tx.with_hash(),
             })
             .collect();
+
+        let sidecars = self.sidecars(&self.block_hash(block_number)?.unwrap_or_default())?;
 
         Block { header, body, ommers, withdrawals, sidecars, requests }
             // Note: we're using unchecked here because we know the block contains valid txs wrt to
@@ -1991,12 +1982,21 @@ impl<TX: DbTx> WithdrawalsProvider for DatabaseProvider<TX> {
 }
 
 impl<TX: DbTx> SidecarsProvider for DatabaseProvider<TX> {
-    fn sidecars_by_block(&self, id: BlockHashOrNumber) -> ProviderResult<Option<BlobSidecars>> {
-        if let Some(number) = self.convert_hash_or_number(id)? {
-            let sidecars = self.tx.get::<tables::BlockSidecars>(number)?;
-            return Ok(sidecars)
+    fn sidecars(&self, block_hash: &BlockHash) -> ProviderResult<Option<BlobSidecars>> {
+        if let Some(num) = self.block_number(*block_hash)? {
+            Ok(self.sidecars_by_number(num)?)
+        } else {
+            Ok(None)
         }
-        Ok(None)
+    }
+
+    fn sidecars_by_number(&self, num: BlockNumber) -> ProviderResult<Option<BlobSidecars>> {
+        self.static_file_provider.get_with_static_file_or_database(
+            StaticFileSegment::Sidecars,
+            num,
+            |static_file| static_file.sidecars_by_number(num),
+            || Ok(self.tx.get::<tables::Sidecars>(num)?),
+        )
     }
 }
 

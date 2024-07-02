@@ -253,17 +253,19 @@ where
         // Copies data from database to static files
         let lowest_static_file_height = {
             let provider = self.provider_factory.provider()?;
-            let stages_checkpoints = [StageId::Headers, StageId::Execution, StageId::Bodies]
-                .into_iter()
-                .map(|stage| {
-                    provider.get_stage_checkpoint(stage).map(|c| c.map(|c| c.block_number))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
+            let stages_checkpoints =
+                [StageId::Headers, StageId::Execution, StageId::Bodies, StageId::Bodies]
+                    .into_iter()
+                    .map(|stage| {
+                        provider.get_stage_checkpoint(stage).map(|c| c.map(|c| c.block_number))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
 
             let targets = static_file_producer.get_static_file_targets(HighestStaticFiles {
                 headers: stages_checkpoints[0],
                 receipts: stages_checkpoints[1],
                 transactions: stages_checkpoints[2],
+                sidecars: stages_checkpoints[3],
             })?;
             static_file_producer.run(targets)?;
             stages_checkpoints.into_iter().min().expect("exists")

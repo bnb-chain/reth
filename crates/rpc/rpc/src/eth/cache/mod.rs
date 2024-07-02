@@ -90,7 +90,7 @@ impl EthStateCache {
             provider,
             full_block_cache: BlockLruCache::new(max_blocks, "blocks"),
             receipts_cache: ReceiptsLruCache::new(max_receipts, "receipts"),
-            sidecars_cache: SidecarsLruCache::new(max_receipts, "sidecars"),
+            sidecars_cache: SidecarsLruCache::new(max_blocks, "sidecars"),
             evm_env_cache: EnvLruCache::new(max_envs, "evm_env"),
             action_tx: to_service.clone(),
             action_rx: UnboundedReceiverStream::new(rx),
@@ -528,7 +528,7 @@ where
                                 this.action_task_spawner.spawn_blocking(Box::pin(async move {
                                     // Acquire permit
                                     let _permit = rate_limiter.acquire().await;
-                                    let res = provider.sidecars_by_block(block_hash.into());
+                                    let res = provider.sidecars(&block_hash);
 
                                     let _ = action_tx
                                         .send(CacheAction::SidecarsResult { block_hash, res });

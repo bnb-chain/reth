@@ -60,14 +60,18 @@ mod tests {
     use crate::{test_utils::create_test_provider_factory, HeaderProvider};
     use rand::seq::SliceRandom;
     use reth_db::{
-        static_file::create_static_file_T1_T2_T3, CanonicalHeaders, HeaderNumbers,
-        HeaderTerminalDifficulties, Headers, RawTable,
+        static_file::{create_static_file_T1_T2, create_static_file_T1_T2_T3},
+        CanonicalHeaders, HeaderNumbers, HeaderTerminalDifficulties, Headers, RawTable, Sidecars,
     };
     use reth_db_api::{
         cursor::DbCursorRO,
         transaction::{DbTx, DbTxMut},
     };
-    use reth_primitives::{static_file::find_fixed_range, BlockNumber, B256, U256};
+    use reth_primitives::{
+        static_file::find_fixed_range, BlobSidecar, BlobSidecars, BlobTransactionSidecar,
+        BlockNumber, B256, U256,
+    };
+    use reth_storage_api::SidecarsProvider;
     use reth_testing_utils::generators::{self, random_header_range};
 
     #[test]
@@ -167,15 +171,123 @@ mod tests {
                 let header_hash = header.hash();
                 let header = header.unseal();
 
+                let tmp = jar_provider.header_by_number(1u64).unwrap().unwrap();
+                println!("{:?}", tmp.number);
+
                 // Compare Header
                 assert_eq!(header, db_provider.header(&header_hash).unwrap().unwrap());
                 assert_eq!(header, jar_provider.header(&header_hash).unwrap().unwrap());
+                assert_eq!(header, jar_provider.header_by_number(header.number).unwrap().unwrap());
 
                 // Compare HeaderTerminalDifficulties
                 assert_eq!(
                     db_provider.header_td(&header_hash).unwrap().unwrap(),
                     jar_provider.header_td(&header_hash).unwrap().unwrap()
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn test_sidecars() {
+        // Ranges
+        let row_count = 100u64;
+        let range = 0..=(row_count - 1);
+        let segment_header = SegmentHeader::new(
+            range.clone().into(),
+            Some(range.clone().into()),
+            Some(range.clone().into()),
+            StaticFileSegment::Sidecars,
+        );
+
+        // Data sources
+        let factory = create_test_provider_factory();
+        let static_files_path = tempfile::tempdir().unwrap();
+        let static_file = static_files_path
+            .path()
+            .join(StaticFileSegment::Sidecars.filename(&find_fixed_range(*range.end())));
+
+        // Setup data
+        let mut provider_rw = factory.provider_rw().unwrap();
+        let tx = provider_rw.tx_mut();
+        let mut sidecars_set = Vec::with_capacity(100);
+        for i in 0..100 {
+            let sidecars = BlobSidecars::new(vec![BlobSidecar {
+                blob_transaction_sidecar: BlobTransactionSidecar {
+                    blobs: vec![],
+                    commitments: vec![Default::default()],
+                    proofs: vec![Default::default()],
+                },
+                block_number: U256::from(i),
+                block_hash: B256::random(),
+                tx_index: rand::random::<u64>(),
+                tx_hash: B256::random(),
+            }]);
+            let block_number = sidecars[0].block_number.to();
+            let block_hash = sidecars[0].block_hash;
+
+            tx.put::<CanonicalHeaders>(block_number, block_hash).unwrap();
+            tx.put::<HeaderNumbers>(block_hash, block_number).unwrap();
+            tx.put::<Sidecars>(block_number, sidecars.clone()).unwrap();
+
+            sidecars_set.push(sidecars);
+        }
+        provider_rw.commit().unwrap();
+
+        // Create StaticFile
+        {
+            let with_compression = true;
+            let with_filter = true;
+
+            let mut nippy_jar = NippyJar::new(2, static_file.as_path(), segment_header);
+
+            if with_compression {
+                nippy_jar = nippy_jar.with_zstd(false, 0);
+            }
+
+            if with_filter {
+                nippy_jar = nippy_jar.with_cuckoo_filter(row_count as usize + 10).with_fmph();
+            }
+
+            let provider = factory.provider().unwrap();
+            let tx = provider.tx_ref();
+
+            // Hacky type inference. TODO fix
+            let mut none_vec = Some(vec![vec![vec![0u8]].into_iter()]);
+            let _ = none_vec.take();
+
+            // Generate list of hashes for filters & PHF
+            let mut cursor = tx.cursor_read::<RawTable<CanonicalHeaders>>().unwrap();
+            let hashes = cursor
+                .walk(None)
+                .unwrap()
+                .map(|row| row.map(|(_key, value)| value.into_value()).map_err(|e| e.into()));
+
+            create_static_file_T1_T2::<Sidecars, CanonicalHeaders, BlockNumber, SegmentHeader>(
+                tx,
+                range,
+                None,
+                none_vec,
+                Some(hashes),
+                row_count as usize,
+                nippy_jar,
+            )
+            .unwrap();
+        }
+
+        // Use providers to query sidecars data and compare if it matches
+        {
+            let db_provider = factory.provider().unwrap();
+            let manager =
+                StaticFileProvider::read_write(static_files_path.path()).unwrap().with_filters();
+            let jar_provider = manager
+                .get_segment_provider_from_block(StaticFileSegment::Sidecars, 0, Some(&static_file))
+                .unwrap();
+
+            for i in 0..100 {
+                let hash = sidecars_set[i][0].block_hash;
+                assert_eq!(sidecars_set[i], db_provider.sidecars(&hash).unwrap().unwrap());
+                assert_eq!(sidecars_set[i], jar_provider.sidecars(&hash).unwrap().unwrap());
             }
         }
     }

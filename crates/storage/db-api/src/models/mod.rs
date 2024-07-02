@@ -241,6 +241,7 @@ impl_compression_for_compact!(
     PruneCheckpoint,
     ClientVersion,
     Requests,
+    BlobSidecar,
     BlobSidecars,
     // Non-DB
     GenesisAccount
