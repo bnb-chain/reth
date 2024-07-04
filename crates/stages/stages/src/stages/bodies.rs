@@ -283,7 +283,14 @@ impl<DB: Database, D: BodyDownloader> Stage<DB> for BodyStage<D> {
                         }
                     }
                 }
-                BlockResponse::Empty(_) => {}
+                BlockResponse::Empty(header) => {
+                    // Write empty sidecars
+                    static_file_producer_sc.append_sidecars(
+                        Default::default(),
+                        block_number,
+                        header.hash(),
+                    )?;
+                }
             };
 
             // insert block meta
@@ -792,22 +799,33 @@ mod tests {
                     // Insert last progress data
                     {
                         let tx = self.db.factory.provider_rw()?.into_tx();
-                        let mut static_file_producer = static_file_provider
+                        let mut static_file_producer_tx = static_file_provider
                             .get_writer(start, StaticFileSegment::Transactions)?;
+                        let mut static_file_producer_sc =
+                            static_file_provider.get_writer(start, StaticFileSegment::Sidecars)?;
 
                         let body = StoredBlockBodyIndices {
                             first_tx_num: 0,
                             tx_count: progress.body.len() as u64,
                         };
 
-                        static_file_producer.set_block_range(0..=progress.number);
+                        static_file_producer_tx.set_block_range(0..=progress.number);
 
                         body.tx_num_range().try_for_each(|tx_num| {
                             let transaction = random_signed_tx(&mut rng);
-                            static_file_producer
+                            static_file_producer_tx
                                 .append_transaction(tx_num, transaction.into())
                                 .map(|_| ())
                         })?;
+
+                        for block_number in 0..=progress.number {
+                            static_file_producer_sc.append_sidecars(
+                                Default::default(),
+                                block_number,
+                                blocks.get(block_number as usize).map(|b| b.header.hash()).unwrap(),
+                            )?;
+                            tx.put::<tables::Sidecars>(block_number, Default::default())?;
+                        }
 
                         if body.tx_count != 0 {
                             tx.put::<tables::TransactionBlocks>(
@@ -825,7 +843,8 @@ mod tests {
                             )?;
                         }
 
-                        static_file_producer.commit()?;
+                        static_file_producer_tx.commit()?;
+                        static_file_producer_sc.commit()?;
                         tx.commit()?;
                     }
                 }

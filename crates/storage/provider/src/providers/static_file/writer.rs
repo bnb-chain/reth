@@ -145,7 +145,9 @@ impl StaticFileProviderRW {
         })?;
 
         // If we have lost rows (in this run or previous), we need to update the [SegmentHeader].
-        let expected_rows = if self.user_header().segment().is_headers() {
+        let expected_rows = if self.user_header().segment().is_headers() ||
+            self.user_header().segment().is_sidecars()
+        {
             self.user_header().block_len().unwrap_or_default()
         } else {
             self.user_header().tx_len().unwrap_or_default()
@@ -178,9 +180,7 @@ impl StaticFileProviderRW {
                 StaticFileSegment::Receipts => {
                     self.prune_receipt_data(to_delete, last_block_number.expect("should exist"))?
                 }
-                StaticFileSegment::Sidecars => {
-                    self.prune_sidecar_data(to_delete, last_block_number.expect("should exist"))?
-                }
+                StaticFileSegment::Sidecars => self.prune_sidecars_data(to_delete)?,
             }
         }
 
@@ -750,17 +750,13 @@ impl StaticFileProviderRW {
     }
 
     /// Prunes the last `to_delete` sidecars from the data file.
-    fn prune_sidecar_data(
-        &mut self,
-        to_delete: u64,
-        last_block: BlockNumber,
-    ) -> ProviderResult<()> {
+    fn prune_sidecars_data(&mut self, to_delete: u64) -> ProviderResult<()> {
         let start = Instant::now();
 
         let segment = StaticFileSegment::Sidecars;
         debug_assert!(self.writer.user_header().segment() == segment);
 
-        self.truncate(segment, to_delete, Some(last_block))?;
+        self.truncate(segment, to_delete, None)?;
 
         if let Some(metrics) = &self.metrics {
             metrics.record_segment_operation(

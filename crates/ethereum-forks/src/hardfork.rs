@@ -116,7 +116,7 @@ pub enum Hardfork {
     // ArbOS20Atlas,
     /// BSC `Haber` hardfork
     Haber,
-    /// BSC `Haber` hardfork
+    /// BSC `HaberFix` hardfork
     HaberFix,
 
     // Upcoming

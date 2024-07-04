@@ -16,7 +16,7 @@ use reth_db_api::{
     DatabaseError as DbError,
 };
 use reth_primitives::{
-    keccak256, Account, Address, BlockNumber, Receipt, SealedBlock, SealedHeader,
+    keccak256, Account, Address, BlockHash, BlockNumber, Receipt, SealedBlock, SealedHeader,
     StaticFileSegment, StorageEntry, TxHash, TxNumber, B256, U256,
 };
 use reth_provider::{
@@ -171,6 +171,32 @@ impl TestStageDB {
         Ok(())
     }
 
+    /// Insert sidecars to static file if `writer` exists, otherwise to DB.
+    /// Always insert empty data.
+    pub fn insert_sidecars<TX: DbTx + DbTxMut>(
+        writer: Option<&mut StaticFileProviderRWRefMut<'_>>,
+        tx: &TX,
+        hash: BlockHash,
+        block_number: BlockNumber,
+    ) -> ProviderResult<()> {
+        if let Some(writer) = writer {
+            // Backfill: some tests start at a forward block number, but static files require no
+            // gaps.
+            let segment_header = writer.user_header();
+            if segment_header.block_end().is_none() && segment_header.expected_block_start() == 0 {
+                for block_number in 0..block_number {
+                    writer.append_sidecars(Default::default(), block_number, B256::ZERO)?;
+                }
+            }
+
+            writer.append_sidecars(Default::default(), block_number, hash)?;
+        } else {
+            tx.put::<tables::Sidecars>(block_number, Default::default())?;
+        }
+
+        Ok(())
+    }
+
     fn insert_headers_inner<'a, I, const TD: bool>(&self, headers: I) -> ProviderResult<()>
     where
         I: IntoIterator<Item = &'a SealedHeader>,
@@ -234,12 +260,24 @@ impl TestStageDB {
             let mut headers_writer = storage_kind
                 .is_static()
                 .then(|| provider.latest_writer(StaticFileSegment::Headers).unwrap());
+            let mut sidecars_writer = storage_kind
+                .is_static()
+                .then(|| provider.latest_writer(StaticFileSegment::Sidecars).unwrap());
 
             blocks.iter().try_for_each(|block| {
+                Self::insert_sidecars(
+                    sidecars_writer.as_mut(),
+                    &tx,
+                    block.header.hash(),
+                    block.header.number,
+                )?;
                 Self::insert_header(headers_writer.as_mut(), &tx, &block.header, U256::ZERO)
             })?;
 
             if let Some(mut writer) = headers_writer {
+                writer.commit()?;
+            }
+            if let Some(mut writer) = sidecars_writer {
                 writer.commit()?;
             }
         }
@@ -490,7 +528,7 @@ impl StorageKind {
 
     fn tx_offset(&self) -> u64 {
         if let Self::Database(offset) = self {
-            return offset.unwrap_or_default()
+            return offset.unwrap_or_default();
         }
         0
     }
