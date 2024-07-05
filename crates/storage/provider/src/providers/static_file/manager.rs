@@ -634,7 +634,12 @@ impl StaticFileProvider {
                     highest_tx,
                     highest_block,
                 )?,
-                StaticFileSegment::Sidecars => None,
+                StaticFileSegment::Sidecars => self.ensure_invariants::<_, tables::Sidecars>(
+                    provider,
+                    segment,
+                    highest_block,
+                    highest_block,
+                )?,
             } {
                 update_unwind_target(unwind);
             }
@@ -726,7 +731,7 @@ impl StaticFileProvider {
             if segment.is_headers() {
                 writer.prune_headers(highest_static_file_block - checkpoint_block_number)?;
             } else if segment.is_sidecars() {
-                panic!("Sidecars should not be checked for invariants")
+                writer.prune_sidecars(highest_static_file_block - checkpoint_block_number)?;
             } else if let Some(block) = provider.block_body_indices(checkpoint_block_number)? {
                 let number = highest_static_file_entry - block.last_tx_num();
                 if segment.is_receipts() {
