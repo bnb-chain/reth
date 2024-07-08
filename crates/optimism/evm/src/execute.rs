@@ -338,10 +338,10 @@ where
             let governance_token_contract_address =
                 Address::from_str("0x4200000000000000000000000000000000000042").unwrap();
             // touch in cache
-            let mut w_bnb_contract_account =
-                self.state.load_cache_account(w_bnb_contract_address).unwrap().clone();
-            let mut governance_token_account =
-                self.state.load_cache_account(governance_token_contract_address).unwrap().clone();
+            let w_bnb_contract_account =
+                self.state.load_cache_account(w_bnb_contract_address).unwrap();
+            let governance_token_account =
+                self.state.load_cache_account(governance_token_contract_address).unwrap();
             // change the token symbol and token name
             let w_bnb_contract_change =  w_bnb_contract_account.change(
                 w_bnb_contract_account.account_info().unwrap(), HashMap::from([
@@ -360,13 +360,10 @@ where
             // destroy governance token contract
             let governance_token_change = governance_token_account.selfdestruct().unwrap();
 
-            if let Some(s) = self.state.transition_state.as_mut() {
-                let transitions = vec![
-                    (w_bnb_contract_address, w_bnb_contract_change),
-                    (governance_token_contract_address, governance_token_change),
-                ];
-                s.add_transitions(transitions);
-            }
+            self.state.apply_transition(vec![
+                (w_bnb_contract_address, w_bnb_contract_change),
+                (governance_token_contract_address, governance_token_change),
+            ]);
         }
 
         // increment balances

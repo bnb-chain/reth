@@ -16,7 +16,7 @@ use reth_provider::ParliaProvider;
 use reth_revm::bsc::SYSTEM_ADDRESS;
 use revm_primitives::{db::Database, EnvWithHandlerCfg};
 use std::collections::HashMap;
-use tracing::log::debug;
+use tracing::debug;
 
 /// Helper type for the input of post execution.
 #[allow(clippy::type_complexity)]
@@ -269,20 +269,18 @@ where
             .state
             .load_cache_account(SYSTEM_ADDRESS)
             .map_err(|err| BscBlockExecutionError::ProviderInnerError { error: err.into() })?;
-        let (mut block_reward, transition) = system_account.drain_balance();
-        if block_reward == 0 {
-            if header.number == 1 {
-                // We have to apply the transition to the system account
-                // even if the block reward is 0
-                // because the system account is initialized in genesis.
-                self.state.apply_transition(vec![(SYSTEM_ADDRESS, transition)]);
-            }
+
+        if header.number != 1 &&
+            (system_account.account.is_none() ||
+                system_account.account.as_ref().unwrap().info.balance == U256::ZERO)
+        {
             return Ok(());
         }
+
+        let (mut block_reward, transition) = system_account.drain_balance();
         self.state.apply_transition(vec![(SYSTEM_ADDRESS, transition)]);
 
-        let mut balance_increment = HashMap::new();
-        balance_increment.insert(validator, block_reward);
+        let balance_increment = HashMap::from([(validator, block_reward)]);
         self.state
             .increment_balances(balance_increment)
             .map_err(|_| BlockValidationError::IncrementBalanceFailed)?;

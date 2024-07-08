@@ -4,8 +4,6 @@ use std::{
 };
 
 use futures_util::TryStreamExt;
-use tracing::*;
-
 use reth_db::tables;
 use reth_db_api::{
     cursor::{DbCursorRO, DbCursorRW},
@@ -24,6 +22,7 @@ use reth_stages_api::{
     UnwindInput, UnwindOutput,
 };
 use reth_storage_errors::provider::ProviderResult;
+use tracing::*;
 
 // TODO(onbjerg): Metrics and events (gradual status for e.g. CLI)
 /// The body stage downloads block bodies.

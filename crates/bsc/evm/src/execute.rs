@@ -34,7 +34,7 @@ use revm_primitives::{
     BlockEnv, CfgEnvWithHandlerCfg, EnvWithHandlerCfg, ResultAndState, TransactTo,
 };
 use std::{collections::HashMap, num::NonZeroUsize, sync::Arc, time::Instant};
-use tracing::log::debug;
+use tracing::debug;
 
 const SNAP_CACHE_NUM: usize = 2048;
 
@@ -188,8 +188,8 @@ where
                 .into());
             }
 
-            self.patch_mainnet(&block.header, transaction, evm.db_mut());
-            self.patch_chapel(&block.header, transaction, evm.db_mut());
+            self.patch_mainnet_before_tx(&block.header, transaction, evm.db_mut());
+            self.patch_chapel_before_tx(&block.header, transaction, evm.db_mut());
 
             EvmConfig::fill_tx_env(evm.tx_mut(), transaction, *sender);
 
@@ -203,6 +203,9 @@ where
             })?;
 
             evm.db_mut().commit(state);
+
+            self.patch_mainnet_after_tx(&block.header, transaction, evm.db_mut());
+            self.patch_chapel_after_tx(&block.header, transaction, evm.db_mut());
 
             // append gas used
             cumulative_gas_used += result.gas_used();
