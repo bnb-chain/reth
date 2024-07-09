@@ -2,7 +2,7 @@ use crate::execute::BscEvmExecutor;
 use lazy_static::lazy_static;
 use reth_errors::ProviderError;
 use reth_evm::ConfigureEvm;
-use reth_primitives::{address, b256, Address, Header, TransactionSigned, B256, U256};
+use reth_primitives::{address, b256, Address, TransactionSigned, B256, U256};
 use reth_revm::{db::states::StorageSlot, State};
 use revm_primitives::db::Database;
 use std::{collections::HashMap, str::FromStr};
