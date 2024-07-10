@@ -77,6 +77,10 @@ where
         header: &Header,
         parent: &Header,
     ) -> Result<(), BlockExecutionError> {
+        if !self.parlia().chain_spec().is_plato_active_at_block(header.number) {
+            return Ok(());
+        }
+
         let attestation =
             self.parlia().get_vote_attestation_from_header(header).map_err(|err| {
                 BscBlockExecutionError::ParliaConsensusInnerError { error: err.into() }
