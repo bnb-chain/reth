@@ -280,6 +280,11 @@ where
         let (mut block_reward, transition) = system_account.drain_balance();
         self.state.apply_transition(vec![(SYSTEM_ADDRESS, transition)]);
 
+        // if block reward is zero, no need to distribute
+        if block_reward == 0 {
+            return Ok(());
+        }
+
         let balance_increment = HashMap::from([(validator, block_reward)]);
         self.state
             .increment_balances(balance_increment)

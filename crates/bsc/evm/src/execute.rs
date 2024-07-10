@@ -585,7 +585,7 @@ where
         let nonce = evm.db_mut().basic(sender).unwrap().unwrap_or_default().nonce;
         transaction.set_nonce(nonce);
         let hash = transaction.signature_hash();
-        if hash != system_txs[0].signature_hash() {
+        if system_txs.is_empty() || hash != system_txs[0].signature_hash() {
             debug!("unexpected transaction: {:?}", transaction);
             for tx in system_txs.iter() {
                 debug!("left system tx: {:?}", tx);
