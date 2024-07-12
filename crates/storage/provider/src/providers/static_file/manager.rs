@@ -704,6 +704,31 @@ impl StaticFileProvider {
             .unwrap_or_default()
             .block_number;
 
+        if segment == StaticFileSegment::Sidecars &&
+            highest_static_file_block == 0 &&
+            checkpoint_block_number != 0
+        {
+            let range_start = find_fixed_range(checkpoint_block_number).start();
+
+            // create static file of newest block
+            let mut writer = StaticFileProviderRW::new(
+                segment,
+                range_start,
+                Arc::downgrade(&self.0),
+                self.metrics.clone(),
+            )?;
+
+            // append empty sidecars
+            for block_number in range_start..=checkpoint_block_number {
+                let hash = provider.block_hash(block_number)?.unwrap_or_default();
+                writer.append_sidecars(Default::default(), block_number, hash)?;
+            }
+            writer.commit()?;
+            self.writers.insert(segment, writer);
+
+            return Ok(None)
+        }
+
         // If the checkpoint is ahead, then we lost static file data. May be data corruption.
         if checkpoint_block_number > highest_static_file_block {
             info!(
