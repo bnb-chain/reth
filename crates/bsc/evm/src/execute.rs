@@ -18,7 +18,7 @@ use reth_evm::{
 };
 use reth_primitives::{
     parlia::{ParliaConfig, Snapshot, VoteAddress, CHECKPOINT_INTERVAL},
-    system_contracts::get_upgrade_system_contracts,
+    system_contracts::{get_upgrade_system_contracts, SLASH_CONTRACT},
     Address, BlockNumber, BlockWithSenders, Bytes, Header, Receipt, Transaction, TransactionSigned,
     B256, BSC_MAINNET, U256,
 };
@@ -34,7 +34,7 @@ use revm_primitives::{
     BlockEnv, CfgEnvWithHandlerCfg, EVMError, EnvWithHandlerCfg, ResultAndState, TransactTo,
 };
 use std::{collections::HashMap, num::NonZeroUsize, sync::Arc, time::Instant};
-use tracing::debug;
+use tracing::{debug, warn};
 
 const SNAP_CACHE_NUM: usize = 2048;
 
@@ -605,6 +605,14 @@ where
         transaction.set_nonce(nonce);
         let hash = transaction.signature_hash();
         if system_txs.is_empty() || hash != system_txs[0].signature_hash() {
+            // slash tx could fail and not in the block
+            if let Some(to) = transaction.to() {
+                if to == SLASH_CONTRACT.parse().unwrap() {
+                    warn!("slash validator failed");
+                    return Ok(());
+                }
+            }
+
             debug!("unexpected transaction: {:?}", transaction);
             for tx in system_txs.iter() {
                 debug!("left system tx: {:?}", tx);
