@@ -607,10 +607,10 @@ where
         if system_txs.is_empty() || hash != system_txs[0].signature_hash() {
             // slash tx could fail and not in the block
             if let Some(to) = transaction.to() {
-                if to == SLASH_CONTRACT.parse().unwrap() &&
+                if to == SLASH_CONTRACT.parse::<Address>().unwrap() &&
                     (system_txs.is_empty() ||
                         system_txs[0].to().unwrap_or_default() !=
-                            SLASH_CONTRACT.parse().unwrap())
+                            SLASH_CONTRACT.parse::<Address>().unwrap())
                 {
                     warn!("slash validator failed");
                     return Ok(());
