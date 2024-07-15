@@ -377,7 +377,6 @@ impl<TX: DbTx> DatabaseProvider<TX> {
             Vec<Address>,
             Vec<Header>,
             Option<Withdrawals>,
-            Option<BlobSidecars>,
             Option<Requests>,
         ) -> ProviderResult<Option<B>>,
     {
@@ -418,9 +417,8 @@ impl<TX: DbTx> DatabaseProvider<TX> {
             })
             .collect();
 
-        let sidecars = self.sidecars(&self.block_hash(block_number)?.unwrap_or_default())?;
-
-        construct_block(header, body, senders, ommers, withdrawals, sidecars, requests)
+        // the sidecars will always be None as this is not needed
+        construct_block(header, body, senders, ommers, withdrawals, requests)
     }
 
     /// Returns a range of blocks from the database.
@@ -1650,8 +1648,8 @@ impl<TX: DbTx> BlockReader for DatabaseProvider<TX> {
             id,
             transaction_kind,
             |block_number| self.header_by_number(block_number),
-            |header, body, senders, ommers, withdrawals, sidecars, requests| {
-                Block { header, body, ommers, withdrawals, sidecars, requests }
+            |header, body, senders, ommers, withdrawals, requests| {
+                Block { header, body, ommers, withdrawals, sidecars: None, requests }
                     // Note: we're using unchecked here because we know the block contains valid txs
                     // wrt to its height and can ignore the s value check so pre
                     // EIP-2 txs are allowed
@@ -1671,8 +1669,8 @@ impl<TX: DbTx> BlockReader for DatabaseProvider<TX> {
             id,
             transaction_kind,
             |block_number| self.sealed_header(block_number),
-            |header, body, senders, ommers, withdrawals, sidecars, requests| {
-                SealedBlock { header, body, ommers, withdrawals, sidecars, requests }
+            |header, body, senders, ommers, withdrawals, requests| {
+                SealedBlock { header, body, ommers, withdrawals, sidecars: None, requests }
                     // Note: we're using unchecked here because we know the block contains valid txs
                     // wrt to its height and can ignore the s value check so pre
                     // EIP-2 txs are allowed
