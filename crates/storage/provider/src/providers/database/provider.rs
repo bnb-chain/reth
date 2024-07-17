@@ -2796,6 +2796,10 @@ impl<TX: DbTxMut + DbTx> BlockWriter for DatabaseProvider<TX> {
             }
         }
 
+        let sidecars = block.block.sidecars.unwrap_or_default();
+        self.tx.put::<tables::Sidecars>(block_number, sidecars)?;
+        durations_recorder.record_relative(metrics::Action::InsertBlockSidecars);
+
         let block_indices = StoredBlockBodyIndices { first_tx_num, tx_count };
         self.tx.put::<tables::BlockBodyIndices>(block_number, block_indices.clone())?;
         durations_recorder.record_relative(metrics::Action::InsertBlockBodyIndices);
