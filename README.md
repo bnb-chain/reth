@@ -12,7 +12,7 @@
 
 [discord-url]: https://discord.gg/z2VpC455eU
 
-BNB Chain Reth is a cutting-edge rust client developed in collaboration with Paradigm, designed to provide seamless
+BNB Chain Reth is a blockchain client based on [Reth](https://github.com/paradigmxyz/reth/), designed to provide seamless
 support for [BNB Smart Chain(BSC)](https://github.com/bnb-chain/bsc) and [opBNB](https://github.com/bnb-chain/op-geth).
 
 ## Build from Source
