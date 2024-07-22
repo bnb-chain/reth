@@ -1055,7 +1055,8 @@ impl<TX: DbTxMut + DbTx> DatabaseProvider<TX> {
                         sidecars = Some(block_sidecars.take().unwrap().1);
                         block_sidecars = block_sidecars_iter.next();
                     }
-                }            } else {
+                }
+            } else {
                 sidecars = None;
             };
 
