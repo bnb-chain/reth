@@ -969,6 +969,7 @@ impl<TX: DbTxMut + DbTx> DatabaseProvider<TX> {
         let block_withdrawals =
             self.get_or_take::<tables::BlockWithdrawals, TAKE>(range.clone())?;
         let block_requests = self.get_or_take::<tables::BlockRequests, TAKE>(range.clone())?;
+        let block_sidecars = self.get_or_take::<tables::Sidecars, TAKE>(range.clone())?;
 
         let block_tx = self.get_take_block_transaction_range::<TAKE>(range.clone())?;
 
@@ -993,9 +994,11 @@ impl<TX: DbTxMut + DbTx> DatabaseProvider<TX> {
         let mut block_ommers_iter = block_ommers.into_iter();
         let mut block_withdrawals_iter = block_withdrawals.into_iter();
         let mut block_requests_iter = block_requests.into_iter();
+        let mut block_sidecars_iter = block_sidecars.into_iter();
         let mut block_ommers = block_ommers_iter.next();
         let mut block_withdrawals = block_withdrawals_iter.next();
         let mut block_requests = block_requests_iter.next();
+        let mut block_sidecars = block_sidecars_iter.next();
 
         let mut blocks = Vec::new();
         for ((main_block_number, header), (_, header_hash), (_, tx)) in
@@ -1044,10 +1047,16 @@ impl<TX: DbTxMut + DbTx> DatabaseProvider<TX> {
             }
 
             // sidecars can be missing
-            let sidecars = if self.chain_spec.is_cancun_active_at_timestamp(header.timestamp) {
-                self.static_file_provider.sidecars(&header.hash())?
-            } else {
-                None
+            let cancun_is_active = self.chain_spec.is_cancun_active_at_timestamp(header.timestamp);
+            let mut sidecars = Some(BlobSidecars::default());
+            if cancun_is_active {
+                if let Some((block_number, _)) = block_sidecars.as_ref() {
+                    if *block_number == main_block_number {
+                        sidecars = Some(block_sidecars.take().unwrap().1);
+                        block_sidecars = block_sidecars_iter.next();
+                    }
+                }            } else {
+                sidecars = None;
             };
 
             blocks.push(SealedBlockWithSenders {
