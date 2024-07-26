@@ -31,6 +31,8 @@
 
 pub mod cli;
 pub mod commands;
+#[cfg(feature = "compiler")]
+pub mod compiler;
 mod macros;
 
 /// Re-exported utils.

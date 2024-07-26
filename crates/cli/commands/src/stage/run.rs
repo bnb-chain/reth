@@ -12,7 +12,7 @@ use reth_downloaders::bodies::bodies::BodiesDownloaderBuilder;
 use reth_evm::execute::BlockExecutorProvider;
 use reth_exex::ExExManagerHandle;
 use reth_node_core::{
-    args::{NetworkArgs, StageEnum},
+    args::{ExperimentalArgs, NetworkArgs, StageEnum},
     prometheus_exporter,
 };
 use reth_provider::{
@@ -30,11 +30,17 @@ use reth_stages::{
 use std::{any::Any, net::SocketAddr, sync::Arc, time::Instant};
 use tracing::*;
 
+#[cfg(feature = "compiler")]
+use {reth_node_ethereum::EthExecutorProvider, reth_tasks::TaskExecutor};
+
 /// `reth stage` command
 #[derive(Debug, Parser)]
 pub struct Command {
     #[command(flatten)]
     env: EnvironmentArgs,
+
+    #[command(flatten)]
+    experimental: ExperimentalArgs,
 
     /// Enable Prometheus metrics.
     ///
@@ -105,7 +111,7 @@ impl Command {
                 provider_factory.db_ref().clone(),
                 provider_factory.static_file_provider(),
                 metrics_process::Collector::default(),
-                ctx.task_executor,
+                ctx.task_executor.clone(),
             )
             .await?;
         }
@@ -168,21 +174,62 @@ impl Command {
                     })),
                     None,
                 ),
-                StageEnum::Execution => (
-                    Box::new(ExecutionStage::new(
-                        executor(provider_factory.chain_spec()),
-                        ExecutionStageThresholds {
-                            max_blocks: Some(batch_size),
-                            max_changes: None,
-                            max_cumulative_gas: None,
-                            max_duration: None,
-                        },
-                        config.stages.merkle.clean_threshold,
-                        prune_modes,
-                        ExExManagerHandle::empty(),
-                    )),
-                    None,
-                ),
+                StageEnum::Execution => {
+                    #[cfg(feature = "compiler")]
+                    {
+                        let stage = if self.experimental.compiler.compiler ||
+                            self.experimental.compiler.block_on_compiler
+                        {
+                            let executor = self.build_evm(data_dir, &ctx.task_executor).await?;
+                            Box::new(ExecutionStage::new(
+                                executor,
+                                ExecutionStageThresholds {
+                                    max_blocks: Some(batch_size),
+                                    max_changes: None,
+                                    max_cumulative_gas: None,
+                                    max_duration: None,
+                                },
+                                config.stages.merkle.clean_threshold,
+                                prune_modes,
+                                ExExManagerHandle::empty(),
+                            )) as Box<dyn Stage<Arc<DatabaseEnv>>>
+                        } else {
+                            Box::new(ExecutionStage::new(
+                                executor(provider_factory.chain_spec()),
+                                ExecutionStageThresholds {
+                                    max_blocks: Some(batch_size),
+                                    max_changes: None,
+                                    max_cumulative_gas: None,
+                                    max_duration: None,
+                                },
+                                config.stages.merkle.clean_threshold,
+                                prune_modes,
+                                ExExManagerHandle::empty(),
+                            ))
+                        };
+
+                        (stage, None)
+                    }
+
+                    #[cfg(not(feature = "compiler"))]
+                    {
+                        (
+                            Box::new(ExecutionStage::new(
+                                executor(provider_factory.chain_spec()),
+                                ExecutionStageThresholds {
+                                    max_blocks: Some(batch_size),
+                                    max_changes: None,
+                                    max_cumulative_gas: None,
+                                    max_duration: None,
+                                },
+                                config.stages.merkle.clean_threshold,
+                                prune_modes,
+                                ExExManagerHandle::empty(),
+                            )),
+                            None,
+                        )
+                    }
+                }
                 StageEnum::TxLookup => (
                     Box::new(TransactionLookupStage::new(
                         TransactionLookupConfig { chunk_size: batch_size },
@@ -291,5 +338,54 @@ impl Command {
         info!(target: "reth::cli", stage = %self.stage, time = ?start.elapsed(), "Finished stage");
 
         Ok(())
+    }
+
+    #[cfg(feature = "compiler")]
+    async fn build_evm(
+        &self,
+        data_dir: reth_node_core::dirs::ChainPath<reth_node_core::dirs::DataDirPath>,
+        task_executor: &TaskExecutor,
+    ) -> eyre::Result<EthExecutorProvider<crate::compiler::CompilerEvmConfig>> {
+        use reth_evm_compiler::*;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let compiler_config = &self.experimental.compiler;
+        let compiler_dir = data_dir.compiler();
+        if !compiler_config.compiler {
+            tracing::debug!("EVM bytecode compiler is disabled");
+            return Ok(EthExecutorProvider::new(
+                self.env.chain.clone(),
+                crate::compiler::CompilerEvmConfig::disabled(),
+            ));
+        }
+        tracing::info!("EVM bytecode compiler initialized");
+
+        let out_dir =
+            compiler_config.out_dir.clone().unwrap_or_else(|| compiler_dir.join("artifacts"));
+        let mut compiler = EvmParCompiler::new(out_dir.clone())?;
+
+        let contracts_path = compiler_config
+            .contracts_file
+            .clone()
+            .unwrap_or_else(|| compiler_dir.join("contracts.toml"));
+        let contracts_config = ContractsConfig::load(&contracts_path)?;
+
+        let done = Arc::new(AtomicBool::new(false));
+        let done2 = done.clone();
+        let handle = task_executor.spawn_blocking(async move {
+            if let Err(err) = compiler.run_to_end(&contracts_config) {
+                tracing::error!(%err, "failed to run compiler");
+            }
+            done2.store(true, Ordering::Relaxed);
+        });
+        if compiler_config.block_on_compiler {
+            tracing::info!("Blocking on EVM bytecode compiler");
+            handle.await?;
+            tracing::info!("Done blocking on EVM bytecode compiler");
+        }
+        Ok(EthExecutorProvider::new(
+            self.env.chain.clone(),
+            crate::compiler::CompilerEvmConfig::new(done, out_dir),
+        ))
     }
 }

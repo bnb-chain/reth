@@ -17,7 +17,7 @@ reth-mdbx-sys.workspace = true
 bitflags.workspace = true
 byteorder = "1"
 derive_more.workspace = true
-indexmap = "2"
+indexmap.workspace = true
 parking_lot.workspace = true
 thiserror.workspace = true
 dashmap = { workspace = true, features = ["inline"], optional = true }

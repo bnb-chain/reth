@@ -2,6 +2,7 @@
 *
 
 # include source files
+!/.github
 !/bin
 !/crates
 !/testing

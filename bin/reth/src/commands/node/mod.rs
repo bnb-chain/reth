@@ -11,7 +11,7 @@ use reth_cli_runner::CliContext;
 use reth_cli_util::parse_socket_address;
 use reth_db::{init_db, DatabaseEnv};
 use reth_node_builder::{NodeBuilder, WithLaunchContext};
-use reth_node_core::{node_config::NodeConfig, version};
+use reth_node_core::{args::ExperimentalArgs, node_config::NodeConfig, version};
 use std::{ffi::OsString, fmt, future::Future, net::SocketAddr, path::PathBuf, sync::Arc};
 
 /// Start the node
@@ -100,6 +100,10 @@ pub struct NodeCommand<Ext: clap::Args + fmt::Debug = NoArgs> {
     #[command(flatten)]
     pub pruning: PruningArgs,
 
+    /// All experimental arguments
+    #[command(flatten)]
+    pub experimental: ExperimentalArgs,
+
     /// Additional cli arguments
     #[command(flatten, next_help_heading = "Extension")]
     pub ext: Ext,
@@ -148,6 +152,7 @@ impl<Ext: clap::Args + fmt::Debug> NodeCommand<Ext> {
             db,
             dev,
             pruning,
+            experimental,
             ext,
         } = self;
 
@@ -166,6 +171,7 @@ impl<Ext: clap::Args + fmt::Debug> NodeCommand<Ext> {
             db,
             dev,
             pruning,
+            experimental,
         };
 
         // Register the prometheus recorder before creating the database,

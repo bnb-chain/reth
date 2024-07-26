@@ -332,14 +332,11 @@ impl TaskExecutor {
         let finished_regular_tasks_total_metrics =
             self.metrics.finished_regular_tasks_total.clone();
         // Wrap the original future to increment the finished tasks counter upon completion
-        let task = {
-            async move {
-                // Create an instance of IncCounterOnDrop with the counter to increment
-                let _inc_counter_on_drop =
-                    IncCounterOnDrop::new(finished_regular_tasks_total_metrics);
-                let fut = pin!(fut);
-                let _ = select(on_shutdown, fut).await;
-            }
+        let task = async move {
+            // Create an instance of IncCounterOnDrop with the counter to increment
+            let _inc_counter_on_drop = IncCounterOnDrop::new(finished_regular_tasks_total_metrics);
+            let fut = pin!(fut);
+            let _ = select(on_shutdown, fut).await;
         }
         .in_current_span();
 

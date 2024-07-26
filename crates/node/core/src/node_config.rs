@@ -2,8 +2,8 @@
 
 use crate::{
     args::{
-        DatabaseArgs, DatadirArgs, DebugArgs, DevArgs, NetworkArgs, PayloadBuilderArgs,
-        PruningArgs, RpcServerArgs, TxPoolArgs,
+        DatabaseArgs, DatadirArgs, DebugArgs, DevArgs, ExperimentalArgs, NetworkArgs,
+        PayloadBuilderArgs, PruningArgs, RpcServerArgs, TxPoolArgs,
     },
     dirs::{ChainPath, DataDirPath},
     metrics::prometheus_exporter,
@@ -145,6 +145,9 @@ pub struct NodeConfig {
 
     /// All pruning related arguments
     pub pruning: PruningArgs,
+
+    /// All experimental arguments
+    pub experimental: ExperimentalArgs,
 }
 
 impl NodeConfig {
@@ -436,6 +439,7 @@ impl Default for NodeConfig {
             dev: DevArgs::default(),
             pruning: PruningArgs::default(),
             datadir: DatadirArgs::default(),
+            experimental: ExperimentalArgs::default(),
         }
     }
 }

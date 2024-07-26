@@ -19,6 +19,8 @@ use reth_exex::ExExManagerHandle;
 use reth_network::{NetworkEvents, NetworkHandle};
 use reth_network_api::NetworkInfo;
 use reth_network_p2p::{bodies::client::BodiesClient, headers::client::HeadersClient};
+use reth_node_core::args::ExperimentalArgs;
+use reth_node_ethereum::EthExecutorProvider;
 use reth_primitives::{BlockHashOrNumber, BlockNumber, B256};
 use reth_provider::{
     BlockExecutionWriter, ChainSpecProvider, ProviderFactory, StageCheckpointReader,
@@ -33,6 +35,9 @@ use reth_tasks::TaskExecutor;
 use std::{path::PathBuf, sync::Arc};
 use tokio::sync::watch;
 use tracing::*;
+
+#[cfg(not(feature = "compiler"))]
+use reth_node_ethereum::EthEvmConfig;
 
 /// `reth debug execution` command
 #[derive(Debug, Parser)]
@@ -51,12 +56,66 @@ pub struct Command {
     /// Defaults to `1000`.
     #[arg(long, default_value = "1000")]
     pub interval: u64,
+
+    /// All experimental arguments
+    #[command(flatten)]
+    pub experimental: ExperimentalArgs,
 }
 
 impl Command {
-    fn build_pipeline<DB, Client>(
+    #[cfg(feature = "compiler")]
+    async fn build_evm(
+        &self,
+        data_dir: reth_node_core::dirs::ChainPath<reth_node_core::dirs::DataDirPath>,
+        task_executor: &TaskExecutor,
+    ) -> eyre::Result<EthExecutorProvider<crate::compiler::CompilerEvmConfig>> {
+        use reth_evm_compiler::*;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let compiler_config = &self.experimental.compiler;
+        let compiler_dir = data_dir.compiler();
+        if !compiler_config.compiler {
+            tracing::debug!("EVM bytecode compiler is disabled");
+            return Ok(EthExecutorProvider::new(
+                self.env.chain.clone(),
+                crate::compiler::CompilerEvmConfig::disabled(),
+            ));
+        }
+        tracing::info!("EVM bytecode compiler initialized");
+
+        let out_dir =
+            compiler_config.out_dir.clone().unwrap_or_else(|| compiler_dir.join("artifacts"));
+        let mut compiler = EvmParCompiler::new(out_dir.clone())?;
+
+        let contracts_path = compiler_config
+            .contracts_file
+            .clone()
+            .unwrap_or_else(|| compiler_dir.join("contracts.toml"));
+        let contracts_config = ContractsConfig::load(&contracts_path)?;
+
+        let done = Arc::new(AtomicBool::new(false));
+        let done2 = done.clone();
+        let handle = task_executor.spawn_blocking(async move {
+            if let Err(err) = compiler.run_to_end(&contracts_config) {
+                tracing::error!(%err, "failed to run compiler");
+            }
+            done2.store(true, Ordering::Relaxed);
+        });
+        if compiler_config.block_on_compiler {
+            tracing::info!("Blocking on EVM bytecode compiler");
+            handle.await?;
+            tracing::info!("Done blocking on EVM bytecode compiler");
+        }
+        Ok(EthExecutorProvider::new(
+            self.env.chain.clone(),
+            crate::compiler::CompilerEvmConfig::new(done, out_dir),
+        ))
+    }
+
+    async fn build_pipeline<DB, Client>(
         &self,
         config: &Config,
+        _data_dir: reth_node_core::dirs::ChainPath<reth_node_core::dirs::DataDirPath>,
         client: Client,
         consensus: Arc<dyn Consensus>,
         provider_factory: ProviderFactory<DB>,
@@ -181,14 +240,17 @@ impl Command {
 
         // Configure the pipeline
         let fetch_client = network.fetch_client().await?;
-        let mut pipeline = self.build_pipeline(
-            &config,
-            fetch_client.clone(),
-            Arc::clone(&consensus),
-            provider_factory.clone(),
-            &ctx.task_executor,
-            static_file_producer,
-        )?;
+        let mut pipeline = self
+            .build_pipeline(
+                &config,
+                data_dir,
+                fetch_client.clone(),
+                Arc::clone(&consensus),
+                provider_factory.clone(),
+                &ctx.task_executor,
+                static_file_producer,
+            )
+            .await?;
 
         let provider = provider_factory.provider()?;
 

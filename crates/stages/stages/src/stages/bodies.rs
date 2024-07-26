@@ -227,6 +227,15 @@ impl<DB: Database, D: BodyDownloader> Stage<DB> for BodyStage<D> {
                 }
             }
 
+            // if block_number == 28889 {
+            //     debug!("test");
+            //     return Err(StageError::InconsistentTxNumber {
+            //         segment: StaticFileSegment::Transactions,
+            //         database: next_tx_num,
+            //         static_file: next_tx_num - 100,
+            //     })
+            // }
+
             match response {
                 BlockResponse::Full(block) => {
                     // write transaction block index

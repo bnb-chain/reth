@@ -21,8 +21,26 @@ fn main() {
     }
 
     if let Err(err) = Cli::parse_args().run(|builder, _| async {
-        let handle = builder.launch_node(EthereumNode::default()).await?;
-        handle.node_exit_future.await
+        #[cfg(not(feature = "compiler"))]
+        {
+            eyre::ensure!(
+                !builder.config().experimental.compiler.compiler,
+                "`experimental.compiler` is set, but reth was not compiled with the `compiler` feature enabled"
+            );
+            let node = EthereumNode::default();
+            let handle = builder.launch_node(node).await?;
+            handle.node_exit_future.await
+        }
+        #[cfg(feature = "compiler")]
+        {
+            let executor_builder = reth::compiler::CompilerExecutorBuilder::default();
+            let handle = builder
+                .with_types::<EthereumNode>()
+                .with_components(EthereumNode::components().executor(executor_builder))
+                .launch()
+                .await?;
+            handle.node_exit_future.await
+        }
     }) {
         eprintln!("Error: {err:?}");
         std::process::exit(1);

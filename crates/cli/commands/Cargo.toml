@@ -76,3 +76,4 @@ dev = [
     "reth-primitives/arbitrary",
     "reth-db-api/arbitrary"
 ]
+compiler = []

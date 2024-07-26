@@ -75,6 +75,8 @@ reth-node-bsc = { workspace = true, optional = true, features = [
     "bsc",
 ] }
 
+reth-evm-compiler = { workspace = true, optional = true }
+
 # crypto
 alloy-rlp.workspace = true
 
@@ -119,6 +121,8 @@ libc = "0.2"
 [dev-dependencies]
 reth-discv4.workspace = true
 
+[build-dependencies]
+revmc-build = { workspace = true, optional = true }
 
 [features]
 default = ["jemalloc"]
@@ -146,12 +150,14 @@ optimism = [
     "reth-blockchain-tree/optimism",
     "dep:reth-node-optimism",
     "reth-node-core/optimism",
+    "reth-evm-compiler?/optimism",
     "reth-rpc-eth-types/optimism",
 ]
 
 opbnb = [
     "reth-primitives/opbnb",
     "reth-node-core/opbnb",
+    "reth-evm-compiler?/opbnb",
 ]
 
 bsc = [
@@ -166,6 +172,8 @@ bsc = [
 
 # no-op feature flag for switching between the `optimism` and default functionality in CI matrices
 ethereum = []
+
+compiler = ["dep:reth-evm-compiler", "dep:revmc-build"]
 
 [[bin]]
 name = "reth"

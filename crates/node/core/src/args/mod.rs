@@ -48,6 +48,10 @@ pub use dev::DevArgs;
 mod pruning;
 pub use pruning::PruningArgs;
 
+/// Experimental arguments.
+mod experimental;
+pub use experimental::{CompilerArgs, ExperimentalArgs};
+
 /// DatadirArgs for configuring data storage paths
 mod datadir_args;
 pub use datadir_args::DatadirArgs;

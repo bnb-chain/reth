@@ -25,8 +25,7 @@ reth-stages.workspace = true
 reth-evm-ethereum.workspace = true
 
 alloy-rlp.workspace = true
-
-walkdir = "2.3.3"
+walkdir.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

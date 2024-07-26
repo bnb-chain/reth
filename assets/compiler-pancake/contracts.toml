@@ -1,0 +1,24 @@
+[[contracts]]
+bytecode_path = "./contracts/0xb89a6778d1efe7a5b7096757a21b810cc2886fa1.hex"
+first_evm_version = "BEDROCK"
+
+[[contracts]]
+bytecode_path = "./contracts/0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865.hex"
+first_evm_version = "BEDROCK"
+
+[[contracts]]
+bytecode_path = "./contracts/0x41ff9aa7e16b8b1a8a8dc4f0efacd93d02d071c9.hex"
+first_evm_version = "BEDROCK"
+
+[[contracts]]
+bytecode_path = "./contracts/0xc4f981189558682f15f60513158b699354b30204.hex"
+first_evm_version = "BEDROCK"
+
+[[contracts]]
+bytecode_path = "./contracts/0x9e5aac1ba1a2e6aed6b32689dfcf62a509ca96f3.hex"
+first_evm_version = "BEDROCK"
+
+[[contracts]]
+bytecode_path = "./contracts/0x4200000000000000000000000000000000000006.hex"
+first_evm_version = "BEDROCK"
+

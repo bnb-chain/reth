@@ -25,7 +25,13 @@ ARG FEATURES="optimism"
 ENV FEATURES $FEATURES
 
 # Install system dependencies
-RUN apt-get update && apt-get -y upgrade && apt-get install -y libclang-dev pkg-config
+RUN apt-get update && apt-get -y upgrade && apt-get install -y libclang-dev pkg-config lsb-release wget software-properties-common gnupg
+
+# Install llvm
+COPY .github/assets/install_llvm_ubuntu.sh /usr/local/bin/install_llvm_ubuntu.sh
+RUN chmod +x /usr/local/bin/install_llvm_ubuntu.sh
+ENV LLVM_VERSION=18
+RUN /usr/local/bin/install_llvm_ubuntu.sh $LLVM_VERSION
 
 # Builds dependencies
 RUN cargo chef cook --profile $BUILD_PROFILE --features "$FEATURES" --recipe-path recipe.json
@@ -44,6 +50,14 @@ WORKDIR /app
 
 # Copy reth over from the build stage
 COPY --from=builder /app/op-reth /usr/local/bin
+
+RUN apt-get update && apt-get -y upgrade && apt-get install -y libclang-dev pkg-config lsb-release wget software-properties-common gnupg
+
+# Install llvm
+COPY .github/assets/install_llvm_ubuntu.sh /usr/local/bin/install_llvm_ubuntu.sh
+RUN chmod +x /usr/local/bin/install_llvm_ubuntu.sh
+ENV LLVM_VERSION=18
+RUN /usr/local/bin/install_llvm_ubuntu.sh $LLVM_VERSION
 
 # Copy licenses
 COPY LICENSE-* ./
