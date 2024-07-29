@@ -64,9 +64,12 @@ impl TriePrefetch {
 
                         let provider_ro = Arc::clone(&provider_ro);
                         let hashed_state = self.deduplicate_and_update_cached(&hashed_state);
-                        if let Err(e) = self.prefetch_once::<DB>(provider_ro, hashed_state) {
-                            trace!(target: "trie::trie_prefetch", ?e, "Error while prefetching trie storage");
-                        };
+
+                        tokio::spawn(async move {
+                            if let Err(e) = self.prefetch_once::<DB>(provider_ro, hashed_state).await {
+                                trace!(target: "trie::trie_prefetch", ?e, "Error while prefetching trie storage");
+                            };
+                        });
                     }
                 }
                 _ = &mut interrupt_rx => {
