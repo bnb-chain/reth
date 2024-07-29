@@ -51,7 +51,7 @@ WORKDIR /app
 # Copy reth over from the build stage
 COPY --from=builder /app/op-reth /usr/local/bin
 
-RUN apt-get update && apt-get -y upgrade && apt-get install -y libclang-dev pkg-config lsb-release wget software-properties-common gnupg
+RUN apt-get update && apt-get -y upgrade && apt-get install -y libclang-dev pkg-config lsb-release wget software-properties-common gnupg gcc
 
 # Install llvm
 COPY .github/assets/install_llvm_ubuntu.sh /usr/local/bin/install_llvm_ubuntu.sh
