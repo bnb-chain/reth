@@ -549,7 +549,8 @@ where
         self.validate_block(&block)?;
 
         let state_provider = self.state_provider(block.parent_hash).unwrap();
-        let executor = self.executor_provider.executor(StateProviderDatabase::new(&state_provider));
+        let executor =
+            self.executor_provider.executor(StateProviderDatabase::new(&state_provider), None);
 
         let block_number = block.number;
         let block_hash = block.hash();

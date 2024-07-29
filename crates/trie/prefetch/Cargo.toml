@@ -1,0 +1,55 @@
+[package]
+name = "reth-trie-prefetch"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Prefetch trie storages when executing block"
+
+[lints]
+workspace = true
+
+[dependencies]
+# reth
+reth-primitives.workspace = true
+reth-db.workspace = true
+reth-trie.workspace = true
+reth-provider.workspace = true
+reth-trie-parallel.workspace = true
+reth-tasks.workspace = true
+reth-execution-errors.workspace = true
+
+# alloy
+alloy-rlp.workspace = true
+
+# tracing
+tracing.workspace = true
+
+# misc
+thiserror.workspace = true
+derive_more.workspace = true
+rayon.workspace = true
+
+# async
+tokio = { workspace = true, default-features = false, features = ["sync", "rt", "macros"] }
+
+# `metrics` feature
+reth-metrics = { workspace = true, optional = true }
+metrics = { workspace = true, optional = true }
+
+[dev-dependencies]
+# reth
+reth-primitives = { workspace = true, features = ["test-utils", "arbitrary"] }
+reth-provider = { workspace = true, features = ["test-utils"] }
+reth-trie = { workspace = true, features = ["test-utils"] }
+
+# misc
+rand.workspace = true
+criterion = { workspace = true, features = ["async_tokio"] }
+proptest.workspace = true
+
+[features]
+default = ["metrics"]
+metrics = ["reth-metrics", "dep:metrics", "reth-trie/metrics"]

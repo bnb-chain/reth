@@ -14,6 +14,8 @@ use revm_primitives::db::Database;
 
 // re-export Either
 pub use futures_util::future::Either;
+use reth_trie::HashedPostState;
+use tokio::sync::mpsc::UnboundedSender;
 
 impl<A, B> BlockExecutorProvider for Either<A, B>
 where
@@ -26,13 +28,17 @@ where
     type BatchExecutor<DB: Database<Error: Into<ProviderError> + Display>> =
         Either<A::BatchExecutor<DB>, B::BatchExecutor<DB>>;
 
-    fn executor<DB>(&self, db: DB) -> Self::Executor<DB>
+    fn executor<DB>(
+        &self,
+        db: DB,
+        prefetch_tx: Option<UnboundedSender<HashedPostState>>,
+    ) -> Self::Executor<DB>
     where
         DB: Database<Error: Into<ProviderError> + Display>,
     {
         match self {
-            Self::Left(a) => Either::Left(a.executor(db)),
-            Self::Right(b) => Either::Right(b.executor(db)),
+            Self::Left(a) => Either::Left(a.executor(db, prefetch_tx)),
+            Self::Right(b) => Either::Right(b.executor(db, prefetch_tx)),
         }
     }
 

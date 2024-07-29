@@ -164,6 +164,8 @@ bsc = [
     "reth-beacon-consensus/bsc",
 ]
 
+prefetch = ["reth-blockchain-tree/prefetch"]
+
 # no-op feature flag for switching between the `optimism` and default functionality in CI matrices
 ethereum = []
 

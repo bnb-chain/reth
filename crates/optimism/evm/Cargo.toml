@@ -21,6 +21,7 @@ reth-execution-errors.workspace = true
 reth-execution-types.workspace = true
 reth-prune-types.workspace = true
 reth-consensus-common.workspace = true
+reth-trie.workspace = true
 
 # Optimism
 reth-optimism-consensus.workspace = true
@@ -32,6 +33,9 @@ revm-primitives.workspace = true
 # misc
 thiserror.workspace = true
 tracing.workspace = true
+
+# async
+tokio = { workspace = true, features = ["sync", "time"] }
 
 [dev-dependencies]
 reth-revm = { workspace = true, features = ["test-utils"] }

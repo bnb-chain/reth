@@ -22,13 +22,15 @@ use reth_revm::{
     state_change::post_block_balance_increments,
     Evm, State,
 };
+use reth_trie::HashedPostState;
 use revm::db::states::StorageSlot;
 use revm_primitives::{
     db::{Database, DatabaseCommit},
     BlockEnv, CfgEnvWithHandlerCfg, EVMError, EnvWithHandlerCfg, ResultAndState,
 };
 use std::{collections::HashMap, str::FromStr, sync::Arc};
-use tracing::trace;
+use tokio::sync::mpsc::UnboundedSender;
+use tracing::{debug, trace};
 
 /// Provides executors to execute regular ethereum blocks
 #[derive(Debug, Clone)]
@@ -55,15 +57,36 @@ impl<EvmConfig> OpExecutorProvider<EvmConfig>
 where
     EvmConfig: ConfigureEvm,
 {
-    fn op_executor<DB>(&self, db: DB) -> OpBlockExecutor<EvmConfig, DB>
+    fn op_executor<DB>(
+        &self,
+        db: DB,
+        prefetch_tx: Option<UnboundedSender<HashedPostState>>,
+    ) -> OpBlockExecutor<EvmConfig, DB>
     where
         DB: Database<Error: Into<ProviderError> + std::fmt::Display>,
     {
-        OpBlockExecutor::new(
-            self.chain_spec.clone(),
-            self.evm_config.clone(),
-            State::builder().with_database(db).with_bundle_update().without_state_clear().build(),
-        )
+        if let Some(tx) = prefetch_tx {
+            OpBlockExecutor::new_with_prefetch_tx(
+                self.chain_spec.clone(),
+                self.evm_config.clone(),
+                State::builder()
+                    .with_database(db)
+                    .with_bundle_update()
+                    .without_state_clear()
+                    .build(),
+                tx,
+            )
+        } else {
+            OpBlockExecutor::new(
+                self.chain_spec.clone(),
+                self.evm_config.clone(),
+                State::builder()
+                    .with_database(db)
+                    .with_bundle_update()
+                    .without_state_clear()
+                    .build(),
+            )
+        }
     }
 }
 
@@ -76,18 +99,22 @@ where
 
     type BatchExecutor<DB: Database<Error: Into<ProviderError> + std::fmt::Display>> =
         OpBatchExecutor<EvmConfig, DB>;
-    fn executor<DB>(&self, db: DB) -> Self::Executor<DB>
+    fn executor<DB>(
+        &self,
+        db: DB,
+        prefetch_tx: Option<UnboundedSender<HashedPostState>>,
+    ) -> Self::Executor<DB>
     where
         DB: Database<Error: Into<ProviderError> + std::fmt::Display>,
     {
-        self.op_executor(db)
+        self.op_executor(db, prefetch_tx)
     }
 
     fn batch_executor<DB>(&self, db: DB) -> Self::BatchExecutor<DB>
     where
         DB: Database<Error: Into<ProviderError> + std::fmt::Display>,
     {
-        let executor = self.op_executor(db);
+        let executor = self.op_executor(db, None);
         OpBatchExecutor {
             executor,
             batch_record: BlockBatchRecord::default(),
@@ -120,6 +147,7 @@ where
         &self,
         block: &BlockWithSenders,
         mut evm: Evm<'_, Ext, &mut State<DB>>,
+        tx: Option<UnboundedSender<HashedPostState>>,
     ) -> Result<(Vec<Receipt>, u64), BlockExecutionError>
     where
         DB: Database<Error: Into<ProviderError> + std::fmt::Display>,
@@ -204,6 +232,13 @@ where
                 "Executed transaction"
             );
 
+            if let Some(tx) = tx.as_ref() {
+                let post_state = HashedPostState::from_state(state.clone());
+                tx.send(post_state).unwrap_or_else(|err| {
+                    debug!(target: "evm_executor", ?err, "Failed to send post state to prefetch channel")
+                });
+            }
+
             evm.db_mut().commit(state);
 
             // append gas used
@@ -244,12 +279,24 @@ pub struct OpBlockExecutor<EvmConfig, DB> {
     executor: OpEvmExecutor<EvmConfig>,
     /// The state to use for execution
     state: State<DB>,
+    /// Prefetch channel
+    prefetch_tx: Option<UnboundedSender<HashedPostState>>,
 }
 
 impl<EvmConfig, DB> OpBlockExecutor<EvmConfig, DB> {
-    /// Creates a new Ethereum block executor.
+    /// Creates a new Optimism block executor.
     pub const fn new(chain_spec: Arc<ChainSpec>, evm_config: EvmConfig, state: State<DB>) -> Self {
-        Self { executor: OpEvmExecutor { chain_spec, evm_config }, state }
+        Self { executor: OpEvmExecutor { chain_spec, evm_config }, state, prefetch_tx: None }
+    }
+
+    /// Creates a new Optimism block executor with a prefetch channel.
+    pub const fn new_with_prefetch_tx(
+        chain_spec: Arc<ChainSpec>,
+        evm_config: EvmConfig,
+        state: State<DB>,
+        tx: UnboundedSender<HashedPostState>,
+    ) -> Self {
+        Self { executor: OpEvmExecutor { chain_spec, evm_config }, state, prefetch_tx: Some(tx) }
     }
 
     #[inline]
@@ -304,7 +351,7 @@ where
 
         let (receipts, gas_used) = {
             let evm = self.executor.evm_config.evm_with_env(&mut self.state, env);
-            self.executor.execute_pre_and_transactions(block, evm)
+            self.executor.execute_pre_and_transactions(block, evm, self.prefetch_tx.clone())
         }?;
 
         // 3. apply post execution changes

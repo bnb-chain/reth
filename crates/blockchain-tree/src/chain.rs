@@ -30,6 +30,11 @@ use std::{
     time::Instant,
 };
 
+#[cfg(feature = "prefetch")]
+use reth_trie_prefetch::TriePrefetch;
+#[cfg(feature = "prefetch")]
+use std::sync::Arc;
+
 /// A chain in the blockchain tree that has functionality to execute blocks and append them to
 /// itself.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -167,9 +172,9 @@ impl AppendableChain {
     ///   - [`BlockAttachment`] represents if the block extends the canonical chain, and thus we can
     ///     cache the trie state updates.
     ///   - [`BlockValidationKind`] determines if the state root __should__ be validated.
-    fn validate_and_execute<EDP, DB, E>(
+    fn validate_and_execute<'a, EDP, DB, E>(
         block: SealedBlockWithSenders,
-        parent_block: &SealedHeader,
+        parent_block: &'a SealedHeader,
         bundle_state_data_provider: EDP,
         externals: &TreeExternals<DB, E>,
         block_attachment: BlockAttachment,
@@ -177,7 +182,7 @@ impl AppendableChain {
     ) -> Result<(ExecutionOutcome, Option<TrieUpdates>), BlockExecutionError>
     where
         EDP: FullExecutionDataProvider,
-        DB: Database + Clone,
+        DB: Database + Clone + 'a,
         E: BlockExecutorProvider,
     {
         // some checks are done before blocks comes here.
@@ -204,10 +209,26 @@ impl AppendableChain {
 
         let provider = BundleStateProvider::new(state_provider, bundle_state_data_provider);
 
+        // todo: make it a config
+        let (prefetch_tx, _prefetch_rx) = tokio::sync::mpsc::unbounded_channel();
+
         let db = StateProviderDatabase::new(&provider);
-        let executor = externals.executor_factory.executor(db);
+        let executor = externals.executor_factory.executor(db, Some(prefetch_tx));
         let block_hash = block.hash();
         let block = block.unseal();
+
+        #[cfg(feature = "prefetch")]
+        let (interrupt_tx, interrupt_rx) = tokio::sync::oneshot::channel();
+
+        #[cfg(feature = "prefetch")]
+        {
+            let mut trie_prefetch = TriePrefetch::new();
+            let provider_ro = Arc::new(consistent_view.provider_ro().unwrap());
+
+            tokio::spawn(async move {
+                trie_prefetch.run::<DB>(provider_ro, _prefetch_rx, interrupt_rx).await;
+            });
+        }
 
         let state = executor.execute((&block, U256::MAX).into())?;
         let BlockExecutionOutput { state, receipts, requests, .. } = state;
@@ -217,6 +238,10 @@ impl AppendableChain {
 
         let initial_execution_outcome =
             ExecutionOutcome::new(state, receipts.into(), block.number, vec![requests.into()]);
+
+        // stop the prefetch task.
+        #[cfg(feature = "prefetch")]
+        let _ = interrupt_tx.send(());
 
         // check state root if the block extends the canonical chain __and__ if state root
         // validation was requested.

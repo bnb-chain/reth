@@ -21,6 +21,7 @@ reth-prune-types.workspace = true
 reth-revm.workspace = true
 reth-provider.workspace = true
 reth-bsc-consensus.workspace = true
+reth-trie.workspace = true
 
 # Revm
 revm-primitives.workspace = true
@@ -33,6 +34,9 @@ parking_lot = "0.12.3"
 bitset = "0.1.2"
 lru = "0.12.3"
 blst = "0.3.12"
+
+# async
+tokio = { workspace = true, features = ["sync", "time"] }
 
 [dev-dependencies]
 reth-revm = { workspace = true, features = ["test-utils"] }
