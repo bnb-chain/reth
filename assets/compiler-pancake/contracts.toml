@@ -21,3 +21,19 @@ first_evm_version = "REGOLITH"
 [[contracts]]
 bytecode_path = "./contracts/0x4200000000000000000000000000000000000006.hex"
 first_evm_version = "REGOLITH"
+
+[[contracts]]
+bytecode_path = "./contracts/0x81d70ef88511d5c6552249f9bde184a8cf4ff1ce.hex"
+first_evm_version = "REGOLITH"
+
+[[contracts]]
+bytecode_path = "./contracts/0x862d72ec947b0054c6c98cced4c140a05b9ec8db.hex"
+first_evm_version = "REGOLITH"
+
+[[contracts]]
+bytecode_path = "./contracts/0x678aa4bf4e210cf2166753e054d5b7c31cc7fa86.hex"
+first_evm_version = "REGOLITH"
+
+[[contracts]]
+bytecode_path = "./contracts/0xb01d49c26416a352fac4fbb3d555d5f2543e3247.hex"
+first_evm_version = "REGOLITH"
