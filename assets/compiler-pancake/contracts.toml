@@ -37,3 +37,7 @@ first_evm_version = "REGOLITH"
 [[contracts]]
 bytecode_path = "./contracts/0xb01d49c26416a352fac4fbb3d555d5f2543e3247.hex"
 first_evm_version = "REGOLITH"
+
+[[contracts]]
+bytecode_path = "./contracts/0x946db00685f035ed1adac9c407f9a2949b0ee84d.hex"
+first_evm_version = "REGOLITH"
