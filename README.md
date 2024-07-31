@@ -126,8 +126,7 @@ utilized for running archive nodes.
 ### Steps to Run op-reth
 
 The op-reth is an [execution client](https://ethereum.org/en/developers/docs/nodes-and-clients/#execution-clients) for
-opBNB.
-You need to run op-node along with op-reth to synchronize with the opBNB network.
+opBNB. You need to run op-node along with op-reth to synchronize with the opBNB network.
 
 Here is the quick command for running the op-node. For more details, refer to
 the [opbnb repository](https://github.com/bnb-chain/opbnb).
@@ -171,12 +170,16 @@ export P2P_BOOTNODES="enr:-J24QA9sgVxbZ0KoJ7-1gx_szfc7Oexzz7xL2iHS7VMHGj2QQaLc_I
   --rpc.enable-admin \
   --l1=${L1_RPC} \
   --l2=http://localhost:8551 \
-  --l2.jwt-secret=./jwt.txt
+  --l2.jwt-secret=./jwt.txt \
+  --syncmode=execution-layer
 ```
 
-Copy the JWT file generated when running the op-node to the current workspace. Here is a quick command for running
-op-reth.
-The command below is for an archive node. To run a full node, simply add the `--full` tag.
+**It's important to mention that op-node and op-reth both need the same jwt.txt file.**
+To do this, switch to the op-reth workdir and paste the jwt.txt file created during op-node execution into the current
+workspace.
+
+Here is a quick command for running op-reth. The command below is for an archive node, to run a full node, simply add
+the `--full` tag.
 
 ```shell
 # for mainnet
