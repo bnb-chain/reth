@@ -9,6 +9,7 @@ use std::collections::HashMap;
 pub(crate) struct SyncMetrics {
     pub(crate) stages: HashMap<StageId, StageMetrics>,
     pub(crate) execution_stage: ExecutionStageMetrics,
+    pub(crate) execution_cache: ExecutionCacheMetrics,
 }
 
 impl SyncMetrics {
@@ -38,4 +39,18 @@ pub(crate) struct StageMetrics {
 pub(crate) struct ExecutionStageMetrics {
     /// The total amount of gas processed (in millions)
     pub(crate) mgas_processed_total: Counter,
+}
+
+/// Execution stage cache metrics.
+#[derive(Metrics)]
+#[metrics(scope = "sync.execution.cache")]
+pub(crate) struct ExecutionCacheMetrics {
+    /// Total account access count
+    pub(crate) account_access_total: Counter,
+    /// Total account access cache hit count
+    pub(crate) account_cache_hit_total: Counter,
+    /// Total storage access count
+    pub(crate) storage_access_total: Counter,
+    /// Total storage access cache hit count
+    pub(crate) storage_cache_hit_total: Counter,
 }

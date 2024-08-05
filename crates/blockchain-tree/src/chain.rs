@@ -4,7 +4,7 @@
 //! blocks, as well as a list of the blocks the chain is composed of.
 
 use super::externals::TreeExternals;
-use crate::BundleStateDataRef;
+use crate::{execution_cache::CachedBundleStateProvider, BundleStateDataRef};
 use reth_blockchain_tree_api::{
     error::{BlockchainTreeError, InsertBlockErrorKind},
     BlockAttachment, BlockValidationKind,
@@ -17,9 +17,9 @@ use reth_execution_types::{Chain, ExecutionOutcome};
 use reth_primitives::{
     BlockHash, BlockNumber, ForkBlock, GotExpected, SealedBlockWithSenders, SealedHeader, U256,
 };
+use reth_primitives_traits::format_gas_throughput;
 use reth_provider::{
-    providers::{BundleStateProvider, ConsistentDbView},
-    FullExecutionDataProvider, ProviderError, StateRootProvider,
+    providers::ConsistentDbView, FullExecutionDataProvider, ProviderError, StateRootProvider,
 };
 use reth_revm::database::StateProviderDatabase;
 use reth_trie::updates::TrieUpdates;
@@ -29,6 +29,7 @@ use std::{
     ops::{Deref, DerefMut},
     time::Instant,
 };
+use tracing::info;
 
 /// A chain in the blockchain tree that has functionality to execute blocks and append them to
 /// itself.
@@ -202,14 +203,24 @@ impl AppendableChain {
             .disable_long_read_transaction_safety()
             .state_provider_by_block_number(canonical_fork.number)?;
 
-        let provider = BundleStateProvider::new(state_provider, bundle_state_data_provider);
+        let provider = CachedBundleStateProvider::new(state_provider, bundle_state_data_provider);
 
         let db = StateProviderDatabase::new(&provider);
         let executor = externals.executor_factory.executor(db);
         let block_hash = block.hash();
         let block = block.unseal();
 
+        let execute_start = Instant::now();
         let state = executor.execute((&block, U256::MAX).into())?;
+        let duration = execute_start.elapsed();
+        info!(
+            target: "blockchain_tree",
+            block = block.number,
+            duration = duration.as_micros(),
+            throughput = format_gas_throughput(block.gas_used, duration),
+            "Executed block"
+        );
+
         let BlockExecutionOutput { state, receipts, requests, .. } = state;
         externals
             .consensus

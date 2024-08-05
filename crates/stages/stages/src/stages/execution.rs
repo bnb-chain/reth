@@ -1,4 +1,7 @@
-use crate::stages::MERKLE_STAGE_DEFAULT_CLEAN_THRESHOLD;
+use crate::stages::{
+    execution_cache::{apply_changeset_to_cache, clear_cache, CachedLatestStateProviderRef},
+    MERKLE_STAGE_DEFAULT_CLEAN_THRESHOLD,
+};
 use num_traits::Zero;
 use reth_config::config::ExecutionConfig;
 use reth_db::{static_file::HeaderMask, tables};
@@ -218,9 +221,9 @@ where
             None
         };
 
-        let db = StateProviderDatabase(LatestStateProviderRef::new(
-            provider.tx_ref(),
-            provider.static_file_provider().clone(),
+        let db = StateProviderDatabase(CachedLatestStateProviderRef::new(
+            LatestStateProviderRef::new(provider.tx_ref(), provider.static_file_provider().clone()),
+            self.metrics_tx.clone(),
         ));
         let mut executor = self.executor_provider.batch_executor(db);
         executor.set_tip(max_block);
@@ -369,12 +372,16 @@ where
 
         let time = Instant::now();
         // write output
-        state.write_to_storage(
+        state.clone().write_to_storage(
             provider.tx_ref(),
             static_file_producer,
             OriginalValuesKnown::Yes,
         )?;
         let db_write_duration = time.elapsed();
+
+        // update cache
+        let (change_set, _) = state.bundle.into_plain_state_and_reverts(OriginalValuesKnown::Yes);
+        apply_changeset_to_cache(change_set);
 
         debug!(
             target: "sync::stages::execution",
@@ -418,6 +425,9 @@ where
                 checkpoint: input.checkpoint.with_block_number(input.unwind_to),
             })
         }
+
+        // Unwind cache by clearing them.
+        clear_cache();
 
         // Unwind account and storage changesets, as well as receipts.
         //

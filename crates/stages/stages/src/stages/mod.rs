@@ -34,7 +34,9 @@ pub use merkle::*;
 pub use sender_recovery::*;
 pub use tx_lookup::*;
 
+mod execution_cache;
 mod utils;
+
 use utils::*;
 
 #[cfg(test)]

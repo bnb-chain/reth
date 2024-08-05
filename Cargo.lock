@@ -6774,6 +6774,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "quick_cache"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac3327c42419cab9678a66fb21f4c6222b6df3ad9114e56816b0defcd7649e0c"
+dependencies = [
+ "ahash",
+ "equivalent",
+ "hashbrown 0.14.5",
+ "parking_lot 0.12.3",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.36"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7348,9 +7360,12 @@ dependencies = [
  "alloy-genesis",
  "aquamarine",
  "assert_matches",
+ "lazy_static",
  "linked_hash_set",
+ "lru",
  "metrics",
  "parking_lot 0.12.3",
+ "quick_cache",
  "reth-blockchain-tree-api",
  "reth-chainspec",
  "reth-consensus",
@@ -7363,6 +7378,7 @@ dependencies = [
  "reth-metrics",
  "reth-network",
  "reth-primitives",
+ "reth-primitives-traits",
  "reth-provider",
  "reth-prune-types",
  "reth-revm",
@@ -9491,7 +9507,10 @@ dependencies = [
  "criterion",
  "futures-util",
  "itertools 0.13.0",
+ "lazy_static",
+ "lru",
  "num-traits",
+ "parking_lot 0.12.3",
  "paste",
  "pprof",
  "rand 0.8.5",
