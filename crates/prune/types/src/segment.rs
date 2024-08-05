@@ -27,15 +27,19 @@ pub enum PruneSegment {
     Headers,
     /// Prune segment responsible for the `Transactions` table.
     Transactions,
+    /// Prune segment responsible for the `Sidecars` table.
+    Sidecars,
 }
 
 impl PruneSegment {
     /// Returns minimum number of blocks to left in the database for this segment.
     pub const fn min_blocks(&self, purpose: PrunePurpose) -> u64 {
         match self {
-            Self::SenderRecovery | Self::TransactionLookup | Self::Headers | Self::Transactions => {
-                0
-            }
+            Self::SenderRecovery |
+            Self::TransactionLookup |
+            Self::Headers |
+            Self::Transactions |
+            Self::Sidecars => 0,
             Self::Receipts if purpose.is_static_file() => 0,
             Self::ContractLogs | Self::AccountHistory | Self::StorageHistory => {
                 MINIMUM_PRUNING_DISTANCE
