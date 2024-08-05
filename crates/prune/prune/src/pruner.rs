@@ -325,7 +325,7 @@ impl<DB: Database, S> Pruner<DB, S> {
             tip_block_number.saturating_sub(self.recent_sidecars_kept_blocks as u64);
         let mut range_start = find_fixed_range(prune_target_block).start();
 
-        if range_start == 0 || range_start == find_fixed_range(tip_block_number).start() {
+        if range_start == 0 {
             return
         }
 
