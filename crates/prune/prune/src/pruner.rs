@@ -368,7 +368,7 @@ fn delete_static_files(path: &Path) {
     }
 
     // Delete the .conf file
-    let conf_path = path.join(".conf");
+    let conf_path = path.with_extension("conf");
     if let Err(err) = fs::remove_file(&conf_path) {
         debug!(target: "pruner", path = %conf_path.display(), %err, "Failed to remove .conf file");
     } else {
@@ -376,7 +376,7 @@ fn delete_static_files(path: &Path) {
     }
 
     // Delete the .off file
-    let off_path = path.join(".off");
+    let off_path = path.with_extension("off");
     if let Err(err) = fs::remove_file(&off_path) {
         debug!(target: "pruner", path = %off_path.display(), %err, "Failed to remove .off file");
     } else {
