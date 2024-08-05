@@ -23,7 +23,7 @@ impl PruningArgs {
         }
         Some(PruneConfig {
             block_interval: 5,
-            recent_sidecars_kept_blocks: 0,
+            recent_sidecars_kept_blocks: 100,
             segments: PruneModes {
                 sender_recovery: Some(PruneMode::Full),
                 transaction_lookup: None,

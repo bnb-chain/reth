@@ -123,7 +123,7 @@ impl Default for PrunerBuilder {
             delete_limit: MAINNET.prune_delete_limit,
             timeout: None,
             finished_exex_height: watch::channel(FinishedExExHeight::NoExExs).1,
-            recent_sidecars_kept_blocks: 0, /* not enabled by default
+            recent_sidecars_kept_blocks: 100, /* not enabled by default
                                              * recent_sidecars_kept_blocks: 518400, // 18 days */
         }
     }

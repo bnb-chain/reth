@@ -357,7 +357,7 @@ pub struct PruneConfig {
 
 impl Default for PruneConfig {
     fn default() -> Self {
-        Self { block_interval: 5, recent_sidecars_kept_blocks: 0, segments: PruneModes::none() }
+        Self { block_interval: 5, recent_sidecars_kept_blocks: 100, segments: PruneModes::none() }
     }
 }
 
