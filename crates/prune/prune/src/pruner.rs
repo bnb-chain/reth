@@ -9,8 +9,13 @@ use reth_db_api::database::Database;
 use reth_exex_types::FinishedExExHeight;
 use reth_provider::{DatabaseProviderRW, ProviderFactory, PruneCheckpointReader};
 use reth_prune_types::{PruneLimiter, PruneProgress, PruneSegment, PrunerOutput};
+use reth_static_file_types::{find_fixed_range, StaticFileSegment};
 use reth_tokio_util::{EventSender, EventStream};
-use std::time::{Duration, Instant};
+use std::{
+    fs,
+    path::Path,
+    time::{Duration, Instant},
+};
 use tokio::sync::watch;
 use tracing::debug;
 
@@ -41,6 +46,8 @@ pub struct Pruner<DB, PF> {
     timeout: Option<Duration>,
     /// The finished height of all `ExEx`'s.
     finished_exex_height: watch::Receiver<FinishedExExHeight>,
+    /// The number of recent sidecars to keep in the static file provider.
+    recent_sidecars_kept_blocks: usize,
     #[doc(hidden)]
     metrics: Metrics,
     event_sender: EventSender<PrunerEvent>,
@@ -54,6 +61,7 @@ impl<DB> Pruner<DB, ()> {
         delete_limit: usize,
         timeout: Option<Duration>,
         finished_exex_height: watch::Receiver<FinishedExExHeight>,
+        recent_sidecars_kept_blocks: usize,
     ) -> Self {
         Self {
             provider_factory: (),
@@ -63,6 +71,7 @@ impl<DB> Pruner<DB, ()> {
             delete_limit,
             timeout,
             finished_exex_height,
+            recent_sidecars_kept_blocks,
             metrics: Metrics::default(),
             event_sender: Default::default(),
         }
@@ -71,6 +80,7 @@ impl<DB> Pruner<DB, ()> {
 
 impl<DB: Database> Pruner<DB, ProviderFactory<DB>> {
     /// Crates a new pruner with the given provider factory.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         provider_factory: ProviderFactory<DB>,
         segments: Vec<Box<dyn Segment<DB>>>,
@@ -78,6 +88,7 @@ impl<DB: Database> Pruner<DB, ProviderFactory<DB>> {
         delete_limit: usize,
         timeout: Option<Duration>,
         finished_exex_height: watch::Receiver<FinishedExExHeight>,
+        recent_sidecars_kept_blocks: usize,
     ) -> Self {
         Self {
             provider_factory,
@@ -87,6 +98,7 @@ impl<DB: Database> Pruner<DB, ProviderFactory<DB>> {
             delete_limit,
             timeout,
             finished_exex_height,
+            recent_sidecars_kept_blocks,
             metrics: Metrics::default(),
             event_sender: Default::default(),
         }
@@ -128,6 +140,8 @@ impl<DB: Database, S> Pruner<DB, S> {
 
         let (stats, deleted_entries, output) =
             self.prune_segments(provider, tip_block_number, &mut limiter)?;
+
+        self.prune_ancient_sidecars(provider, tip_block_number);
 
         self.previous_tip_block_number = Some(tip_block_number);
 
@@ -294,6 +308,80 @@ impl<DB: Database, S> Pruner<DB, S> {
             }
         }
     }
+
+    /// Prunes ancient sidecars data from the static file provider.
+    pub fn prune_ancient_sidecars(
+        &mut self,
+        provider: &DatabaseProviderRW<DB>,
+        tip_block_number: BlockNumber,
+    ) {
+        if self.recent_sidecars_kept_blocks == 0 {
+            return
+        }
+
+        let static_file_provider = provider.static_file_provider();
+
+        let prune_target_block =
+            tip_block_number.saturating_sub(self.recent_sidecars_kept_blocks as u64);
+        let mut range_start = find_fixed_range(prune_target_block).start();
+
+        if range_start == 0 {
+            return
+        }
+
+        debug!(
+            target: "pruner",
+            %tip_block_number,
+            "Ancient sidecars pruning started",
+        );
+
+        while range_start > 0 {
+            let range = find_fixed_range(range_start - 1);
+            let path =
+                static_file_provider.path().join(StaticFileSegment::Sidecars.filename(&range));
+
+            if path.exists() {
+                delete_static_files(&path);
+                self.metrics.oldest_sidecars_height.set(range.end() as f64 + 1_f64);
+            } else {
+                debug!(target: "pruner", path = %path.display(), "Static file not found, skipping");
+                break
+            }
+
+            range_start = range.start();
+        }
+
+        debug!(
+            target: "pruner",
+            %tip_block_number,
+            "Ancient sidecars pruning finished",
+        );
+    }
+}
+
+fn delete_static_files(path: &Path) {
+    // Delete the main file
+    if let Err(err) = fs::remove_file(path) {
+        debug!(target: "pruner", path = %path.display(), %err, "Failed to remove file");
+    } else {
+        debug!(target: "pruner", path = %path.display(), "Removed file");
+    }
+
+    // Delete the .conf file
+    let conf_path = path.with_extension("conf");
+    if let Err(err) = fs::remove_file(&conf_path) {
+        debug!(target: "pruner", path = %conf_path.display(), %err, "Failed to remove .conf file");
+    } else {
+        debug!(target: "pruner", path = %conf_path.display(), "Removed .conf file");
+    }
+
+    // Delete the .off file
+    let off_path = path.with_extension("off");
+    if let Err(err) = fs::remove_file(&off_path) {
+        debug!(target: "pruner", path = %off_path.display(), %err, "Failed to remove .off file");
+    } else {
+        debug!(target: "pruner", path = %off_path.display(), "Removed .off file");
+    }
 }
 
 impl<DB: Database> Pruner<DB, ()> {
@@ -347,6 +435,7 @@ mod tests {
             0,
             None,
             finished_exex_height_rx,
+            0,
         );
 
         // No last pruned block number was set before

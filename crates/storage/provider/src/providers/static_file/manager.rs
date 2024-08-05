@@ -1031,7 +1031,7 @@ impl StaticFileProvider {
         Ok(data)
     }
 
-    #[cfg(any(test, feature = "test-utils"))]
+    // #[cfg(any(test, feature = "test-utils"))]
     /// Returns `static_files` directory
     pub fn path(&self) -> &Path {
         &self.path

@@ -200,6 +200,7 @@ mod tests {
             0,
             None,
             finished_exex_height_rx,
+            0,
         );
 
         PersistenceHandle::spawn_services(provider, pruner)

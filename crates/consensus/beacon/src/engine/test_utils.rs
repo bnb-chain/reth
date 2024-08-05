@@ -410,6 +410,7 @@ where
             self.base_config.chain_spec.prune_delete_limit,
             None,
             watch::channel(FinishedExExHeight::NoExExs).1,
+            0,
         );
 
         let mut hooks = EngineHooks::new();

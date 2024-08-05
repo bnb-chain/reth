@@ -14,7 +14,7 @@ use reth_prune_types::{
 };
 pub use set::SegmentSet;
 pub use static_file::{
-    Headers as StaticFileHeaders, Receipts as StaticFileReceipts,
+    Headers as StaticFileHeaders, Receipts as StaticFileReceipts, Sidecars as StaticFileSidecars,
     Transactions as StaticFileTransactions,
 };
 use std::{fmt::Debug, ops::RangeInclusive};
