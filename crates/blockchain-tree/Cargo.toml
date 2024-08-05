@@ -28,6 +28,7 @@ reth-trie = { workspace = true, features = ["metrics"] }
 reth-trie-parallel = { workspace = true, features = ["parallel"] }
 reth-network.workspace = true
 reth-consensus.workspace = true
+reth-trie-prefetch = { workspace = true, optional = true }
 
 # common
 parking_lot.workspace = true
@@ -59,3 +60,4 @@ alloy-genesis.workspace = true
 [features]
 test-utils = []
 optimism = ["reth-primitives/optimism", "reth-provider/optimism"]
+prefetch = ["dep:reth-trie-prefetch"]

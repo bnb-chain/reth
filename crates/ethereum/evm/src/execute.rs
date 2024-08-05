@@ -28,10 +28,13 @@ use reth_revm::{
     state_change::{apply_blockhashes_update, post_block_balance_increments},
     Evm, State,
 };
+use reth_trie::HashedPostState;
 use revm_primitives::{
     db::{Database, DatabaseCommit},
     BlockEnv, CfgEnvWithHandlerCfg, EVMError, EnvWithHandlerCfg, ResultAndState,
 };
+use tokio::sync::mpsc::UnboundedSender;
+use tracing::debug;
 
 #[cfg(feature = "std")]
 use std::{fmt::Display, sync::Arc, vec, vec::Vec};
@@ -65,15 +68,36 @@ impl<EvmConfig> EthExecutorProvider<EvmConfig>
 where
     EvmConfig: ConfigureEvm,
 {
-    fn eth_executor<DB>(&self, db: DB) -> EthBlockExecutor<EvmConfig, DB>
+    fn eth_executor<DB>(
+        &self,
+        db: DB,
+        prefetch_tx: Option<UnboundedSender<HashedPostState>>,
+    ) -> EthBlockExecutor<EvmConfig, DB>
     where
         DB: Database<Error: Into<ProviderError>>,
     {
-        EthBlockExecutor::new(
-            self.chain_spec.clone(),
-            self.evm_config.clone(),
-            State::builder().with_database(db).with_bundle_update().without_state_clear().build(),
-        )
+        if let Some(tx) = prefetch_tx {
+            EthBlockExecutor::new_with_prefetch_tx(
+                self.chain_spec.clone(),
+                self.evm_config.clone(),
+                State::builder()
+                    .with_database(db)
+                    .with_bundle_update()
+                    .without_state_clear()
+                    .build(),
+                tx,
+            )
+        } else {
+            EthBlockExecutor::new(
+                self.chain_spec.clone(),
+                self.evm_config.clone(),
+                State::builder()
+                    .with_database(db)
+                    .with_bundle_update()
+                    .without_state_clear()
+                    .build(),
+            )
+        }
     }
 }
 
@@ -87,18 +111,22 @@ where
     type BatchExecutor<DB: Database<Error: Into<ProviderError> + Display>> =
         EthBatchExecutor<EvmConfig, DB>;
 
-    fn executor<DB>(&self, db: DB) -> Self::Executor<DB>
+    fn executor<DB>(
+        &self,
+        db: DB,
+        prefetch_tx: Option<UnboundedSender<HashedPostState>>,
+    ) -> Self::Executor<DB>
     where
         DB: Database<Error: Into<ProviderError> + Display>,
     {
-        self.eth_executor(db)
+        self.eth_executor(db, prefetch_tx)
     }
 
     fn batch_executor<DB>(&self, db: DB) -> Self::BatchExecutor<DB>
     where
         DB: Database<Error: Into<ProviderError> + Display>,
     {
-        let executor = self.eth_executor(db);
+        let executor = self.eth_executor(db, None);
         EthBatchExecutor {
             executor,
             batch_record: BlockBatchRecord::default(),
@@ -142,6 +170,7 @@ where
         &self,
         block: &BlockWithSenders,
         mut evm: Evm<'_, Ext, &mut State<DB>>,
+        tx: Option<UnboundedSender<HashedPostState>>,
     ) -> Result<EthExecuteOutput, BlockExecutionError>
     where
         DB: Database,
@@ -196,6 +225,14 @@ where
                     error: Box::new(new_err),
                 }
             })?;
+
+            if let Some(tx) = tx.as_ref() {
+                let post_state = HashedPostState::from_state(state.clone());
+                tx.send(post_state).unwrap_or_else(|err| {
+                    debug!(target: "evm_executor", ?err, "Failed to send post state to prefetch channel")
+                });
+            }
+
             evm.db_mut().commit(state);
 
             // append gas used
@@ -250,12 +287,24 @@ pub struct EthBlockExecutor<EvmConfig, DB> {
     executor: EthEvmExecutor<EvmConfig>,
     /// The state to use for execution
     state: State<DB>,
+    /// Prefetch channel
+    prefetch_tx: Option<UnboundedSender<HashedPostState>>,
 }
 
 impl<EvmConfig, DB> EthBlockExecutor<EvmConfig, DB> {
     /// Creates a new Ethereum block executor.
     pub const fn new(chain_spec: Arc<ChainSpec>, evm_config: EvmConfig, state: State<DB>) -> Self {
-        Self { executor: EthEvmExecutor { chain_spec, evm_config }, state }
+        Self { executor: EthEvmExecutor { chain_spec, evm_config }, state, prefetch_tx: None }
+    }
+
+    /// Creates a new Ethereum block executor with a prefetch channel.
+    pub const fn new_with_prefetch_tx(
+        chain_spec: Arc<ChainSpec>,
+        evm_config: EvmConfig,
+        state: State<DB>,
+        tx: UnboundedSender<HashedPostState>,
+    ) -> Self {
+        Self { executor: EthEvmExecutor { chain_spec, evm_config }, state, prefetch_tx: Some(tx) }
     }
 
     #[inline]
@@ -312,7 +361,7 @@ where
         let env = self.evm_env_for_block(&block.header, total_difficulty);
         let output = {
             let evm = self.executor.evm_config.evm_with_env(&mut self.state, env);
-            self.executor.execute_state_transitions(block, evm)
+            self.executor.execute_state_transitions(block, evm, self.prefetch_tx.clone())
         }?;
 
         // 3. apply post execution changes
@@ -552,7 +601,7 @@ mod tests {
 
         // attempt to execute a block without parent beacon block root, expect err
         let err = provider
-            .executor(StateProviderDatabase::new(&db))
+            .executor(StateProviderDatabase::new(&db), None)
             .execute(
                 (
                     &BlockWithSenders {
@@ -582,7 +631,7 @@ mod tests {
         // fix header, set a gas limit
         header.parent_beacon_block_root = Some(B256::with_last_byte(0x69));
 
-        let mut executor = provider.executor(StateProviderDatabase::new(&db));
+        let mut executor = provider.executor(StateProviderDatabase::new(&db), None);
 
         // Now execute a block with the fixed header, ensure that it does not fail
         executor
@@ -1309,7 +1358,7 @@ mod tests {
 
         let provider = executor_provider(chain_spec);
 
-        let executor = provider.executor(StateProviderDatabase::new(&db));
+        let executor = provider.executor(StateProviderDatabase::new(&db), None);
 
         let BlockExecutionOutput { receipts, requests, .. } = executor
             .execute(
@@ -1398,7 +1447,8 @@ mod tests {
         );
 
         // Create an executor from the state provider
-        let executor = executor_provider(chain_spec).executor(StateProviderDatabase::new(&db));
+        let executor =
+            executor_provider(chain_spec).executor(StateProviderDatabase::new(&db), None);
 
         // Execute the block and capture the result
         let exec_result = executor.execute(

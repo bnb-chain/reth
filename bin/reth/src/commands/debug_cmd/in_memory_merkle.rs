@@ -130,10 +130,10 @@ impl Command {
         ));
 
         #[cfg(feature = "bsc")]
-        let executor =
-            block_executor!(provider_factory.chain_spec(), provider_factory.clone()).executor(db);
+        let executor = block_executor!(provider_factory.chain_spec(), provider_factory.clone())
+            .executor(db, None);
         #[cfg(not(feature = "bsc"))]
-        let executor = block_executor!(provider_factory.chain_spec()).executor(db);
+        let executor = block_executor!(provider_factory.chain_spec()).executor(db, None);
 
         let merkle_block_td =
             provider.header_td_by_number(merkle_block_number)?.unwrap_or_default();

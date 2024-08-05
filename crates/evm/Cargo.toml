@@ -19,12 +19,14 @@ revm-primitives.workspace = true
 reth-prune-types.workspace = true
 reth-storage-errors.workspace = true
 reth-execution-types.workspace = true
+reth-trie.workspace = true
 
 revm.workspace = true
 alloy-eips.workspace = true
 auto_impl.workspace = true
 futures-util.workspace = true
 parking_lot = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["sync", "time"] }
 
 [dev-dependencies]
 parking_lot.workspace = true

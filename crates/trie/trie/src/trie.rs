@@ -535,6 +535,56 @@ where
         let storage_slots_walked = stats.leaves_added() as usize;
         Ok((root, storage_slots_walked, trie_updates))
     }
+
+    /// Walks the hashed storage table entries for a given address to prefetch the storage tries.
+    ///
+    /// # Returns
+    ///
+    /// The number of walked entries.
+    pub fn prefetch(self) -> Result<usize, StorageRootError> {
+        trace!(target: "trie::storage_root", hashed_address = ?self.hashed_address, "prefetching storage tries");
+
+        let mut hashed_storage_cursor =
+            self.hashed_cursor_factory.hashed_storage_cursor(self.hashed_address)?;
+
+        // short circuit on empty storage
+        if hashed_storage_cursor.is_storage_empty()? {
+            return Ok(0)
+        }
+
+        let mut tracker = TrieTracker::default();
+        let trie_cursor = self.trie_cursor_factory.storage_trie_cursor(self.hashed_address)?;
+        let walker = TrieWalker::new(trie_cursor, self.prefix_set).with_deletions_retained(false);
+
+        let mut storage_node_iter = TrieNodeIter::new(walker, hashed_storage_cursor);
+        while let Some(node) = storage_node_iter.try_next()? {
+            match node {
+                TrieElement::Branch(_) => {
+                    tracker.inc_branch();
+                }
+                TrieElement::Leaf(_, _) => {
+                    tracker.inc_leaf();
+                }
+            }
+        }
+
+        let stats = tracker.finish();
+
+        #[cfg(feature = "metrics")]
+        self.metrics.record(stats);
+
+        trace!(
+            target: "trie::storage_root",
+            hashed_address = %self.hashed_address,
+            duration = ?stats.duration(),
+            branches_added = stats.branches_added(),
+            leaves_added = stats.leaves_added(),
+            "prefetched storage tries"
+        );
+
+        let storage_slots_walked = stats.leaves_added() as usize;
+        Ok(storage_slots_walked)
+    }
 }
 
 #[cfg(test)]

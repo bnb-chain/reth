@@ -251,9 +251,12 @@ where
             .ok_or_else(|| ProviderError::HeaderNotFound(block_number.into()))?;
 
         // Configure the executor to use the previous block's state.
-        let executor = self.executor.executor(StateProviderDatabase::new(
-            self.provider.history_by_block_number(block_number.saturating_sub(1))?,
-        ));
+        let executor = self.executor.executor(
+            StateProviderDatabase::new(
+                self.provider.history_by_block_number(block_number.saturating_sub(1))?,
+            ),
+            None,
+        );
 
         trace!(target: "exex::backfill", number = block_number, txs = block_with_senders.block.body.len(), "Executing block");
 
@@ -332,10 +335,13 @@ mod tests {
 
         // Execute the block to produce a block execution output
         let mut block_execution_output = EthExecutorProvider::ethereum(chain_spec)
-            .executor(StateProviderDatabase::new(LatestStateProviderRef::new(
-                provider.tx_ref(),
-                provider.static_file_provider().clone(),
-            )))
+            .executor(
+                StateProviderDatabase::new(LatestStateProviderRef::new(
+                    provider.tx_ref(),
+                    provider.static_file_provider().clone(),
+                )),
+                None,
+            )
             .execute(BlockExecutionInput { block, total_difficulty: U256::ZERO })?;
         block_execution_output.state.reverts.sort();
 

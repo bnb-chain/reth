@@ -119,6 +119,7 @@ members = [
     "crates/transaction-pool/",
     "crates/trie/common",
     "crates/trie/parallel/",
+    "crates/trie/prefetch/",
     "crates/trie/trie",
     "crates/bsc/node/",
     "crates/bsc/engine/",
@@ -384,6 +385,7 @@ reth-transaction-pool = { path = "crates/transaction-pool" }
 reth-trie = { path = "crates/trie/trie" }
 reth-trie-common = { path = "crates/trie/common" }
 reth-trie-parallel = { path = "crates/trie/parallel" }
+reth-trie-prefetch = { path = "crates/trie/prefetch" }
 
 # revm
 revm = { version = "11.0.0", features = [

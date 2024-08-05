@@ -29,11 +29,13 @@ use reth_revm::{
     db::states::bundle_state::BundleRetention,
     Evm, State,
 };
+use reth_trie::HashedPostState;
 use revm_primitives::{
     db::{Database, DatabaseCommit},
     BlockEnv, CfgEnvWithHandlerCfg, EVMError, EnvWithHandlerCfg, ResultAndState, TransactTo,
 };
 use std::{collections::HashMap, num::NonZeroUsize, sync::Arc, time::Instant};
+use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, warn};
 
 const SNAP_CACHE_NUM: usize = 2048;
@@ -81,17 +83,40 @@ where
     P: Clone,
     EvmConfig: ConfigureEvm,
 {
-    fn bsc_executor<DB>(&self, db: DB) -> BscBlockExecutor<EvmConfig, DB, P>
+    fn bsc_executor<DB>(
+        &self,
+        db: DB,
+        prefetch_tx: Option<UnboundedSender<HashedPostState>>,
+    ) -> BscBlockExecutor<EvmConfig, DB, P>
     where
         DB: Database<Error: Into<ProviderError> + std::fmt::Display>,
     {
-        BscBlockExecutor::new(
-            self.chain_spec.clone(),
-            self.evm_config.clone(),
-            self.parlia_config.clone(),
-            State::builder().with_database(db).with_bundle_update().without_state_clear().build(),
-            self.provider.clone(),
-        )
+        if let Some(tx) = prefetch_tx {
+            BscBlockExecutor::new_with_prefetch_tx(
+                self.chain_spec.clone(),
+                self.evm_config.clone(),
+                self.parlia_config.clone(),
+                State::builder()
+                    .with_database(db)
+                    .with_bundle_update()
+                    .without_state_clear()
+                    .build(),
+                self.provider.clone(),
+                tx,
+            )
+        } else {
+            BscBlockExecutor::new(
+                self.chain_spec.clone(),
+                self.evm_config.clone(),
+                self.parlia_config.clone(),
+                State::builder()
+                    .with_database(db)
+                    .with_bundle_update()
+                    .without_state_clear()
+                    .build(),
+                self.provider.clone(),
+            )
+        }
     }
 }
 
@@ -106,18 +131,22 @@ where
     type BatchExecutor<DB: Database<Error: Into<ProviderError> + std::fmt::Display>> =
         BscBatchExecutor<EvmConfig, DB, P>;
 
-    fn executor<DB>(&self, db: DB) -> Self::Executor<DB>
+    fn executor<DB>(
+        &self,
+        db: DB,
+        prefetch_tx: Option<UnboundedSender<HashedPostState>>,
+    ) -> Self::Executor<DB>
     where
         DB: Database<Error: Into<ProviderError> + std::fmt::Display>,
     {
-        self.bsc_executor(db)
+        self.bsc_executor(db, prefetch_tx)
     }
 
     fn batch_executor<DB>(&self, db: DB) -> Self::BatchExecutor<DB>
     where
         DB: Database<Error: Into<ProviderError> + std::fmt::Display>,
     {
-        let executor = self.bsc_executor(db);
+        let executor = self.bsc_executor(db, None);
         BscBatchExecutor {
             executor,
             batch_record: BlockBatchRecord::default(),
@@ -159,6 +188,7 @@ where
         &self,
         block: &BlockWithSenders,
         mut evm: Evm<'_, Ext, &mut State<DB>>,
+        tx: Option<UnboundedSender<HashedPostState>>,
     ) -> Result<(Vec<TransactionSigned>, Vec<Receipt>, u64), BlockExecutionError>
     where
         DB: Database<Error: Into<ProviderError> + std::fmt::Display>,
@@ -211,6 +241,13 @@ where
                 }
             })?;
 
+            if let Some(tx) = tx.as_ref() {
+                let post_state = HashedPostState::from_state(state.clone());
+                tx.send(post_state).unwrap_or_else(|err| {
+                    debug!(target: "evm_executor", ?err, "Failed to send post state to prefetch channel")
+                });
+            }
+
             evm.db_mut().commit(state);
 
             self.patch_mainnet_after_tx(transaction, evm.db_mut());
@@ -251,6 +288,8 @@ pub struct BscBlockExecutor<EvmConfig, DB, P> {
     pub(crate) provider: Arc<P>,
     /// Parlia consensus instance
     pub(crate) parlia: Arc<Parlia>,
+    /// Prefetch channel
+    prefetch_tx: Option<UnboundedSender<HashedPostState>>,
 }
 
 impl<EvmConfig, DB, P> BscBlockExecutor<EvmConfig, DB, P> {
@@ -269,6 +308,27 @@ impl<EvmConfig, DB, P> BscBlockExecutor<EvmConfig, DB, P> {
             state,
             provider: shared_provider,
             parlia,
+            prefetch_tx: None,
+        }
+    }
+
+    /// Creates a new BSC block executor with a prefetch channel.
+    pub fn new_with_prefetch_tx(
+        chain_spec: Arc<ChainSpec>,
+        evm_config: EvmConfig,
+        parlia_config: ParliaConfig,
+        state: State<DB>,
+        provider: P,
+        tx: UnboundedSender<HashedPostState>,
+    ) -> Self {
+        let parlia = Arc::new(Parlia::new(Arc::clone(&chain_spec), parlia_config));
+        let shared_provider = Arc::new(provider);
+        Self {
+            executor: BscEvmExecutor { chain_spec, evm_config },
+            state,
+            provider: shared_provider,
+            parlia,
+            prefetch_tx: Some(tx),
         }
     }
 
@@ -347,7 +407,7 @@ where
 
         let (mut system_txs, mut receipts, mut gas_used) = {
             let evm = self.executor.evm_config.evm_with_env(&mut self.state, env.clone());
-            self.executor.execute_pre_and_transactions(block, evm)
+            self.executor.execute_pre_and_transactions(block, evm, self.prefetch_tx.clone())
         }?;
 
         // 5. apply post execution changes
@@ -800,7 +860,7 @@ impl<P> SnapshotReader<P>
 where
     P: ParliaProvider,
 {
-    pub fn new(provider: Arc<P>, parlia: Arc<Parlia>) -> Self {
+    pub const fn new(provider: Arc<P>, parlia: Arc<Parlia>) -> Self {
         Self { provider, parlia }
     }
 
