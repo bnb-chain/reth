@@ -71,6 +71,7 @@ rand.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 derive_more.workspace = true
+cfg-if = "1.0.0"
 
 [dev-dependencies]
 reth-evm-ethereum.workspace = true
@@ -86,6 +87,7 @@ tempfile.workspace = true
 [features]
 bsc = [
     "reth-primitives/bsc",
+    "reth-rpc-eth-api/bsc",
 ]
 optimism = [
     "reth-primitives/optimism",

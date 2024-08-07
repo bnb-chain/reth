@@ -1,8 +1,16 @@
 //! Loads a pending block from database. Helper trait for `eth_` transaction, call and trace RPC
 //! methods.
 
+use super::{LoadBlock, LoadPendingBlock, LoadState, LoadTransaction, SpawnBlocking, Trace};
+use cfg_if::cfg_if;
 use futures::Future;
+#[cfg(feature = "bsc")]
+use reth_chainspec::BscHardforks;
 use reth_evm::{ConfigureEvm, ConfigureEvmEnv};
+#[cfg(feature = "bsc")]
+use reth_primitives::system_contracts::get_upgrade_system_contracts;
+#[cfg(feature = "bsc")]
+use reth_primitives::system_contracts::is_system_transaction;
 use reth_primitives::{
     revm_primitives::{
         BlockEnv, CfgEnvWithHandlerCfg, EnvWithHandlerCfg, ExecutionResult, HaltReason,
@@ -27,11 +35,13 @@ use reth_rpc_types::{
     AccessListWithGasUsed, BlockId, Bundle, EthCallResponse, StateContext, TransactionInfo,
     TransactionRequest,
 };
+#[cfg(feature = "bsc")]
+use revm::bsc::SYSTEM_ADDRESS;
+#[cfg(feature = "bsc")]
+use revm::db::AccountState::{NotExisting, Touched};
 use revm::{Database, DatabaseCommit};
 use revm_inspectors::access_list::AccessListInspector;
 use tracing::trace;
-
-use super::{LoadBlock, LoadPendingBlock, LoadState, LoadTransaction, SpawnBlocking, Trace};
 
 /// Execution related functions for the [`EthApiServer`](crate::EthApiServer) trait in
 /// the `eth_` namespace.
@@ -410,6 +420,16 @@ pub trait Call: LoadState + SpawnBlocking {
             let parent_block = block.parent_hash;
             let block_txs = block.into_transactions_ecrecovered();
 
+            cfg_if! {
+                if #[cfg(feature = "bsc")] {
+                    let parent_timestamp = self.block(parent_block.into()).await?
+                        .map(|block| block.timestamp)
+                        .ok_or_else(|| EthApiError::UnknownParentBlock)?;
+                } else {
+                    let parent_timestamp = 0;
+                }
+            }
+
             let this = self.clone();
             self.spawn_with_state_at_block(parent_block.into(), move |state| {
                 let mut db = CacheDB::new(StateProviderDatabase::new(state));
@@ -421,13 +441,21 @@ pub trait Call: LoadState + SpawnBlocking {
                     block_env.clone(),
                     block_txs,
                     tx.hash,
+                    parent_timestamp,
                 )?;
 
-                let env = EnvWithHandlerCfg::new_with_cfg_env(
-                    cfg,
-                    block_env,
-                    Call::evm_config(&this).tx_env(&tx),
-                );
+                cfg_if! {
+                    if #[cfg(feature = "bsc")] {
+                        let mut tx_env = Call::evm_config(&this).tx_env(&tx);
+                        if is_system_transaction(&tx, tx.signer(), block_env.coinbase) {
+                            tx_env.bsc.is_system_transaction = Some(true);
+                        };
+                    } else {
+                        let tx_env = Call::evm_config(&this).tx_env(&tx);
+                    }
+                }
+
+                let env = EnvWithHandlerCfg::new_with_cfg_env(cfg, block_env, tx_env);
 
                 let (res, _) = this.transact(&mut db, env)?;
                 f(tx_info, res, db)
@@ -444,6 +472,7 @@ pub trait Call: LoadState + SpawnBlocking {
     ///
     /// Note: This assumes the target transaction is in the given iterator.
     /// Returns the index of the target transaction in the given iterator.
+    #[allow(unused_variables)]
     fn replay_transactions_until<DB>(
         &self,
         db: &mut CacheDB<DB>,
@@ -451,16 +480,86 @@ pub trait Call: LoadState + SpawnBlocking {
         block_env: BlockEnv,
         transactions: impl IntoIterator<Item = TransactionSignedEcRecovered>,
         target_tx_hash: B256,
+        parent_timestamp: u64,
     ) -> Result<usize, EthApiError>
     where
         DB: DatabaseRef,
         EthApiError: From<<DB as DatabaseRef>::Error>,
     {
-        let env = EnvWithHandlerCfg::new_with_cfg_env(cfg, block_env, Default::default());
+        #[allow(clippy::redundant_clone)]
+        let env = EnvWithHandlerCfg::new_with_cfg_env(cfg, block_env.clone(), Default::default());
 
         let mut evm = self.evm_config().evm_with_env(db, env);
         let mut index = 0;
+        #[cfg(feature = "bsc")]
+        let mut before_system_tx = true;
+
+        // try to upgrade system contracts before all txs if feynman is not active
+        #[cfg(feature = "bsc")]
+        if !self.provider().chain_spec().is_feynman_active_at_timestamp(block_env.timestamp.to()) {
+            let contracts = get_upgrade_system_contracts(
+                self.provider().chain_spec().as_ref(),
+                block_env.number.to(),
+                block_env.timestamp.to(),
+                parent_timestamp,
+            )
+            .expect("get upgrade system contracts failed");
+
+            for (k, v) in contracts {
+                let account = evm.db_mut().load_account(k)?;
+                if account.account_state == NotExisting {
+                    account.account_state = Touched;
+                }
+                account.info.code_hash = v.clone().unwrap().hash_slow();
+                account.info.code = v;
+            }
+        }
+
         for tx in transactions {
+            // check if the transaction is a system transaction
+            // this should be done before return
+            #[cfg(feature = "bsc")]
+            if before_system_tx && is_system_transaction(&tx, tx.signer(), block_env.coinbase) {
+                let sys_acc = evm.db_mut().load_account(SYSTEM_ADDRESS)?;
+                let balance = sys_acc.info.balance;
+                if balance > U256::ZERO {
+                    sys_acc.info.balance = U256::ZERO;
+
+                    let val_acc = evm.db_mut().load_account(block_env.coinbase)?;
+                    if val_acc.account_state == NotExisting {
+                        val_acc.account_state = Touched;
+                    }
+                    val_acc.info.balance += balance;
+                }
+
+                // try to upgrade system contracts between normal txs and system txs
+                // if feynman is active
+                if !self
+                    .provider()
+                    .chain_spec()
+                    .is_feynman_active_at_timestamp(block_env.timestamp.to())
+                {
+                    let contracts = get_upgrade_system_contracts(
+                        self.provider().chain_spec().as_ref(),
+                        block_env.number.to(),
+                        block_env.timestamp.to(),
+                        parent_timestamp,
+                    )
+                    .expect("get upgrade system contracts failed");
+
+                    for (k, v) in contracts {
+                        let account = evm.db_mut().load_account(k)?;
+                        if account.account_state == NotExisting {
+                            account.account_state = Touched;
+                        }
+                        account.info.code_hash = v.clone().unwrap().hash_slow();
+                        account.info.code = v;
+                    }
+                }
+
+                before_system_tx = false;
+            }
+
             if tx.hash() == target_tx_hash {
                 // reached the target transaction
                 break
@@ -468,6 +567,12 @@ pub trait Call: LoadState + SpawnBlocking {
 
             let sender = tx.signer();
             self.evm_config().fill_tx_env(evm.tx_mut(), &tx.into_signed(), sender);
+
+            #[cfg(feature = "bsc")]
+            if !before_system_tx {
+                evm.tx_mut().bsc.is_system_transaction = Some(true);
+            };
+
             evm.transact_commit()?;
             index += 1;
         }

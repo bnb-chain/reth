@@ -5,8 +5,7 @@ use lazy_static::lazy_static;
 use lru::LruCache;
 use parking_lot::RwLock;
 use reth_bsc_consensus::{
-    is_breathe_block, is_system_transaction, validate_block_post_execution, Parlia,
-    ValidatorElectionInfo, ValidatorsInfo,
+    is_breathe_block, validate_block_post_execution, Parlia, ValidatorElectionInfo, ValidatorsInfo,
 };
 use reth_chainspec::{BscHardforks, ChainSpec, EthereumHardforks};
 use reth_errors::{BlockExecutionError, BlockValidationError, ProviderError};
@@ -18,7 +17,7 @@ use reth_evm::{
 };
 use reth_primitives::{
     parlia::{ParliaConfig, Snapshot, VoteAddress, CHECKPOINT_INTERVAL, DEFAULT_TURN_LENGTH},
-    system_contracts::{get_upgrade_system_contracts, SLASH_CONTRACT},
+    system_contracts::{get_upgrade_system_contracts, is_system_transaction, SLASH_CONTRACT},
     Address, BlockNumber, BlockWithSenders, Bytes, Header, Receipt, Transaction, TransactionSigned,
     B256, BSC_MAINNET, U256,
 };
@@ -168,7 +167,7 @@ where
         let mut system_txs = Vec::with_capacity(2); // Normally there are 2 system transactions.
         let mut receipts = Vec::with_capacity(block.body.len());
         for (sender, transaction) in block.transactions_with_sender() {
-            if is_system_transaction(transaction, *sender, &block.header) {
+            if is_system_transaction(transaction, *sender, block.beneficiary) {
                 system_txs.push(transaction.clone());
                 continue;
             }
@@ -800,7 +799,7 @@ impl<P> SnapshotReader<P>
 where
     P: ParliaProvider,
 {
-    pub fn new(provider: Arc<P>, parlia: Arc<Parlia>) -> Self {
+    pub const fn new(provider: Arc<P>, parlia: Arc<Parlia>) -> Self {
         Self { provider, parlia }
     }
 

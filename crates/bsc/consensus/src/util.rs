@@ -1,9 +1,6 @@
 use crate::EXTRA_SEAL_LEN;
 use alloy_rlp::Encodable;
-use reth_primitives::{
-    keccak256, system_contracts::SYSTEM_CONTRACTS_SET, Address, BufMut, BytesMut, Header,
-    TransactionSigned, B256, B64, U256,
-};
+use reth_primitives::{keccak256, BufMut, BytesMut, Header, B256, B64, U256};
 use std::env;
 
 const SECONDS_PER_DAY: u64 = 86400; // 24 * 60 * 60
@@ -19,24 +16,6 @@ pub fn is_same_day_in_utc(first: u64, second: u64) -> bool {
 
 pub fn is_breathe_block(last_block_time: u64, block_time: u64) -> bool {
     last_block_time != 0 && !is_same_day_in_utc(last_block_time, block_time)
-}
-
-pub fn is_system_transaction(tx: &TransactionSigned, sender: Address, header: &Header) -> bool {
-    if let Some(to) = tx.to() {
-        if sender == header.beneficiary &&
-            is_invoke_system_contract(&to) &&
-            tx.max_fee_per_gas() == 0
-        {
-            return true;
-        }
-    }
-
-    false
-}
-
-/// whether the contract is system or not
-pub fn is_invoke_system_contract(addr: &Address) -> bool {
-    SYSTEM_CONTRACTS_SET.contains(addr)
 }
 
 pub fn hash_with_chain_id(header: &Header, chain_id: u64) -> B256 {
@@ -154,14 +133,5 @@ mod tests {
         let hash = hash_with_chain_id(&header, 97);
         println!("encode hash: {:?}", hex::encode(hash.as_slice()));
         assert_eq!(hex::encode(hash.as_slice()), expected_hash);
-    }
-
-    #[test]
-    fn test_is_system_contract() {
-        let addr1 = address!("0000000000000000000000000000000000001000");
-        let addr2 = address!("0000000000000000000000000000000000001100");
-
-        assert_eq!(super::is_invoke_system_contract(&addr1), true);
-        assert_eq!(super::is_invoke_system_contract(&addr2), false);
     }
 }

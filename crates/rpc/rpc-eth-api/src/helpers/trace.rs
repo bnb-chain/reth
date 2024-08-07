@@ -1,7 +1,10 @@
 //! Loads a pending block from database. Helper trait for `eth_` call and trace RPC methods.
 
+use cfg_if::cfg_if;
 use futures::Future;
 use reth_evm::{ConfigureEvm, ConfigureEvmEnv};
+#[cfg(feature = "bsc")]
+use reth_primitives::system_contracts::is_system_transaction;
 use reth_primitives::B256;
 use reth_revm::database::StateProviderDatabase;
 use reth_rpc_eth_types::{
@@ -183,6 +186,16 @@ pub trait Trace: LoadState {
             let parent_block = block.parent_hash;
             let block_txs = block.into_transactions_ecrecovered();
 
+            cfg_if! {
+                if #[cfg(feature = "bsc")] {
+                    let parent_timestamp = LoadState::cache(self).get_block(parent_block).await?
+                        .map(|block| block.timestamp)
+                        .ok_or_else(|| EthApiError::UnknownParentBlock)?;
+                } else {
+                    let parent_timestamp = 0;
+                }
+            }
+
             let this = self.clone();
             self.spawn_with_state_at_block(parent_block.into(), move |state| {
                 let mut db = CacheDB::new(StateProviderDatabase::new(state));
@@ -194,13 +207,21 @@ pub trait Trace: LoadState {
                     block_env.clone(),
                     block_txs,
                     tx.hash,
+                    parent_timestamp,
                 )?;
 
-                let env = EnvWithHandlerCfg::new_with_cfg_env(
-                    cfg,
-                    block_env,
-                    Call::evm_config(&this).tx_env(&tx),
-                );
+                cfg_if! {
+                    if #[cfg(feature = "bsc")] {
+                        let mut tx_env = Call::evm_config(&this).tx_env(&tx);
+                        if is_system_transaction(&tx, tx.signer(), block_env.coinbase) {
+                            tx_env.bsc.is_system_transaction = Some(true);
+                        };
+                    } else {
+                        let tx_env = Call::evm_config(&this).tx_env(&tx);
+                    }
+                }
+
+                let env = EnvWithHandlerCfg::new_with_cfg_env(cfg, block_env, tx_env);
                 let (res, _) =
                     this.inspect(StateCacheDbRefMutWrapper(&mut db), env, &mut inspector)?;
                 f(tx_info, inspector, res, db)

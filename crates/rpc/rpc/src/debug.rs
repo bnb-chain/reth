@@ -2,9 +2,14 @@ use std::sync::Arc;
 
 use alloy_rlp::{Decodable, Encodable};
 use async_trait::async_trait;
+use cfg_if::cfg_if;
 use jsonrpsee::core::RpcResult;
+#[cfg(feature = "bsc")]
+use reth_chainspec::BscHardforks;
 use reth_chainspec::EthereumHardforks;
 use reth_evm::ConfigureEvmEnv;
+#[cfg(feature = "bsc")]
+use reth_primitives::system_contracts::{get_upgrade_system_contracts, is_system_transaction};
 use reth_primitives::{
     Address, Block, BlockId, BlockNumberOrTag, Bytes, TransactionSignedEcRecovered, B256, U256,
 };
@@ -26,6 +31,10 @@ use reth_rpc_types::{
     BlockError, Bundle, RichBlock, StateContext, TransactionRequest,
 };
 use reth_tasks::pool::BlockingTaskGuard;
+#[cfg(feature = "bsc")]
+use revm::bsc::SYSTEM_ADDRESS;
+#[cfg(feature = "bsc")]
+use revm::db::AccountState::{NotExisting, Touched};
 use revm::{
     db::CacheDB,
     primitives::{db::DatabaseCommit, BlockEnv, CfgEnvWithHandlerCfg, Env, EnvWithHandlerCfg},
@@ -76,6 +85,7 @@ where
     }
 
     /// Trace the entire block asynchronously
+    #[allow(unused_variables)]
     async fn trace_block(
         &self,
         at: BlockId,
@@ -83,11 +93,19 @@ where
         cfg: CfgEnvWithHandlerCfg,
         block_env: BlockEnv,
         opts: GethDebugTracingOptions,
+        parent_timestamp: u64,
     ) -> EthResult<Vec<TraceResult>> {
         if transactions.is_empty() {
             // nothing to trace
             return Ok(Vec::new())
         }
+
+        #[cfg(feature = "bsc")]
+        let is_feynman_active = self
+            .inner
+            .provider
+            .chain_spec()
+            .is_feynman_active_at_timestamp(block_env.timestamp.to());
 
         // replay all transactions of the block
         let this = self.clone();
@@ -97,15 +115,89 @@ where
                 let mut results = Vec::with_capacity(transactions.len());
                 let mut db = CacheDB::new(StateProviderDatabase::new(state));
                 let mut transactions = transactions.into_iter().enumerate().peekable();
+                #[cfg(feature = "bsc")]
+                let mut before_system_tx = true;
+
+                // try to upgrade system contracts before all txs if feynman is not active
+                #[cfg(feature = "bsc")]
+                if !is_feynman_active {
+                    let contracts = get_upgrade_system_contracts(
+                        this.inner.provider.chain_spec().as_ref(),
+                        block_env.number.to(),
+                        block_env.timestamp.to(),
+                        parent_timestamp,
+                    )
+                    .expect("get upgrade system contracts failed");
+
+                    for (k, v) in contracts {
+                        let account = db.load_account(k)?;
+                        if account.account_state == NotExisting {
+                            account.account_state = Touched;
+                        }
+                        account.info.code_hash = v.clone().unwrap().hash_slow();
+                        account.info.code = v;
+                    }
+                }
+
                 while let Some((index, tx)) = transactions.next() {
                     let tx_hash = tx.hash;
 
+                    #[cfg(feature = "bsc")]
+                    if before_system_tx &&
+                        is_system_transaction(&tx, tx.signer(), block_env.coinbase)
+                    {
+                        let sys_acc =
+                            db.load_account(SYSTEM_ADDRESS).expect("load system account failed");
+                        let balance = sys_acc.info.balance;
+                        if balance > U256::ZERO {
+                            sys_acc.info.balance = U256::ZERO;
+
+                            let val_acc = db
+                                .load_account(block_env.coinbase)
+                                .expect("load validator account failed");
+                            if val_acc.account_state == NotExisting {
+                                val_acc.account_state = Touched;
+                            }
+                            val_acc.info.balance += balance;
+                        }
+
+                        // try to upgrade system contracts between normal txs and system txs
+                        // if feynman is active
+                        if is_feynman_active {
+                            let contracts = get_upgrade_system_contracts(
+                                this.inner.provider.chain_spec().as_ref(),
+                                block_env.number.to(),
+                                block_env.timestamp.to(),
+                                parent_timestamp,
+                            )
+                            .expect("get upgrade system contracts failed");
+
+                            for (k, v) in contracts {
+                                let account = db.load_account(k)?;
+                                if account.account_state == NotExisting {
+                                    account.account_state = Touched;
+                                }
+                                account.info.code_hash = v.clone().unwrap().hash_slow();
+                                account.info.code = v;
+                            }
+                        }
+
+                        before_system_tx = false;
+                    }
+
+                    cfg_if! {
+                        if #[cfg(feature = "bsc")] {
+                            let mut tx_env = Call::evm_config(this.eth_api()).tx_env(&tx);
+                            if !before_system_tx {
+                                tx_env.bsc.is_system_transaction = Some(true);
+                            };
+                        } else {
+                            let tx_env = Call::evm_config(this.eth_api()).tx_env(&tx);
+                        }
+                    }
+
                     let env = EnvWithHandlerCfg {
-                        env: Env::boxed(
-                            cfg.cfg_env.clone(),
-                            block_env.clone(),
-                            Call::evm_config(this.eth_api()).tx_env(&tx),
-                        ),
+                        env: Env::boxed(cfg.cfg_env.clone(), block_env.clone(), tx_env),
                         handler_cfg: cfg.handler_cfg,
                     };
                     let (result, state_changes) = this.trace_transaction(
@@ -149,6 +241,16 @@ where
         // we trace on top the block's parent block
         let parent = block.parent_hash;
 
+        cfg_if! {
+            if #[cfg(feature = "bsc")] {
+                let parent_timestamp = self.eth_api().block(parent.into()).await?
+                    .map(|block| block.timestamp)
+                    .ok_or_else(|| EthApiError::UnknownParentBlock)?;
+            } else {
+                let parent_timestamp = 0;
+            }
+        }
+
         // Depending on EIP-2 we need to recover the transactions differently
         let transactions =
             if self.inner.provider.chain_spec().is_homestead_active_at_block(block.number) {
@@ -171,7 +273,7 @@ where
                     .collect::<EthResult<Vec<_>>>()?
             };
 
-        self.trace_block(parent.into(), transactions, cfg, block_env, opts).await
+        self.trace_block(parent.into(), transactions, cfg, block_env, opts, parent_timestamp).await
     }
 
     /// Replays a block and returns the trace of each transaction.
@@ -196,12 +298,23 @@ where
         // its parent block's state
         let state_at = block.parent_hash;
 
+        cfg_if! {
+            if #[cfg(feature = "bsc")] {
+                let parent_timestamp = self.eth_api().block(state_at.into()).await?
+                    .map(|block| block.timestamp)
+                    .ok_or_else(|| EthApiError::UnknownParentBlock)?;
+            } else {
+                let parent_timestamp = 0;
+            }
+        }
+
         self.trace_block(
             state_at.into(),
             block.into_transactions_ecrecovered().collect(),
             cfg,
             block_env,
             opts,
+            parent_timestamp,
         )
         .await
     }
@@ -226,6 +339,16 @@ where
         let block_hash = block.hash();
         let block_txs = block.into_transactions_ecrecovered();
 
+        cfg_if! {
+            if #[cfg(feature = "bsc")] {
+                let parent_timestamp = self.eth_api().block(state_at).await?
+                    .map(|block| block.timestamp)
+                    .ok_or_else(|| EthApiError::UnknownParentBlock)?;
+            } else {
+                let parent_timestamp = 0;
+            }
+        }
+
         let this = self.clone();
         self.inner
             .eth_api
@@ -241,14 +364,22 @@ where
                     block_env.clone(),
                     block_txs,
                     tx.hash,
+                    parent_timestamp,
                 )?;
 
+                cfg_if! {
+                    if #[cfg(feature = "bsc")] {
+                        let mut tx_env = Call::evm_config(this.eth_api()).tx_env(&tx);
+                        if is_system_transaction(&tx, tx.signer(), block_env.coinbase) {
+                            tx_env.bsc.is_system_transaction = Some(true);
+                        };
+                    } else {
+                        let tx_env = Call::evm_config(this.eth_api()).tx_env(&tx);
+                    }
+                }
+
                 let env = EnvWithHandlerCfg {
-                    env: Env::boxed(
-                        cfg.cfg_env.clone(),
-                        block_env,
-                        Call::evm_config(this.eth_api()).tx_env(&tx),
-                    ),
+                    env: Env::boxed(cfg.cfg_env.clone(), block_env, tx_env),
                     handler_cfg: cfg.handler_cfg,
                 };
 
@@ -421,6 +552,8 @@ where
     /// The `debug_traceCallMany` method lets you run an `eth_callMany` within the context of the
     /// given block execution using the first n transactions in the given block as base.
     /// Each following bundle increments block number by 1 and block timestamp by 12 seconds
+    ///
+    /// This method is not supported for BSC.
     pub async fn debug_trace_call_many(
         &self,
         bundles: Vec<Bundle>,

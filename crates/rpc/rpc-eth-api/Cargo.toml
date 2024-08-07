@@ -46,6 +46,7 @@ tokio.workspace = true
 auto_impl.workspace = true
 dyn-clone.workspace = true
 tracing.workspace = true
+cfg-if = "1.0.0"
 
 [features]
 client = ["jsonrpsee/client", "jsonrpsee/async-client"]
@@ -54,4 +55,7 @@ optimism = [
     "revm/optimism",
     "reth-provider/optimism",
     "reth-rpc-eth-types/optimism"
+]
+bsc = [
+    "reth-primitives/bsc",
 ]

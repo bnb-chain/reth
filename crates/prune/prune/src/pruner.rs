@@ -311,7 +311,7 @@ impl<DB: Database, S> Pruner<DB, S> {
 
     /// Prunes ancient sidecars data from the static file provider.
     pub fn prune_ancient_sidecars(
-        &mut self,
+        &self,
         provider: &DatabaseProviderRW<DB>,
         tip_block_number: BlockNumber,
     ) {
