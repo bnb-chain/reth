@@ -223,7 +223,9 @@ impl AppendableChain {
         #[cfg(feature = "prefetch")]
         {
             let mut trie_prefetch = TriePrefetch::new();
-            let consistent_view = Arc::new(ConsistentDbView::new_with_latest_tip(externals.provider_factory.clone())?);
+            let consistent_view = Arc::new(ConsistentDbView::new_with_latest_tip(
+                externals.provider_factory.clone(),
+            )?);
 
             tokio::spawn({
                 async move {
@@ -232,7 +234,15 @@ impl AppendableChain {
             });
         }
 
+        let start = Instant::now();
         let state = executor.execute((&block, U256::MAX).into())?;
+        tracing::info!(
+            target: "blockchain_tree::chain",
+            number = block.number,
+            hash = %block_hash,
+            elapsed = ?start.elapsed(),
+            "Executed block"
+        );
         let BlockExecutionOutput { state, receipts, requests, .. } = state;
         externals
             .consensus

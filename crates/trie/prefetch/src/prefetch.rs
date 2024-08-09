@@ -1,7 +1,8 @@
+use rayon::prelude::*;
 use reth_db::database::Database;
 use reth_execution_errors::StorageRootError;
 use reth_primitives::B256;
-use reth_provider::{ProviderError, ProviderFactory};
+use reth_provider::{providers::ConsistentDbView, ProviderError, ProviderFactory};
 use reth_trie::{
     hashed_cursor::{HashedCursorFactory, HashedPostStateCursorFactory},
     metrics::TrieRootMetrics,
@@ -11,14 +12,11 @@ use reth_trie::{
     walker::TrieWalker,
     HashedPostState, HashedStorage, StorageRoot,
 };
-use reth_trie_parallel::StorageRootTargets;
+use reth_trie_parallel::{parallel_root::ParallelStateRootError, StorageRootTargets};
 use std::{collections::HashMap, sync::Arc};
-use rayon::prelude::*;
 use thiserror::Error;
-use tokio::sync::{mpsc::UnboundedReceiver, oneshot::Receiver};
+use tokio::sync::{mpsc::UnboundedReceiver, oneshot::Receiver, watch};
 use tracing::{debug, trace};
-use reth_provider::providers::ConsistentDbView;
-use reth_trie_parallel::parallel_root::ParallelStateRootError;
 
 /// Prefetch trie storage when executing transactions.
 #[derive(Debug, Clone)]
@@ -58,6 +56,7 @@ impl TriePrefetch {
     ) where
         DB: Database + 'static,
     {
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let mut count = 0u64;
         loop {
             tokio::select! {
@@ -69,8 +68,9 @@ impl TriePrefetch {
                         let hashed_state = self.deduplicate_and_update_cached(&hashed_state);
 
                         let self_clone = Arc::new(self.clone());
+                        let mut shutdown_rx = shutdown_rx.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = self_clone.prefetch_once::<DB>(consistent_view, hashed_state) {
+                            if let Err(e) = self_clone.prefetch_once::<DB>(consistent_view, hashed_state, count, &mut shutdown_rx).await {
                                 debug!(target: "trie::trie_prefetch", ?e, "Error while prefetching trie storage");
                             };
                         });
@@ -78,6 +78,7 @@ impl TriePrefetch {
                 }
                 _ = &mut interrupt_rx => {
                     debug!(target: "trie::trie_prefetch", "Interrupted trie prefetch task. Processed {:?}, left {:?}", count, prefetch_rx.len());
+                    let _ = shutdown_tx.send(true);
                     return
                 }
             }
@@ -134,14 +135,18 @@ impl TriePrefetch {
     }
 
     /// Prefetch trie storage for the given hashed state.
-    pub fn prefetch_once<DB>(
+    pub async fn prefetch_once<DB>(
         self: Arc<Self>,
         consistent_view: Arc<ConsistentDbView<DB, ProviderFactory<DB>>>,
         hashed_state: HashedPostState,
+        count: u64,
+        shutdown_rx: &mut watch::Receiver<bool>,
     ) -> Result<(), TriePrefetchError>
     where
         DB: Database,
     {
+        debug!("prefetch once started {:?}", count);
+
         let mut tracker = TrieTracker::default();
 
         let prefix_sets = hashed_state.construct_prefix_sets().freeze();
@@ -155,6 +160,10 @@ impl TriePrefetch {
         let mut storage_roots = storage_root_targets
             .into_par_iter()
             .map(|(hashed_address, prefix_set)| {
+                if *shutdown_rx.borrow() {
+                    return Ok((B256::ZERO, 0)); // return early if shutdown
+                }
+
                 let provider_ro = consistent_view.provider_ro()?;
 
                 let storage_root_result = StorageRoot::new_hashed(
@@ -170,6 +179,10 @@ impl TriePrefetch {
                 Ok((hashed_address, storage_root_result?))
             })
             .collect::<Result<HashMap<_, _>, ParallelStateRootError>>()?;
+
+        if *shutdown_rx.borrow() {
+            return Ok(()); // return early if shutdown
+        }
 
         trace!(target: "trie::trie_prefetch", "prefetching account tries");
         let provider_ro = consistent_view.provider_ro()?;
@@ -188,6 +201,10 @@ impl TriePrefetch {
         );
 
         while let Some(node) = account_node_iter.try_next().map_err(ProviderError::Database)? {
+            if *shutdown_rx.borrow() {
+                return Ok(()); // return early if shutdown
+            }
+
             match node {
                 TrieElement::Branch(_) => {
                     tracker.inc_branch();
@@ -225,6 +242,8 @@ impl TriePrefetch {
             leaves_added = stats.leaves_added(),
             "prefetched account trie"
         );
+
+        debug!("prefetch once finished {:?}", count);
 
         Ok(())
     }
