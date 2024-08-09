@@ -89,7 +89,7 @@ impl<DB, E> BlockchainTree<DB, E> {
 
 impl<DB, E> BlockchainTree<DB, E>
 where
-    DB: Database + Clone,
+    DB: Database + Clone + 'static,
     E: BlockExecutorProvider,
 {
     /// Builds the blockchain tree for the node.

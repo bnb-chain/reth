@@ -81,7 +81,7 @@ impl AppendableChain {
         block_validation_kind: BlockValidationKind,
     ) -> Result<Self, InsertBlockErrorKind>
     where
-        DB: Database + Clone,
+        DB: Database + Clone + 'static,
         E: BlockExecutorProvider,
     {
         let execution_outcome = ExecutionOutcome::default();
@@ -119,7 +119,7 @@ impl AppendableChain {
         block_validation_kind: BlockValidationKind,
     ) -> Result<Self, InsertBlockErrorKind>
     where
-        DB: Database + Clone,
+        DB: Database + Clone + 'static,
         E: BlockExecutorProvider,
     {
         let parent_number =
@@ -172,9 +172,9 @@ impl AppendableChain {
     ///   - [`BlockAttachment`] represents if the block extends the canonical chain, and thus we can
     ///     cache the trie state updates.
     ///   - [`BlockValidationKind`] determines if the state root __should__ be validated.
-    fn validate_and_execute<'a, EDP, DB, E>(
+    fn validate_and_execute<EDP, DB, E>(
         block: SealedBlockWithSenders,
-        parent_block: &'a SealedHeader,
+        parent_block: &SealedHeader,
         bundle_state_data_provider: EDP,
         externals: &TreeExternals<DB, E>,
         block_attachment: BlockAttachment,
@@ -182,7 +182,7 @@ impl AppendableChain {
     ) -> Result<(ExecutionOutcome, Option<TrieUpdates>), BlockExecutionError>
     where
         EDP: FullExecutionDataProvider,
-        DB: Database + Clone + 'a,
+        DB: Database + Clone + 'static,
         E: BlockExecutorProvider,
     {
         // some checks are done before blocks comes here.
@@ -223,10 +223,12 @@ impl AppendableChain {
         #[cfg(feature = "prefetch")]
         {
             let mut trie_prefetch = TriePrefetch::new();
-            let provider_ro = Arc::new(consistent_view.provider_ro().unwrap());
+            let consistent_view = Arc::new(ConsistentDbView::new_with_latest_tip(externals.provider_factory.clone())?);
 
-            tokio::spawn(async move {
-                trie_prefetch.run::<DB>(provider_ro, _prefetch_rx, interrupt_rx).await;
+            tokio::spawn({
+                async move {
+                    trie_prefetch.run::<DB>(consistent_view, _prefetch_rx, interrupt_rx).await;
+                }
             });
         }
 
@@ -267,7 +269,7 @@ impl AppendableChain {
                 .into())
             }
 
-            tracing::debug!(
+            tracing::info!(
                 target: "blockchain_tree::chain",
                 number = block.number,
                 hash = %block_hash,
@@ -305,7 +307,7 @@ impl AppendableChain {
         block_validation_kind: BlockValidationKind,
     ) -> Result<(), InsertBlockErrorKind>
     where
-        DB: Database + Clone,
+        DB: Database + Clone + 'static,
         E: BlockExecutorProvider,
     {
         let parent_block = self.chain.tip();

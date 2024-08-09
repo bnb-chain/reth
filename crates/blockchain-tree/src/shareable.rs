@@ -37,7 +37,7 @@ impl<DB, E> ShareableBlockchainTree<DB, E> {
 
 impl<DB, E> BlockchainTreeEngine for ShareableBlockchainTree<DB, E>
 where
-    DB: Database + Clone,
+    DB: Database + Clone + 'static,
     E: BlockExecutorProvider,
 {
     fn buffer_block(&self, block: SealedBlockWithSenders) -> Result<(), InsertBlockError> {
@@ -108,7 +108,7 @@ where
 
 impl<DB, E> BlockchainTreeViewer for ShareableBlockchainTree<DB, E>
 where
-    DB: Database + Clone,
+    DB: Database + Clone + 'static,
     E: BlockExecutorProvider,
 {
     fn header_by_hash(&self, hash: BlockHash) -> Option<SealedHeader> {
@@ -171,7 +171,7 @@ where
 
 impl<DB, E> BlockchainTreePendingStateProvider for ShareableBlockchainTree<DB, E>
 where
-    DB: Database + Clone,
+    DB: Database + Clone + 'static,
     E: BlockExecutorProvider,
 {
     fn find_pending_state_provider(
