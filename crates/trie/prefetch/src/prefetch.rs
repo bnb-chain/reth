@@ -15,7 +15,7 @@ use reth_trie_parallel::StorageRootTargets;
 use std::{collections::HashMap, sync::Arc};
 use thiserror::Error;
 use tokio::sync::{mpsc::UnboundedReceiver, oneshot::Receiver};
-use tracing::trace;
+use tracing::{debug, trace};
 
 /// Prefetch trie storage when executing transactions.
 #[derive(Debug, Clone)]
@@ -65,15 +65,16 @@ impl TriePrefetch {
                         let provider_ro = Arc::clone(&provider_ro);
                         let hashed_state = self.deduplicate_and_update_cached(&hashed_state);
 
+                        let self_clone = Arc::new(self.clone());
                         tokio::spawn(async move {
-                            if let Err(e) = self.prefetch_once::<DB>(provider_ro, hashed_state).await {
-                                trace!(target: "trie::trie_prefetch", ?e, "Error while prefetching trie storage");
+                            if let Err(e) = self_clone.prefetch_once::<DB>(provider_ro, hashed_state) {
+                                debug!(target: "trie::trie_prefetch", ?e, "Error while prefetching trie storage");
                             };
                         });
                     }
                 }
                 _ = &mut interrupt_rx => {
-                    trace!(target: "trie::trie_prefetch", "Interrupted trie prefetch task. Processed {:?}, left {:?}", count, prefetch_rx.len());
+                    debug!(target: "trie::trie_prefetch", "Interrupted trie prefetch task. Processed {:?}, left {:?}", count, prefetch_rx.len());
                     return
                 }
             }
@@ -131,7 +132,7 @@ impl TriePrefetch {
 
     /// Prefetch trie storage for the given hashed state.
     pub fn prefetch_once<DB>(
-        &self,
+        self: Arc<Self>,
         provider_ro: Arc<DatabaseProviderRO<DB>>,
         hashed_state: HashedPostState,
     ) -> Result<(), TriePrefetchError>
@@ -245,6 +246,7 @@ impl From<TriePrefetchError> for ProviderError {
     }
 }
 
+#[cfg(test)]
 mod tests {
     use tokio::time;
 
