@@ -394,6 +394,7 @@ where
         body: transactions,
         ommers: reorg_target.ommers,
         withdrawals: reorg_target.withdrawals,
+        sidecars: reorg_target.sidecars,
         requests: None, // TODO(prague)
     }
     .seal_slow();

@@ -23,16 +23,12 @@ use reth_primitives::{
 };
 use reth_provider::{ExecutionOutcome, ParliaProvider};
 use reth_prune_types::PruneModes;
-use reth_revm::{
-    batch::{BlockBatchRecord, BlockExecutorStats},
-    db::states::bundle_state::BundleRetention,
-    Evm, State,
-};
+use reth_revm::{batch::BlockBatchRecord, db::states::bundle_state::BundleRetention, Evm, State};
 use revm_primitives::{
     db::{Database, DatabaseCommit},
     BlockEnv, CfgEnvWithHandlerCfg, EVMError, EnvWithHandlerCfg, ResultAndState, TransactTo,
 };
-use std::{collections::HashMap, num::NonZeroUsize, sync::Arc, time::Instant};
+use std::{collections::HashMap, num::NonZeroUsize, sync::Arc};
 use tracing::{debug, warn};
 
 const SNAP_CACHE_NUM: usize = 2048;
@@ -120,7 +116,6 @@ where
         BscBatchExecutor {
             executor,
             batch_record: BlockBatchRecord::default(),
-            stats: BlockExecutorStats::default(),
             snapshots: Vec::new(),
         }
     }
@@ -708,7 +703,6 @@ pub struct BscBatchExecutor<EvmConfig, DB, P> {
     executor: BscBlockExecutor<EvmConfig, DB, P>,
     /// Keeps track of the batch and record receipts based on the configured prune mode
     batch_record: BlockBatchRecord,
-    stats: BlockExecutorStats,
     snapshots: Vec<Snapshot>,
 }
 
@@ -732,23 +726,17 @@ where
 
     fn execute_and_verify_one(&mut self, input: Self::Input<'_>) -> Result<(), Self::Error> {
         let BlockExecutionInput { block, total_difficulty } = input;
-        let execute_start = Instant::now();
         let BscExecuteOutput { receipts, gas_used: _, snapshot } =
             self.executor.execute_and_verify(block, total_difficulty)?;
-        self.stats.execution_duration += execute_start.elapsed();
 
         validate_block_post_execution(block, self.executor.chain_spec(), &receipts)?;
 
         // prepare the state according to the prune mode
-        let merge_start = Instant::now();
         let retention = self.batch_record.bundle_retention(block.number);
         self.executor.state.merge_transitions(retention);
-        self.stats.merge_transitions_duration += merge_start.elapsed();
 
         // store receipts in the set
-        let receipts_start = Instant::now();
         self.batch_record.save_receipts(receipts)?;
-        self.stats.receipt_root_duration += receipts_start.elapsed();
 
         // store snapshot
         if let Some(snapshot) = snapshot {
@@ -763,8 +751,6 @@ where
     }
 
     fn finalize(mut self) -> Self::Output {
-        self.stats.log_debug();
-
         ExecutionOutcome::new_with_snapshots(
             self.executor.state.take_bundle(),
             self.batch_record.take_receipts(),

@@ -4,7 +4,6 @@ use reth_bsc_consensus::Parlia;
 use reth_chainspec::ChainSpec;
 use reth_engine_primitives::EngineTypes;
 use reth_evm_bsc::SnapshotReader;
-use reth_network::message::EngineMessage;
 use reth_network_p2p::{
     headers::client::{HeadersClient, HeadersDirection, HeadersRequest},
     priority::Priority,
@@ -30,6 +29,7 @@ use tokio::{
     time::{interval, timeout, Duration},
 };
 use tracing::{debug, error, info, trace};
+use reth_network_api::events::EngineMessage;
 
 /// All message variants that can be sent to beacon engine.
 #[derive(Debug)]

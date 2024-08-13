@@ -1,8 +1,8 @@
 //! Loads a pending block from database. Helper trait for `eth_` transaction, call and trace RPC
 //! methods.
 
-use crate::{AsEthApiError, FromEthApiError, FromEvmError, IntoEthApiError};
 use super::{LoadBlock, LoadPendingBlock, LoadState, LoadTransaction, SpawnBlocking, Trace};
+use crate::{AsEthApiError, FromEthApiError, FromEvmError, IntoEthApiError};
 use cfg_if::cfg_if;
 use futures::Future;
 #[cfg(feature = "bsc")]
@@ -46,6 +46,7 @@ use revm::db::AccountState::{NotExisting, Touched};
 use revm::{Database, DatabaseCommit};
 use revm_inspectors::access_list::AccessListInspector;
 use tracing::trace;
+use reth_errors::RethError;
 
 /// Execution related functions for the [`EthApiServer`](crate::EthApiServer) trait in
 /// the `eth_` namespace.
@@ -528,7 +529,9 @@ pub trait Call: LoadState + SpawnBlocking {
             .expect("get upgrade system contracts failed");
 
             for (k, v) in contracts {
-                let account = evm.db_mut().load_account(k)?;
+                let account = evm.db_mut().load_account(k).map_err(|error| {
+                    EthApiError::Internal(RethError::Other("load account failed".into()))
+                })?;
                 if account.account_state == NotExisting {
                     account.account_state = Touched;
                 }
@@ -542,12 +545,16 @@ pub trait Call: LoadState + SpawnBlocking {
             // this should be done before return
             #[cfg(feature = "bsc")]
             if before_system_tx && is_system_transaction(&tx, tx.signer(), block_env.coinbase) {
-                let sys_acc = evm.db_mut().load_account(SYSTEM_ADDRESS)?;
+                let sys_acc = evm.db_mut().load_account(SYSTEM_ADDRESS).map_err(|error| {
+                    EthApiError::Internal(RethError::Other("load account failed".into()))
+                })?;
                 let balance = sys_acc.info.balance;
                 if balance > U256::ZERO {
                     sys_acc.info.balance = U256::ZERO;
 
-                    let val_acc = evm.db_mut().load_account(block_env.coinbase)?;
+                    let val_acc = evm.db_mut().load_account(block_env.coinbase).map_err(|error| {
+                        EthApiError::Internal(RethError::Other("load account failed".into()))
+                    })?;
                     if val_acc.account_state == NotExisting {
                         val_acc.account_state = Touched;
                     }
@@ -570,7 +577,9 @@ pub trait Call: LoadState + SpawnBlocking {
                     .expect("get upgrade system contracts failed");
 
                     for (k, v) in contracts {
-                        let account = evm.db_mut().load_account(k)?;
+                        let account = evm.db_mut().load_account(k).map_err(|error| {
+                            EthApiError::Internal(RethError::Other("load account failed".into()))
+                        })?;
                         if account.account_state == NotExisting {
                             account.account_state = Touched;
                         }

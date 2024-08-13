@@ -128,7 +128,6 @@ pub mod transactions;
 mod budget;
 mod builder;
 mod discovery;
-mod fetch;
 mod flattened_response;
 mod listener;
 mod manager;

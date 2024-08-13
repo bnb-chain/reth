@@ -10,20 +10,14 @@ use reth_chainspec::{ChainInfo, ChainSpec};
 use reth_db_api::models::{AccountBeforeTx, StoredBlockBodyIndices};
 use reth_evm::ConfigureEvmEnv;
 use reth_primitives::{
-    keccak256, Account, Address, Block, BlockHash, BlockHashOrNumber, BlockId, BlockNumber,
-    BlockNumberOrTag, BlockWithSenders, Bytecode, Bytes, Header, Receipt, SealedBlock,
-    SealedBlockWithSenders, SealedHeader, StorageKey, StorageValue, TransactionMeta,
-    TransactionSigned, TransactionSignedNoHash, TxHash, TxNumber, Withdrawal, Withdrawals, B256,
-    U256,
     keccak256, Account, Address, BlobSidecars, Block, BlockHash, BlockHashOrNumber, BlockId,
-    BlockNumber, BlockWithSenders, Bytecode, Bytes, Header, Receipt, SealedBlock,
+    BlockNumber, BlockNumberOrTag, BlockWithSenders, Bytecode, Bytes, Header, Receipt, SealedBlock,
     SealedBlockWithSenders, SealedHeader, StorageKey, StorageValue, TransactionMeta,
     TransactionSigned, TransactionSignedNoHash, TxHash, TxNumber, Withdrawal, Withdrawals, B256,
     U256,
 };
 use reth_stages_types::{StageCheckpoint, StageId};
-use reth_storage_api::{StageCheckpointReader, StateProofProvider};
-use reth_storage_api::{SidecarsProvider, StateProofProvider};
+use reth_storage_api::{SidecarsProvider, StageCheckpointReader, StateProofProvider};
 use reth_storage_errors::provider::{ProviderError, ProviderResult};
 use reth_trie::{updates::TrieUpdates, AccountProof, HashedPostState, HashedStorage};
 use revm::primitives::{BlockEnv, CfgEnvWithHandlerCfg};

@@ -402,7 +402,7 @@ revm-primitives = { version = "8.0.0", features = [
 ], default-features = false }
 
 # eth
-alloy-chains = "0.1.18"
+alloy-chains = "=0.1.18"
 alloy-dyn-abi = "0.7.2"
 alloy-primitives = { version = "0.7.2", default-features = false }
 alloy-rlp = "0.3.4"
@@ -554,15 +554,16 @@ tempfile = "3.8"
 test-fuzz = "5"
 
 [patch.crates-io]
-revm = { git = "https://github.com/bnb-chain/revm", tag = "v1.0.0" }
-revm-interpreter = { git = "https://github.com/bnb-chain/revm", tag = "v1.0.0" }
-revm-precompile = { git = "https://github.com/bnb-chain/revm", tag = "v1.0.0" }
-revm-primitives = { git = "https://github.com/bnb-chain/revm", tag = "v1.0.0" }
+revm = { git = "https://github.com/bnb-chain/revm", rev = "2c1cf20e69fed554ac9625e7cc3c586bfa26ca59" }
+revm-interpreter = { git = "https://github.com/bnb-chain/revm", rev = "2c1cf20e69fed554ac9625e7cc3c586bfa26ca59" }
+revm-precompile = { git = "https://github.com/bnb-chain/revm", rev = "2c1cf20e69fed554ac9625e7cc3c586bfa26ca59" }
+revm-primitives = { git = "https://github.com/bnb-chain/revm", rev = "2c1cf20e69fed554ac9625e7cc3c586bfa26ca59" }
 alloy-chains = { git = "https://github.com/bnb-chain/alloy-chains-rs.git", tag = "v1.0.0" }
-alloy-rpc-types-eth = { git = "https://github.com/bnb-chain/alloy", tag = "v1.0.0" }
-alloy-consensus = { git = "https://github.com/bnb-chain/alloy", tag = "v1.0.0" }
-alloy-eips = { git = "https://github.com/bnb-chain/alloy", tag = "v1.0.0" }
-alloy-network = { git = "https://github.com/bnb-chain/alloy", tag = "v1.0.0" }
-alloy-serde = { git = "https://github.com/bnb-chain/alloy", tag = "v1.0.0" }
-alloy-signer = { git = "https://github.com/bnb-chain/alloy", tag = "v1.0.0" }
-alloy-signer-local = { git = "https://github.com/bnb-chain/alloy", tag = "v1.0.0" }
+alloy-rpc-types-eth = { git = "https://github.com/bnb-chain/alloy", rev = "f445b9c3653aebdc92cbe03e72448c104f771916" }
+alloy-consensus = { git = "https://github.com/bnb-chain/alloy", rev = "f445b9c3653aebdc92cbe03e72448c104f771916" }
+alloy-eips = { git = "https://github.com/bnb-chain/alloy", rev = "f445b9c3653aebdc92cbe03e72448c104f771916" }
+alloy-network = { git = "https://github.com/bnb-chain/alloy", rev = "f445b9c3653aebdc92cbe03e72448c104f771916" }
+alloy-network-primitives = { git = "https://github.com/bnb-chain/alloy", rev = "f445b9c3653aebdc92cbe03e72448c104f771916" }
+alloy-serde = { git = "https://github.com/bnb-chain/alloy", rev = "f445b9c3653aebdc92cbe03e72448c104f771916" }
+alloy-signer = { git = "https://github.com/bnb-chain/alloy", rev = "f445b9c3653aebdc92cbe03e72448c104f771916" }
+alloy-signer-local = { git = "https://github.com/bnb-chain/alloy", rev = "f445b9c3653aebdc92cbe03e72448c104f771916" }

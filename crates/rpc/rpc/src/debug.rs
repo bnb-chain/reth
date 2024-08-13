@@ -49,6 +49,7 @@ use revm_inspectors::tracing::{
 use revm_primitives::{keccak256, HashMap};
 use std::sync::Arc;
 use tokio::sync::{AcquireError, OwnedSemaphorePermit};
+use reth_errors::RethError;
 
 /// `debug` API implementation.
 ///
@@ -135,7 +136,9 @@ where
                     .expect("get upgrade system contracts failed");
 
                     for (k, v) in contracts {
-                        let account = db.load_account(k)?;
+                        let account = db.load_account(k).map_err(|error| {
+                            EthApiError::Internal(RethError::Other("load account failed".into()))
+                        })?;
                         if account.account_state == NotExisting {
                             account.account_state = Touched;
                         }
@@ -178,7 +181,9 @@ where
                             .expect("get upgrade system contracts failed");
 
                             for (k, v) in contracts {
-                                let account = db.load_account(k)?;
+                                let account = db.load_account(k).map_err(|error| {
+                                    EthApiError::Internal(RethError::Other("load account failed".into()))
+                                })?;
                                 if account.account_state == NotExisting {
                                     account.account_state = Touched;
                                 }

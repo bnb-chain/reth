@@ -1,4 +1,4 @@
-use reth_primitives::{Request, U256};
+use reth_primitives::{parlia::Snapshot, Request, U256};
 use revm::db::BundleState;
 
 /// A helper type for ethereum block inputs that consists of a block and the total difficulty.
@@ -38,4 +38,7 @@ pub struct BlockExecutionOutput<T> {
     pub requests: Vec<Request>,
     /// The total gas used by the block.
     pub gas_used: u64,
+
+    /// Parlia snapshot.
+    pub snapshot: Option<Snapshot>,
 }

@@ -14,9 +14,10 @@ use reth_errors::ProviderError;
 use reth_evm::ConfigureEvmEnv;
 use reth_primitives::{
     parlia::Snapshot, Account, Address, BlobSidecars, Block, BlockHash, BlockHashOrNumber, BlockId,
-    BlockNumber, BlockNumberOrTag,BlockWithSenders, Bytecode, Bytes,Header, Receipt, SealedBlock, SealedBlockWithSenders,
-    SealedHeader, StorageKey, StorageValue, TransactionMeta, TransactionSigned,
-    TransactionSignedNoHash, TxHash, TxNumber, Withdrawal, Withdrawals, B256, U256,
+    BlockNumber, BlockNumberOrTag, BlockWithSenders, Bytecode, Bytes, Header, Receipt, SealedBlock,
+    SealedBlockWithSenders, SealedHeader, StorageKey, StorageValue, TransactionMeta,
+    TransactionSigned, TransactionSignedNoHash, TxHash, TxNumber, Withdrawal, Withdrawals, B256,
+    U256,
 };
 use reth_prune_types::{PruneCheckpoint, PruneSegment};
 use reth_stages_types::{StageCheckpoint, StageId};
@@ -30,10 +31,10 @@ use crate::{
     providers::StaticFileProvider,
     traits::{BlockSource, ReceiptProvider},
     AccountReader, BlockHashReader, BlockIdReader, BlockNumReader, BlockReader, BlockReaderIdExt,
-    ChainSpecProvider, ChangeSetReader, EvmEnvProvider, HeaderProvider, ParliaSnapshotReader, PruneCheckpointReader,
-    ReceiptProviderIdExt, RequestsProvider, StageCheckpointReader, StateProvider, StateProviderBox,
-    StateProviderFactory, StateRootProvider, StaticFileProviderFactory, TransactionVariant,
-    TransactionsProvider, WithdrawalsProvider,
+    ChainSpecProvider, ChangeSetReader, EvmEnvProvider, HeaderProvider, ParliaSnapshotReader,
+    PruneCheckpointReader, ReceiptProviderIdExt, RequestsProvider, StageCheckpointReader,
+    StateProvider, StateProviderBox, StateProviderFactory, StateRootProvider,
+    StaticFileProviderFactory, TransactionVariant, TransactionsProvider, WithdrawalsProvider,
 };
 
 /// Supports various api interfaces for testing purposes.

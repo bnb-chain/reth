@@ -10,9 +10,9 @@ use std::{
 
 use futures::FutureExt;
 use reth_eth_wire::{
-    capability::RawCapabilityMessage, message::RequestPair, BlockBodies, BlockHashNumber,
-    BlockHeaders, EthMessage, GetBlockBodies, GetBlockHeaders,  NewBlock, NewBlockHashes, NewPooledTransactionHashes, NodeData,
-    PooledTransactions, Receipts, SharedTransactions, Transactions,
+    capability::RawCapabilityMessage, message::RequestPair, BlockBodies, BlockHeaders, EthMessage,
+    GetBlockBodies, GetBlockHeaders, NewBlock, NewBlockHashes, NewPooledTransactionHashes,
+    NodeData, PooledTransactions, Receipts, SharedTransactions, Transactions,
 };
 use reth_network_api::PeerRequest;
 use reth_network_p2p::error::{RequestError, RequestResult};

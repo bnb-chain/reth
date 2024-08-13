@@ -29,6 +29,7 @@ pub(crate) struct StaticFileWriters {
     headers: RwLock<Option<StaticFileProviderRW>>,
     transactions: RwLock<Option<StaticFileProviderRW>>,
     receipts: RwLock<Option<StaticFileProviderRW>>,
+    sidecars: RwLock<Option<StaticFileProviderRW>>,
 }
 
 impl StaticFileWriters {
@@ -41,6 +42,7 @@ impl StaticFileWriters {
             StaticFileSegment::Headers => self.headers.write(),
             StaticFileSegment::Transactions => self.transactions.write(),
             StaticFileSegment::Receipts => self.receipts.write(),
+            StaticFileSegment::Sidecars => self.sidecars.write(),
         };
 
         if write_guard.is_none() {
@@ -51,13 +53,26 @@ impl StaticFileWriters {
     }
 
     pub(crate) fn commit(&self) -> ProviderResult<()> {
-        for writer_lock in [&self.headers, &self.transactions, &self.receipts] {
+        for writer_lock in [&self.headers, &self.transactions, &self.receipts, &self.sidecars] {
             let mut writer = writer_lock.write();
             if let Some(writer) = writer.as_mut() {
                 writer.commit()?;
             }
         }
         Ok(())
+    }
+
+    pub(crate) fn set_writer(
+        &self,
+        segment: StaticFileSegment,
+        writer: Option<StaticFileProviderRW>,
+    ) {
+        match segment {
+            StaticFileSegment::Headers => *self.headers.write() = writer,
+            StaticFileSegment::Transactions => *self.transactions.write() = writer,
+            StaticFileSegment::Receipts => *self.receipts.write() = writer,
+            StaticFileSegment::Sidecars => *self.sidecars.write() = writer,
+        }
     }
 }
 
@@ -574,7 +589,7 @@ impl StaticFileProviderRW {
 
         debug_assert!(self.writer.user_header().segment() == StaticFileSegment::Sidecars);
 
-        let block_number = self.increment_block(StaticFileSegment::Sidecars, block_number)?;
+        let block_number = self.increment_block(block_number)?;
 
         self.append_column(sidecars)?;
         self.append_column(hash)?;

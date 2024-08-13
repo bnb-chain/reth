@@ -2,8 +2,8 @@ use crate::{
     providers::StaticFileProvider, AccountReader, BlockHashReader, BlockIdReader, BlockNumReader,
     BlockReader, BlockReaderIdExt, BlockSource, CanonChainTracker, CanonStateNotifications,
     CanonStateSubscriptions, ChainSpecProvider, ChangeSetReader, DatabaseProviderFactory,
-    DatabaseProviderRO, EvmEnvProvider, FinalizedBlockReader, HeaderProvider, ProviderError,
-    ProviderFactory, PruneCheckpointReader, ReceiptProvider, ReceiptProviderIdExt,
+    DatabaseProviderRO, EvmEnvProvider, FinalizedBlockReader, HeaderProvider, ParliaSnapshotReader,
+    ProviderError, ProviderFactory, PruneCheckpointReader, ReceiptProvider, ReceiptProviderIdExt,
     RequestsProvider, StageCheckpointReader, StateProviderBox, StateProviderFactory,
     StaticFileProviderFactory, TransactionVariant, TransactionsProvider, WithdrawalsProvider,
 };
@@ -16,13 +16,14 @@ use reth_db_api::{
 };
 use reth_evm::ConfigureEvmEnv;
 use reth_primitives::{
-    Account, Address, Block, BlockHash, BlockHashOrNumber, BlockId, BlockNumHash, BlockNumber,
-    BlockNumberOrTag, BlockWithSenders, EthereumHardforks, Header, Receipt, SealedBlock,
-    SealedBlockWithSenders, SealedHeader, TransactionMeta, TransactionSigned,
+    parlia::Snapshot, Account, Address, BlobSidecars, Block, BlockHash, BlockHashOrNumber, BlockId,
+    BlockNumHash, BlockNumber, BlockNumberOrTag, BlockWithSenders, EthereumHardforks, Header,
+    Receipt, SealedBlock, SealedBlockWithSenders, SealedHeader, TransactionMeta, TransactionSigned,
     TransactionSignedNoHash, TxHash, TxNumber, Withdrawal, Withdrawals, B256, U256,
 };
 use reth_prune_types::{PruneCheckpoint, PruneSegment};
 use reth_stages_types::{StageCheckpoint, StageId};
+use reth_storage_api::SidecarsProvider;
 use reth_storage_errors::provider::ProviderResult;
 use revm::primitives::{BlockEnv, CfgEnvWithHandlerCfg};
 use std::{
@@ -823,6 +824,19 @@ where
     }
 }
 
+impl<DB> SidecarsProvider for BlockchainProvider2<DB>
+where
+    DB: Database,
+{
+    fn sidecars(&self, block_hash: &BlockHash) -> ProviderResult<Option<BlobSidecars>> {
+        self.database.sidecars(block_hash)
+    }
+
+    fn sidecars_by_number(&self, num: BlockNumber) -> ProviderResult<Option<BlobSidecars>> {
+        self.database.sidecars_by_number(num)
+    }
+}
+
 impl<DB> RequestsProvider for BlockchainProvider2<DB>
 where
     DB: Database,
@@ -1224,5 +1238,14 @@ where
         // use latest state provider
         let state_provider = self.latest()?;
         state_provider.basic_account(address)
+    }
+}
+
+impl<DB> ParliaSnapshotReader for BlockchainProvider2<DB>
+where
+    DB: Database + Sync + Send,
+{
+    fn get_parlia_snapshot(&self, block_hash: B256) -> ProviderResult<Option<Snapshot>> {
+        self.database.provider()?.get_parlia_snapshot(block_hash)
     }
 }

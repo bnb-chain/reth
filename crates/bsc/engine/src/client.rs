@@ -1,12 +1,7 @@
 //! This includes download client implementations for parlia consensus.
 use crate::Storage;
 use reth_network::FetchClient;
-use reth_network_p2p::{
-    bodies::client::{BodiesClient, BodiesFut},
-    download::DownloadClient,
-    headers::client::{HeadersClient, HeadersDirection, HeadersFut, HeadersRequest},
-    priority::Priority,
-};
+use reth_network_p2p::{bodies::client::{BodiesClient, BodiesFut}, download::DownloadClient, headers::client::{HeadersClient, HeadersDirection, HeadersFut, HeadersRequest}, priority::Priority, BlockClient};
 use reth_network_peers::{PeerId, WithPeerId};
 use reth_primitives::{BlockBody, Header, SealedHeader, B256};
 use std::fmt::Debug;
@@ -25,15 +20,18 @@ type InnerFetchBodyResult = Result<Vec<BlockBody>, InnerFetchError>;
 /// This client will first try to fetch from the local storage, and if the data is not found, it
 /// will fetch from the network.
 #[derive(Debug, Clone)]
-pub struct ParliaClient {
+pub struct ParliaClient<Client> {
     /// cached header and body
     storage: Storage,
-    fetch_client: FetchClient,
+    fetch_client: Client,
     peer_id: PeerId,
 }
 
-impl ParliaClient {
-    pub(crate) fn new(storage: Storage, fetch_client: FetchClient) -> Self {
+impl<Client> ParliaClient<Client>
+where
+    Client: BlockClient + 'static,
+{
+    pub(crate) fn new(storage: Storage, fetch_client: Client) -> Self {
         let peer_id = PeerId::random();
         Self { storage, fetch_client, peer_id }
     }
@@ -96,7 +94,10 @@ impl ParliaClient {
     }
 }
 
-impl HeadersClient for ParliaClient {
+impl<Client> HeadersClient for ParliaClient<Client>
+where
+    Client: BlockClient + 'static,
+{
     type Output = HeadersFut;
 
     fn get_headers_with_priority(
@@ -116,7 +117,10 @@ impl HeadersClient for ParliaClient {
     }
 }
 
-impl BodiesClient for ParliaClient {
+impl<Client> BodiesClient for ParliaClient<Client>
+where
+    Client: BlockClient + 'static,
+{
     type Output = BodiesFut;
 
     fn get_block_bodies_with_priority(
@@ -136,7 +140,10 @@ impl BodiesClient for ParliaClient {
     }
 }
 
-impl DownloadClient for ParliaClient {
+impl<Client> DownloadClient for ParliaClient<Client>
+where
+    Client: BlockClient + 'static,
+{
     fn report_bad_message(&self, peer_id: PeerId) {
         let this = self.clone();
         if peer_id == self.peer_id {

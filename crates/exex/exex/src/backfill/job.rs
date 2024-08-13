@@ -107,6 +107,7 @@ where
                 body: block.body,
                 ommers: block.ommers,
                 withdrawals: block.withdrawals,
+                sidecars: block.sidecars,
                 requests: block.requests,
             }
             .with_senders_unchecked(senders);

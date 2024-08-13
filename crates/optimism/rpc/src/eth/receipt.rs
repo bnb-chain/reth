@@ -1,7 +1,7 @@
 //! Loads and formats OP receipt RPC response.
 
-use reth_node_api::FullNodeComponents;
 use reth_chainspec::OptimismHardforks;
+use reth_node_api::FullNodeComponents;
 use reth_primitives::{Receipt, TransactionMeta, TransactionSigned};
 use reth_rpc_eth_api::{
     helpers::{EthApiSpec, LoadReceipt, LoadTransaction},

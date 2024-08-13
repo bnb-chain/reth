@@ -15,8 +15,7 @@ use reth_rpc_types::{BlockId, TransactionInfo};
 use revm::{db::CacheDB, Database, DatabaseCommit, GetInspector, Inspector};
 use revm_inspectors::tracing::{TracingInspector, TracingInspectorConfig};
 use revm_primitives::{EnvWithHandlerCfg, EvmState, ExecutionResult, ResultAndState};
-
-use crate::FromEvmError;
+use crate::{FromEthApiError, FromEvmError};
 
 use super::{Call, LoadBlock, LoadPendingBlock, LoadState, LoadTransaction};
 
@@ -196,7 +195,8 @@ pub trait Trace: LoadState {
 
             cfg_if! {
                 if #[cfg(feature = "bsc")] {
-                    let parent_timestamp = LoadState::cache(self).get_block(parent_block).await?
+                    let parent_timestamp = LoadState::cache(self).get_block(parent_block).await
+                        .map_err(Self::Error::from_eth_err)?
                         .map(|block| block.timestamp)
                         .ok_or_else(|| EthApiError::UnknownParentBlock)?;
                 } else {

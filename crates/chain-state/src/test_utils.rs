@@ -165,6 +165,7 @@ impl TestBlockBuilder {
             body: transactions.into_iter().map(|tx| tx.into_signed()).collect(),
             ommers: Vec::new(),
             withdrawals: None,
+            sidecars: None,
             requests: None,
         };
 

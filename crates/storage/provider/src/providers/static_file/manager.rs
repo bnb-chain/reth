@@ -745,7 +745,7 @@ impl StaticFileProvider {
                 writer.append_sidecars(Default::default(), block_number, hash)?;
             }
             writer.commit()?;
-            self.writers.insert(segment, writer);
+            self.writers.set_writer(segment, Some(writer));
 
             return Ok(None)
         }

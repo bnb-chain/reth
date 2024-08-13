@@ -2,10 +2,11 @@ use crate::{
     AccountReader, BlockHashReader, BlockIdReader, BlockNumReader, BlockReader, BlockReaderIdExt,
     BlockSource, BlockchainTreePendingStateProvider, CanonChainTracker, CanonStateNotifications,
     CanonStateSubscriptions, ChainSpecProvider, ChangeSetReader, DatabaseProviderFactory,
-    EvmEnvProvider, FinalizedBlockReader, FullExecutionDataProvider, HeaderProvider, ParliaSnapshotReader, ProviderError,
-    PruneCheckpointReader, ReceiptProvider, ReceiptProviderIdExt, RequestsProvider,
-    StageCheckpointReader, StateProviderBox, StateProviderFactory, StaticFileProviderFactory,
-    TransactionVariant, TransactionsProvider, TreeViewer, WithdrawalsProvider,
+    EvmEnvProvider, FinalizedBlockReader, FullExecutionDataProvider, HeaderProvider,
+    ParliaSnapshotReader, ProviderError, PruneCheckpointReader, ReceiptProvider,
+    ReceiptProviderIdExt, RequestsProvider, StageCheckpointReader, StateProviderBox,
+    StateProviderFactory, StaticFileProviderFactory, TransactionVariant, TransactionsProvider,
+    TreeViewer, WithdrawalsProvider,
 };
 use reth_blockchain_tree_api::{
     error::{CanonicalError, InsertBlockError},

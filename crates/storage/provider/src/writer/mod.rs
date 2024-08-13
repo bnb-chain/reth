@@ -15,7 +15,8 @@ use reth_db::{
 use reth_errors::{ProviderError, ProviderResult};
 use reth_execution_types::ExecutionOutcome;
 use reth_primitives::{
-    parlia::Snapshot, BlockNumber, Header, SealedBlock, StaticFileSegment, TransactionSignedNoHash, B256, U256,
+    parlia::Snapshot, BlockNumber, Header, SealedBlock, StaticFileSegment, TransactionSignedNoHash,
+    B256, U256,
 };
 use reth_stages_types::{StageCheckpoint, StageId};
 use reth_storage_api::{
@@ -29,6 +30,7 @@ use tracing::{debug, instrument};
 mod database;
 mod static_file;
 use database::DatabaseWriter;
+use reth_db_api::cursor::DbCursorRW;
 
 enum StorageType<C = (), S = ()> {
     Database(C),
@@ -482,7 +484,7 @@ where
         // Write snapshots to the database.
         if !snapshots.is_empty() {
             let mut snapshot_cursor =
-                self.database_writer().tx_ref().cursor_write::<tables::ParliaSnapshot>()?;
+                self.database().tx_ref().cursor_write::<tables::ParliaSnapshot>()?;
             for snap in snapshots {
                 snapshot_cursor.upsert(snap.block_hash, snap)?;
             }
@@ -511,6 +513,7 @@ where
         self.append_receipts_from_blocks(
             execution_outcome.first_block,
             execution_outcome.receipts.into_iter(),
+            execution_outcome.snapshots,
         )?;
 
         self.database().write_state_changes(plain_state)?;
@@ -1356,6 +1359,7 @@ mod tests {
             receipts: vec![vec![Some(Receipt::default()); 2]; 7].into(),
             first_block: 10,
             requests: Vec::new(),
+            snapshots: Vec::new(),
         };
 
         let mut this = base.clone();
@@ -1574,6 +1578,7 @@ mod tests {
             receipts: vec![vec![Some(Receipt::default()); 2]; 1].into(),
             first_block: 2,
             requests: Vec::new(),
+            snapshots: Vec::new(),
         };
 
         test.prepend_state(previous_state);

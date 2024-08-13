@@ -44,7 +44,7 @@ use secp256k1::SecretKey;
 use tokio::sync::mpsc::{self, error::TrySendError};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{debug, error, trace, warn};
-
+use reth_network_api::events::{BlockEvent, BlockHashesEvent, EngineMessage};
 use crate::{
     budget::{DEFAULT_BUDGET_TRY_DRAIN_NETWORK_HANDLE_CHANNEL, DEFAULT_BUDGET_TRY_DRAIN_SWARM},
     config::NetworkConfig,
@@ -54,8 +54,7 @@ use crate::{
     import::{BlockImport, BlockImportOutcome, BlockValidation},
     listener::ConnectionListener,
     message::{
-        BlockEvent, BlockHashesEvent, EngineMessage, NewBlockMessage, PeerMessage, PeerRequest,
-        PeerRequestSender,
+        NewBlockMessage, PeerMessage,
     },
     metrics::{
         DisconnectMetrics, NetworkMetrics, NETWORK_PEER_SCOPE, NETWORK_POOL_TRANSACTIONS_SCOPE,

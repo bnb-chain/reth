@@ -7,19 +7,14 @@ use crate::{
     },
     writer::UnifiedStorageWriter,
     AccountReader, BlockExecutionReader, BlockExecutionWriter, BlockHashReader, BlockNumReader,
-    BlockReader, BlockWriter, BundleStateInit, EvmEnvProvider, FinalizedBlockReader,
+    BlockReader, BlockWriter, BundleStateInit, Chain, EvmEnvProvider, FinalizedBlockReader,
     FinalizedBlockWriter, HashingWriter, HeaderProvider, HeaderSyncGap, HeaderSyncGapProvider,
     HistoricalStateProvider, HistoryWriter, LatestStateProvider, OriginalValuesKnown,
-    ProviderError, PruneCheckpointReader, PruneCheckpointWriter, RequestsProvider, RevertsInit,
-    StageCheckpointReader, StateChangeWriter, StateProviderBox, StateWriter, StatsReader,
-    StorageReader, StorageTrieWriter, TransactionVariant, TransactionsProvider,
-    TransactionsProviderExt, TrieWriter, WithdrawalsProvider,
-    BlockReader, BlockWriter, Chain, EvmEnvProvider, FinalizedBlockReader, FinalizedBlockWriter,
-    HashingWriter, HeaderProvider, HeaderSyncGap, HeaderSyncGapProvider, HistoricalStateProvider,
-    HistoryWriter, LatestStateProvider, OriginalValuesKnown, ParliaSnapshotReader, ProviderError,
-    PruneCheckpointReader, PruneCheckpointWriter, RequestsProvider, SidecarsProvider,
-    StageCheckpointReader, StateProviderBox, StateWriter, StatsReader, StorageReader,
-    TransactionVariant, TransactionsProvider, TransactionsProviderExt, WithdrawalsProvider,
+    ParliaSnapshotReader, ProviderError, PruneCheckpointReader, PruneCheckpointWriter,
+    RequestsProvider, RevertsInit, SidecarsProvider, StageCheckpointReader, StateChangeWriter,
+    StateProviderBox, StateWriter, StatsReader, StorageReader, StorageTrieWriter,
+    TransactionVariant, TransactionsProvider, TransactionsProviderExt, TrieWriter,
+    WithdrawalsProvider,
 };
 use itertools::{izip, Itertools};
 use rayon::slice::ParallelSliceMut;
@@ -44,8 +39,8 @@ use reth_execution_types::ExecutionOutcome;
 use reth_network_p2p::headers::downloader::SyncTarget;
 use reth_primitives::{
     keccak256, parlia::Snapshot, Account, Address, BlobSidecars, Block, BlockHash,
-    BlockHashOrNumber, BlockNumber, BlockWithSenders, Bytecode,GotExpected, Header, Receipt, Requests,
-    SealedBlock, SealedBlockWithSenders, SealedHeader, StaticFileSegment, StorageEntry,
+    BlockHashOrNumber, BlockNumber, BlockWithSenders, Bytecode, GotExpected, Header, Receipt,
+    Requests, SealedBlock, SealedBlockWithSenders, SealedHeader, StaticFileSegment, StorageEntry,
     TransactionMeta, TransactionSigned, TransactionSignedEcRecovered, TransactionSignedNoHash,
     TxHash, TxNumber, Withdrawal, Withdrawals, B256, U256,
 };
