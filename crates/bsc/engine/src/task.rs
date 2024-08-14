@@ -7,7 +7,9 @@ use reth_evm_bsc::SnapshotReader;
 use reth_network_p2p::{
     headers::client::{HeadersClient, HeadersDirection, HeadersRequest},
     priority::Priority,
+    BlockClient,
 };
+
 use reth_primitives::{Block, BlockBody, BlockHashOrNumber, SealedHeader, B256};
 use reth_provider::{BlockReaderIdExt, CanonChainTracker, ParliaProvider};
 use reth_rpc_types::engine::ForkchoiceState;
@@ -19,6 +21,7 @@ use std::{
 };
 use tokio::sync::Mutex;
 
+use reth_network_api::events::EngineMessage;
 use reth_rpc_types::{BlockId, RpcBlockHash};
 use tokio::{
     signal,
@@ -29,7 +32,6 @@ use tokio::{
     time::{interval, timeout, Duration},
 };
 use tracing::{debug, error, info, trace};
-use reth_network_api::events::EngineMessage;
 
 /// All message variants that can be sent to beacon engine.
 #[derive(Debug)]
@@ -58,6 +60,7 @@ pub(crate) struct ParliaEngineTask<
     Engine: EngineTypes,
     Provider: BlockReaderIdExt + CanonChainTracker,
     P: ParliaProvider,
+    Client: BlockClient,
 > {
     /// The configured chain spec
     chain_spec: Arc<ChainSpec>,
@@ -68,7 +71,7 @@ pub(crate) struct ParliaEngineTask<
     /// The snapshot reader used to read the snapshot
     snapshot_reader: Arc<SnapshotReader<P>>,
     /// The client used to fetch headers
-    block_fetcher: ParliaClient,
+    block_fetcher: ParliaClient<Client>,
     /// The interval of the block producing
     block_interval: u64,
     /// Shared storage to insert new headers
@@ -92,7 +95,8 @@ impl<
         Engine: EngineTypes + 'static,
         Provider: BlockReaderIdExt + CanonChainTracker + Clone + 'static,
         P: ParliaProvider + 'static,
-    > ParliaEngineTask<Engine, Provider, P>
+        Client: BlockClient + 'static,
+    > ParliaEngineTask<Engine, Provider, P, Client>
 {
     /// Creates a new instance of the task
     #[allow(clippy::too_many_arguments)]
@@ -104,7 +108,7 @@ impl<
         to_engine: UnboundedSender<BeaconEngineMessage<Engine>>,
         network_block_event_rx: Arc<Mutex<UnboundedReceiver<EngineMessage>>>,
         storage: Storage,
-        block_fetcher: ParliaClient,
+        block_fetcher: ParliaClient<Client>,
         block_interval: u64,
     ) {
         let (fork_choice_tx, fork_choice_rx) = mpsc::unbounded_channel();
@@ -538,8 +542,12 @@ impl<
     }
 }
 
-impl<Engine: EngineTypes, Provider: BlockReaderIdExt + CanonChainTracker, P: ParliaProvider>
-    fmt::Debug for ParliaEngineTask<Engine, Provider, P>
+impl<
+        Engine: EngineTypes,
+        Provider: BlockReaderIdExt + CanonChainTracker,
+        P: ParliaProvider,
+        Client: BlockClient,
+    > fmt::Debug for ParliaEngineTask<Engine, Provider, P, Client>
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("chain_spec")

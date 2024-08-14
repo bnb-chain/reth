@@ -25,13 +25,12 @@ use reth_beacon_consensus::BeaconEngineMessage;
 use reth_engine_primitives::EngineTypes;
 use reth_evm_bsc::SnapshotReader;
 use reth_network_api::events::EngineMessage;
-use reth_network::{fetch::FetchClient};
+use reth_network_p2p::BlockClient;
 use reth_primitives::{BlockBody, BlockHash, BlockHashOrNumber, BlockNumber};
 use reth_provider::{BlockReaderIdExt, CanonChainTracker, ParliaProvider};
 
 mod client;
 use client::*;
-use reth_network_p2p::BlockClient;
 
 mod task;
 use task::*;
@@ -104,7 +103,7 @@ where
 
     /// Consumes the type and returns all components
     #[track_caller]
-    pub fn build(self, start_engine_task: bool) -> ParliaClient {
+    pub fn build(self, start_engine_task: bool) -> ParliaClient<Client> {
         let Self {
             chain_spec,
             cfg,

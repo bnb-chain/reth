@@ -1,7 +1,12 @@
 //! This includes download client implementations for parlia consensus.
 use crate::Storage;
-use reth_network::FetchClient;
-use reth_network_p2p::{bodies::client::{BodiesClient, BodiesFut}, download::DownloadClient, headers::client::{HeadersClient, HeadersDirection, HeadersFut, HeadersRequest}, priority::Priority, BlockClient};
+use reth_network_p2p::{
+    bodies::client::{BodiesClient, BodiesFut},
+    download::DownloadClient,
+    headers::client::{HeadersClient, HeadersDirection, HeadersFut, HeadersRequest},
+    priority::Priority,
+    BlockClient,
+};
 use reth_network_peers::{PeerId, WithPeerId};
 use reth_primitives::{BlockBody, Header, SealedHeader, B256};
 use std::fmt::Debug;
