@@ -313,20 +313,15 @@ where
             BscBlockExecutionError::ProviderInnerError { error: Box::new(err.into()) }
         })?;
 
-        if header.number != 1 &&
-            (system_account.account.is_none() ||
-                system_account.account.as_ref().unwrap().info.balance == U256::ZERO)
+        if system_account.account.is_none() ||
+            system_account.account.as_ref().unwrap().info.balance == U256::ZERO
         {
             return Ok(());
         }
 
-        let (mut block_reward, transition) = system_account.drain_balance();
+        let (mut block_reward, mut transition) = system_account.drain_balance();
+        transition.info = None;
         self.state.apply_transition(vec![(SYSTEM_ADDRESS, transition)]);
-
-        // if block reward is zero, no need to distribute
-        if block_reward == 0 {
-            return Ok(());
-        }
 
         let balance_increment = HashMap::from([(validator, block_reward)]);
         self.state
@@ -338,8 +333,7 @@ where
             .basic(SYSTEM_REWARD_CONTRACT.parse().unwrap())
             .map_err(|err| BscBlockExecutionError::ProviderInnerError {
                 error: Box::new(err.into()),
-            })
-            .unwrap()
+            })?
             .unwrap_or_default()
             .balance;
         if !self.chain_spec().is_kepler_active_at_timestamp(header.timestamp) &&
