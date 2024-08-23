@@ -65,6 +65,7 @@ where
         let mut header_writer = provider.get_writer(block.number, StaticFileSegment::Headers)?;
         let mut transactions_writer =
             provider.get_writer(block.number, StaticFileSegment::Transactions)?;
+        let mut sidecars_writer = provider.get_writer(block.number, StaticFileSegment::Sidecars)?;
 
         // TODO: does to_compact require ownership?
         header_writer.append_header(block.header().clone(), td, block.hash())?;
@@ -80,9 +81,16 @@ where
         // increment block for transactions
         transactions_writer.increment_block(StaticFileSegment::Transactions, block.number)?;
 
+        sidecars_writer.append_sidecars(
+            block.sidecars.clone().unwrap_or_default(),
+            block.number,
+            block.hash(),
+        )?;
+
         // finally commit
         transactions_writer.commit()?;
         header_writer.commit()?;
+        sidecars_writer.commit()?;
 
         // TODO: do we care about the mpsc error here?
         // send a command to the db service to update the checkpoints for headers / bodies
@@ -167,7 +175,7 @@ where
         let sf_provider = self.provider.static_file_provider();
         let db_provider_rw = self.provider.provider_rw()?;
 
-        // get highest static file block for the total block range
+        // get the highest static file block for the total block range
         let highest_static_file_block = sf_provider
             .get_highest_static_file_block(StaticFileSegment::Headers)
             .expect("todo: error handling, headers should exist");
@@ -183,11 +191,18 @@ where
         let mut transactions_writer =
             sf_provider.get_writer(block_num, StaticFileSegment::Transactions)?;
         let mut receipts_writer = sf_provider.get_writer(block_num, StaticFileSegment::Receipts)?;
+        let mut sidecars_writer = sf_provider.get_writer(block_num, StaticFileSegment::Sidecars)?;
 
         // finally actually truncate, these internally commit
         receipts_writer.prune_receipts(total_txs, block_num)?;
         transactions_writer.prune_transactions(total_txs, block_num)?;
         header_writer.prune_headers(highest_static_file_block.saturating_sub(block_num))?;
+
+        // get the highest static file block of sidecars and prune
+        let highest_static_file_block = sf_provider
+            .get_highest_static_file_block(StaticFileSegment::Sidecars)
+            .expect("todo: error handling, headers should exist");
+        sidecars_writer.prune_sidecars(highest_static_file_block.saturating_sub(block_num))?;
 
         sf_provider.commit()?;
 

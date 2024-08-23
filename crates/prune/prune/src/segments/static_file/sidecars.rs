@@ -100,7 +100,7 @@ mod tests {
         let db = TestStageDB::default();
         let mut rng = generators::rng();
 
-        let blocks = random_block_range(&mut rng, 1..=15, B256::ZERO, 0..1);
+        let blocks = random_block_range(&mut rng, 0..=15, B256::ZERO, 0..1);
         db.insert_blocks(blocks.iter(), StorageKind::Database(None)).expect("insert blocks");
 
         assert_eq!(db.table::<tables::Sidecars>().unwrap().len(), blocks.len());
@@ -154,12 +154,13 @@ mod tests {
             provider.commit().expect("commit");
 
             let last_pruned_block_number = to_block.min(
-                next_block_number_to_prune + input.limiter.deleted_entries_limit().unwrap() as u64,
+                next_block_number_to_prune +
+                    (input.limiter.deleted_entries_limit().unwrap() - 1) as u64,
             );
 
             assert_eq!(
                 db.table::<tables::Sidecars>().unwrap().len(),
-                blocks.len() - last_pruned_block_number as usize
+                blocks.len() - (last_pruned_block_number + 1) as usize
             );
             assert_eq!(
                 db.factory
@@ -179,6 +180,6 @@ mod tests {
             12,
             (PruneProgress::HasMoreData(PruneInterruptReason::DeletedEntriesLimitReached), 10),
         );
-        test_prune(12, (PruneProgress::Finished, 2));
+        test_prune(12, (PruneProgress::Finished, 3));
     }
 }

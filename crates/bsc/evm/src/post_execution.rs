@@ -429,8 +429,7 @@ where
         env: EnvWithHandlerCfg,
     ) -> Result<(), BlockExecutionError> {
         let ElectedValidators { validators, voting_powers, vote_addrs } =
-            get_top_validators_by_voting_power(validators_election_info, max_elected_validators)
-                .ok_or_else(|| BscBlockExecutionError::GetTopValidatorsFailed)?;
+            get_top_validators_by_voting_power(validators_election_info, max_elected_validators);
 
         self.transact_system_tx(
             self.parlia().update_validator_set_v2(validators, voting_powers, vote_addrs),

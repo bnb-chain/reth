@@ -35,7 +35,7 @@ impl PartialOrd for ValidatorElectionInfo {
 pub fn get_top_validators_by_voting_power(
     validators: Vec<ValidatorElectionInfo>,
     max_elected_validators: U256,
-) -> Option<ElectedValidators> {
+) -> ElectedValidators {
     let mut validator_heap: BinaryHeap<ValidatorElectionInfo> = BinaryHeap::new();
     for info in validators {
         if info.voting_power > U256::ZERO {
@@ -60,15 +60,11 @@ pub fn get_top_validators_by_voting_power(
         }
     }
 
-    if e_validators.is_empty() {
-        return None;
-    }
-
-    Some(ElectedValidators {
+    ElectedValidators {
         validators: e_validators,
         voting_powers: e_voting_powers,
         vote_addrs: e_vote_addrs,
-    })
+    }
 }
 
 #[cfg(test)]
@@ -207,13 +203,8 @@ mod tests {
         ];
 
         for (description, k, validators, expected) in test_cases {
-            let eligible_validators = if let Some(elected) =
-                get_top_validators_by_voting_power(validators, U256::from(k))
-            {
-                elected.validators
-            } else {
-                Vec::new()
-            };
+            let eligible_validators =
+                get_top_validators_by_voting_power(validators, U256::from(k)).validators;
 
             assert_eq!(eligible_validators.len(), expected.len(), "case: {}", description);
             for i in 0..expected.len() {
