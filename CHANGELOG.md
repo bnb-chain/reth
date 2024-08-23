@@ -1,5 +1,18 @@
 # Changelog
 
+## V1.0.2
+This release is for BSC mainnet HaberFix and Bohr upgrade and opBNB mainnet Wright upgrade.
+
+### FEATURES
+* [\#106](https://github.com/bnb-chain/reth/pull/106) feat: add mainnet fork time for Wright upgrade
+* [\#116](https://github.com/bnb-chain/reth/pull/116) feat: add mainnet fork time for HaberFix and Bohr upgrade
+
+### BUGFIX
+* [\#111](https://github.com/bnb-chain/reth/pull/111) fix: cannot find parent block during livesync
+* [\#113](https://github.com/bnb-chain/reth/pull/113) fix: system account transition issue in `distribute_incoming`
+* [\#115](https://github.com/bnb-chain/reth/pull/115) fix: print CanonicalBlockAdded logs after committed db
+
+
 ## V1.0.1
 This release is for BSC testnet Bohr upgrade and opBNB testnet Wright upgrade.
 
@@ -7,15 +20,15 @@ This release is for BSC testnet Bohr upgrade and opBNB testnet Wright upgrade.
 * [\#102](https://github.com/bnb-chain/reth/pull/102) chore: update deps
 * [\#101](https://github.com/bnb-chain/reth/pull/101) feat: support traceBlock and traceTransaction for bsc
 * [\#100](https://github.com/bnb-chain/reth/pull/100) feat: add fork time for Bohr Hardfork of BSC in testnet
-* [\#99](https://github.com/bnb-chain/reth/pull/99)   feat: add fork time for Wright Hardfork of opBNB in testnet
+* [\#99](https://github.com/bnb-chain/reth/pull/99) feat: add fork time for Wright Hardfork of opBNB in testnet
 * [\#94](https://github.com/bnb-chain/reth/pull/94) feat: support Wright upgrade for opbnb
 * [\#95](https://github.com/bnb-chain/reth/pull/95) feat: add prune for ancient sidecars data
 * [\#86](https://github.com/bnb-chain/reth/pull/86) feat: implement the Bohr upgrade of BSC
 * [\#98](https://github.com/bnb-chain/reth/pull/98) feat: merge with upstream v1.0.3 version
 
-
 ### BUGFIX
 * [\#97](https://github.com/bnb-chain/reth/pull/97) fix: snapshot incompatibility issue
+
 
 ## v1.0.0
 The Reth is entering production-ready v1.0.0. Thanks to the Paradigm team for their continuous iterations on Reth, 
