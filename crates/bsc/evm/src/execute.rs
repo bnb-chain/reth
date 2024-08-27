@@ -928,9 +928,10 @@ where
                     self.parlia.chain_spec().is_bohr_active_at_timestamp(header.timestamp),
                 )
                 .ok_or_else(|| BscBlockExecutionError::ApplySnapshotFailed)?;
+
+            cache.put(snap.block_hash, snap.clone());
         }
 
-        cache.put(snap.block_hash, snap.clone());
         Ok(snap)
     }
 

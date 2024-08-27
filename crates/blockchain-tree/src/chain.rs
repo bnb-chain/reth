@@ -214,13 +214,18 @@ impl AppendableChain {
         let block = block.unseal();
 
         let state = executor.execute((&block, U256::MAX, ancestor_blocks).into())?;
-        let BlockExecutionOutput { state, receipts, requests, .. } = state;
+        let BlockExecutionOutput { state, receipts, requests, gas_used: _, snapshot } = state;
         externals
             .consensus
             .validate_block_post_execution(&block, PostExecutionInput::new(&receipts, &requests))?;
 
-        let initial_execution_outcome =
-            ExecutionOutcome::new(state, receipts.into(), block.number, vec![requests.into()]);
+        let initial_execution_outcome = ExecutionOutcome::new_with_snapshots(
+            state,
+            receipts.into(),
+            block.number,
+            vec![requests.into()],
+            vec![snapshot.unwrap_or_default()],
+        );
 
         // check state root if the block extends the canonical chain __and__ if state root
         // validation was requested.
