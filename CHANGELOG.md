@@ -1,5 +1,13 @@
 # Changelog
 
+## V1.0.3
+This is a bugfix version.
+
+### BUGFIX
+* [\#119](https://github.com/bnb-chain/reth/pull/119) fix: sidecars missing issue and empty validators election info issue
+* [\#122](https://github.com/bnb-chain/reth/pull/122) fix: bsc snapshot issues
+* [\#125](https://github.com/bnb-chain/reth/pull/125) fix: bsc `BLS_SIGNATURE_VALIDATION` precompile contract error
+
 ## V1.0.2
 This release is for BSC mainnet HaberFix and Bohr upgrade and opBNB mainnet Wright upgrade.
 
