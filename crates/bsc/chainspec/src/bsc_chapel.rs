@@ -18,7 +18,7 @@ pub static BSC_CHAPEL: Lazy<Arc<BscChainSpec>> = Lazy::new(|| {
     BscChainSpec {
         inner: ChainSpec {
             chain: Chain::from_named(NamedChain::BNBSmartChainTestnet),
-            genesis: serde_json::from_str(include_str!("../res/genesis/bsc_rialto.json"))
+            genesis: serde_json::from_str(include_str!("../res/genesis/bsc_chapel.json"))
                 .expect("Can't deserialize BSC Testnet genesis json"),
             genesis_hash: Some(b256!(
                 "6d3c66c5357ec91d5c43af47e234a939b22557cbb552dc45bebbceeed90fbe34"
