@@ -1758,8 +1758,16 @@ where
         let sealed_block = Arc::new(block.block.clone());
         let block = block.unseal();
 
+        let ancestor_blocks = self
+            .state
+            .tree_state
+            .blocks_by_hash
+            .iter()
+            .map(|(hash, block)| (*hash, block.block().header.header().clone()))
+            .collect::<HashMap<_, _>>();
+
         let exec_time = Instant::now();
-        let output = executor.execute((&block, U256::MAX, None).into())?;
+        let output = executor.execute((&block, U256::MAX, Some(&ancestor_blocks)).into())?;
         debug!(target: "engine", elapsed=?exec_time.elapsed(), ?block_number, "Executed block");
         self.consensus.validate_block_post_execution(
             &block,
