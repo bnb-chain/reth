@@ -34,7 +34,7 @@ Please include the following information in your report:
  * The debug logs from __the same time period__. To find the default location for these logs, run:
    `reth --help | grep -A 4 'log.file.directory'`
 
-Once you have this information, please submit a github issue at https://github.com/paradigmxyz/reth/issues/new
+Once you have this information, please submit a github issue at https://github.com/bnb-chain/reth/issues/new
 "#;
 
 /// The default threshold (in number of blocks) for switching from incremental trie building

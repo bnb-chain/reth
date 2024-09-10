@@ -261,6 +261,13 @@ impl AppendableChain {
                 (state_root, None)
             };
             if block.state_root != state_root {
+                tracing::debug!(
+                    target: "blockchain_tree::chain",
+                    number = block.number,
+                    hash = %block_hash,
+                    receipts = ?&initial_execution_outcome.receipts,
+                    "Mismatched state root"
+                );
                 return Err(ConsensusError::BodyStateRootDiff(
                     GotExpected { got: state_root, expected: block.state_root }.into(),
                 )

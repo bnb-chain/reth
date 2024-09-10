@@ -1780,6 +1780,13 @@ where
         let (state_root, trie_output) =
             state_provider.state_root_with_updates(hashed_state.clone())?;
         if state_root != block.state_root {
+            debug!(
+                target: "engine",
+                number = block.number,
+                hash = %block_hash,
+                receipts = ?output.receipts,
+                "Mismatched state root"
+            );
             return Err(ConsensusError::BodyStateRootDiff(
                 GotExpected { got: state_root, expected: block.state_root }.into(),
             )
