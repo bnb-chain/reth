@@ -39,13 +39,8 @@ RUN cargo build --profile $BUILD_PROFILE --features "$FEATURES" --locked --bin b
 RUN cp /app/target/$BUILD_PROFILE/bsc-reth /app/bsc-reth
 
 # Use Ubuntu as the release image
-FROM ubuntu:20.04 AS runtime
+FROM ubuntu AS runtime
 WORKDIR /app
-
-# Install perf and other system dependencies
-RUN apt-get update && \
-    apt-get install -y linux-tools-common linux-tools-generic \
-                       libclang-dev pkg-config
 
 # Copy reth over from the build stage
 COPY --from=builder /app/bsc-reth /usr/local/bin
