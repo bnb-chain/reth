@@ -185,11 +185,11 @@ impl TestStageDB {
             let segment_header = writer.user_header();
             if segment_header.block_end().is_none() && segment_header.expected_block_start() == 0 {
                 for block_number in 0..block_number {
-                    writer.append_sidecars(Default::default(), block_number, &B256::ZERO)?;
+                    writer.append_sidecars(&Default::default(), block_number, &B256::ZERO)?;
                 }
             }
 
-            writer.append_sidecars(Default::default(), block_number, &hash)?;
+            writer.append_sidecars(&Default::default(), block_number, &hash)?;
         } else {
             tx.put::<tables::Sidecars>(block_number, Default::default())?;
         }
