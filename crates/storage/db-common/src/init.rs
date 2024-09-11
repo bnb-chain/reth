@@ -296,7 +296,7 @@ pub fn insert_genesis_header<DB: Database>(
 
             // skip the zero block index
             let mut writer = static_file_provider.latest_writer(StaticFileSegment::Sidecars)?;
-            writer.append_sidecars(Default::default(), 0, B256::ZERO)?;
+            writer.append_sidecars(&Default::default(), 0, &B256::ZERO)?;
         }
         Ok(Some(_)) => {}
         Err(e) => return Err(e),

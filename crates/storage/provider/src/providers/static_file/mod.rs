@@ -194,7 +194,7 @@ mod tests {
             for sidecars in sidecars_set.clone() {
                 let block_number = sidecars[0].block_number.to();
                 let hash = sidecars[0].block_hash;
-                writer.append_sidecars(sidecars, block_number, hash).unwrap();
+                writer.append_sidecars(&sidecars, block_number, &hash).unwrap();
             }
             writer.commit().unwrap();
         }

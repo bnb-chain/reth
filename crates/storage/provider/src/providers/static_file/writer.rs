@@ -580,9 +580,9 @@ impl StaticFileProviderRW {
     /// Returns the current [`BlockNumber`] as seen in the static file.
     pub fn append_sidecars(
         &mut self,
-        sidecars: BlobSidecars,
+        sidecars: &BlobSidecars,
         block_number: BlockNumber,
-        hash: BlockHash,
+        hash: &BlockHash,
     ) -> ProviderResult<BlockNumber> {
         let start = Instant::now();
         self.ensure_no_queued_prune()?;

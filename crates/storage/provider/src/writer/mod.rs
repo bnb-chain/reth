@@ -15,8 +15,8 @@ use reth_db::{
 use reth_errors::{ProviderError, ProviderResult};
 use reth_execution_types::ExecutionOutcome;
 use reth_primitives::{
-    parlia::Snapshot, BlockNumber, Header, SealedBlock, StaticFileSegment, TransactionSignedNoHash,
-    B256, U256,
+    parlia::Snapshot, BlobSidecars, BlockNumber, Header, SealedBlock, StaticFileSegment,
+    TransactionSignedNoHash, B256, U256,
 };
 use reth_stages_types::{StageCheckpoint, StageId};
 use reth_storage_api::{
@@ -209,8 +209,8 @@ where
         Ok(())
     }
 
-    /// Writes the header & transactions to static files, and updates their respective checkpoints
-    /// on database.
+    /// Writes the header & transactions & sidecars to static files, and updates their respective
+    /// checkpoints on database.
     #[instrument(level = "trace", skip_all, fields(block = ?block.num_hash()) target = "storage")]
     fn save_header_and_transactions(&self, block: Arc<SealedBlock>) -> ProviderResult<()> {
         debug!(target: "provider::storage_writer", "Writing headers and transactions.");
@@ -243,6 +243,16 @@ where
                 block.header().number,
                 std::iter::once(&no_hash_transactions),
             )?;
+
+            let sidecar_writer =
+                self.static_file().get_writer(block.number, StaticFileSegment::Sidecars)?;
+            let mut storage_writer = UnifiedStorageWriter::from(self.database(), sidecar_writer);
+            storage_writer.append_sidecars_from_blocks(std::iter::once((
+                &block.sidecars.clone().unwrap_or_default(),
+                block.number,
+                block.hash(),
+            )))?;
+
             self.database()
                 .save_stage_checkpoint(StageId::Bodies, StageCheckpoint::new(block.number))?;
         }
@@ -398,6 +408,29 @@ where
             // update index
             last_tx_idx = Some(tx_index);
         }
+        Ok(())
+    }
+
+    /// Appends sidecars to static files
+    ///
+    /// NOTE: The static file writer used to construct this [`UnifiedStorageWriter`] MUST be a
+    /// writer for the Sidecars segment.
+    pub fn append_sidecars_from_blocks<SC, I>(
+        &mut self,
+        sidecars: impl Iterator<Item = I>,
+    ) -> ProviderResult<()>
+    where
+        I: Borrow<(SC, u64, B256)>,
+        SC: Borrow<BlobSidecars>,
+    {
+        self.ensure_static_file_segment(StaticFileSegment::Sidecars)?;
+
+        for pair in sidecars {
+            let (sc, block_number, hash) = pair.borrow();
+            let sc = sc.borrow();
+            self.static_file_mut().append_sidecars(sc, *block_number, hash)?;
+        }
+
         Ok(())
     }
 }

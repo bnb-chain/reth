@@ -742,7 +742,7 @@ impl StaticFileProvider {
             // append empty sidecars
             for block_number in range_start..=checkpoint_block_number {
                 let hash = provider.block_hash(block_number)?.unwrap_or_default();
-                writer.append_sidecars(Default::default(), block_number, hash)?;
+                writer.append_sidecars(&Default::default(), block_number, &hash)?;
             }
             writer.commit()?;
             self.writers.set_writer(segment, Some(writer));

@@ -43,7 +43,7 @@ impl<DB: Database> Segment<DB> for Sidecars {
             debug_assert_eq!(header_block, canonical_header_block);
 
             let _static_file_block =
-                static_file_writer.append_sidecars(sidecar, header_block, canonical_header)?;
+                static_file_writer.append_sidecars(&sidecar, header_block, &canonical_header)?;
             debug_assert_eq!(_static_file_block, header_block);
         }
 
