@@ -825,7 +825,7 @@ mod tests {
 
                         for block_number in 0..=progress.number {
                             static_file_producer_sc.append_sidecars(
-                                Default::default(),
+                                &Default::default(),
                                 block_number,
                                 &blocks
                                     .get(block_number as usize)
