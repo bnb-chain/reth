@@ -226,6 +226,7 @@ where
                     pruner,
                     ctx.components().payload_builder().clone(),
                     TreeConfig::default(),
+                    ctx.node_config().skip_state_root_validation,
                 );
                 eth_service
             }
@@ -255,6 +256,7 @@ where
                     pruner,
                     ctx.components().payload_builder().clone(),
                     TreeConfig::default(),
+                    ctx.node_config().skip_state_root_validation,
                 );
                 eth_service
             }

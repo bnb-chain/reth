@@ -80,6 +80,7 @@ where
         pruner: Pruner<DB, ProviderFactory<DB>>,
         payload_builder: PayloadBuilderHandle<T>,
         tree_config: TreeConfig,
+        skip_state_root_validation: bool,
     ) -> Self {
         let downloader = BasicBlockDownloader::new(client, consensus.clone());
 
@@ -97,6 +98,7 @@ where
             payload_builder,
             canonical_in_memory_state,
             tree_config,
+            skip_state_root_validation,
         );
 
         let engine_handler = EngineApiRequestHandler::new(to_tree_tx, from_tree);
@@ -203,6 +205,7 @@ mod tests {
             pruner,
             PayloadBuilderHandle::new(tx),
             TreeConfig::default(),
+            false,
         );
     }
 }

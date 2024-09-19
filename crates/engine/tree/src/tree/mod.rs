@@ -39,7 +39,7 @@ use reth_rpc_types::{
     ExecutionPayload,
 };
 use reth_stages_api::ControlFlow;
-use reth_trie::HashedPostState;
+use reth_trie::{updates::TrieUpdates, HashedPostState};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     ops::Bound,
@@ -415,6 +415,8 @@ pub struct EngineApiTreeHandler<P, E, T: EngineTypes> {
     config: TreeConfig,
     /// Metrics for the engine api.
     metrics: EngineApiMetrics,
+    /// Flag indicating whether the state root validation should be skipped.
+    skip_state_root_validation: bool,
 }
 
 impl<P, E, T> EngineApiTreeHandler<P, E, T>
@@ -437,6 +439,7 @@ where
         persistence_state: PersistenceState,
         payload_builder: PayloadBuilderHandle<T>,
         config: TreeConfig,
+        skip_state_root_validation: bool,
     ) -> Self {
         let (incoming_tx, incoming) = std::sync::mpsc::channel();
         Self {
@@ -455,6 +458,7 @@ where
             config,
             metrics: Default::default(),
             incoming_tx,
+            skip_state_root_validation,
         }
     }
 
@@ -473,6 +477,7 @@ where
         payload_builder: PayloadBuilderHandle<T>,
         canonical_in_memory_state: CanonicalInMemoryState,
         config: TreeConfig,
+        skip_state_root_validation: bool,
     ) -> (Sender<FromEngine<EngineApiRequest<T>>>, UnboundedReceiver<EngineApiEvent>) {
         let best_block_number = provider.best_block_number().unwrap_or(0);
         let header = provider.sealed_header(best_block_number).ok().flatten().unwrap_or_default();
@@ -502,6 +507,7 @@ where
             persistence_state,
             payload_builder,
             config,
+            skip_state_root_validation,
         );
         let incoming = task.incoming_tx.clone();
         std::thread::Builder::new().name("Tree Task".to_string()).spawn(|| task.run()).unwrap();
@@ -1775,25 +1781,27 @@ where
         )?;
 
         let hashed_state = HashedPostState::from_bundle_state(&output.state.state);
-
-        let root_time = Instant::now();
-        let (state_root, trie_output) =
-            state_provider.state_root_with_updates(hashed_state.clone())?;
-        if state_root != block.state_root {
-            debug!(
-                target: "engine",
-                number = block.number,
-                hash = %block_hash,
-                receipts = ?output.receipts,
-                "Mismatched state root"
-            );
-            return Err(ConsensusError::BodyStateRootDiff(
-                GotExpected { got: state_root, expected: block.state_root }.into(),
-            )
-            .into())
+        let mut trie_output = TrieUpdates::default();
+        if !self.skip_state_root_validation {
+            let root_time = Instant::now();
+            let (state_root, _trie_output) =
+                state_provider.state_root_with_updates(hashed_state.clone())?;
+            if state_root != block.state_root {
+                debug!(
+                    target: "engine",
+                    number = block.number,
+                    hash = %block_hash,
+                    receipts = ?output.receipts,
+                    "Mismatched state root"
+                );
+                return Err(ConsensusError::BodyStateRootDiff(
+                    GotExpected { got: state_root, expected: block.state_root }.into(),
+                )
+                .into())
+            }
+            trie_output = _trie_output;
+            debug!(target: "engine", elapsed=?root_time.elapsed(), ?block_number, "Calculated state root");
         }
-
-        debug!(target: "engine", elapsed=?root_time.elapsed(), ?block_number, "Calculated state root");
 
         let executed = ExecutedBlock {
             block: sealed_block.clone(),
@@ -2127,6 +2135,7 @@ mod tests {
                 PersistenceState::default(),
                 payload_builder,
                 TreeConfig::default(),
+                false,
             );
 
             let block_builder = TestBlockBuilder::default().with_chain_spec((*chain_spec).clone());
