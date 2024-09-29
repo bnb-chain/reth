@@ -48,6 +48,7 @@ pub struct ParliaEngineBuilder<Client, Provider, Engine: EngineTypes, P> {
     provider: Provider,
     parlia: Parlia,
     snapshot_reader: SnapshotReader<P>,
+    merkle_clean_threshold: u64,
 }
 
 // === impl ParliaEngineBuilder ===
@@ -60,6 +61,7 @@ where
     P: ParliaProvider + 'static,
 {
     /// Creates a new builder instance to configure all parts.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         chain_spec: Arc<ChainSpec>,
         cfg: ParliaConfig,
@@ -68,6 +70,7 @@ where
         to_engine: UnboundedSender<BeaconEngineMessage<Engine>>,
         network_block_event_rx: Arc<Mutex<UnboundedReceiver<EngineMessage>>>,
         fetch_client: Client,
+        merkle_clean_threshold: u64,
     ) -> Self {
         let latest_header = provider
             .latest_header()
@@ -97,6 +100,7 @@ where
             to_engine,
             network_block_event_rx,
             fetch_client,
+            merkle_clean_threshold,
         }
     }
 
@@ -113,6 +117,7 @@ where
             provider,
             parlia,
             snapshot_reader,
+            merkle_clean_threshold,
         } = self;
         let parlia_client = ParliaClient::new(storage.clone(), fetch_client);
         if start_engine_task {
@@ -126,6 +131,7 @@ where
                 storage,
                 parlia_client.clone(),
                 cfg.period,
+                merkle_clean_threshold,
             );
         }
         parlia_client

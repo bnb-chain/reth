@@ -35,8 +35,6 @@ use reth_node_core::{
     version::{CARGO_PKG_VERSION, CLIENT_CODE, NAME_CLIENT, VERGEN_GIT_SHA},
 };
 use reth_node_events::{cl::ConsensusLayerHealthEvents, node};
-#[cfg(feature = "bsc")]
-use reth_primitives::parlia::ParliaConfig;
 use reth_provider::providers::BlockchainProvider2;
 use reth_rpc_engine_api::{capabilities::EngineCapabilities, EngineApi};
 use reth_rpc_types::{engine::ClientVersionV1, WithOtherFields};
@@ -251,12 +249,13 @@ where
                 let engine_rx = ctx.node_adapter().components.network().get_to_engine_rx();
                 let client = ParliaEngineBuilder::new(
                     ctx.chain_spec(),
-                    ParliaConfig::default(),
+                    ctx.toml_config().parlia.clone(),
                     ctx.blockchain_db().clone(),
                     ctx.blockchain_db().clone(),
                     consensus_engine_tx.clone(),
                     engine_rx,
                     network_client.clone(),
+                    ctx.toml_config().stages.merkle.clean_threshold,
                 )
                 .build(ctx.node_config().debug.tip.is_none());
                 let eth_service = EngineService::new(
