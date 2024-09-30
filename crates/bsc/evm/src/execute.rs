@@ -238,6 +238,11 @@ where
                 });
             }
 
+            debug!("test info: tx hash {:?}", transaction.recalculate_hash());
+            debug!("test info: tx fee {:?}", transaction.effective_gas_price(None) * result.gas_used() as u128);
+            debug!("test info: result {:?}", result);
+            debug!("test info: state {:?}", state);
+
             evm.db_mut().commit(state);
 
             self.patch_mainnet_after_tx(transaction, evm.db_mut());
