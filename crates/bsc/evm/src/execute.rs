@@ -1,7 +1,8 @@
 //! Bsc block executor.
 
-use crate::{post_execution::PostExecutionInput, BscBlockExecutionError, BscEvmConfig};
 use core::fmt::Display;
+use std::{collections::HashMap, num::NonZeroUsize, sync::Arc};
+
 use lazy_static::lazy_static;
 use lru::LruCache;
 use parking_lot::RwLock;
@@ -14,6 +15,7 @@ use reth_evm::{
     execute::{
         BatchExecutor, BlockExecutionInput, BlockExecutionOutput, BlockExecutorProvider, Executor,
     },
+    system_calls::apply_blockhashes_contract_call,
     ConfigureEvm,
 };
 use reth_primitives::{
@@ -30,9 +32,10 @@ use revm_primitives::{
     BlockEnv, CfgEnvWithHandlerCfg, EVMError, EnvWithHandlerCfg, EvmState, ResultAndState,
     TransactTo,
 };
-use std::{collections::HashMap, num::NonZeroUsize, sync::Arc};
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, warn};
+
+use crate::{post_execution::PostExecutionInput, BscBlockExecutionError, BscEvmConfig};
 
 const SNAP_CACHE_NUM: usize = 2048;
 
@@ -183,6 +186,16 @@ where
     where
         DB: Database<Error: Into<ProviderError> + std::fmt::Display>,
     {
+        // apply pre execution changes(BEP-440)
+        apply_blockhashes_contract_call(
+            &self.evm_config,
+            &self.chain_spec,
+            block.timestamp,
+            block.number,
+            block.parent_hash,
+            &mut evm,
+        )?;
+
         // execute transactions
         let mut cumulative_gas_used = 0;
         let mut system_txs = Vec::with_capacity(2); // Normally there are 2 system transactions.

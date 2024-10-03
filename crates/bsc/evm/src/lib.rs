@@ -6,6 +6,8 @@
 // The `bsc` feature must be enabled to use this crate.
 #![cfg(feature = "bsc")]
 
+use std::sync::Arc;
+
 use reth_chainspec::ChainSpec;
 use reth_ethereum_forks::EthereumHardfork;
 use reth_evm::{ConfigureEvm, ConfigureEvmEnv, NextBlockEnvAttributes};
@@ -15,11 +17,10 @@ use reth_primitives::{
         AnalysisKind, BlobExcessGasAndPrice, BlockEnv, CfgEnv, CfgEnvWithHandlerCfg, SpecId, TxEnv,
     },
     transaction::FillTxEnv,
-    Address, Bytes, Head, Header, TransactionSigned, U256,
+    Address, Bytes, Head, Header, TransactionSigned, TxKind, U256,
 };
 use reth_revm::{inspector_handle_register, Database, Evm, EvmBuilder, GetInspector};
 use revm_primitives::Env;
-use std::sync::Arc;
 
 mod config;
 pub use config::{revm_spec, revm_spec_by_timestamp_after_shanghai};
@@ -59,12 +60,40 @@ impl ConfigureEvmEnv for BscEvmConfig {
 
     fn fill_tx_env_system_contract_call(
         &self,
-        _env: &mut Env,
-        _caller: Address,
-        _contract: Address,
-        _data: Bytes,
+        env: &mut Env,
+        caller: Address,
+        contract: Address,
+        data: Bytes,
     ) {
-        // No system contract call on BSC
+        let tx = TxEnv {
+            caller,
+            transact_to: TxKind::Call(contract),
+            // Explicitly set nonce to None so revm does not do any nonce checks
+            nonce: None,
+            gas_limit: 30_000_000,
+            value: U256::ZERO,
+            data,
+            // Setting the gas price to zero enforces that no value is transferred as part of the
+            // call, and that the call will not count against the block's gas limit
+            gas_price: U256::ZERO,
+            // The chain ID check is not relevant here and is disabled if set to None
+            chain_id: None,
+            // Setting the gas priority fee to None ensures the effective gas price is derived from
+            // the `gas_price` field, which we need to be zero
+            gas_priority_fee: None,
+            access_list: Vec::new(),
+            // blob fields can be None for this tx
+            blob_hashes: Vec::new(),
+            max_fee_per_blob_gas: None,
+            ..Default::default()
+        };
+        env.tx = tx;
+
+        // ensure the block gas limit is >= the tx
+        env.block.gas_limit = U256::from(env.tx.gas_limit);
+
+        // disable the base fee check for this call by setting the base fee to zero
+        env.block.basefee = U256::ZERO;
     }
 
     fn fill_cfg_env(
@@ -183,13 +212,14 @@ impl ConfigureEvm for BscEvmConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use reth_chainspec::Chain;
     use reth_primitives::{
         revm_primitives::{BlockEnv, CfgEnv},
         Genesis,
     };
     use revm_primitives::SpecId;
+
+    use super::*;
 
     #[test]
     #[ignore]
