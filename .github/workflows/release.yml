@@ -13,7 +13,7 @@ env:
   OP_IMAGE_NAME: ${{ github.repository_owner }}/op-reth
   IMAGE_NAME: ${{ github.repository_owner }}/bsc-reth
   CARGO_TERM_COLOR: always
-  TOOL_CHAIN: "1.79"
+  TOOL_CHAIN: "1.81"
 
 jobs:
   extract-version:

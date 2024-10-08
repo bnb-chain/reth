@@ -12,7 +12,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   SEED: rustethereumethereumrust
-  TOOL_CHAIN: "1.80"
+  TOOL_CHAIN: "1.81"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}

@@ -10,7 +10,7 @@ on:
     # Needed so we can run it manually
 
 env:
-  TOOL_CHAIN: "1.79"
+  TOOL_CHAIN: "1.81"
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   BRANCH: cargo-update
   TITLE: "chore(deps): weekly `cargo update`"
