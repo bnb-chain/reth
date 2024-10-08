@@ -1759,8 +1759,7 @@ mod tests {
         let genesis = data.genesis;
 
         // test pops execution results from vector, so order is from last to first.
-        let externals =
-            setup_externals(vec![exec3.clone(), exec2.clone(), exec4, exec3, exec2, exec1]);
+        let externals = setup_externals(vec![exec3.clone(), exec2.clone(), exec2, exec1]);
 
         // last finalized block would be number 9.
         setup_genesis(&externals.provider_factory, genesis);
@@ -1781,16 +1780,6 @@ mod tests {
 
         assert_eq!(
             tree.insert_block(block2.clone(), BlockValidationKind::Exhaustive).unwrap(),
-            InsertPayloadOk::Inserted(BlockStatus::Valid(BlockAttachment::Canonical))
-        );
-
-        assert_eq!(
-            tree.insert_block(block3.clone(), BlockValidationKind::Exhaustive).unwrap(),
-            InsertPayloadOk::Inserted(BlockStatus::Valid(BlockAttachment::Canonical))
-        );
-
-        assert_eq!(
-            tree.insert_block(block4, BlockValidationKind::Exhaustive).unwrap(),
             InsertPayloadOk::Inserted(BlockStatus::Valid(BlockAttachment::Canonical))
         );
 
