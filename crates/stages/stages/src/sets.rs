@@ -28,7 +28,7 @@
 //!     StaticFileProducer::new(provider_factory.clone(), PruneModes::default());
 //! // Build a pipeline with all offline stages.
 //! let pipeline = Pipeline::<MockNodeTypesWithDB>::builder()
-//!     .add_stages(OfflineStages::new(exec, StageConfig::default(), PruneModes::default()))
+//!     .add_stages(OfflineStages::new(exec, StageConfig::default(), PruneModes::default(), false))
 //!     .build(provider_factory, static_file_producer);
 //!
 //! # }
