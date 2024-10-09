@@ -1,0 +1,67 @@
+name: build-check
+
+on:
+    pull_request:
+      branches: [ main, develop ]
+
+env:
+  CARGO_TERM_COLOR: always
+  TOOL_CHAIN: "1.81"
+
+jobs:
+  extract-version:
+    name: extract version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Extract version
+        run: echo "VERSION=$(echo ${GITHUB_REF#refs/tags/})" >> $GITHUB_OUTPUT
+        id: extract_version
+    outputs:
+      VERSION: ${{ steps.extract_version.outputs.VERSION }}
+
+  build:
+    name: build release
+    runs-on: ${{ matrix.configs.os }}
+    needs: extract-version
+    strategy:
+      matrix:
+        configs:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-20.04
+            profile: maxperf
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-20.04
+            profile: maxperf
+          - target: x86_64-apple-darwin
+            os: macos-13
+            profile: maxperf
+          - target: aarch64-apple-darwin
+            os: macos-14
+            profile: maxperf
+          - target: x86_64-pc-windows-gnu
+            os: ubuntu-20.04
+            profile: maxperf
+        build:
+          - command: op-build
+            binary: op-reth
+          - command: bsc-build
+            binary: bsc-reth
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          target: ${{ matrix.configs.target }}
+          toolchain: ${{ env.TOOL_CHAIN }}
+      - uses: taiki-e/install-action@cross
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Apple M1 setup
+        if: matrix.configs.target == 'aarch64-apple-darwin'
+        run: |
+          echo "SDKROOT=$(xcrun -sdk macosx --show-sdk-path)" >> $GITHUB_ENV
+          echo "MACOSX_DEPLOYMENT_TARGET=$(xcrun -sdk macosx --show-sdk-platform-version)" >> $GITHUB_ENV
+
+      - name: Build Reth
+        run: make PROFILE=${{ matrix.configs.profile }} ${{ matrix.build.command }}-${{ matrix.configs.target }}
