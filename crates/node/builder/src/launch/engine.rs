@@ -243,6 +243,7 @@ where
                     ctx.invalid_block_hook()?,
                     ctx.sync_metrics_tx(),
                     ctx.node_config().skip_state_root_validation,
+                    ctx.node_config().enable_execution_cache,
                 );
                 eth_service
             }
@@ -275,6 +276,7 @@ where
                     ctx.invalid_block_hook()?,
                     ctx.sync_metrics_tx(),
                     ctx.node_config().skip_state_root_validation,
+                    ctx.node_config().enable_execution_cache,
                 );
                 eth_service
             }

@@ -133,6 +133,9 @@ pub struct NodeConfig {
 
     /// Disable hashing stages to skip merkle tree building
     pub skip_state_root_validation: bool,
+
+    /// Enable execution cache during block insertion
+    pub enable_execution_cache: bool,
 }
 
 impl NodeConfig {
@@ -421,6 +424,7 @@ impl Default for NodeConfig {
             datadir: DatadirArgs::default(),
             enable_prefetch: false,
             skip_state_root_validation: false,
+            enable_execution_cache: false,
         }
     }
 }
