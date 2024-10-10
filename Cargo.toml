@@ -129,8 +129,6 @@ members = [
     "crates/trie/parallel/",
     "crates/trie/prefetch/",
     "crates/trie/trie",
-    "crates/bsc/node/",
-    "crates/bsc/engine/",
     "examples/beacon-api-sidecar-fetcher/",
     "examples/beacon-api-sse/",
     "examples/bsc-p2p",
@@ -301,6 +299,7 @@ reth-bench = { path = "bin/reth-bench" }
 reth-bsc-chainspec = { path = "crates/bsc/chainspec" }
 reth-bsc-cli = { path = "crates/bsc/cli" }
 reth-bsc-consensus = { path = "crates/bsc/consensus" }
+reth-bsc-engine = { path = "crates/bsc/engine" }
 reth-blockchain-tree = { path = "crates/blockchain-tree" }
 reth-blockchain-tree-api = { path = "crates/blockchain-tree-api" }
 reth-chain-state = { path = "crates/chain-state" }
@@ -407,7 +406,6 @@ reth-static-file-types = { path = "crates/static-file/types" }
 reth-storage-api = { path = "crates/storage/storage-api" }
 reth-storage-errors = { path = "crates/storage/errors" }
 reth-tasks = { path = "crates/tasks" }
-reth-bsc-engine = { path = "crates/bsc/engine" }
 reth-testing-utils = { path = "testing/testing-utils" }
 reth-tokio-util = { path = "crates/tokio-util" }
 reth-tracing = { path = "crates/tracing" }
