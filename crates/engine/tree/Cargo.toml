@@ -77,14 +77,14 @@ rand.workspace = true
 
 [features]
 test-utils = [
-  "reth-db/test-utils",
-  "reth-chain-state/test-utils",
-  "reth-network-p2p/test-utils",
-  "reth-prune-types",
-  "reth-stages/test-utils",
-  "reth-static-file",
-  "reth-tracing",
-  "reth-chainspec"
+    "reth-db/test-utils",
+    "reth-chain-state/test-utils",
+    "reth-network-p2p/test-utils",
+    "reth-prune-types",
+    "reth-stages/test-utils",
+    "reth-static-file",
+    "reth-tracing",
+    "reth-chainspec"
 ]
 
 bsc = []
