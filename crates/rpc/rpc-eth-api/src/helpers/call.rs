@@ -15,8 +15,6 @@ use alloy_rpc_types::{
 use alloy_rpc_types_eth::transaction::TransactionRequest;
 use cfg_if::cfg_if;
 use futures::Future;
-#[cfg(feature = "bsc")]
-use reth_bsc_forks::BscHardforks;
 use reth_chainspec::{EthChainSpec, MIN_TRANSACTION_GAS};
 #[cfg(feature = "bsc")]
 use reth_errors::RethError;
