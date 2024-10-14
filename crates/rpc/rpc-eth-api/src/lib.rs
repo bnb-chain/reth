@@ -34,3 +34,6 @@ pub use bundle::{EthBundleApiClient, EthCallBundleApiClient};
 pub use core::EthApiClient;
 #[cfg(feature = "client")]
 pub use filter::EthFilterApiClient;
+
+/// fix lint errors
+use reth_bsc_forks as _;
