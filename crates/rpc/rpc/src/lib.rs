@@ -54,3 +54,5 @@ pub use rpc::RPCApi;
 pub use trace::TraceApi;
 pub use txpool::TxPoolApi;
 pub use web3::Web3Api;
+
+use reth_bsc_forks as _;
