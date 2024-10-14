@@ -6,9 +6,9 @@ use blst::{
     BLST_ERROR,
 };
 use reth_bsc_consensus::{DIFF_INTURN, DIFF_NOTURN};
+use reth_bsc_forks::BscHardforks;
 use reth_errors::{BlockExecutionError, ProviderError};
 use reth_ethereum_forks::EthereumHardforks;
-use reth_bsc_forks::BscHardforks;
 use reth_evm::ConfigureEvm;
 use reth_primitives::{
     parlia::{Snapshot, VoteAddress, MAX_ATTESTATION_EXTRA_LENGTH},
@@ -230,9 +230,7 @@ mod tests {
     use alloy_primitives::{b256, hex};
 
     use blst::min_pk::{PublicKey, Signature};
-    use reth_primitives::{
-        parlia::{VoteAddress, VoteData, VoteSignature},
-    };
+    use reth_primitives::parlia::{VoteAddress, VoteData, VoteSignature};
 
     #[test]
     fn verify_vote_attestation() {

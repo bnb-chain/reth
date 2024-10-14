@@ -56,6 +56,7 @@ impl Deref for LoadedJar {
 mod tests {
     use super::*;
     use crate::{test_utils::create_test_provider_factory, HeaderProvider};
+    use alloy_eips::eip4844::BlobTransactionSidecar;
     use alloy_primitives::{BlockHash, TxNumber, B256, U256};
     use rand::seq::SliceRandom;
     use reth_db::{
@@ -63,11 +64,13 @@ mod tests {
         HeaderTerminalDifficulties, Headers, Sidecars,
     };
     use reth_db_api::transaction::DbTxMut;
-    use reth_primitives::{static_file::{find_fixed_range, SegmentRangeInclusive, DEFAULT_BLOCKS_PER_STATIC_FILE}, BlobSidecar, BlobSidecars, Header, Receipt, TransactionSignedNoHash};
+    use reth_primitives::{
+        static_file::{find_fixed_range, SegmentRangeInclusive, DEFAULT_BLOCKS_PER_STATIC_FILE},
+        BlobSidecar, BlobSidecars, Header, Receipt, TransactionSignedNoHash,
+    };
     use reth_storage_api::{ReceiptProvider, SidecarsProvider, TransactionsProvider};
     use reth_testing_utils::generators::{self, random_header_range};
     use std::{fmt::Debug, fs, ops::Range, path::Path};
-    use alloy_eips::eip4844::BlobTransactionSidecar;
 
     fn assert_eyre<T: PartialEq + Debug>(got: T, expected: T, msg: &str) -> eyre::Result<()> {
         if got != expected {
@@ -554,10 +557,10 @@ mod tests {
         // Data sources
         let factory = create_test_provider_factory();
         let static_files_path = tempfile::tempdir().unwrap();
-        let static_file = static_files_path
-            .path()
-            .join(StaticFileSegment::Sidecars.filename(&find_fixed_range(*range.end(), DEFAULT_BLOCKS_PER_STATIC_FILE)));
-
+        let static_file = static_files_path.path().join(
+            StaticFileSegment::Sidecars
+                .filename(&find_fixed_range(*range.end(), DEFAULT_BLOCKS_PER_STATIC_FILE)),
+        );
         // Setup data
         let mut provider_rw = factory.provider_rw().unwrap();
         let tx = provider_rw.tx_mut();

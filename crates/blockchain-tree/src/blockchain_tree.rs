@@ -1675,7 +1675,8 @@ mod tests {
                         ommers: Vec::new(),
                         withdrawals: Some(Withdrawals::default()),
                         sidecars: None,
-                    requests: None,},
+                        requests: None,
+                    },
                 },
                 body.iter().map(|tx| tx.signer()).collect(),
             )

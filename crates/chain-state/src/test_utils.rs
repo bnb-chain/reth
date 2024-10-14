@@ -170,7 +170,8 @@ impl TestBlockBuilder {
                 ommers: Vec::new(),
                 withdrawals: Some(vec![].into()),
                 sidecars: None,
-            requests: None,},
+                requests: None,
+            },
         };
 
         SealedBlockWithSenders::new(block, vec![self.signer; num_txs as usize]).unwrap()

@@ -1,7 +1,7 @@
 use crate::Parlia;
 use alloy_consensus::TxLegacy;
-use alloy_primitives::{Address, Bytes, TxKind, U256};
 use alloy_dyn_abi::{DynSolValue, JsonAbiExt};
+use alloy_primitives::{Address, Bytes, TxKind, U256};
 use reth_primitives::{
     system_contracts::{
         CROSS_CHAIN_CONTRACT, GOVERNOR_CONTRACT, GOV_TOKEN_CONTRACT, LIGHT_CLIENT_CONTRACT,

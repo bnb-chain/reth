@@ -512,12 +512,13 @@ where
     // seal the block
     let block = Block {
         header,
-        body: BlockBody { transactions: executed_txs,
-        ommers: vec![],
-        withdrawals,
-        sidecars: None,
-        requests: None,
-    },
+        body: BlockBody {
+            transactions: executed_txs,
+            ommers: vec![],
+            withdrawals,
+            sidecars: None,
+            requests: None,
+        },
     };
 
     let sealed_block = block.seal_slow();

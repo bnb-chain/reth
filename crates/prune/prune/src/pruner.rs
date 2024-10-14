@@ -340,8 +340,8 @@ where
 
         let prune_target_block =
             tip_block_number.saturating_sub(self.recent_sidecars_kept_blocks as u64);
-        let mut range_start = find_fixed_range(prune_target_block, DEFAULT_BLOCKS_PER_STATIC_FILE).start();
-
+        let mut range_start =
+            find_fixed_range(prune_target_block, DEFAULT_BLOCKS_PER_STATIC_FILE).start();
         if range_start == 0 {
             return
         }

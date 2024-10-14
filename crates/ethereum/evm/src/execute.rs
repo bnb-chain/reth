@@ -346,7 +346,12 @@ where
         let env = self.evm_env_for_block(&block.header, total_difficulty);
         let output = {
             let evm = self.executor.evm_config.evm_with_env(&mut self.state, env);
-            self.executor.execute_state_transitions(block, evm, state_hook, self.prefetch_tx.clone())
+            self.executor.execute_state_transitions(
+                block,
+                evm,
+                state_hook,
+                self.prefetch_tx.clone(),
+            )
         }?;
 
         // 3. apply post execution changes
@@ -646,7 +651,8 @@ mod tests {
                                 ommers: vec![],
                                 withdrawals: None,
                                 sidecars: None,
-                            requests: None,},
+                                requests: None,
+                            },
                         },
                         senders: vec![],
                     },
@@ -680,7 +686,8 @@ mod tests {
                             ommers: vec![],
                             withdrawals: None,
                             sidecars: None,
-                        requests: None,},
+                            requests: None,
+                        },
                     },
                     senders: vec![],
                 },
@@ -748,7 +755,8 @@ mod tests {
                                 ommers: vec![],
                                 withdrawals: None,
                                 sidecars: None,
-                            requests: None,},
+                                requests: None,
+                            },
                         },
                         senders: vec![],
                     },
@@ -804,7 +812,8 @@ mod tests {
                                 ommers: vec![],
                                 withdrawals: None,
                                 sidecars: None,
-                            requests: None,},
+                                requests: None,
+                            },
                         },
                         senders: vec![],
                     },

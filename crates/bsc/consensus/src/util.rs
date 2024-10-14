@@ -1,5 +1,8 @@
 use crate::EXTRA_SEAL_LEN;
-use alloy_primitives::{keccak256, bytes::{BufMut, BytesMut}, B256, B64, U256};
+use alloy_primitives::{
+    bytes::{BufMut, BytesMut},
+    keccak256, B256, B64, U256,
+};
 use alloy_rlp::Encodable;
 use reth_primitives::Header;
 use std::env;

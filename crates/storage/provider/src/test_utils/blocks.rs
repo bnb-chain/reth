@@ -9,8 +9,8 @@ use once_cell::sync::Lazy;
 use reth_db::tables;
 use reth_db_api::{database::Database, models::StoredBlockBodyIndices};
 use reth_primitives::{
-    Account, BlockBody, Header, Receipt, SealedBlock, SealedBlockWithSenders,
-    SealedHeader, Signature, Transaction, TransactionSigned, TxType, Withdrawal, Withdrawals,
+    Account, BlockBody, Header, Receipt, SealedBlock, SealedBlockWithSenders, SealedHeader,
+    Signature, Transaction, TransactionSigned, TxType, Withdrawal, Withdrawals,
 };
 use reth_trie::root::{state_root_unhashed, storage_root_unhashed};
 use revm::{db::BundleState, primitives::AccountInfo};

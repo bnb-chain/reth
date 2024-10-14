@@ -187,9 +187,7 @@ mod tests {
     use super::*;
     use alloy_genesis::Genesis;
     use reth_chainspec::Chain;
-    use reth_primitives::{
-        revm_primitives::{BlockEnv, CfgEnv},
-    };
+    use reth_primitives::revm_primitives::{BlockEnv, CfgEnv};
     use revm_primitives::SpecId;
 
     #[test]

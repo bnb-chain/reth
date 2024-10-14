@@ -14,7 +14,8 @@ use reth_db::static_file::{
 };
 use reth_db_api::models::CompactU256;
 use reth_primitives::{
-    BlobSidecars, Header, Receipt, SealedHeader, TransactionMeta, TransactionSigned, TransactionSignedNoHash,
+    BlobSidecars, Header, Receipt, SealedHeader, TransactionMeta, TransactionSigned,
+    TransactionSignedNoHash,
 };
 use reth_storage_api::SidecarsProvider;
 use reth_storage_errors::provider::{ProviderError, ProviderResult};

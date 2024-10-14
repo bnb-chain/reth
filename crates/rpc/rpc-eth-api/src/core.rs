@@ -8,8 +8,8 @@ use alloy_rpc_types::{
     serde_helpers::JsonStorageKey,
     simulate::{SimulatePayload, SimulatedBlock},
     state::{EvmOverrides, StateOverride},
-    BlockOverrides, BlockSidecar, Bundle, EIP1186AccountProofResponse,
-    EthCallResponse, FeeHistory, Header, Index, StateContext, SyncStatus, Work,
+    BlockOverrides, BlockSidecar, Bundle, EIP1186AccountProofResponse, EthCallResponse, FeeHistory,
+    Header, Index, StateContext, SyncStatus, Work,
 };
 use alloy_rpc_types_eth::transaction::TransactionRequest;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};

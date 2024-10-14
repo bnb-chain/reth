@@ -417,10 +417,15 @@ where
     };
 
     // seal the block
-    let block =
-        Block {
+    let block = Block {
         header,
-        body: BlockBody { transactions: executed_txs, ommers: vec![], withdrawals, sidecars: None, requests },
+        body: BlockBody {
+            transactions: executed_txs,
+            ommers: vec![],
+            withdrawals,
+            sidecars: None,
+            requests,
+        },
     };
 
     let sealed_block = block.seal_slow();

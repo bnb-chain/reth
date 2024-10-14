@@ -1,7 +1,7 @@
 //! Bsc block executor.
 
 use crate::{post_execution::PostExecutionInput, BscBlockExecutionError, BscEvmConfig};
-use alloy_primitives::{Address, BlockNumber, B256, Bytes, U256};
+use alloy_primitives::{Address, BlockNumber, Bytes, B256, U256};
 use core::fmt::Display;
 use lazy_static::lazy_static;
 use lru::LruCache;
@@ -9,8 +9,8 @@ use parking_lot::RwLock;
 use reth_bsc_consensus::{
     is_breathe_block, validate_block_post_execution, Parlia, ValidatorElectionInfo, ValidatorsInfo,
 };
-use reth_chainspec::{ChainSpec, EthereumHardforks};
 use reth_bsc_forks::BscHardforks;
+use reth_chainspec::{ChainSpec, EthereumHardforks};
 use reth_errors::{BlockExecutionError, BlockValidationError, ProviderError};
 use reth_evm::{
     execute::{

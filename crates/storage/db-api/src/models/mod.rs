@@ -8,8 +8,8 @@ use alloy_genesis::GenesisAccount;
 use alloy_primitives::{bytes::BufMut, Address, Bytes, Log, B256, U256};
 use reth_codecs::{add_arbitrary_tests, Compact};
 use reth_primitives::{
-    parlia::Snapshot, Account, BlobSidecar, BlobSidecars, Bytecode, Header,
-    Receipt, Requests, StorageEntry, TransactionSignedNoHash, TxType,
+    parlia::Snapshot, Account, BlobSidecar, BlobSidecars, Bytecode, Header, Receipt, Requests,
+    StorageEntry, TransactionSignedNoHash, TxType,
 };
 use reth_prune_types::{PruneCheckpoint, PruneSegment};
 use reth_stages_types::StageCheckpoint;
@@ -202,7 +202,7 @@ impl Compress for Snapshot {
 
 impl Decompress for Snapshot {
     fn decompress(value: &[u8]) -> Result<Self, DatabaseError> {
-        serde_cbor::from_slice(value.as_ref()).map_err(|_| DatabaseError::Decode)
+        serde_cbor::from_slice(value).map_err(|_| DatabaseError::Decode)
     }
 }
 
@@ -328,9 +328,7 @@ add_wrapper_struct!((ClientVersion, CompactClientVersion));
 mod tests {
     use super::*;
     use rand::Rng;
-    use reth_primitives::{
-        parlia::{ValidatorInfo, VoteAddress, VoteData, DEFAULT_TURN_LENGTH},
-    };
+    use reth_primitives::parlia::{ValidatorInfo, VoteAddress, VoteData, DEFAULT_TURN_LENGTH};
     use std::collections::{BTreeMap, HashMap};
 
     // each value in the database has an extra field named flags that encodes metadata about other

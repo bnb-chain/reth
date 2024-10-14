@@ -1,23 +1,23 @@
 //! BSC Node types config.
 
-use std::sync::Arc;
 use crate::EthEngineTypes;
 use reth_basic_payload_builder::{BasicPayloadJobGenerator, BasicPayloadJobGeneratorConfig};
 use reth_bsc_consensus::Parlia;
 use reth_chainspec::ChainSpec;
-use reth_ethereum_engine_primitives::{EthBuiltPayload, EthPayloadAttributes, EthPayloadBuilderAttributes, EthereumEngineValidator};
+use reth_ethereum_engine_primitives::{
+    EthBuiltPayload, EthPayloadAttributes, EthPayloadBuilderAttributes, EthereumEngineValidator,
+};
 use reth_evm_bsc::{BscEvmConfig, BscExecutorProvider};
 use reth_network::NetworkHandle;
 use reth_node_api::{ConfigureEvm, EngineValidator, FullNodeComponents, NodeAddOns};
 use reth_node_builder::{
     components::{
-        ComponentsBuilder, ConsensusBuilder, ExecutorBuilder, NetworkBuilder,
-        PayloadServiceBuilder, PoolBuilder,
+        ComponentsBuilder, ConsensusBuilder, EngineValidatorBuilder, ExecutorBuilder,
+        NetworkBuilder, PayloadServiceBuilder, PoolBuilder,
     },
     node::{FullNodeTypes, NodeTypes, NodeTypesWithEngine},
     BuilderContext, Node, PayloadBuilderConfig, PayloadTypes,
 };
-use reth_node_builder::components::EngineValidatorBuilder;
 use reth_payload_builder::{PayloadBuilderHandle, PayloadBuilderService};
 use reth_primitives::Header;
 use reth_provider::CanonStateSubscriptions;
@@ -27,6 +27,7 @@ use reth_transaction_pool::{
     blobstore::DiskFileBlobStore, EthTransactionPool, TransactionPool,
     TransactionValidationTaskExecutor,
 };
+use std::sync::Arc;
 
 /// Type configuration for a regular BSC node.
 #[derive(Debug, Default, Clone, Copy)]

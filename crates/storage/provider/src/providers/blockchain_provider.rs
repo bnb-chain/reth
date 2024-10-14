@@ -2,10 +2,11 @@ use crate::{
     providers::StaticFileProvider, AccountReader, BlockHashReader, BlockIdReader, BlockNumReader,
     BlockReader, BlockReaderIdExt, BlockSource, CanonChainTracker, CanonStateNotifications,
     CanonStateSubscriptions, ChainSpecProvider, ChainStateBlockReader, ChangeSetReader,
-    DatabaseProviderFactory, DatabaseProviderRO, EvmEnvProvider, HeaderProvider, ParliaSnapshotReader,
-    ProviderError, ProviderFactory, PruneCheckpointReader, ReceiptProvider, ReceiptProviderIdExt,
-    RequestsProvider, StageCheckpointReader, StateProviderBox, StateProviderFactory, StateReader,
-    StaticFileProviderFactory, TransactionVariant, TransactionsProvider, WithdrawalsProvider,
+    DatabaseProviderFactory, DatabaseProviderRO, EvmEnvProvider, HeaderProvider,
+    ParliaSnapshotReader, ProviderError, ProviderFactory, PruneCheckpointReader, ReceiptProvider,
+    ReceiptProviderIdExt, RequestsProvider, StageCheckpointReader, StateProviderBox,
+    StateProviderFactory, StateReader, StaticFileProviderFactory, TransactionVariant,
+    TransactionsProvider, WithdrawalsProvider,
 };
 use alloy_eips::{BlockHashOrNumber, BlockId, BlockNumHash, BlockNumberOrTag, HashOrNumber};
 use alloy_primitives::{Address, BlockHash, BlockNumber, Sealable, TxHash, TxNumber, B256, U256};
@@ -21,7 +22,7 @@ use reth_evm::ConfigureEvmEnv;
 use reth_execution_types::{BundleStateInit, ExecutionOutcome, RevertsInit};
 use reth_node_types::NodeTypesWithDB;
 use reth_primitives::{
-    parlia::Snapshot, Account, BlobSidecars, Block,  BlockWithSenders,  Header, Receipt, SealedBlock,
+    parlia::Snapshot, Account, BlobSidecars, Block, BlockWithSenders, Header, Receipt, SealedBlock,
     SealedBlockWithSenders, SealedHeader, StorageEntry, TransactionMeta, TransactionSigned,
     TransactionSignedNoHash, Withdrawal, Withdrawals,
 };

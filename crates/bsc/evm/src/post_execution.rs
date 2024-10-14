@@ -6,8 +6,8 @@ use reth_bsc_consensus::{
     COLLECT_ADDITIONAL_VOTES_REWARD_RATIO, DEFAULT_TURN_LENGTH, DIFF_INTURN, MAX_SYSTEM_REWARD,
     SYSTEM_REWARD_PERCENT,
 };
-use reth_errors::{BlockExecutionError, BlockValidationError, ProviderError};
 use reth_bsc_forks::BscHardforks;
+use reth_errors::{BlockExecutionError, BlockValidationError, ProviderError};
 use reth_evm::ConfigureEvm;
 use reth_primitives::{
     parlia::{Snapshot, VoteAddress, VoteAttestation},

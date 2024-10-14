@@ -41,8 +41,7 @@ use reth_execution_types::{Chain, ExecutionOutcome};
 use reth_network_p2p::headers::downloader::SyncTarget;
 use reth_primitives::{
     parlia::Snapshot, Account, BlobSidecars, Block, BlockBody, BlockWithSenders, Bytecode,
-    GotExpected, Header, Receipt, Requests,
-    SealedBlock, SealedBlockWithSenders, SealedHeader,
+    GotExpected, Header, Receipt, Requests, SealedBlock, SealedBlockWithSenders, SealedHeader,
     StaticFileSegment, StorageEntry, TransactionMeta, TransactionSigned,
     TransactionSignedEcRecovered, TransactionSignedNoHash, Withdrawal, Withdrawals,
 };
@@ -1727,12 +1726,7 @@ impl<TX: DbTx, Spec: Send + Sync + EthereumHardforks> BlockReader for DatabasePr
 
                 return Ok(Some(Block {
                     header,
-                    body: BlockBody { transactions,
-                    ommers,
-                    withdrawals,
-                    sidecars,
-                    requests,
-                },
+                    body: BlockBody { transactions, ommers, withdrawals, sidecars, requests },
                 }))
             }
         }
@@ -1795,12 +1789,14 @@ impl<TX: DbTx, Spec: Send + Sync + EthereumHardforks> BlockReader for DatabasePr
             |header, transactions, senders, ommers, withdrawals, requests| {
                 Block {
                     header,
-                    body: BlockBody { transactions,
-                    ommers,
-                    withdrawals,
-                    sidecars: Some(Default::default()),
-                    requests,
-                } }
+                    body: BlockBody {
+                        transactions,
+                        ommers,
+                        withdrawals,
+                        sidecars: Some(Default::default()),
+                        requests,
+                    },
+                }
                 // Note: we're using unchecked here because we know the block contains valid txs
                 // wrt to its height and can ignore the s value check so pre
                 // EIP-2 txs are allowed
@@ -1823,12 +1819,13 @@ impl<TX: DbTx, Spec: Send + Sync + EthereumHardforks> BlockReader for DatabasePr
             |header, transactions, senders, ommers, withdrawals, requests| {
                 SealedBlock {
                     header,
-                    body: BlockBody { transactions,
-                    ommers,
-                    withdrawals,
-                    sidecars: Some(Default::default()),
-                    requests,
-                },
+                    body: BlockBody {
+                        transactions,
+                        ommers,
+                        withdrawals,
+                        sidecars: Some(Default::default()),
+                        requests,
+                    },
                 }
                 // Note: we're using unchecked here because we know the block contains valid txs
                 // wrt to its height and can ignore the s value check so pre
@@ -1870,9 +1867,12 @@ impl<TX: DbTx, Spec: Send + Sync + EthereumHardforks> BlockReader for DatabasePr
             range,
             |range| self.headers_range(range),
             |header, transactions, ommers, withdrawals, sidecars, requests, senders| {
-                Block { header, body: BlockBody { transactions, ommers, withdrawals, sidecars, requests } }
-                    .try_with_senders_unchecked(senders)
-                    .map_err(|_| ProviderError::SenderRecoveryError)
+                Block {
+                    header,
+                    body: BlockBody { transactions, ommers, withdrawals, sidecars, requests },
+                }
+                .try_with_senders_unchecked(senders)
+                .map_err(|_| ProviderError::SenderRecoveryError)
             },
         )
     }

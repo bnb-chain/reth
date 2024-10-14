@@ -457,10 +457,15 @@ pub trait LoadPendingBlock: EthApiTypes {
         let sidecars = None;
 
         // seal the block
-        let block =
-            Block {
+        let block = Block {
             header,
-            body: BlockBody { transactions: executed_txs, ommers: vec![], withdrawals, sidecars, requests },
+            body: BlockBody {
+                transactions: executed_txs,
+                ommers: vec![],
+                withdrawals,
+                sidecars,
+                requests,
+            },
         };
         Ok((SealedBlockWithSenders { block: block.seal_slow(), senders }, receipts))
     }

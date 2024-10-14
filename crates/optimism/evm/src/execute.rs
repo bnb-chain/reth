@@ -19,8 +19,10 @@ use reth_optimism_forks::OptimismHardfork;
 use reth_primitives::{BlockWithSenders, Header, Receipt, Receipts, TxType};
 use reth_prune_types::PruneModes;
 use reth_revm::{
-    batch::BlockBatchRecord, db::states::{bundle_state::BundleRetention, StorageSlot},
-    state_change::post_block_balance_increments, Evm, State,
+    batch::BlockBatchRecord,
+    db::states::{bundle_state::BundleRetention, StorageSlot},
+    state_change::post_block_balance_increments,
+    Evm, State,
 };
 use revm_primitives::{
     db::{Database, DatabaseCommit},
@@ -363,7 +365,12 @@ where
 
         let (receipts, gas_used) = {
             let evm = self.executor.evm_config.evm_with_env(&mut self.state, env);
-            self.executor.execute_pre_and_transactions(block, evm, state_hook, self.prefetch_tx.clone())
+            self.executor.execute_pre_and_transactions(
+                block,
+                evm,
+                state_hook,
+                self.prefetch_tx.clone(),
+            )
         }?;
 
         // 3. apply post execution changes

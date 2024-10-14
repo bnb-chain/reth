@@ -12,8 +12,8 @@ use alloy_rlp::Decodable;
 use lazy_static::lazy_static;
 use lru::LruCache;
 use parking_lot::RwLock;
-use reth_chainspec::{ChainSpec, EthereumHardforks};
 use reth_bsc_forks::BscHardforks;
+use reth_chainspec::{ChainSpec, EthereumHardforks};
 use reth_consensus::{Consensus, ConsensusError, PostExecutionInput};
 use reth_primitives::{
     constants::EMPTY_MIX_HASH,

@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crate::{
-    parlia::{VoteAddress, VoteAttestation, VoteData}, Header,
+    parlia::{VoteAddress, VoteAttestation, VoteData},
+    Header,
 };
 use alloy_primitives::{Address, BlockNumber, B256};
 #[cfg(any(test, feature = "reth-codec"))]

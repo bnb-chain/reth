@@ -32,9 +32,9 @@ use reth_node_core::{
 };
 use reth_node_events::{cl::ConsensusLayerHealthEvents, node};
 use reth_payload_primitives::PayloadBuilder;
-use reth_primitives::EthereumHardforks;
 #[cfg(feature = "bsc")]
 use reth_primitives::parlia::ParliaConfig;
+use reth_primitives::EthereumHardforks;
 use reth_provider::providers::{BlockchainProvider2, ProviderNodeTypes};
 use reth_rpc_engine_api::{capabilities::EngineCapabilities, EngineApi};
 use reth_tasks::TaskExecutor;

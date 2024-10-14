@@ -140,8 +140,10 @@ mod block_rlp {
 
     impl<'a> From<&'a Block> for HelperRef<'a, Header> {
         fn from(block: &'a Block) -> Self {
-            let Block { header, body: BlockBody { transactions, ommers, withdrawals, requests , sidecars} } =
-                block;
+            let Block {
+                header,
+                body: BlockBody { transactions, ommers, withdrawals, requests, sidecars },
+            } = block;
             Self {
                 header,
                 transactions,
@@ -172,15 +174,23 @@ mod block_rlp {
 
     impl Decodable for Block {
         fn decode(b: &mut &[u8]) -> alloy_rlp::Result<Self> {
-            let Helper { header, transactions, ommers, withdrawals, requests, sidecars } = Helper::decode(b)?;
-            Ok(Self { header, body: BlockBody { transactions, ommers, withdrawals, requests, sidecars } })
+            let Helper { header, transactions, ommers, withdrawals, requests, sidecars } =
+                Helper::decode(b)?;
+            Ok(Self {
+                header,
+                body: BlockBody { transactions, ommers, withdrawals, requests, sidecars },
+            })
         }
     }
 
     impl Decodable for SealedBlock {
         fn decode(b: &mut &[u8]) -> alloy_rlp::Result<Self> {
-            let Helper { header, transactions, ommers, withdrawals, requests, sidecars } = Helper::decode(b)?;
-            Ok(Self { header, body: BlockBody { transactions, ommers, withdrawals, requests, sidecars } })
+            let Helper { header, transactions, ommers, withdrawals, requests, sidecars } =
+                Helper::decode(b)?;
+            Ok(Self {
+                header,
+                body: BlockBody { transactions, ommers, withdrawals, requests, sidecars },
+            })
         }
     }
 
@@ -724,7 +734,9 @@ pub(super) mod serde_bincode_compat {
     use alloc::{borrow::Cow, vec::Vec};
     use alloy_consensus::serde_bincode_compat::Header;
     use alloy_primitives::Address;
-    use reth_primitives_traits::{serde_bincode_compat::SealedHeader, BlobSidecars, Requests, Withdrawals};
+    use reth_primitives_traits::{
+        serde_bincode_compat::SealedHeader, BlobSidecars, Requests, Withdrawals,
+    };
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use serde_with::{DeserializeAs, SerializeAs};
 

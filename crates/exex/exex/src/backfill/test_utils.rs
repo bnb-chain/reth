@@ -127,7 +127,8 @@ fn blocks(
                 }),
             )],
             sidecars: Some(Default::default()),
-        ..Default::default()},
+            ..Default::default()
+        },
     }
     .with_recovered_senders()
     .ok_or_eyre("failed to recover senders")?;
@@ -159,7 +160,8 @@ fn blocks(
                 }),
             )],
             sidecars: Some(Default::default()),
-        ..Default::default()},
+            ..Default::default()
+        },
     }
     .with_recovered_senders()
     .ok_or_eyre("failed to recover senders")?;

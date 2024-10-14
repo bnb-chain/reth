@@ -13,9 +13,7 @@ use reth_engine_primitives::EngineTypes;
 use reth_evm_bsc::SnapshotReader;
 use reth_network_api::events::EngineMessage;
 use reth_network_p2p::BlockClient;
-use reth_primitives::{
-    parlia::ParliaConfig, BlockBody, BlockHashOrNumber, SealedHeader,
-};
+use reth_primitives::{parlia::ParliaConfig, BlockBody, BlockHashOrNumber, SealedHeader};
 use reth_provider::{BlockReaderIdExt, CanonChainTracker, ParliaProvider};
 use std::{
     clone::Clone,
@@ -283,8 +281,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use alloy_primitives::Sealable;
     use super::*;
+    use alloy_primitives::Sealable;
     use reth_primitives::SealedHeader;
 
     #[test]
@@ -356,7 +354,7 @@ mod tests {
 
     #[test]
     fn test_clean_cache() {
-        let default_block =SealedHeader::default();
+        let default_block = SealedHeader::default();
         let mut storage = StorageInner {
             best_hash: default_block.hash_slow(),
             best_block: default_block.number,

@@ -480,11 +480,13 @@ mod tests {
         (
             SealedBlock {
                 header: SealedHeader::new(header, seal),
-                body: BlockBody { transactions,
-                ommers,
-                withdrawals: None,
-                sidecars: None,
-                requests: None},
+                body: BlockBody {
+                    transactions,
+                    ommers,
+                    withdrawals: None,
+                    sidecars: None,
+                    requests: None,
+                },
             },
             parent,
         )

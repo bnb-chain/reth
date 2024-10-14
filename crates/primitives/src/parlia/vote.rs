@@ -1,4 +1,4 @@
-use alloy_primitives::{B256, BlockNumber, keccak256, wrap_fixed_bytes};
+use alloy_primitives::{keccak256, wrap_fixed_bytes, BlockNumber, B256};
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use bytes::Bytes;
 #[cfg(any(test, feature = "reth-codec"))]

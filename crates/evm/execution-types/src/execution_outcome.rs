@@ -1,7 +1,7 @@
 use crate::BlockExecutionOutput;
 use alloy_primitives::{Address, BlockNumber, Bloom, Log, B256, U256};
 use reth_primitives::{
-    logs_bloom, Account, Bytecode, parlia::Snapshot, Receipt, Receipts, Requests, StorageEntry,
+    logs_bloom, parlia::Snapshot, Account, Bytecode, Receipt, Receipts, Requests, StorageEntry,
 };
 use reth_trie::HashedPostState;
 use revm::{

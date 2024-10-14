@@ -21,9 +21,9 @@ use reth_db_api::models::{AccountBeforeTx, StoredBlockBodyIndices};
 use reth_evm::ConfigureEvmEnv;
 use reth_execution_types::{Chain, ExecutionOutcome};
 use reth_primitives::{
-    Account, BlobSidecars, Block,  BlockWithSenders,
-    Bytecode, GotExpected, Header, Receipt, SealedBlock, SealedBlockWithSenders, SealedHeader,
-    TransactionMeta, TransactionSigned, TransactionSignedNoHash, Withdrawal, Withdrawals,
+    Account, BlobSidecars, Block, BlockWithSenders, Bytecode, GotExpected, Header, Receipt,
+    SealedBlock, SealedBlockWithSenders, SealedHeader, TransactionMeta, TransactionSigned,
+    TransactionSignedNoHash, Withdrawal, Withdrawals,
 };
 use reth_stages_types::{StageCheckpoint, StageId};
 use reth_storage_api::{

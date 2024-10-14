@@ -116,7 +116,11 @@ impl ExecutorMetrics {
     }
 
     /// Execute the given block and update metrics for the execution.
-    pub fn metered_one<F, R>(&self, input: BlockExecutionInput<'_, BlockWithSenders, Header>, f: F) -> R
+    pub fn metered_one<F, R>(
+        &self,
+        input: BlockExecutionInput<'_, BlockWithSenders, Header>,
+        f: F,
+    ) -> R
     where
         F: FnOnce(BlockExecutionInput<'_, BlockWithSenders, Header>) -> R,
     {

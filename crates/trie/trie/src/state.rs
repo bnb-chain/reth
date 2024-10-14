@@ -1,16 +1,18 @@
+use crate::{
+    prefix_set::{PrefixSetMut, TriePrefixSetsMut},
+    Nibbles,
+};
 use alloy_primitives::{keccak256, Address, B256, U256};
 use itertools::Itertools;
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
 use reth_primitives::Account;
-use revm::db::{states::CacheAccount, AccountStatus, BundleAccount};
+use revm::{
+    db::{states::CacheAccount, AccountStatus, BundleAccount},
+    primitives::EvmState,
+};
 use std::{
     borrow::Cow,
     collections::{hash_map, HashMap, HashSet},
-};
-use revm::primitives::EvmState;
-use crate::{
-    prefix_set::{PrefixSetMut, TriePrefixSetsMut},
-    Nibbles,
 };
 
 /// Representation of in-memory hashed state.
@@ -52,9 +54,7 @@ impl HashedPostState {
     }
 
     /// Initialize [`HashedPostState`] from evm state.
-    pub fn from_state(
-        changes: EvmState,
-    ) -> Self {
+    pub fn from_state(changes: EvmState) -> Self {
         let mut this = Self::default();
         for (address, account) in changes {
             let hashed_address = keccak256(address);
