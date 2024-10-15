@@ -5,13 +5,13 @@ use alloc::sync::Arc;
 #[cfg(feature = "std")]
 use std::sync::Arc;
 
+use crate::OpChainSpec;
 use alloy_chains::Chain;
 use alloy_primitives::{b256, U256};
 use once_cell::sync::Lazy;
 use reth_chainspec::{once_cell_set, BaseFeeParams, BaseFeeParamsKind, ChainSpec};
-use reth_ethereum_forks::{EthereumHardfork, OptimismHardfork};
-
-use crate::OpChainSpec;
+use reth_ethereum_forks::EthereumHardfork;
+use reth_optimism_forks::OptimismHardfork;
 
 /// The opbnb qa spec
 pub static OPBNB_QA: Lazy<Arc<OpChainSpec>> = Lazy::new(|| {

@@ -8,8 +8,8 @@ use std::sync::Arc;
 use alloy_chains::{Chain, NamedChain};
 use alloy_primitives::{b256, U256};
 use once_cell::sync::Lazy;
+use reth_bsc_forks::BscHardfork;
 use reth_chainspec::{once_cell_set, BaseFeeParams, BaseFeeParamsKind, ChainSpec};
-use reth_ethereum_forks::BscHardfork;
 
 use crate::BscChainSpec;
 

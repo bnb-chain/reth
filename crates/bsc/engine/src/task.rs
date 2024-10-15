@@ -1,4 +1,7 @@
 use crate::{client::ParliaClient, Storage};
+
+use alloy_primitives::{Sealable, B256};
+use alloy_rpc_types::{engine::ForkchoiceState, BlockId, RpcBlockHash};
 use reth_beacon_consensus::{BeaconEngineMessage, ForkchoiceStatus, MIN_BLOCKS_FOR_PIPELINE_RUN};
 use reth_bsc_consensus::Parlia;
 use reth_chainspec::ChainSpec;
@@ -10,9 +13,8 @@ use reth_network_p2p::{
     priority::Priority,
     BlockClient,
 };
-use reth_primitives::{Block, BlockBody, BlockHashOrNumber, SealedHeader, B256};
+use reth_primitives::{Block, BlockBody, BlockHashOrNumber, SealedHeader};
 use reth_provider::{BlockReaderIdExt, CanonChainTracker, ParliaProvider};
-use reth_rpc_types::{engine::ForkchoiceState, BlockId, RpcBlockHash};
 use std::{
     clone::Clone,
     fmt,
@@ -283,10 +285,10 @@ impl<
                         if number != sealed_header.number {
                             continue;
                         }
-                        sealed_header.hash()
+                        sealed_header.hash_slow()
                     }
                 };
-                if sealed_header.hash() != block_hash {
+                if sealed_header.hash_slow() != block_hash {
                     continue;
                 }
 
@@ -322,7 +324,7 @@ impl<
                     let mut parent_hash = sealed_header.parent_hash;
                     for (i, _) in headers.iter().enumerate() {
                         let sealed_header = headers[i].clone().seal_slow();
-                        if sealed_header.hash() != parent_hash {
+                        if sealed_header.hash_slow() != parent_hash {
                             break;
                         }
                         parent_hash = sealed_header.parent_hash;

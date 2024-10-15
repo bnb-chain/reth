@@ -17,6 +17,9 @@ reth-chainspec = { workspace = true, features = ["bsc"] }
 reth-ethereum-forks = { workspace = true, features = ["bsc"] }
 reth-primitives-traits.workspace = true
 
+# bsc
+reth-bsc-forks.workspace = true
+
 # ethereum
 alloy-chains.workspace = true
 alloy-primitives.workspace = true

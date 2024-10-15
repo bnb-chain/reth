@@ -22,8 +22,14 @@ reth-revm.workspace = true
 reth-provider.workspace = true
 reth-bsc-consensus.workspace = true
 
+# bsc
+reth-bsc-forks.workspace = true
+
 # Revm
 revm-primitives.workspace = true
+
+alloy-genesis.workspace = true
+alloy-primitives.workspace = true
 
 # misc
 thiserror.workspace = true

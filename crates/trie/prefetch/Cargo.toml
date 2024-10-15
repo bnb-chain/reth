@@ -24,6 +24,7 @@ reth-execution-errors.workspace = true
 
 # alloy
 alloy-rlp.workspace = true
+alloy-primitives.workspace = true
 
 # tracing
 tracing.workspace = true

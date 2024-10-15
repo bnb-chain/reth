@@ -10,7 +10,7 @@ use reth_provider::{
     DBProvider, DatabaseProviderFactory, PruneCheckpointReader, PruneCheckpointWriter,
 };
 use reth_prune_types::{PruneLimiter, PruneProgress, PruneSegment, PrunerOutput};
-use reth_static_file_types::{find_fixed_range, StaticFileSegment};
+use reth_static_file_types::{find_fixed_range, StaticFileSegment, DEFAULT_BLOCKS_PER_STATIC_FILE};
 use reth_tokio_util::{EventSender, EventStream};
 use std::{
     fs,
@@ -340,8 +340,8 @@ where
 
         let prune_target_block =
             tip_block_number.saturating_sub(self.recent_sidecars_kept_blocks as u64);
-        let mut range_start = find_fixed_range(prune_target_block).start();
-
+        let mut range_start =
+            find_fixed_range(prune_target_block, DEFAULT_BLOCKS_PER_STATIC_FILE).start();
         if range_start == 0 {
             return
         }
@@ -353,7 +353,7 @@ where
         );
 
         while range_start > 0 {
-            let range = find_fixed_range(range_start - 1);
+            let range = find_fixed_range(range_start - 1, DEFAULT_BLOCKS_PER_STATIC_FILE);
             let path = static_file_path.join(StaticFileSegment::Sidecars.filename(&range));
 
             if path.exists() {

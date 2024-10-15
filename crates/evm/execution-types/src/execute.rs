@@ -1,6 +1,6 @@
-use reth_primitives::{parlia::Snapshot, Request, B256, U256};
+use alloy_primitives::{map::HashMap, B256, U256};
+use reth_primitives::{parlia::Snapshot, Request};
 use revm::db::BundleState;
-use std::collections::HashMap;
 
 /// A helper type for ethereum block inputs that consists of a block and the total difficulty.
 #[derive(Debug)]

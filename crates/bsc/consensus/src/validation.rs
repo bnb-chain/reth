@@ -1,8 +1,9 @@
+use alloy_primitives::{Bloom, B256};
 use reth_chainspec::{ChainSpec, EthereumHardforks};
 use reth_consensus::ConsensusError;
 use reth_primitives::{
     constants::eip4844::{DATA_GAS_PER_BLOB, MAX_DATA_GAS_PER_BLOCK},
-    gas_spent_by_transactions, BlockWithSenders, Bloom, GotExpected, Receipt, SealedHeader, B256,
+    gas_spent_by_transactions, BlockWithSenders, GotExpected, Receipt, SealedHeader,
 };
 
 /// Validate the 4844 header of a BSC block.

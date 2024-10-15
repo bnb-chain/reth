@@ -128,6 +128,12 @@ impl StaticFileSegment {
         matches!(self, Self::Receipts)
     }
 
+    /// Returns `true` if the segment is `StaticFileSegment::Receipts` or
+    /// `StaticFileSegment::Transactions`.
+    pub const fn is_tx_based(&self) -> bool {
+        matches!(self, Self::Receipts | Self::Transactions)
+    }
+
     /// Returns `true` if the segment is `StaticFileSegment::Sidecars`.
     pub const fn is_sidecars(&self) -> bool {
         matches!(self, Self::Sidecars)
@@ -249,7 +255,7 @@ impl SegmentHeader {
         match self.segment {
             StaticFileSegment::Headers | StaticFileSegment::Sidecars => {
                 if let Some(range) = &mut self.block_range {
-                    if num > range.end {
+                    if num > range.end - range.start {
                         self.block_range = None;
                     } else {
                         range.end = range.end.saturating_sub(num);
@@ -258,7 +264,7 @@ impl SegmentHeader {
             }
             StaticFileSegment::Transactions | StaticFileSegment::Receipts => {
                 if let Some(range) = &mut self.tx_range {
-                    if num > range.end {
+                    if num > range.end - range.start {
                         self.tx_range = None;
                     } else {
                         range.end = range.end.saturating_sub(num);

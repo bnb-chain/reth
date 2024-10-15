@@ -6,6 +6,7 @@
 // The `bsc` feature must be enabled to use this crate.
 #![cfg(feature = "bsc")]
 
+use alloy_primitives::{Address, Bytes, U256};
 use reth_chainspec::ChainSpec;
 use reth_ethereum_forks::EthereumHardfork;
 use reth_evm::{ConfigureEvm, ConfigureEvmEnv, NextBlockEnvAttributes};
@@ -15,7 +16,7 @@ use reth_primitives::{
         AnalysisKind, BlobExcessGasAndPrice, BlockEnv, CfgEnv, CfgEnvWithHandlerCfg, SpecId, TxEnv,
     },
     transaction::FillTxEnv,
-    Address, Bytes, Head, Header, TransactionSigned, U256,
+    Head, Header, TransactionSigned,
 };
 use reth_revm::{inspector_handle_register, Database, Evm, EvmBuilder, GetInspector};
 use revm_primitives::Env;
@@ -184,11 +185,9 @@ impl ConfigureEvm for BscEvmConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_genesis::Genesis;
     use reth_chainspec::Chain;
-    use reth_primitives::{
-        revm_primitives::{BlockEnv, CfgEnv},
-        Genesis,
-    };
+    use reth_primitives::revm_primitives::{BlockEnv, CfgEnv};
     use revm_primitives::SpecId;
 
     #[test]

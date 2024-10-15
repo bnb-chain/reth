@@ -1,4 +1,4 @@
-use crate::{alloy_primitives::wrap_fixed_bytes, keccak256, BlockNumber, B256};
+use alloy_primitives::{keccak256, wrap_fixed_bytes, BlockNumber, B256};
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use bytes::Bytes;
 #[cfg(any(test, feature = "reth-codec"))]

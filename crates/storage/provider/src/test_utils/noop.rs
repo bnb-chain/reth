@@ -1,10 +1,12 @@
 use std::{
-    collections::{HashMap, HashSet},
     ops::{RangeBounds, RangeInclusive},
+    path::PathBuf,
     sync::Arc,
 };
 
+use alloy_eips::{BlockHashOrNumber, BlockId, BlockNumberOrTag};
 use alloy_primitives::{
+    map::{HashMap, HashSet},
     Address, BlockHash, BlockNumber, Bytes, StorageKey, StorageValue, TxHash, TxNumber, B256, U256,
 };
 use reth_chain_state::{
@@ -16,9 +18,9 @@ use reth_db_api::models::{AccountBeforeTx, StoredBlockBodyIndices};
 use reth_errors::ProviderError;
 use reth_evm::ConfigureEvmEnv;
 use reth_primitives::{
-    parlia::Snapshot, Account, BlobSidecars, Block, BlockHashOrNumber, BlockId, BlockNumberOrTag,
-    BlockWithSenders, Bytecode, Header, Receipt, SealedBlock, SealedBlockWithSenders, SealedHeader,
-    TransactionMeta, TransactionSigned, TransactionSignedNoHash, Withdrawal, Withdrawals,
+    parlia::Snapshot, Account, BlobSidecars, Block, BlockWithSenders, Bytecode, Header, Receipt,
+    SealedBlock, SealedBlockWithSenders, SealedHeader, TransactionMeta, TransactionSigned,
+    TransactionSignedNoHash, Withdrawal, Withdrawals,
 };
 use reth_prune_types::{PruneCheckpoint, PruneSegment};
 use reth_stages_types::{StageCheckpoint, StageId};
@@ -354,6 +356,15 @@ impl StorageRootProvider for NoopProvider {
     ) -> ProviderResult<B256> {
         Ok(B256::default())
     }
+
+    fn storage_proof(
+        &self,
+        _address: Address,
+        slot: B256,
+        _hashed_storage: HashedStorage,
+    ) -> ProviderResult<reth_trie::StorageProof> {
+        Ok(reth_trie::StorageProof::new(slot))
+    }
 }
 
 impl StateProofProvider for NoopProvider {
@@ -563,7 +574,7 @@ impl PruneCheckpointReader for NoopProvider {
 
 impl StaticFileProviderFactory for NoopProvider {
     fn static_file_provider(&self) -> StaticFileProvider {
-        StaticFileProvider::default()
+        StaticFileProvider::read_only(PathBuf::default(), false).unwrap()
     }
 }
 

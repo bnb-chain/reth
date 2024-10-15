@@ -2,10 +2,14 @@
 
 use core::fmt::Display;
 
-use crate::execute::{BatchExecutor, BlockExecutorProvider, Executor};
+use crate::{
+    execute::{BatchExecutor, BlockExecutorProvider, Executor},
+    system_calls::OnStateHook,
+};
+use alloy_primitives::BlockNumber;
 use reth_execution_errors::BlockExecutionError;
 use reth_execution_types::{BlockExecutionInput, BlockExecutionOutput, ExecutionOutcome};
-use reth_primitives::{BlockNumber, BlockWithSenders, Header, Receipt};
+use reth_primitives::{BlockWithSenders, Header, Receipt};
 use reth_prune_types::PruneModes;
 use reth_storage_errors::provider::ProviderError;
 use revm_primitives::{db::Database, EvmState};
@@ -13,6 +17,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 // re-export Either
 pub use futures_util::future::Either;
+use revm::State;
 
 impl<A, B> BlockExecutorProvider for Either<A, B>
 where
@@ -74,6 +79,34 @@ where
         match self {
             Self::Left(a) => a.execute(input),
             Self::Right(b) => b.execute(input),
+        }
+    }
+
+    fn execute_with_state_closure<F>(
+        self,
+        input: Self::Input<'_>,
+        witness: F,
+    ) -> Result<Self::Output, Self::Error>
+    where
+        F: FnMut(&State<DB>),
+    {
+        match self {
+            Self::Left(a) => a.execute_with_state_closure(input, witness),
+            Self::Right(b) => b.execute_with_state_closure(input, witness),
+        }
+    }
+
+    fn execute_with_state_hook<F>(
+        self,
+        input: Self::Input<'_>,
+        state_hook: F,
+    ) -> Result<Self::Output, Self::Error>
+    where
+        F: OnStateHook,
+    {
+        match self {
+            Self::Left(a) => a.execute_with_state_hook(input, state_hook),
+            Self::Right(b) => b.execute_with_state_hook(input, state_hook),
         }
     }
 }

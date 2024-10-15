@@ -38,12 +38,15 @@ jobs:
         with:
           cache-on-failure: true
       - uses: taiki-e/install-action@nextest
+      - if: "${{ matrix.type == 'book' }}"
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - if: matrix.network == 'ethereum'
         name: Run tests
         run: |
           cargo nextest run \
-            --locked --features "asm-keccak ${{ matrix.network }}" \
-            --workspace --exclude ef-tests \
+            ${{ matrix.args }} --workspace --exclude ef-tests \
             --partition hash:${{ matrix.partition }}/3 \
             -E "!kind(test)"
       - if: matrix.network == 'optimism'

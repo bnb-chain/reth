@@ -13,7 +13,7 @@ env:
 
 jobs:
   clippy-binaries:
-    name: clippy / ${{ matrix.network }}
+    name: clippy binaries / ${{ matrix.type }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -126,7 +126,10 @@ jobs:
         with:
           components: rustfmt
           toolchain: ${{ env.TOOL_CHAIN_NIGHTLY }} # fmt need the nightly flag, please update this if reallly needed
-      - run: cargo fmt --all --check
+      - name: Run fmt
+        run: cargo fmt --all --check
+      - name: Run fmt on book sources
+        run: cargo fmt --manifest-path book/sources/Cargo.toml --all --check
 
   # udeps:
   #   name: udeps

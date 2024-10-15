@@ -17,6 +17,12 @@ reth-network-peers.workspace = true
 reth-trie-common.workspace = true
 reth-primitives-traits.workspace = true
 
+#bsc
+reth-bsc-forks = { workspace = true, optional = true }
+
+# op-reth
+reth-optimism-forks = { workspace = true, optional = true }
+
 # ethereum
 alloy-chains = { workspace = true, features = ["serde", "rlp"] }
 alloy-eips = { workspace = true, features = ["serde"] }
@@ -24,13 +30,9 @@ alloy-genesis.workspace = true
 alloy-primitives = { workspace = true, features = ["rand", "rlp"] }
 alloy-trie.workspace = true
 
-# op
-op-alloy-rpc-types = { workspace = true, optional = true }
-
 # misc
 auto_impl.workspace = true
 once_cell.workspace = true
-serde = { workspace = true, optional = true }
 serde_json.workspace = true
 derive_more.workspace = true
 
@@ -41,26 +43,22 @@ alloy-eips = { workspace = true, features = ["arbitrary"] }
 alloy-rlp = { workspace = true, features = ["arrayvec"] }
 alloy-genesis.workspace = true
 
-# op
-op-alloy-rpc-types.workspace = true
-
 [features]
 default = ["std"]
 bsc = [
-    "reth-ethereum-forks/bsc"
+    "reth-ethereum-forks/bsc",
+    "reth-bsc-forks"
 ]
-optimism = [
-    "reth-ethereum-forks/optimism",
-    "serde",
-    "dep:op-alloy-rpc-types",
+optimism = ["reth-optimism-forks"]
+std = [
+    "alloy-chains/std",
+    "alloy-eips/std",
+    "alloy-genesis/std",
+    "alloy-primitives/std",
+    "alloy-trie/std",
 ]
 opbnb = [
     "reth-ethereum-forks/opbnb"
 ]
-std = []
-arbitrary = [
-    "alloy-chains/arbitrary"
-]
+arbitrary = ["alloy-chains/arbitrary"]
 test-utils = []
-
-

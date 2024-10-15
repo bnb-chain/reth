@@ -4,18 +4,20 @@ use std::{
 };
 
 use futures_util::TryStreamExt;
+use tracing::*;
+
+use alloy_primitives::TxNumber;
 use reth_db::tables;
 use reth_db_api::{
     cursor::{DbCursorRO, DbCursorRW},
-    database::Database,
     models::{StoredBlockBodyIndices, StoredBlockOmmers, StoredBlockWithdrawals},
     transaction::DbTxMut,
 };
 use reth_network_p2p::bodies::{downloader::BodyDownloader, response::BlockResponse};
-use reth_primitives::{StaticFileSegment, TxNumber};
+use reth_primitives::StaticFileSegment;
 use reth_provider::{
     providers::{StaticFileProvider, StaticFileWriter},
-    BlockReader, DatabaseProviderRW, HeaderProvider, ProviderError, StatsReader,
+    BlockReader, DBProvider, ProviderError, StaticFileProviderFactory, StatsReader,
 };
 use reth_stages_api::{
     EntitiesCheckpoint, ExecInput, ExecOutput, Stage, StageCheckpoint, StageError, StageId,
@@ -69,7 +71,10 @@ impl<D: BodyDownloader> BodyStage<D> {
     }
 }
 
-impl<DB: Database, D: BodyDownloader> Stage<DB> for BodyStage<D> {
+impl<Provider, D: BodyDownloader> Stage<Provider> for BodyStage<D>
+where
+    Provider: DBProvider<Tx: DbTxMut> + StaticFileProviderFactory + StatsReader + BlockReader,
+{
     /// Return the id of the stage
     fn id(&self) -> StageId {
         StageId::Bodies
@@ -105,11 +110,7 @@ impl<DB: Database, D: BodyDownloader> Stage<DB> for BodyStage<D> {
 
     /// Download block bodies from the last checkpoint for this stage up until the latest synced
     /// header, limited by the stage's batch size.
-    fn execute(
-        &mut self,
-        provider: &DatabaseProviderRW<DB>,
-        input: ExecInput,
-    ) -> Result<ExecOutput, StageError> {
+    fn execute(&mut self, provider: &Provider, input: ExecInput) -> Result<ExecOutput, StageError> {
         if input.target_reached() {
             return Ok(ExecOutput::done(input.checkpoint()))
         }
@@ -154,7 +155,7 @@ impl<DB: Database, D: BodyDownloader> Stage<DB> for BodyStage<D> {
             Ordering::Less => {
                 return Err(missing_static_data_error(
                     next_static_file_tx_num.saturating_sub(1),
-                    static_file_provider,
+                    &static_file_provider,
                     provider,
                     StaticFileSegment::Transactions,
                 )?)
@@ -185,7 +186,7 @@ impl<DB: Database, D: BodyDownloader> Stage<DB> for BodyStage<D> {
             Ordering::Less => {
                 return Err(missing_static_data_error(
                     next_static_file_tx_num.saturating_sub(1),
-                    static_file_provider,
+                    &static_file_provider,
                     provider,
                     StaticFileSegment::Sidecars,
                 )?)
@@ -205,7 +206,7 @@ impl<DB: Database, D: BodyDownloader> Stage<DB> for BodyStage<D> {
             let block_indices = StoredBlockBodyIndices {
                 first_tx_num: next_tx_num,
                 tx_count: match &response {
-                    BlockResponse::Full(block) => block.body.len() as u64,
+                    BlockResponse::Full(block) => block.body.transactions.len() as u64,
                     BlockResponse::Empty(_) => 0,
                 },
             };
@@ -229,12 +230,12 @@ impl<DB: Database, D: BodyDownloader> Stage<DB> for BodyStage<D> {
             match response {
                 BlockResponse::Full(block) => {
                     // write transaction block index
-                    if !block.body.is_empty() {
+                    if !block.body.transactions.is_empty() {
                         tx_block_cursor.append(block_indices.last_tx_num(), block.number)?;
                     }
 
                     // Write transactions
-                    for transaction in block.body {
+                    for transaction in block.body.transactions {
                         let appended_tx_number = static_file_producer_tx
                             .append_transaction(next_tx_num, &transaction.into())?;
 
@@ -253,7 +254,7 @@ impl<DB: Database, D: BodyDownloader> Stage<DB> for BodyStage<D> {
                     }
 
                     // Write sidecars
-                    let sidecars = block.sidecars.unwrap_or_default();
+                    let sidecars = block.body.sidecars.unwrap_or_default();
                     static_file_producer_sc.append_sidecars(
                         &sidecars,
                         block_number,
@@ -261,13 +262,15 @@ impl<DB: Database, D: BodyDownloader> Stage<DB> for BodyStage<D> {
                     )?;
 
                     // Write ommers if any
-                    if !block.ommers.is_empty() {
-                        ommers_cursor
-                            .append(block_number, StoredBlockOmmers { ommers: block.ommers })?;
+                    if !block.body.ommers.is_empty() {
+                        ommers_cursor.append(
+                            block_number,
+                            StoredBlockOmmers { ommers: block.body.ommers },
+                        )?;
                     }
 
                     // Write withdrawals if any
-                    if let Some(withdrawals) = block.withdrawals {
+                    if let Some(withdrawals) = block.body.withdrawals {
                         if !withdrawals.is_empty() {
                             withdrawals_cursor
                                 .append(block_number, StoredBlockWithdrawals { withdrawals })?;
@@ -275,7 +278,7 @@ impl<DB: Database, D: BodyDownloader> Stage<DB> for BodyStage<D> {
                     }
 
                     // Write requests if any
-                    if let Some(requests) = block.requests {
+                    if let Some(requests) = block.body.requests {
                         if !requests.0.is_empty() {
                             requests_cursor.append(block_number, requests)?;
                         }
@@ -311,7 +314,7 @@ impl<DB: Database, D: BodyDownloader> Stage<DB> for BodyStage<D> {
     /// Unwind the stage.
     fn unwind(
         &mut self,
-        provider: &DatabaseProviderRW<DB>,
+        provider: &Provider,
         input: UnwindInput,
     ) -> Result<UnwindOutput, StageError> {
         self.buffer.take();
@@ -374,7 +377,7 @@ impl<DB: Database, D: BodyDownloader> Stage<DB> for BodyStage<D> {
         if db_tx_num > static_file_tx_num {
             return Err(missing_static_data_error(
                 static_file_tx_num,
-                static_file_provider,
+                &static_file_provider,
                 provider,
                 StaticFileSegment::Transactions,
             )?)
@@ -399,7 +402,7 @@ impl<DB: Database, D: BodyDownloader> Stage<DB> for BodyStage<D> {
         if db_block_num > static_file_block_num {
             return Err(missing_static_data_error(
                 static_file_block_num,
-                static_file_provider,
+                &static_file_provider,
                 provider,
                 StaticFileSegment::Sidecars,
             )?)
@@ -416,12 +419,15 @@ impl<DB: Database, D: BodyDownloader> Stage<DB> for BodyStage<D> {
     }
 }
 
-fn missing_static_data_error<DB: Database>(
+fn missing_static_data_error<Provider>(
     last_tx_num: TxNumber,
     static_file_provider: &StaticFileProvider,
-    provider: &DatabaseProviderRW<DB>,
+    provider: &Provider,
     segment: StaticFileSegment,
-) -> Result<StageError, ProviderError> {
+) -> Result<StageError, ProviderError>
+where
+    Provider: BlockReader,
+{
     let mut last_block = static_file_provider
         .get_highest_static_file_block(StaticFileSegment::Transactions)
         .unwrap_or_default();
@@ -448,9 +454,10 @@ fn missing_static_data_error<DB: Database>(
 // TODO(alexey): ideally, we want to measure Bodies stage progress in bytes, but it's hard to know
 //  beforehand how many bytes we need to download. So the good solution would be to measure the
 //  progress in gas as a proxy to size. Execution stage uses a similar approach.
-fn stage_checkpoint<DB: Database>(
-    provider: &DatabaseProviderRW<DB>,
-) -> ProviderResult<EntitiesCheckpoint> {
+fn stage_checkpoint<Provider>(provider: &Provider) -> ProviderResult<EntitiesCheckpoint>
+where
+    Provider: StatsReader + StaticFileProviderFactory,
+{
     Ok(EntitiesCheckpoint {
         processed: provider.count_entries::<tables::BlockBodyIndices>()? as u64,
         // Count only static files entries. If we count the database entries too, we may have
@@ -688,6 +695,7 @@ mod tests {
                 UnwindStageTestRunner,
             },
         };
+        use alloy_primitives::{BlockHash, BlockNumber, TxNumber, B256};
         use futures_util::Stream;
         use reth_db::{static_file::HeaderMask, tables};
         use reth_db_api::{
@@ -702,10 +710,7 @@ mod tests {
             },
             error::DownloadResult,
         };
-        use reth_primitives::{
-            BlockBody, BlockHash, BlockNumber, Header, SealedBlock, SealedHeader,
-            StaticFileSegment, TxNumber, B256,
-        };
+        use reth_primitives::{BlockBody, Header, SealedBlock, SealedHeader, StaticFileSegment};
         use reth_provider::{
             providers::StaticFileWriter, test_utils::MockNodeTypesWithDB, HeaderProvider,
             ProviderFactory, StaticFileProviderFactory, TransactionsProvider,
@@ -726,16 +731,7 @@ mod tests {
 
         /// A helper to create a collection of block bodies keyed by their hash.
         pub(crate) fn body_by_hash(block: &SealedBlock) -> (B256, BlockBody) {
-            (
-                block.hash(),
-                BlockBody {
-                    transactions: block.body.clone(),
-                    ommers: block.ommers.clone(),
-                    withdrawals: block.withdrawals.clone(),
-                    sidecars: block.sidecars.clone(),
-                    requests: block.requests.clone(),
-                },
-            )
+            (block.hash(), block.body.clone())
         }
 
         /// A helper struct for running the [`BodyStage`].
@@ -810,7 +806,7 @@ mod tests {
 
                         let body = StoredBlockBodyIndices {
                             first_tx_num: 0,
-                            tx_count: progress.body.len() as u64,
+                            tx_count: progress.body.transactions.len() as u64,
                         };
 
                         static_file_producer_tx.set_block_range(0..=progress.number);
@@ -846,7 +842,7 @@ mod tests {
                         if !progress.ommers_hash_is_empty() {
                             tx.put::<tables::BlockOmmers>(
                                 progress.number,
-                                StoredBlockOmmers { ommers: progress.ommers.clone() },
+                                StoredBlockOmmers { ommers: progress.body.ommers.clone() },
                             )?;
                         }
 
@@ -1007,7 +1003,7 @@ mod tests {
                     |cursor, number| cursor.get_two::<HeaderMask<Header, BlockHash>>(number.into()),
                 )? {
                     let (header, hash) = header?;
-                    self.headers.push_back(header.seal(hash));
+                    self.headers.push_back(SealedHeader::new(header, hash));
                 }
 
                 Ok(())
@@ -1030,14 +1026,7 @@ mod tests {
                     } else {
                         let body =
                             this.responses.remove(&header.hash()).expect("requested unknown body");
-                        response.push(BlockResponse::Full(SealedBlock {
-                            header,
-                            body: body.transactions,
-                            ommers: body.ommers,
-                            withdrawals: body.withdrawals,
-                            sidecars: body.sidecars,
-                            requests: body.requests,
-                        }));
+                        response.push(BlockResponse::Full(SealedBlock { header, body }));
                     }
 
                     if response.len() as u64 >= this.batch_size {

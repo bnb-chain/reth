@@ -18,7 +18,6 @@ reth-primitives.workspace = true
 reth-stages-api.workspace = true
 reth-errors.workspace = true
 reth-provider.workspace = true
-reth-rpc-types.workspace = true
 reth-tasks.workspace = true
 reth-payload-builder.workspace = true
 reth-payload-primitives.workspace = true
@@ -33,6 +32,7 @@ reth-bsc-consensus = { workspace = true, optional = true }
 
 # ethereum
 alloy-primitives.workspace = true
+alloy-rpc-types-engine.workspace = true
 
 # async
 tokio = { workspace = true, features = ["sync"] }
@@ -48,6 +48,8 @@ tracing.workspace = true
 thiserror.workspace = true
 schnellru.workspace = true
 itertools.workspace = true
+
+reth-chainspec = { workspace = true, optional = true }
 
 [dev-dependencies]
 # reth
@@ -80,6 +82,7 @@ optimism = [
     "reth-primitives/optimism",
     "reth-provider/optimism",
     "reth-blockchain-tree/optimism",
+    "reth-chainspec"
 ]
 bsc = [
     "reth-bsc-consensus/bsc",

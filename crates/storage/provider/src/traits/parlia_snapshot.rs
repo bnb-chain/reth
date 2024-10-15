@@ -1,4 +1,5 @@
-use reth_primitives::{parlia::Snapshot, B256};
+use alloy_primitives::B256;
+use reth_primitives::parlia::Snapshot;
 use reth_storage_errors::provider::ProviderResult;
 
 /// The trait for fetching parlia snapshot related data.

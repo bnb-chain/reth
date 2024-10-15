@@ -7,17 +7,18 @@
 #![cfg(feature = "bsc")]
 
 use alloy_json_abi::JsonAbi;
+use alloy_primitives::{Address, B256, U256};
 use alloy_rlp::Decodable;
 use lazy_static::lazy_static;
 use lru::LruCache;
 use parking_lot::RwLock;
-use reth_chainspec::{BscHardforks, ChainSpec, EthereumHardforks};
+use reth_bsc_forks::BscHardforks;
+use reth_chainspec::{ChainSpec, EthereumHardforks};
 use reth_consensus::{Consensus, ConsensusError, PostExecutionInput};
 use reth_primitives::{
     constants::EMPTY_MIX_HASH,
     parlia::{ParliaConfig, Snapshot, VoteAddress, VoteAttestation},
-    Address, BlockWithSenders, GotExpected, Header, SealedBlock, SealedHeader, B256,
-    EMPTY_OMMER_ROOT_HASH, U256,
+    BlockWithSenders, GotExpected, Header, SealedBlock, SealedHeader, EMPTY_OMMER_ROOT_HASH,
 };
 use secp256k1::{
     ecdsa::{RecoverableSignature, RecoveryId},

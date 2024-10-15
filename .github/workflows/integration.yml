@@ -56,7 +56,7 @@ jobs:
         name: Run tests
         run: |
           cargo nextest run \
-            --locked -p reth-node-optimism --features "optimism ${{ matrix.extra-features }}"
+            --locked -p reth-optimism-node --features "optimism ${{ matrix.extra-features }}"
       - if: matrix.network == 'bsc'
         name: Run tests
         run: |

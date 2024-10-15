@@ -1,16 +1,21 @@
 //! Traits for execution.
 
 // Re-export execution types
-pub use reth_execution_errors::{BlockExecutionError, BlockValidationError};
+pub use reth_execution_errors::{
+    BlockExecutionError, BlockValidationError, InternalBlockExecutionError,
+};
 pub use reth_execution_types::{BlockExecutionInput, BlockExecutionOutput, ExecutionOutcome};
 pub use reth_storage_errors::provider::ProviderError;
 
+use alloy_primitives::BlockNumber;
 use core::fmt::Display;
-
-use reth_primitives::{BlockNumber, BlockWithSenders, Header, Receipt};
+use reth_primitives::{BlockWithSenders, Header, Receipt};
 use reth_prune_types::PruneModes;
+use revm::State;
 use revm_primitives::{db::Database, EvmState};
 use tokio::sync::mpsc::UnboundedSender;
+
+use crate::system_calls::OnStateHook;
 
 /// A general purpose executor trait that executes an input (e.g. block) and produces an output
 /// (e.g. state changes and receipts).
@@ -33,6 +38,26 @@ pub trait Executor<DB> {
     /// # Returns
     /// The output of the block execution.
     fn execute(self, input: Self::Input<'_>) -> Result<Self::Output, Self::Error>;
+
+    /// Executes the EVM with the given input and accepts a state closure that is invoked with
+    /// the EVM state after execution.
+    fn execute_with_state_closure<F>(
+        self,
+        input: Self::Input<'_>,
+        state: F,
+    ) -> Result<Self::Output, Self::Error>
+    where
+        F: FnMut(&State<DB>);
+
+    /// Executes the EVM with the given input and accepts a state hook closure that is invoked with
+    /// the EVM state after execution.
+    fn execute_with_state_hook<F>(
+        self,
+        input: Self::Input<'_>,
+        state_hook: F,
+    ) -> Result<Self::Output, Self::Error>
+    where
+        F: OnStateHook;
 }
 
 /// A general purpose executor that can execute multiple inputs in sequence, validate the outputs,
@@ -146,9 +171,8 @@ pub trait BlockExecutorProvider: Send + Sync + Clone + Unpin + 'static {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reth_primitives::Block;
+    use alloy_primitives::U256;
     use revm::db::{CacheDB, EmptyDBTyped};
-    use revm_primitives::U256;
     use std::marker::PhantomData;
 
     #[derive(Clone, Default)]
@@ -187,6 +211,28 @@ mod tests {
         fn execute(self, _input: Self::Input<'_>) -> Result<Self::Output, Self::Error> {
             Err(BlockExecutionError::msg("execution unavailable for tests"))
         }
+
+        fn execute_with_state_closure<F>(
+            self,
+            _: Self::Input<'_>,
+            _: F,
+        ) -> Result<Self::Output, Self::Error>
+        where
+            F: FnMut(&State<DB>),
+        {
+            Err(BlockExecutionError::msg("execution unavailable for tests"))
+        }
+
+        fn execute_with_state_hook<F>(
+            self,
+            _: Self::Input<'_>,
+            _: F,
+        ) -> Result<Self::Output, Self::Error>
+        where
+            F: OnStateHook,
+        {
+            Err(BlockExecutionError::msg("execution unavailable for tests"))
+        }
     }
 
     impl<DB> BatchExecutor<DB> for TestExecutor<DB> {
@@ -220,15 +266,6 @@ mod tests {
         let provider = TestExecutorProvider;
         let db = CacheDB::<EmptyDBTyped<ProviderError>>::default();
         let executor = provider.executor(db, None);
-        let block = Block {
-            header: Default::default(),
-            body: vec![],
-            ommers: vec![],
-            withdrawals: None,
-            sidecars: None,
-            requests: None,
-        };
-        let block = BlockWithSenders::new(block, Default::default()).unwrap();
-        let _ = executor.execute(BlockExecutionInput::new(&block, U256::ZERO, None));
+        let _ = executor.execute(BlockExecutionInput::new(&Default::default(), U256::ZERO, None));
     }
 }

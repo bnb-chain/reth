@@ -1,4 +1,5 @@
-use reth_primitives::{BlobSidecars, BlockHash, BlockNumber};
+use alloy_primitives::{BlockHash, BlockNumber};
+use reth_primitives::BlobSidecars;
 use reth_storage_errors::provider::ProviderResult;
 
 /// Client trait for fetching [BlobSidecars] for blocks.

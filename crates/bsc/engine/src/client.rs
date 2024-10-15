@@ -1,5 +1,6 @@
 //! This includes download client implementations for parlia consensus.
 use crate::Storage;
+use alloy_primitives::B256;
 use reth_network_p2p::{
     bodies::client::{BodiesClient, BodiesFut},
     download::DownloadClient,
@@ -8,7 +9,7 @@ use reth_network_p2p::{
     BlockClient,
 };
 use reth_network_peers::{PeerId, WithPeerId};
-use reth_primitives::{BlockBody, Header, SealedHeader, B256};
+use reth_primitives::{BlockBody, Header, SealedHeader};
 use std::fmt::Debug;
 use tracing::trace;
 

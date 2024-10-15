@@ -5,15 +5,15 @@ use reth_basic_payload_builder::{BasicPayloadJobGenerator, BasicPayloadJobGenera
 use reth_bsc_consensus::Parlia;
 use reth_chainspec::ChainSpec;
 use reth_ethereum_engine_primitives::{
-    EthBuiltPayload, EthPayloadAttributes, EthPayloadBuilderAttributes,
+    EthBuiltPayload, EthPayloadAttributes, EthPayloadBuilderAttributes, EthereumEngineValidator,
 };
 use reth_evm_bsc::{BscEvmConfig, BscExecutorProvider};
 use reth_network::NetworkHandle;
-use reth_node_api::{ConfigureEvm, FullNodeComponents, NodeAddOns};
+use reth_node_api::{ConfigureEvm, EngineValidator, FullNodeComponents, NodeAddOns};
 use reth_node_builder::{
     components::{
-        ComponentsBuilder, ConsensusBuilder, ExecutorBuilder, NetworkBuilder,
-        PayloadServiceBuilder, PoolBuilder,
+        ComponentsBuilder, ConsensusBuilder, EngineValidatorBuilder, ExecutorBuilder,
+        NetworkBuilder, PayloadServiceBuilder, PoolBuilder,
     },
     node::{FullNodeTypes, NodeTypes, NodeTypesWithEngine},
     BuilderContext, Node, PayloadBuilderConfig, PayloadTypes,
@@ -27,6 +27,7 @@ use reth_transaction_pool::{
     blobstore::DiskFileBlobStore, EthTransactionPool, TransactionPool,
     TransactionValidationTaskExecutor,
 };
+use std::sync::Arc;
 
 /// Type configuration for a regular BSC node.
 #[derive(Debug, Default, Clone, Copy)]
@@ -42,6 +43,7 @@ impl BscNode {
         BscNetworkBuilder,
         BscExecutorBuilder,
         BscConsensusBuilder,
+        BscEngineValidatorBuilder,
     >
     where
         Node: FullNodeTypes<Types: NodeTypes<ChainSpec = ChainSpec>>,
@@ -58,6 +60,7 @@ impl BscNode {
             .network(BscNetworkBuilder::default())
             .executor(BscExecutorBuilder::default())
             .consensus(BscConsensusBuilder::default())
+            .engine_validator(BscEngineValidator::default())
     }
 }
 
@@ -71,7 +74,7 @@ impl NodeTypesWithEngine for BscNode {
 }
 
 /// Add-ons w.r.t. l1 bsc.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct BSCAddOns;
 
 impl<N: FullNodeComponents> NodeAddOns<N> for BSCAddOns {
@@ -90,12 +93,17 @@ where
         BscNetworkBuilder,
         BscExecutorBuilder,
         BscConsensusBuilder,
+        BscEngineValidatorBuilder,
     >;
 
     type AddOns = BSCAddOns;
 
     fn components_builder(&self) -> Self::ComponentsBuilder {
         Self::components()
+    }
+
+    fn add_ons(&self) -> Self::AddOns {
+        BSCAddOns::default()
     }
 }
 
@@ -242,7 +250,6 @@ impl BscPayloadBuilder {
             pool,
             ctx.task_executor().clone(),
             payload_job_config,
-            ctx.chain_spec(),
             payload_builder,
         );
         let (payload_service, payload_builder) =
@@ -310,5 +317,36 @@ where
 
     async fn build_consensus(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Consensus> {
         Ok(Parlia::new(ctx.chain_spec(), ctx.reth_config().parlia.clone()))
+    }
+}
+
+/// Validator for the ethereum engine API.
+#[derive(Debug, Clone)]
+pub struct BscEngineValidator {
+    chain_spec: Arc<ChainSpec>,
+}
+
+impl BscEngineValidator {
+    /// Instantiates a new validator.
+    pub const fn new(chain_spec: Arc<ChainSpec>) -> Self {
+        Self { chain_spec }
+    }
+}
+
+/// Builder for [`BscEngineValidatorBuilder`].
+#[derive(Debug, Default, Clone)]
+#[non_exhaustive]
+pub struct BscEngineValidatorBuilder;
+
+impl<Node, Types> EngineValidatorBuilder<Node> for BscEngineValidatorBuilder
+where
+    Types: NodeTypesWithEngine<ChainSpec = ChainSpec>,
+    Node: FullNodeTypes<Types = Types>,
+    BscEngineValidatorBuilder: EngineValidator<Types::Engine>,
+{
+    type Validator = BscEngineValidator;
+
+    async fn build_validator(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Validator> {
+        Ok(BscEngineValidator::new(ctx.chain_spec()))
     }
 }

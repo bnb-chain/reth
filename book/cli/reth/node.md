@@ -74,6 +74,9 @@ Networking:
       --enable-discv5-discovery
           Enable Discv5 discovery
 
+      --disable-nat
+          Disable Nat discovery
+
       --discovery.addr <DISCOVERY_ADDR>
           The UDP address to use for devp2p peer discovery version 4
 
@@ -93,12 +96,12 @@ Networking:
       --discovery.v5.port <DISCOVERY_V5_PORT>
           The UDP IPv4 port to use for devp2p peer discovery version 5. Not used unless `--addr` is IPv4, or `--discovery.v5.addr` is set
 
-          [default: 9000]
+          [default: 9200]
 
       --discovery.v5.port.ipv6 <DISCOVERY_V5_PORT_IPV6>
           The UDP IPv6 port to use for devp2p peer discovery version 5. Not used unless `--addr` is IPv6, or `--discovery.addr.ipv6` is set
 
-          [default: 9000]
+          [default: 9200]
 
       --discovery.v5.lookup-interval <DISCOVERY_V5_LOOKUP_INTERVAL>
           The interval in seconds at which to carry out periodic lookup queries, for the whole run of the program
@@ -663,7 +666,12 @@ Pruning:
 
 Engine:
       --engine.experimental
-          Enable the engine2 experimental features on reth binary
+          Enable the experimental engine features on reth binary
+
+          DEPRECATED: experimental engine is default now, use --engine.legacy to enable the legacy functionality
+
+      --engine.legacy
+          Enable the legacy engine on reth binary
 
       --engine.persistence-threshold <PERSISTENCE_THRESHOLD>
           Configure persistence threshold for engine experimental

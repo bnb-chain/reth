@@ -1,7 +1,8 @@
+use alloy_eips::BlockNumHash;
 use alloy_primitives::BlockNumber;
 use parking_lot::RwLock;
 use reth_chainspec::ChainInfo;
-use reth_primitives::{BlockNumHash, SealedHeader};
+use reth_primitives::SealedHeader;
 use std::{
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -20,9 +21,13 @@ pub struct ChainInfoTracker {
 impl ChainInfoTracker {
     /// Create a new chain info container for the given canonical head and finalized header if it
     /// exists.
-    pub fn new(head: SealedHeader, finalized: Option<SealedHeader>) -> Self {
+    pub fn new(
+        head: SealedHeader,
+        finalized: Option<SealedHeader>,
+        safe: Option<SealedHeader>,
+    ) -> Self {
         let (finalized_block, _) = watch::channel(finalized);
-        let (safe_block, _) = watch::channel(None);
+        let (safe_block, _) = watch::channel(safe);
 
         Self {
             inner: Arc::new(ChainInfoInner {
@@ -111,15 +116,25 @@ impl ChainInfoTracker {
 
     /// Sets the safe header of the chain.
     pub fn set_safe(&self, header: SealedHeader) {
-        self.inner.safe_block.send_modify(|h| {
-            let _ = h.replace(header);
+        self.inner.safe_block.send_if_modified(|current_header| {
+            if current_header.as_ref().map(SealedHeader::hash) != Some(header.hash()) {
+                let _ = current_header.replace(header);
+                return true
+            }
+
+            false
         });
     }
 
     /// Sets the finalized header of the chain.
     pub fn set_finalized(&self, header: SealedHeader) {
-        self.inner.finalized_block.send_modify(|h| {
-            let _ = h.replace(header);
+        self.inner.finalized_block.send_if_modified(|current_header| {
+            if current_header.as_ref().map(SealedHeader::hash) != Some(header.hash()) {
+                let _ = current_header.replace(header);
+                return true
+            }
+
+            false
         });
     }
 

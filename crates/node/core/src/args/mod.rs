@@ -60,7 +60,5 @@ pub use benchmark_args::BenchmarkArgs;
 mod performance_optimization;
 pub use performance_optimization::PerformanceOptimizationArgs;
 
-pub mod utils;
-
 mod error;
 pub mod types;

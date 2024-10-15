@@ -1,6 +1,7 @@
+use alloy_primitives::B256;
 use rayon::prelude::*;
 use reth_execution_errors::StorageRootError;
-use reth_primitives::{revm_primitives::EvmState, B256};
+use reth_primitives::revm_primitives::EvmState;
 use reth_provider::{
     providers::ConsistentDbView, BlockReader, DBProvider, DatabaseProviderFactory, ProviderError,
 };

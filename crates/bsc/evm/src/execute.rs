@@ -1,6 +1,7 @@
 //! Bsc block executor.
 
 use crate::{post_execution::PostExecutionInput, BscBlockExecutionError, BscEvmConfig};
+use alloy_primitives::{Address, BlockNumber, Bytes, B256, U256};
 use core::fmt::Display;
 use lazy_static::lazy_static;
 use lru::LruCache;
@@ -8,7 +9,8 @@ use parking_lot::RwLock;
 use reth_bsc_consensus::{
     is_breathe_block, validate_block_post_execution, Parlia, ValidatorElectionInfo, ValidatorsInfo,
 };
-use reth_chainspec::{BscHardforks, ChainSpec, EthereumHardforks};
+use reth_bsc_forks::BscHardforks;
+use reth_chainspec::{ChainSpec, EthereumHardforks};
 use reth_errors::{BlockExecutionError, BlockValidationError, ProviderError};
 use reth_evm::{
     execute::{
@@ -19,8 +21,7 @@ use reth_evm::{
 use reth_primitives::{
     parlia::{ParliaConfig, Snapshot, VoteAddress, CHECKPOINT_INTERVAL, DEFAULT_TURN_LENGTH},
     system_contracts::{get_upgrade_system_contracts, is_system_transaction, SLASH_CONTRACT},
-    Address, BlockNumber, BlockWithSenders, Bytes, Header, Receipt, Transaction, TransactionSigned,
-    B256, U256,
+    BlockWithSenders, Header, Receipt, Transaction, TransactionSigned,
 };
 use reth_provider::{ExecutionOutcome, ParliaProvider};
 use reth_prune_types::PruneModes;

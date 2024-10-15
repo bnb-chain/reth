@@ -3,13 +3,14 @@
 
 use std::collections::HashMap;
 
-use crate::{hex, Address, BlockNumber, TransactionSigned};
+use crate::TransactionSigned;
 use alloy_chains::Chain;
+use alloy_primitives::{hex, Address, BlockNumber};
 use include_dir::{include_dir, Dir};
 use lazy_static::lazy_static;
 use reth_bsc_chainspec::{BSC_CHAPEL, BSC_MAINNET, BSC_RIALTO};
+use reth_bsc_forks::BscHardfork;
 use reth_chainspec::ChainSpec;
-use reth_ethereum_forks::BscHardfork;
 use revm_primitives::Bytecode;
 use thiserror::Error;
 

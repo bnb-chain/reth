@@ -38,7 +38,8 @@ type BlockTransactionsResponseSender =
     oneshot::Sender<ProviderResult<Option<Vec<TransactionSigned>>>>;
 
 /// The type that can send the response to a requested [`BlockWithSenders`]
-type BlockWithSendersResponseSender = oneshot::Sender<ProviderResult<Option<BlockWithSenders>>>;
+type BlockWithSendersResponseSender =
+    oneshot::Sender<ProviderResult<Option<Arc<BlockWithSenders>>>>;
 
 /// The type that can send the response to the requested receipts of a block.
 type ReceiptsResponseSender = oneshot::Sender<ProviderResult<Option<Arc<Vec<Receipt>>>>>;
@@ -51,7 +52,7 @@ type EnvResponseSender = oneshot::Sender<ProviderResult<(CfgEnvWithHandlerCfg, B
 
 type BlockLruCache<L> = MultiConsumerLruCache<
     B256,
-    BlockWithSenders,
+    Arc<BlockWithSenders>,
     L,
     Either<BlockWithSendersResponseSender, BlockTransactionsResponseSender>,
 >;
@@ -157,7 +158,7 @@ impl EthStateCache {
             rx.await.map_err(|_| ProviderError::CacheServiceUnavailable)?;
 
         if let Ok(Some(block_with_senders)) = block_with_senders_res {
-            Ok(Some(block_with_senders.block))
+            Ok(Some(block_with_senders.block.clone()))
         } else {
             Ok(None)
         }
@@ -192,7 +193,7 @@ impl EthStateCache {
         Ok(self
             .get_block_with_senders(block_hash)
             .await?
-            .map(|block| block.into_transactions_ecrecovered().collect()))
+            .map(|block| (*block).clone().into_transactions_ecrecovered().collect()))
     }
 
     /// Fetches both transactions and receipts for the given block hash.
@@ -214,7 +215,7 @@ impl EthStateCache {
     pub async fn get_block_with_senders(
         &self,
         block_hash: B256,
-    ) -> ProviderResult<Option<BlockWithSenders>> {
+    ) -> ProviderResult<Option<Arc<BlockWithSenders>>> {
         let (response_tx, rx) = oneshot::channel();
         let _ = self.to_service.send(CacheAction::GetBlockWithSenders { block_hash, response_tx });
         rx.await.map_err(|_| ProviderError::CacheServiceUnavailable)?
@@ -227,7 +228,10 @@ impl EthStateCache {
         &self,
         block_hash: B256,
     ) -> ProviderResult<Option<SealedBlockWithSenders>> {
-        Ok(self.get_block_with_senders(block_hash).await?.map(|block| block.seal(block_hash)))
+        Ok(self
+            .get_block_with_senders(block_hash)
+            .await?
+            .map(|block| (*block).clone().seal(block_hash)))
     }
 
     /// Requests the [Receipt] for the block hash
@@ -302,7 +306,7 @@ pub(crate) struct EthStateCacheService<
     LimitEnvs = ByLength,
     LimitSidecars = ByLength,
 > where
-    LimitBlocks: Limiter<B256, BlockWithSenders>,
+    LimitBlocks: Limiter<B256, Arc<BlockWithSenders>>,
     LimitReceipts: Limiter<B256, Arc<Vec<Receipt>>>,
     LimitEnvs: Limiter<B256, (CfgEnvWithHandlerCfg, BlockEnv)>,
     LimitSidecars: Limiter<B256, BlobSidecars>,
@@ -335,7 +339,11 @@ where
     Tasks: TaskSpawner + Clone + 'static,
     EvmConfig: ConfigureEvm<Header = Header>,
 {
-    fn on_new_block(&mut self, block_hash: B256, res: ProviderResult<Option<BlockWithSenders>>) {
+    fn on_new_block(
+        &mut self,
+        block_hash: B256,
+        res: ProviderResult<Option<Arc<BlockWithSenders>>>,
+    ) {
         if let Some(queued) = self.full_block_cache.remove(&block_hash) {
             // send the response to queued senders
             for tx in queued {
@@ -344,10 +352,9 @@ where
                         let _ = block_with_senders.send(res.clone());
                     }
                     Either::Right(transaction_tx) => {
-                        let _ = transaction_tx.send(
-                            res.clone()
-                                .map(|maybe_block| maybe_block.map(|block| block.block.body)),
-                        );
+                        let _ = transaction_tx.send(res.clone().map(|maybe_block| {
+                            maybe_block.map(|block| block.block.body.transactions.clone())
+                        }));
                     }
                 }
             }
@@ -378,6 +385,7 @@ where
     }
 
     fn on_reorg_block(&mut self, block_hash: B256, res: ProviderResult<Option<BlockWithSenders>>) {
+        let res = res.map(|b| b.map(Arc::new));
         if let Some(queued) = self.full_block_cache.remove(&block_hash) {
             // send the response to queued senders
             for tx in queued {
@@ -386,10 +394,9 @@ where
                         let _ = block_with_senders.send(res.clone());
                     }
                     Either::Right(transaction_tx) => {
-                        let _ = transaction_tx.send(
-                            res.clone()
-                                .map(|maybe_block| maybe_block.map(|block| block.block.body)),
-                        );
+                        let _ = transaction_tx.send(res.clone().map(|maybe_block| {
+                            maybe_block.map(|block| block.block.body.transactions.clone())
+                        }));
                     }
                 }
             }
@@ -450,10 +457,12 @@ where
                                     let _permit = rate_limiter.acquire().await;
                                     // Only look in the database to prevent situations where we
                                     // looking up the tree is blocking
-                                    let block_sender = provider.block_with_senders(
-                                        BlockHashOrNumber::Hash(block_hash),
-                                        TransactionVariant::WithHash,
-                                    );
+                                    let block_sender = provider
+                                        .block_with_senders(
+                                            BlockHashOrNumber::Hash(block_hash),
+                                            TransactionVariant::WithHash,
+                                        )
+                                        .map(|maybe_block| maybe_block.map(Arc::new));
                                     let _ = action_tx.send(CacheAction::BlockWithSendersResult {
                                         block_hash,
                                         res: block_sender,
@@ -464,7 +473,7 @@ where
                         CacheAction::GetBlockTransactions { block_hash, response_tx } => {
                             // check if block is cached
                             if let Some(block) = this.full_block_cache.get(&block_hash) {
-                                let _ = response_tx.send(Ok(Some(block.body.clone())));
+                                let _ = response_tx.send(Ok(Some(block.body.transactions.clone())));
                                 continue
                             }
 
@@ -478,10 +487,12 @@ where
                                     let _permit = rate_limiter.acquire().await;
                                     // Only look in the database to prevent situations where we
                                     // looking up the tree is blocking
-                                    let res = provider.block_with_senders(
-                                        BlockHashOrNumber::Hash(block_hash),
-                                        TransactionVariant::WithHash,
-                                    );
+                                    let res = provider
+                                        .block_with_senders(
+                                            BlockHashOrNumber::Hash(block_hash),
+                                            TransactionVariant::WithHash,
+                                        )
+                                        .map(|b| b.map(Arc::new));
                                     let _ = action_tx.send(CacheAction::BlockWithSendersResult {
                                         block_hash,
                                         res,
@@ -615,7 +626,7 @@ where
                         }
                         CacheAction::CacheNewCanonicalChain { chain_change } => {
                             for block in chain_change.blocks {
-                                this.on_new_block(block.hash(), Ok(Some(block.unseal())));
+                                this.on_new_block(block.hash(), Ok(Some(Arc::new(block.unseal()))));
                             }
 
                             for block_receipts in chain_change.receipts {
@@ -655,7 +666,7 @@ enum CacheAction {
     GetBlockTransactions { block_hash: B256, response_tx: BlockTransactionsResponseSender },
     GetEnv { block_hash: B256, response_tx: EnvResponseSender },
     GetReceipts { block_hash: B256, response_tx: ReceiptsResponseSender },
-    BlockWithSendersResult { block_hash: B256, res: ProviderResult<Option<BlockWithSenders>> },
+    BlockWithSendersResult { block_hash: B256, res: ProviderResult<Option<Arc<BlockWithSenders>>> },
     ReceiptsResult { block_hash: B256, res: ProviderResult<Option<Arc<Vec<Receipt>>>> },
     EnvResult { block_hash: B256, res: Box<ProviderResult<(CfgEnvWithHandlerCfg, BlockEnv)>> },
     CacheNewCanonicalChain { chain_change: ChainChange },

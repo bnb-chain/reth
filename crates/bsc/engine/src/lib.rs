@@ -5,6 +5,7 @@
 // The `bsc` feature must be enabled to use this crate.
 #![cfg(feature = "bsc")]
 
+use alloy_primitives::{BlockHash, BlockNumber, B256};
 use reth_beacon_consensus::BeaconEngineMessage;
 use reth_bsc_consensus::Parlia;
 use reth_chainspec::ChainSpec;
@@ -12,9 +13,7 @@ use reth_engine_primitives::EngineTypes;
 use reth_evm_bsc::SnapshotReader;
 use reth_network_api::events::EngineMessage;
 use reth_network_p2p::BlockClient;
-use reth_primitives::{
-    parlia::ParliaConfig, BlockBody, BlockHash, BlockHashOrNumber, BlockNumber, SealedHeader, B256,
-};
+use reth_primitives::{parlia::ParliaConfig, BlockBody, BlockHashOrNumber, SealedHeader};
 use reth_provider::{BlockReaderIdExt, CanonChainTracker, ParliaProvider};
 use std::{
     clone::Clone,
@@ -283,13 +282,14 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reth_primitives::Header;
+    use alloy_primitives::Sealable;
+    use reth_primitives::SealedHeader;
 
     #[test]
     fn test_inner_storage() {
-        let default_block = Header::default().seal_slow();
+        let default_block = SealedHeader::default();
         let mut storage = StorageInner {
-            best_hash: default_block.hash(),
+            best_hash: default_block.hash_slow(),
             best_block: default_block.number,
             best_header: default_block.clone(),
             headers: LimitedHashSet::new(10),
@@ -299,18 +299,18 @@ mod tests {
             best_safe_hash: B256::default(),
         };
         storage.headers.put(default_block.number, default_block.clone());
-        storage.hash_to_number.put(default_block.hash(), default_block.number);
+        storage.hash_to_number.put(default_block.hash_slow(), default_block.number);
 
-        let block = Header::default().seal_slow();
+        let block = SealedHeader::default();
         storage.insert_new_block(block.clone(), BlockBody::default());
         assert_eq!(storage.best_block, block.number);
-        assert_eq!(storage.best_hash, block.hash());
+        assert_eq!(storage.best_hash, block.hash_slow());
         assert_eq!(storage.best_header, block);
         assert_eq!(storage.headers.get(&block.number), Some(&block));
-        assert_eq!(storage.hash_to_number.get(&block.hash()), Some(&block.number));
-        assert_eq!(storage.bodies.get(&block.hash()), Some(&BlockBody::default()));
+        assert_eq!(storage.hash_to_number.get(&block.hash_slow()), Some(&block.number));
+        assert_eq!(storage.bodies.get(&block.hash_slow()), Some(&BlockBody::default()));
         assert_eq!(
-            storage.header_by_hash_or_number(BlockHashOrNumber::Hash(block.hash())),
+            storage.header_by_hash_or_number(BlockHashOrNumber::Hash(block.hash_slow())),
             Some(block.clone())
         );
         assert_eq!(
@@ -318,18 +318,18 @@ mod tests {
             Some(block.clone())
         );
         assert_eq!(storage.best_block, block.number);
-        assert_eq!(storage.best_hash, block.hash());
+        assert_eq!(storage.best_hash, block.hash_slow());
         assert_eq!(storage.best_header, block);
 
-        let header = Header::default().seal_slow();
+        let header = SealedHeader::default();
         storage.insert_new_header(header.clone());
         assert_eq!(storage.best_block, header.number);
-        assert_eq!(storage.best_hash, header.hash());
+        assert_eq!(storage.best_hash, header.hash_slow());
         assert_eq!(storage.best_header, header);
         assert_eq!(storage.headers.get(&header.number), Some(&header));
-        assert_eq!(storage.hash_to_number.get(&header.hash()), Some(&header.number));
+        assert_eq!(storage.hash_to_number.get(&header.hash_slow()), Some(&header.number));
         assert_eq!(
-            storage.header_by_hash_or_number(BlockHashOrNumber::Hash(header.hash())),
+            storage.header_by_hash_or_number(BlockHashOrNumber::Hash(header.hash_slow())),
             Some(header.clone())
         );
         assert_eq!(
@@ -337,7 +337,7 @@ mod tests {
             Some(header.clone())
         );
         assert_eq!(storage.best_block, header.number);
-        assert_eq!(storage.best_hash, header.hash());
+        assert_eq!(storage.best_hash, header.hash_slow());
         assert_eq!(storage.best_header, header);
     }
 
@@ -354,9 +354,9 @@ mod tests {
 
     #[test]
     fn test_clean_cache() {
-        let default_block = Header::default().seal_slow();
+        let default_block = SealedHeader::default();
         let mut storage = StorageInner {
-            best_hash: default_block.hash(),
+            best_hash: default_block.hash_slow(),
             best_block: default_block.number,
             best_header: default_block.clone(),
             headers: LimitedHashSet::new(10),
@@ -366,18 +366,18 @@ mod tests {
             best_safe_hash: B256::default(),
         };
         storage.headers.put(default_block.number, default_block.clone());
-        storage.hash_to_number.put(default_block.hash(), default_block.number);
+        storage.hash_to_number.put(default_block.hash_slow(), default_block.number);
 
-        let block = Header::default().seal_slow();
+        let block = SealedHeader::default();
         storage.insert_new_block(block.clone(), BlockBody::default());
         assert_eq!(storage.best_block, block.number);
-        assert_eq!(storage.best_hash, block.hash());
+        assert_eq!(storage.best_hash, block.hash_slow());
         assert_eq!(storage.best_header, block);
         assert_eq!(storage.headers.get(&block.number), Some(&block));
-        assert_eq!(storage.hash_to_number.get(&block.hash()), Some(&block.number));
-        assert_eq!(storage.bodies.get(&block.hash()), Some(&BlockBody::default()));
+        assert_eq!(storage.hash_to_number.get(&block.hash_slow()), Some(&block.number));
+        assert_eq!(storage.bodies.get(&block.hash_slow()), Some(&BlockBody::default()));
         assert_eq!(
-            storage.header_by_hash_or_number(BlockHashOrNumber::Hash(block.hash())),
+            storage.header_by_hash_or_number(BlockHashOrNumber::Hash(block.hash_slow())),
             Some(block.clone())
         );
         assert_eq!(
@@ -385,12 +385,12 @@ mod tests {
             Some(block.clone())
         );
         assert_eq!(storage.best_block, block.number);
-        assert_eq!(storage.best_hash, block.hash());
+        assert_eq!(storage.best_hash, block.hash_slow());
         assert_eq!(storage.best_header, block);
 
         storage.clean_caches();
         assert_eq!(storage.headers.get(&block.number), None);
-        assert_eq!(storage.hash_to_number.get(&block.hash()), None);
-        assert_eq!(storage.bodies.get(&block.hash()), None);
+        assert_eq!(storage.hash_to_number.get(&block.hash_slow()), None);
+        assert_eq!(storage.bodies.get(&block.hash_slow()), None);
     }
 }

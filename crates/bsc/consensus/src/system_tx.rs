@@ -1,5 +1,7 @@
 use crate::Parlia;
+use alloy_consensus::TxLegacy;
 use alloy_dyn_abi::{DynSolValue, JsonAbiExt};
+use alloy_primitives::{Address, Bytes, TxKind, U256};
 use reth_primitives::{
     system_contracts::{
         CROSS_CHAIN_CONTRACT, GOVERNOR_CONTRACT, GOV_TOKEN_CONTRACT, LIGHT_CLIENT_CONTRACT,
@@ -7,7 +9,7 @@ use reth_primitives::{
         SYSTEM_REWARD_CONTRACT, TIMELOCK_CONTRACT, TOKEN_HUB_CONTRACT,
         TOKEN_RECOVER_PORTAL_CONTRACT, VALIDATOR_CONTRACT,
     },
-    Address, Bytes, Transaction, TxKind, TxLegacy, U256,
+    Transaction,
 };
 
 /// Assemble system tx
@@ -32,7 +34,7 @@ impl Parlia {
                 Transaction::Legacy(TxLegacy {
                     chain_id: Some(self.chain_spec.chain.id()),
                     nonce: 0,
-                    gas_limit: u128::from(u64::MAX / 2),
+                    gas_limit: u64::MAX / 2,
                     gas_price: 0,
                     value: U256::ZERO,
                     input: Bytes::from(input.clone()),
@@ -60,7 +62,7 @@ impl Parlia {
                 Transaction::Legacy(TxLegacy {
                     chain_id: Some(self.chain_spec.chain.id()),
                     nonce: 0,
-                    gas_limit: u128::from(u64::MAX / 2),
+                    gas_limit: u64::MAX / 2,
                     gas_price: 0,
                     value: U256::ZERO,
                     input: Bytes::from(input.clone()),
@@ -77,7 +79,7 @@ impl Parlia {
         Transaction::Legacy(TxLegacy {
             chain_id: Some(self.chain_spec.chain.id()),
             nonce: 0,
-            gas_limit: u128::from(u64::MAX / 2),
+            gas_limit: u64::MAX / 2,
             gas_price: 0,
             value: U256::ZERO,
             input: Bytes::from(input),
@@ -89,7 +91,7 @@ impl Parlia {
         Transaction::Legacy(TxLegacy {
             chain_id: Some(self.chain_spec.chain.id()),
             nonce: 0,
-            gas_limit: u128::from(u64::MAX / 2),
+            gas_limit: u64::MAX / 2,
             gas_price: 0,
             value: U256::from(system_reward),
             input: Bytes::default(),
@@ -104,7 +106,7 @@ impl Parlia {
         Transaction::Legacy(TxLegacy {
             chain_id: Some(self.chain_spec.chain.id()),
             nonce: 0,
-            gas_limit: u128::from(u64::MAX / 2),
+            gas_limit: u64::MAX / 2,
             gas_price: 0,
             value: U256::from(block_reward),
             input: Bytes::from(input),
@@ -129,7 +131,7 @@ impl Parlia {
         Transaction::Legacy(TxLegacy {
             chain_id: Some(self.chain_spec.chain.id()),
             nonce: 0,
-            gas_limit: u128::from(u64::MAX / 2),
+            gas_limit: u64::MAX / 2,
             gas_price: 0,
             value: U256::ZERO,
             input: Bytes::from(input),
@@ -160,7 +162,7 @@ impl Parlia {
         Transaction::Legacy(TxLegacy {
             chain_id: Some(self.chain_spec.chain.id()),
             nonce: 0,
-            gas_limit: u128::from(u64::MAX / 2),
+            gas_limit: u64::MAX / 2,
             gas_price: 0,
             value: U256::ZERO,
             input: Bytes::from(input),

@@ -1,14 +1,15 @@
 //! Command that initializes the node from a genesis file.
 
 use clap::Parser;
-use reth_chainspec::ChainSpec;
 use reth_cli::chainspec::ChainSpecParser;
 use reth_cli_commands::common::{AccessRights, Environment};
 use reth_db_common::init::init_from_state_dump;
 use reth_node_builder::NodeTypesWithEngine;
+use reth_optimism_chainspec::OpChainSpec;
 use reth_optimism_primitives::bedrock::BEDROCK_HEADER;
 use reth_provider::{
-    BlockNumReader, ChainSpecProvider, StaticFileProviderFactory, StaticFileWriter,
+    BlockNumReader, ChainSpecProvider, DatabaseProviderFactory, StaticFileProviderFactory,
+    StaticFileWriter,
 };
 use std::{fs::File, io::BufReader};
 use tracing::info;
@@ -34,7 +35,7 @@ pub struct InitStateCommandOp<C: ChainSpecParser> {
     without_ovm: bool,
 }
 
-impl<C: ChainSpecParser<ChainSpec = ChainSpec>> InitStateCommandOp<C> {
+impl<C: ChainSpecParser<ChainSpec = OpChainSpec>> InitStateCommandOp<C> {
     /// Execute the `init` command
     pub async fn execute<N: NodeTypesWithEngine<ChainSpec = C::ChainSpec>>(
         self,
@@ -45,7 +46,7 @@ impl<C: ChainSpecParser<ChainSpec = ChainSpec>> InitStateCommandOp<C> {
             self.init_state.env.init::<N>(AccessRights::RW)?;
 
         let static_file_provider = provider_factory.static_file_provider();
-        let provider_rw = provider_factory.provider_rw()?;
+        let provider_rw = provider_factory.database_provider_rw()?;
 
         // OP-Mainnet may want to bootstrap a chain without OVM historical data
         if provider_factory.chain_spec().is_optimism_mainnet() && self.without_ovm {
@@ -70,7 +71,7 @@ impl<C: ChainSpecParser<ChainSpec = ChainSpec>> InitStateCommandOp<C> {
         info!(target: "reth::cli", "Initiating state dump");
 
         let reader = BufReader::new(File::open(self.init_state.state)?);
-        let hash = init_from_state_dump(reader, &provider_rw.0, config.stages.etl)?;
+        let hash = init_from_state_dump(reader, &provider_rw, config.stages.etl)?;
 
         provider_rw.commit()?;
 

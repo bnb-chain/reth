@@ -2,8 +2,7 @@ use std::{ffi::OsStr, sync::Arc};
 
 use clap::{builder::TypedValueParser, error::Result, Arg, Command};
 use reth_bsc_chainspec::{BscChainSpec, BSC_CHAPEL, BSC_DEV, BSC_MAINNET, BSC_RIALTO};
-use reth_cli::chainspec::ChainSpecParser;
-use reth_node_core::args::utils::parse_custom_chain_spec;
+use reth_cli::chainspec::{parse_genesis, ChainSpecParser};
 
 /// Clap value parser for [`ChainSpec`]s.
 ///
@@ -15,7 +14,7 @@ fn chain_value_parser(s: &str) -> eyre::Result<Arc<BscChainSpec>, eyre::Error> {
         "bsc-testnet" | "bsc-chapel" | "bsc_testnet" | "bsc_chapel" => BSC_CHAPEL.clone(),
         "bsc-rialto" | "bsc-qa" | "bsc_rialto" | "bsc_qa" => BSC_RIALTO.clone(),
         "dev" => BSC_DEV.clone(),
-        _ => Arc::new(BscChainSpec { inner: parse_custom_chain_spec(s)? }),
+        _ => Arc::new(parse_genesis(s)?.into()),
     })
 }
 

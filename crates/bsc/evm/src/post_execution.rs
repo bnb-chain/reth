@@ -1,18 +1,18 @@
 use crate::{BscBlockExecutionError, BscBlockExecutor, SnapshotReader};
+use alloy_primitives::{hex, Address, B256, U256};
 use bitset::BitSet;
 use reth_bsc_consensus::{
     get_top_validators_by_voting_power, is_breathe_block, ElectedValidators, ValidatorElectionInfo,
     COLLECT_ADDITIONAL_VOTES_REWARD_RATIO, DEFAULT_TURN_LENGTH, DIFF_INTURN, MAX_SYSTEM_REWARD,
     SYSTEM_REWARD_PERCENT,
 };
+use reth_bsc_forks::BscHardforks;
 use reth_errors::{BlockExecutionError, BlockValidationError, ProviderError};
-use reth_ethereum_forks::BscHardforks;
 use reth_evm::ConfigureEvm;
 use reth_primitives::{
-    hex,
     parlia::{Snapshot, VoteAddress, VoteAttestation},
     system_contracts::SYSTEM_REWARD_CONTRACT,
-    Address, BlockWithSenders, GotExpected, Header, Receipt, TransactionSigned, B256, U256,
+    BlockWithSenders, GotExpected, Header, Receipt, TransactionSigned,
 };
 use reth_provider::ParliaProvider;
 use reth_revm::bsc::SYSTEM_ADDRESS;

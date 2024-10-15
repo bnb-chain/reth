@@ -1,4 +1,4 @@
-use reth_primitives::BlockNumber;
+use alloy_primitives::BlockNumber;
 
 /// Parlia consensus error.
 #[derive(thiserror::Error, Debug, PartialEq, Eq, Clone)]

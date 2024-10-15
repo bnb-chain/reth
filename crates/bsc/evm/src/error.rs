@@ -1,8 +1,9 @@
 //! Error types for the Bsc EVM module.
 
+use alloy_primitives::{Address, BlockHash, BlockNumber, B256, U256};
 use reth_bsc_consensus::ParliaConsensusError;
 use reth_errors::{BlockExecutionError, ProviderError};
-use reth_primitives::{Address, BlockHash, BlockNumber, GotExpected, GotExpectedBoxed, B256, U256};
+use reth_primitives::{GotExpected, GotExpectedBoxed};
 
 /// Bsc Block Executor Errors
 #[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]

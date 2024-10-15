@@ -42,7 +42,7 @@ mod tree_viewer;
 pub use tree_viewer::TreeViewer;
 
 mod finalized_block;
-pub use finalized_block::{FinalizedBlockReader, FinalizedBlockWriter};
+pub use finalized_block::{ChainStateBlockReader, ChainStateBlockWriter};
 
 mod parlia_provider;
 pub use parlia_provider::ParliaProvider;

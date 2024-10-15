@@ -5,7 +5,8 @@
 
 use super::externals::TreeExternals;
 use crate::BundleStateDataRef;
-use alloy_primitives::{BlockHash, BlockNumber, U256};
+use alloy_eips::ForkBlock;
+use alloy_primitives::{map::HashMap, BlockHash, BlockNumber, B256, U256};
 use reth_blockchain_tree_api::{
     error::{BlockchainTreeError, InsertBlockErrorKind},
     BlockAttachment, BlockValidationKind,
@@ -15,8 +16,7 @@ use reth_evm::execute::{BlockExecutorProvider, Executor};
 use reth_execution_errors::BlockExecutionError;
 use reth_execution_types::{Chain, ExecutionOutcome};
 use reth_primitives::{
-    revm_primitives::EvmState, ForkBlock, GotExpected, Header, SealedBlockWithSenders,
-    SealedHeader, B256,
+    revm_primitives::EvmState, GotExpected, Header, SealedBlockWithSenders, SealedHeader,
 };
 use reth_provider::{
     providers::{BundleStateProvider, ConsistentDbView, ProviderNodeTypes},
@@ -28,7 +28,7 @@ use reth_trie_parallel::parallel_root::ParallelStateRoot;
 use reth_trie_prefetch::TriePrefetch;
 use std::{
     clone::Clone,
-    collections::{BTreeMap, HashMap},
+    collections::BTreeMap,
     ops::{Deref, DerefMut},
     sync::Arc,
     time::Instant,

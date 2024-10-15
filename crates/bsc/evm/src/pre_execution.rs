@@ -1,16 +1,18 @@
 use crate::{BscBlockExecutionError, BscBlockExecutor, SnapshotReader};
+use alloy_primitives::B256;
 use bitset::BitSet;
 use blst::{
     min_pk::{PublicKey, Signature},
     BLST_ERROR,
 };
 use reth_bsc_consensus::{DIFF_INTURN, DIFF_NOTURN};
+use reth_bsc_forks::BscHardforks;
 use reth_errors::{BlockExecutionError, ProviderError};
-use reth_ethereum_forks::{BscHardforks, EthereumHardforks};
+use reth_ethereum_forks::EthereumHardforks;
 use reth_evm::ConfigureEvm;
 use reth_primitives::{
     parlia::{Snapshot, VoteAddress, MAX_ATTESTATION_EXTRA_LENGTH},
-    GotExpected, Header, B256,
+    GotExpected, Header,
 };
 use reth_provider::ParliaProvider;
 use revm_primitives::db::Database;
@@ -225,11 +227,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::BLST_DST;
+    use alloy_primitives::{b256, hex};
+
     use blst::min_pk::{PublicKey, Signature};
-    use reth_primitives::{
-        b256, hex,
-        parlia::{VoteAddress, VoteData, VoteSignature},
-    };
+    use reth_primitives::parlia::{VoteAddress, VoteData, VoteSignature};
 
     #[test]
     fn verify_vote_attestation() {
