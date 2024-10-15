@@ -14,8 +14,6 @@ use alloy_rpc_types_trace::geth::{
 use async_trait::async_trait;
 use cfg_if::cfg_if;
 use jsonrpsee::core::RpcResult;
-#[cfg(feature = "bsc")]
-use reth_bsc_forks::BscHardforks;
 use reth_chainspec::EthereumHardforks;
 #[cfg(feature = "bsc")]
 use reth_errors::RethError;
@@ -27,8 +25,8 @@ use reth_evm::{
 use reth_primitives::system_contracts::{get_upgrade_system_contracts, is_system_transaction};
 use reth_primitives::{Block, BlockId, BlockNumberOrTag, TransactionSignedEcRecovered};
 use reth_provider::{
-    BlockReaderIdExt, ChainSpecProvider, EvmEnvProvider, HeaderProvider, StateProofProvider,
-    StateProviderFactory, TransactionVariant,
+    BlockReaderIdExt, ChainSpecHardforks, ChainSpecProvider, EvmEnvProvider, HeaderProvider,
+    StateProofProvider, StateProviderFactory, TransactionVariant,
 };
 use reth_revm::database::StateProviderDatabase;
 use reth_rpc_api::DebugApiServer;
@@ -89,7 +87,7 @@ impl<Provider, Eth, BlockExecutor> DebugApi<Provider, Eth, BlockExecutor>
 where
     Provider: BlockReaderIdExt
         + HeaderProvider
-        + ChainSpecProvider<ChainSpec: EthereumHardforks>
+        + ChainSpecProvider<ChainSpec: ChainSpecHardforks>
         + StateProviderFactory
         + EvmEnvProvider
         + 'static,
@@ -951,7 +949,7 @@ impl<Provider, Eth, BlockExecutor> DebugApiServer for DebugApi<Provider, Eth, Bl
 where
     Provider: BlockReaderIdExt
         + HeaderProvider
-        + ChainSpecProvider<ChainSpec: EthereumHardforks>
+        + ChainSpecProvider<ChainSpec: ChainSpecHardforks>
         + StateProviderFactory
         + EvmEnvProvider
         + 'static,

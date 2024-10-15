@@ -61,7 +61,7 @@ jobs:
         name: Run tests
         run: |
           cargo nextest run \
-            --locked -p reth-node-bsc --features "bsc ${{ matrix.extra-features }}" \
+            --locked -p reth-bsc-node --features "bsc ${{ matrix.extra-features }}" \
             -E "kind(test)"
 
   integration-success:

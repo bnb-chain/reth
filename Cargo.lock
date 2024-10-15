@@ -7027,6 +7027,8 @@ dependencies = [
  "reth-basic-payload-builder",
  "reth-beacon-consensus",
  "reth-blockchain-tree",
+ "reth-bsc-evm",
+ "reth-bsc-node",
  "reth-chainspec",
  "reth-cli",
  "reth-cli-commands",
@@ -7044,7 +7046,6 @@ dependencies = [
  "reth-ethereum-cli",
  "reth-ethereum-payload-builder",
  "reth-evm",
- "reth-evm-bsc",
  "reth-execution-types",
  "reth-exex",
  "reth-fs-util",
@@ -7052,7 +7053,6 @@ dependencies = [
  "reth-network-api",
  "reth-network-p2p",
  "reth-node-api",
- "reth-node-bsc",
  "reth-node-builder",
  "reth-node-core",
  "reth-node-ethereum",
@@ -7290,6 +7290,7 @@ dependencies = [
  "reth-bsc-forks",
  "reth-chainspec",
  "reth-ethereum-forks",
+ "reth-network-peers",
  "reth-primitives-traits",
  "serde_json",
 ]
@@ -7323,6 +7324,7 @@ dependencies = [
  "mockall 0.12.1",
  "parking_lot 0.12.3",
  "rand 0.8.5",
+ "reth-bsc-chainspec",
  "reth-bsc-forks",
  "reth-chainspec",
  "reth-codecs",
@@ -7366,6 +7368,7 @@ dependencies = [
  "rand 0.8.5",
  "reth-beacon-consensus",
  "reth-bsc-consensus",
+ "reth-bsc-evm",
  "reth-chainspec",
  "reth-codecs",
  "reth-consensus",
@@ -7373,7 +7376,6 @@ dependencies = [
  "reth-db-api",
  "reth-engine-primitives",
  "reth-evm",
- "reth-evm-bsc",
  "reth-network",
  "reth-network-api",
  "reth-network-p2p",
@@ -7393,6 +7395,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "reth-bsc-evm"
+version = "1.0.5"
+dependencies = [
+ "alloy-genesis 0.4.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "alloy-primitives",
+ "bitset",
+ "blst",
+ "lazy_static",
+ "lru",
+ "parking_lot 0.12.3",
+ "reth-bsc-chainspec",
+ "reth-bsc-consensus",
+ "reth-bsc-forks",
+ "reth-chainspec",
+ "reth-errors",
+ "reth-ethereum-forks",
+ "reth-evm",
+ "reth-primitives",
+ "reth-provider",
+ "reth-prune-types",
+ "reth-revm",
+ "revm-primitives",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "reth-bsc-forks"
 version = "1.0.5"
 dependencies = [
@@ -7401,6 +7431,77 @@ dependencies = [
  "once_cell",
  "reth-ethereum-forks",
  "serde",
+]
+
+[[package]]
+name = "reth-bsc-node"
+version = "1.0.5"
+dependencies = [
+ "eyre",
+ "futures",
+ "futures-util",
+ "reth",
+ "reth-basic-payload-builder",
+ "reth-bsc-chainspec",
+ "reth-bsc-consensus",
+ "reth-bsc-evm",
+ "reth-chainspec",
+ "reth-config",
+ "reth-db",
+ "reth-e2e-test-utils",
+ "reth-ethereum-engine-primitives",
+ "reth-ethereum-payload-builder",
+ "reth-exex",
+ "reth-network",
+ "reth-node-api",
+ "reth-node-builder",
+ "reth-node-core",
+ "reth-payload-builder",
+ "reth-primitives",
+ "reth-provider",
+ "reth-rpc",
+ "reth-tracing",
+ "reth-transaction-pool",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "reth-bsc-rpc"
+version = "1.0.5"
+dependencies = [
+ "alloy-eips",
+ "alloy-network",
+ "alloy-primitives",
+ "alloy-rpc-types",
+ "alloy-rpc-types-eth",
+ "derive_more 1.0.0",
+ "jsonrpsee-types",
+ "parking_lot 0.12.3",
+ "reqwest 0.12.8",
+ "reth-bsc-chainspec",
+ "reth-bsc-consensus",
+ "reth-bsc-evm",
+ "reth-bsc-forks",
+ "reth-chainspec",
+ "reth-evm",
+ "reth-network-api",
+ "reth-node-api",
+ "reth-node-builder",
+ "reth-primitives",
+ "reth-provider",
+ "reth-revm",
+ "reth-rpc",
+ "reth-rpc-eth-api",
+ "reth-rpc-eth-types",
+ "reth-rpc-server-types",
+ "reth-tasks",
+ "reth-transaction-pool",
+ "revm",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -8283,33 +8384,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "reth-evm-bsc"
-version = "1.0.5"
-dependencies = [
- "alloy-genesis 0.4.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "alloy-primitives",
- "bitset",
- "blst",
- "lazy_static",
- "lru",
- "parking_lot 0.12.3",
- "reth-bsc-consensus",
- "reth-bsc-forks",
- "reth-chainspec",
- "reth-errors",
- "reth-ethereum-forks",
- "reth-evm",
- "reth-primitives",
- "reth-provider",
- "reth-prune-types",
- "reth-revm",
- "revm-primitives",
- "thiserror",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "reth-evm-ethereum"
 version = "1.0.5"
 dependencies = [
@@ -8742,38 +8816,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "reth-node-bsc"
-version = "1.0.5"
-dependencies = [
- "eyre",
- "futures",
- "futures-util",
- "reth",
- "reth-basic-payload-builder",
- "reth-bsc-consensus",
- "reth-chainspec",
- "reth-config",
- "reth-db",
- "reth-e2e-test-utils",
- "reth-ethereum-engine-primitives",
- "reth-ethereum-payload-builder",
- "reth-evm-bsc",
- "reth-exex",
- "reth-network",
- "reth-node-api",
- "reth-node-builder",
- "reth-node-core",
- "reth-payload-builder",
- "reth-primitives",
- "reth-provider",
- "reth-rpc",
- "reth-tracing",
- "reth-transaction-pool",
- "serde_json",
- "tokio",
-]
-
-[[package]]
 name = "reth-node-builder"
 version = "1.0.5"
 dependencies = [
@@ -8854,7 +8896,6 @@ dependencies = [
  "humantime",
  "proptest",
  "rand 0.8.5",
- "reth-bsc-chainspec",
  "reth-chainspec",
  "reth-cli-util",
  "reth-config",
@@ -9395,6 +9436,7 @@ dependencies = [
  "rand 0.8.5",
  "rayon",
  "reth-blockchain-tree-api",
+ "reth-bsc-forks",
  "reth-chain-state",
  "reth-chainspec",
  "reth-codecs",
@@ -9708,13 +9750,11 @@ dependencies = [
  "alloy-rpc-types-mev",
  "async-trait",
  "auto_impl",
- "cfg-if",
  "dyn-clone",
  "futures",
  "jsonrpsee",
  "jsonrpsee-types",
  "parking_lot 0.12.3",
- "reth-bsc-forks",
  "reth-chainspec",
  "reth-errors",
  "reth-evm",
@@ -9841,6 +9881,7 @@ dependencies = [
  "pprof",
  "rand 0.8.5",
  "rayon",
+ "reth-bsc-evm",
  "reth-chainspec",
  "reth-codecs",
  "reth-config",
@@ -9850,7 +9891,6 @@ dependencies = [
  "reth-downloaders",
  "reth-etl",
  "reth-evm",
- "reth-evm-bsc",
  "reth-evm-ethereum",
  "reth-execution-errors",
  "reth-execution-types",

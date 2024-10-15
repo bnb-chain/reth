@@ -21,7 +21,7 @@ use reth_consensus::Consensus;
 use reth_errors::RethResult;
 use reth_evm::execute::{BlockExecutorProvider, Executor};
 #[cfg(feature = "bsc")]
-use reth_evm_bsc::{BscEvmConfig, BscExecutorProvider};
+use reth_bsc_evm::{BscEvmConfig, BscExecutorProvider};
 use reth_execution_types::ExecutionOutcome;
 use reth_fs_util as fs;
 use reth_node_api::{NodeTypesWithDB, NodeTypesWithEngine, PayloadBuilderAttributes};

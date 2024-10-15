@@ -1,0 +1,67 @@
+[package]
+name = "reth-bsc-rpc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Ethereum RPC implementation for bsc."
+
+[lints]
+workspace = true
+
+[dependencies]
+# reth
+reth-evm.workspace = true
+reth-primitives.workspace = true
+reth-provider.workspace = true
+reth-revm.workspace = true
+reth-rpc-eth-api.workspace = true
+reth-rpc-eth-types.workspace = true
+reth-rpc-server-types.workspace = true
+reth-tasks = { workspace = true, features = ["rayon"] }
+reth-transaction-pool.workspace = true
+reth-rpc.workspace = true
+reth-node-api.workspace = true
+reth-network-api.workspace = true
+reth-node-builder.workspace = true
+reth-chainspec.workspace = true
+
+# bsc-reth
+reth-bsc-chainspec.workspace = true
+reth-bsc-consensus.workspace = true
+reth-bsc-evm.workspace = true
+reth-bsc-forks.workspace = true
+
+# ethereum
+alloy-eips.workspace = true
+alloy-network.workspace = true
+alloy-primitives.workspace = true
+alloy-rpc-types-eth.workspace = true
+alloy-rpc-types.workspace = true
+revm.workspace = true
+
+# async
+parking_lot.workspace = true
+tokio.workspace = true
+reqwest = { workspace = true, features = ["rustls-tls-native-roots"] }
+
+# rpc
+jsonrpsee-types.workspace = true
+serde_json.workspace = true
+
+# misc
+thiserror.workspace = true
+tracing.workspace = true
+derive_more.workspace = true
+
+[dev-dependencies]
+reth-bsc-chainspec.workspace = true
+
+[features]
+bsc = [
+    "reth-bsc-evm/bsc",
+    "reth-primitives/bsc",
+    "revm/bsc",
+]

@@ -86,4 +86,5 @@ optimism = [
 ]
 bsc = [
     "reth-bsc-consensus/bsc",
+    "reth-provider/bsc",
 ]

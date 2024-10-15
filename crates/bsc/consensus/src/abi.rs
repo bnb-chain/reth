@@ -1,9 +1,11 @@
-use crate::{Parlia, VoteAddress};
 use alloy_dyn_abi::{DynSolValue, FunctionExt, JsonAbiExt};
 use alloy_primitives::{Address, BlockNumber, Bytes, U256};
 use lazy_static::lazy_static;
 use reth_bsc_forks::BscHardforks;
+use reth_chainspec::EthChainSpec;
 use reth_primitives::system_contracts::{STAKE_HUB_CONTRACT, VALIDATOR_CONTRACT};
+
+use crate::{Parlia, VoteAddress};
 
 lazy_static! {
     pub static ref VALIDATOR_SET_ABI: &'static str = r#"
@@ -5871,7 +5873,7 @@ lazy_static! {
 }
 
 /// ABI encode/decode
-impl Parlia {
+impl<ChainSpec: EthChainSpec + BscHardforks> Parlia<ChainSpec> {
     pub fn get_current_validators_before_luban(
         &self,
         block_number: BlockNumber,
@@ -6003,9 +6005,10 @@ impl Parlia {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloy_json_abi::JsonAbi;
     use alloy_primitives::{address, hex};
+
+    use super::*;
 
     #[test]
     fn abi_encode() {
