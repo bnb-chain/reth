@@ -1,4 +1,5 @@
-use crate::{execute::BscEvmExecutor, BscBlockExecutionError};
+use std::{collections::HashMap, fmt::Display, str::FromStr};
+
 use alloy_primitives::{address, b256, Address, B256, U256};
 use lazy_static::lazy_static;
 use reth_errors::ProviderError;
@@ -6,8 +7,9 @@ use reth_evm::ConfigureEvm;
 use reth_primitives::{Header, TransactionSigned};
 use reth_revm::{db::states::StorageSlot, State};
 use revm_primitives::db::Database;
-use std::{collections::HashMap, str::FromStr};
 use tracing::trace;
+
+use crate::{execute::BscEvmExecutor, BscBlockExecutionError};
 
 struct StoragePatch {
     address: Address,
@@ -665,7 +667,7 @@ where
         transaction: &TransactionSigned,
         state: &mut State<DB>,
     ) where
-        DB: Database<Error: Into<ProviderError> + std::fmt::Display>,
+        DB: Database<Error: Into<ProviderError> + Display>,
     {
         let tx_hash = transaction.recalculate_hash();
         if let Some(patch) = MAINNET_PATCHES_BEFORE_TX.get(&tx_hash) {
@@ -680,7 +682,7 @@ where
         transaction: &TransactionSigned,
         state: &mut State<DB>,
     ) where
-        DB: Database<Error: Into<ProviderError> + std::fmt::Display>,
+        DB: Database<Error: Into<ProviderError> + Display>,
     {
         let tx_hash = transaction.recalculate_hash();
         if let Some(patch) = CHAPEL_PATCHES_BEFORE_TX.get(&tx_hash) {
@@ -695,7 +697,7 @@ where
         transaction: &TransactionSigned,
         state: &mut State<DB>,
     ) where
-        DB: Database<Error: Into<ProviderError> + std::fmt::Display>,
+        DB: Database<Error: Into<ProviderError> + Display>,
     {
         let tx_hash = transaction.recalculate_hash();
         if let Some(patch) = MAINNET_PATCHES_AFTER_TX.get(&tx_hash) {
@@ -710,7 +712,7 @@ where
         transaction: &TransactionSigned,
         state: &mut State<DB>,
     ) where
-        DB: Database<Error: Into<ProviderError> + std::fmt::Display>,
+        DB: Database<Error: Into<ProviderError> + Display>,
     {
         let tx_hash = transaction.recalculate_hash();
         if let Some(patch) = CHAPEL_PATCHES_AFTER_TX.get(&tx_hash) {
@@ -723,7 +725,7 @@ where
 
 fn apply_patch<DB>(state: &mut State<DB>, address: Address, storage: &HashMap<U256, U256>)
 where
-    DB: Database<Error: Into<ProviderError> + std::fmt::Display>,
+    DB: Database<Error: Into<ProviderError> + Display>,
 {
     let account = state
         .load_cache_account(address)

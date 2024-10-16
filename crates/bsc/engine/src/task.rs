@@ -1,12 +1,17 @@
-use crate::{client::ParliaClient, Storage};
+use std::{
+    clone::Clone,
+    fmt,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use alloy_primitives::{Sealable, B256};
 use alloy_rpc_types::{engine::ForkchoiceState, BlockId, RpcBlockHash};
 use reth_beacon_consensus::{BeaconEngineMessage, ForkchoiceStatus, MIN_BLOCKS_FOR_PIPELINE_RUN};
 use reth_bsc_consensus::Parlia;
+use reth_bsc_evm::SnapshotReader;
 use reth_chainspec::ChainSpec;
 use reth_engine_primitives::EngineTypes;
-use reth_evm_bsc::SnapshotReader;
 use reth_network_api::events::EngineMessage;
 use reth_network_p2p::{
     headers::client::{HeadersClient, HeadersDirection, HeadersRequest},
@@ -15,12 +20,6 @@ use reth_network_p2p::{
 };
 use reth_primitives::{Block, BlockBody, BlockHashOrNumber, SealedHeader};
 use reth_provider::{BlockReaderIdExt, CanonChainTracker, ParliaProvider};
-use std::{
-    clone::Clone,
-    fmt,
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
-};
 use tokio::{
     signal,
     sync::{
@@ -30,6 +29,8 @@ use tokio::{
     time::{interval, timeout, Duration},
 };
 use tracing::{debug, error, info, trace};
+
+use crate::{client::ParliaClient, Storage};
 
 /// All message variants that can be sent to beacon engine.
 #[derive(Debug)]
@@ -262,7 +263,9 @@ impl<
                 // than the predicted timestamp and less than the current timestamp.
                 let predicted_timestamp = trusted_header.timestamp +
                     block_interval * (latest_header.number - 1 - trusted_header.number);
-                let sealed_header = latest_header.clone().seal_slow();
+                let sealed = latest_header.clone().seal_slow();
+                let (header, seal) = sealed.into_parts();
+                let sealed_header = SealedHeader::new(header, seal);
                 let is_valid_header = match consensus
                     .validate_header_with_predicted_timestamp(&sealed_header, predicted_timestamp)
                 {
@@ -323,7 +326,9 @@ impl<
                     }
                     let mut parent_hash = sealed_header.parent_hash;
                     for (i, _) in headers.iter().enumerate() {
-                        let sealed_header = headers[i].clone().seal_slow();
+                        let sealed = headers[i].clone().seal_slow();
+                        let (header, seal) = sealed.into_parts();
+                        let sealed_header = SealedHeader::new(header, seal);
                         if sealed_header.hash_slow() != parent_hash {
                             break;
                         }

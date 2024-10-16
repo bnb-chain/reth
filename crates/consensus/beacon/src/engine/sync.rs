@@ -1,14 +1,13 @@
 //! Sync management for the engine implementation.
 
-#[cfg(not(feature = "bsc"))]
 use crate::EthBeaconConsensus;
 use crate::{
     engine::metrics::EngineSyncMetrics, BeaconConsensusEngineEvent, ConsensusEngineLiveSyncProgress,
 };
 use alloy_primitives::{BlockNumber, B256};
 use futures::FutureExt;
-#[cfg(feature = "bsc")]
-use reth_bsc_consensus::Parlia;
+// #[cfg(feature = "bsc")]
+// use reth_bsc_consensus::Parlia;
 use reth_network_p2p::{
     full_block::{FetchFullBlockFuture, FetchFullBlockRangeFuture, FullBlockClient},
     BlockClient,
@@ -79,12 +78,11 @@ where
         chain_spec: Arc<N::ChainSpec>,
         event_sender: EventSender<BeaconConsensusEngineEvent>,
     ) -> Self {
-        #[cfg(not(feature = "bsc"))]
         let full_block_client =
             FullBlockClient::new(client, Arc::new(EthBeaconConsensus::new(chain_spec)));
-        #[cfg(feature = "bsc")]
-        let full_block_client =
-            FullBlockClient::new(client, Arc::new(Parlia::new(chain_spec, Default::default())));
+        // #[cfg(feature = "bsc")]
+        // let full_block_client =
+        //     FullBlockClient::new(client, Arc::new(Parlia::new(chain_spec, Default::default())));
 
         Self {
             full_block_client,

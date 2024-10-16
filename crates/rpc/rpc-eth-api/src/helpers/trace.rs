@@ -1,16 +1,11 @@
 //! Loads a pending block from database. Helper trait for `eth_` call and trace RPC methods.
 
-#[cfg(feature = "bsc")]
-use crate::FromEthApiError;
 use crate::FromEvmError;
 use alloy_primitives::B256;
 use alloy_rpc_types::{BlockId, TransactionInfo};
-use cfg_if::cfg_if;
 use futures::Future;
 use reth_chainspec::ChainSpecProvider;
 use reth_evm::{system_calls::SystemCaller, ConfigureEvm, ConfigureEvmEnv};
-#[cfg(feature = "bsc")]
-use reth_primitives::system_contracts::is_system_transaction;
 use reth_primitives::Header;
 use reth_revm::database::StateProviderDatabase;
 use reth_rpc_eth_types::{
@@ -198,16 +193,7 @@ pub trait Trace: LoadState {
             let parent_beacon_block_root = block.parent_beacon_block_root;
             let block_txs = block.into_transactions_ecrecovered();
 
-            cfg_if! {
-                if #[cfg(feature = "bsc")] {
-                    let parent_timestamp = LoadState::cache(self).get_block(parent_block).await
-                        .map_err(Self::Error::from_eth_err)?
-                        .map(|block| block.timestamp)
-                        .ok_or_else(|| EthApiError::UnknownParentBlock)?;
-                } else {
-                    let parent_timestamp = 0;
-                }
-            }
+            let parent_timestamp = 0;
 
             let this = self.clone();
             self.spawn_with_state_at_block(parent_block.into(), move |state| {
@@ -241,16 +227,7 @@ pub trait Trace: LoadState {
                     parent_timestamp,
                 )?;
 
-                cfg_if! {
-                    if #[cfg(feature = "bsc")] {
-                        let mut tx_env = Call::evm_config(&this).tx_env(&tx);
-                        if is_system_transaction(&tx, tx.signer(), block_env.coinbase) {
-                            tx_env.bsc.is_system_transaction = Some(true);
-                        };
-                    } else {
-                        let tx_env = Call::evm_config(&this).tx_env(&tx);
-                    }
-                }
+                let tx_env = Call::evm_config(&this).tx_env(&tx);
 
                 let env = EnvWithHandlerCfg::new_with_cfg_env(cfg, block_env, tx_env);
                 let (res, _) =

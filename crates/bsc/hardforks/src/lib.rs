@@ -7,11 +7,9 @@
 extern crate alloc;
 
 pub mod hardfork;
-
-mod dev;
-
-pub use dev::DEV_HARDFORKS;
 pub use hardfork::BscHardfork;
+mod dev;
+pub use dev::DEV_HARDFORKS;
 
 use reth_ethereum_forks::EthereumHardforks;
 

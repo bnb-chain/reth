@@ -1,13 +1,15 @@
 //! BSC Node types config.
 
-use crate::EthEngineTypes;
+use std::sync::Arc;
+
 use reth_basic_payload_builder::{BasicPayloadJobGenerator, BasicPayloadJobGeneratorConfig};
+use reth_bsc_chainspec::BscChainSpec;
 use reth_bsc_consensus::Parlia;
+use reth_bsc_evm::{BscEvmConfig, BscExecutorProvider};
 use reth_chainspec::ChainSpec;
 use reth_ethereum_engine_primitives::{
     EthBuiltPayload, EthPayloadAttributes, EthPayloadBuilderAttributes, EthereumEngineValidator,
 };
-use reth_evm_bsc::{BscEvmConfig, BscExecutorProvider};
 use reth_network::NetworkHandle;
 use reth_node_api::{ConfigureEvm, EngineValidator, FullNodeComponents, NodeAddOns};
 use reth_node_builder::{
@@ -27,7 +29,8 @@ use reth_transaction_pool::{
     blobstore::DiskFileBlobStore, EthTransactionPool, TransactionPool,
     TransactionValidationTaskExecutor,
 };
-use std::sync::Arc;
+
+use crate::EthEngineTypes;
 
 /// Type configuration for a regular BSC node.
 #[derive(Debug, Default, Clone, Copy)]
@@ -66,7 +69,7 @@ impl BscNode {
 
 impl NodeTypes for BscNode {
     type Primitives = ();
-    type ChainSpec = ChainSpec;
+    type ChainSpec = BscChainSpec;
 }
 
 impl NodeTypesWithEngine for BscNode {
@@ -83,7 +86,7 @@ impl<N: FullNodeComponents> NodeAddOns<N> for BSCAddOns {
 
 impl<Types, N> Node<N> for BscNode
 where
-    Types: NodeTypesWithEngine<Engine = EthEngineTypes, ChainSpec = ChainSpec>,
+    Types: NodeTypesWithEngine<Engine = EthEngineTypes, ChainSpec = BscChainSpec>,
     N: FullNodeTypes<Types = Types>,
 {
     type ComponentsBuilder = ComponentsBuilder<
@@ -114,7 +117,7 @@ pub struct BscExecutorBuilder;
 
 impl<Types, Node> ExecutorBuilder<Node> for BscExecutorBuilder
 where
-    Types: NodeTypesWithEngine<ChainSpec = ChainSpec>,
+    Types: NodeTypesWithEngine<ChainSpec = BscChainSpec>,
     Node: FullNodeTypes<Types = Types>,
 {
     type EVM = BscEvmConfig;
@@ -263,7 +266,7 @@ impl BscPayloadBuilder {
 
 impl<Types, Node, Pool> PayloadServiceBuilder<Node, Pool> for BscPayloadBuilder
 where
-    Types: NodeTypesWithEngine<ChainSpec = ChainSpec>,
+    Types: NodeTypesWithEngine<ChainSpec = BscChainSpec>,
     Node: FullNodeTypes<Types = Types>,
     Pool: TransactionPool + Unpin + 'static,
     Types::Engine: PayloadTypes<
@@ -311,7 +314,7 @@ pub struct BscConsensusBuilder;
 
 impl<Node> ConsensusBuilder<Node> for BscConsensusBuilder
 where
-    Node: FullNodeTypes<Types: NodeTypes<ChainSpec = ChainSpec>>,
+    Node: FullNodeTypes<Types: NodeTypes<ChainSpec = BscChainSpec>>,
 {
     type Consensus = Parlia;
 

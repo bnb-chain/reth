@@ -26,7 +26,7 @@ reth-network-p2p.workspace = true
 reth-network-peers.workspace = true
 reth-beacon-consensus.workspace = true
 reth-bsc-consensus.workspace = true
-reth-evm-bsc.workspace = true
+reth-bsc-evm.workspace = true
 reth-evm.workspace = true
 reth-primitives-traits.workspace = true
 
@@ -69,6 +69,6 @@ bsc = [
     "reth-primitives/bsc",
     "reth-consensus-common/bsc",
     "reth-bsc-consensus/bsc",
-    "reth-evm-bsc/bsc",
+    "reth-bsc-evm/bsc",
     "reth-beacon-consensus/bsc",
 ]
