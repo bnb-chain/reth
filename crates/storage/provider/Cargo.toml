@@ -40,6 +40,9 @@ alloy-primitives.workspace = true
 alloy-rpc-types-engine.workspace = true
 revm.workspace = true
 
+# bsc
+reth-bsc-forks = { workspace = true, optional = true }
+
 # optimism
 reth-optimism-primitives = { workspace = true, optional = true }
 
@@ -85,6 +88,9 @@ eyre.workspace = true
 alloy-consensus.workspace = true
 
 [features]
+bsc = [
+    "dep:reth-bsc-forks"
+]
 optimism = ["reth-primitives/optimism", "reth-execution-types/optimism", "reth-optimism-primitives"]
 serde = ["reth-execution-types/serde"]
 test-utils = [

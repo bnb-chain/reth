@@ -24,7 +24,7 @@ use reth_network_p2p::{headers::client::HeadersClient, BlockClient};
 use reth_node_api::{NodeTypesWithDB, NodeTypesWithDBAdapter, NodeTypesWithEngine};
 
 #[cfg(feature = "bsc")]
-use reth_evm_bsc::BscExecutorProvider;
+use reth_bsc_evm::BscExecutorProvider;
 #[cfg(not(feature = "bsc"))]
 use reth_node_ethereum::EthExecutorProvider;
 use reth_primitives::BlockHashOrNumber;

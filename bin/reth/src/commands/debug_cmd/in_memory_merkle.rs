@@ -15,7 +15,7 @@ use reth_config::Config;
 use reth_errors::BlockValidationError;
 use reth_evm::execute::{BlockExecutorProvider, Executor};
 #[cfg(feature = "bsc")]
-use reth_evm_bsc::BscExecutorProvider;
+use reth_bsc_evm::BscExecutorProvider;
 use reth_execution_types::ExecutionOutcome;
 use reth_network::NetworkHandle;
 use reth_network_api::NetworkInfo;

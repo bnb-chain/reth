@@ -4,7 +4,6 @@ use std::{
 };
 
 use futures_util::TryStreamExt;
-use tracing::*;
 
 use alloy_primitives::TxNumber;
 use reth_db::tables;

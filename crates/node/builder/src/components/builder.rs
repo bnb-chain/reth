@@ -16,7 +16,7 @@ use crate::{
     BuilderContext, ConfigureEvm, FullNodeTypes,
 };
 
-use super::EngineValidatorBuilder;
+use super::{EngineValidatorBuilder, ParliaBuilder};
 
 /// A generic, general purpose and customizable [`NodeComponentsBuilder`] implementation.
 ///
@@ -38,23 +38,24 @@ use super::EngineValidatorBuilder;
 /// All component builders are captured in the builder state and will be consumed once the node is
 /// launched.
 #[derive(Debug)]
-pub struct ComponentsBuilder<Node, PoolB, PayloadB, NetworkB, ExecB, ConsB, EVB> {
+pub struct ComponentsBuilder<Node, PoolB, PayloadB, NetworkB, ExecB, ConsB, EVB, ParliaB> {
     pool_builder: PoolB,
     payload_builder: PayloadB,
     network_builder: NetworkB,
     executor_builder: ExecB,
     consensus_builder: ConsB,
     engine_validator_builder: EVB,
+    parlia_builder: ParliaB,
     _marker: PhantomData<Node>,
 }
 
-impl<Node, PoolB, PayloadB, NetworkB, ExecB, ConsB, EVB>
-    ComponentsBuilder<Node, PoolB, PayloadB, NetworkB, ExecB, ConsB, EVB>
+impl<Node, PoolB, PayloadB, NetworkB, ExecB, ConsB, EVB, ParliaB>
+    ComponentsBuilder<Node, PoolB, PayloadB, NetworkB, ExecB, ConsB, EVB, ParliaB>
 {
     /// Configures the node types.
     pub fn node_types<Types>(
         self,
-    ) -> ComponentsBuilder<Types, PoolB, PayloadB, NetworkB, ExecB, ConsB, EVB>
+    ) -> ComponentsBuilder<Types, PoolB, PayloadB, NetworkB, ExecB, ConsB, EVB, ParliaB>
     where
         Types: FullNodeTypes,
     {
@@ -65,6 +66,7 @@ impl<Node, PoolB, PayloadB, NetworkB, ExecB, ConsB, EVB>
             executor_builder: evm_builder,
             consensus_builder,
             engine_validator_builder,
+            parlia_builder,
             _marker,
         } = self;
         ComponentsBuilder {
@@ -74,6 +76,7 @@ impl<Node, PoolB, PayloadB, NetworkB, ExecB, ConsB, EVB>
             network_builder,
             consensus_builder,
             engine_validator_builder,
+            parlia_builder,
             _marker: Default::default(),
         }
     }
@@ -87,6 +90,7 @@ impl<Node, PoolB, PayloadB, NetworkB, ExecB, ConsB, EVB>
             executor_builder: self.executor_builder,
             consensus_builder: self.consensus_builder,
             engine_validator_builder: self.engine_validator_builder,
+            parlia_builder: self.parlia_builder,
             _marker: self._marker,
         }
     }
@@ -100,6 +104,7 @@ impl<Node, PoolB, PayloadB, NetworkB, ExecB, ConsB, EVB>
             executor_builder: self.executor_builder,
             consensus_builder: self.consensus_builder,
             engine_validator_builder: self.engine_validator_builder,
+            parlia_builder: self.parlia_builder,
             _marker: self._marker,
         }
     }
@@ -113,6 +118,7 @@ impl<Node, PoolB, PayloadB, NetworkB, ExecB, ConsB, EVB>
             executor_builder: self.executor_builder,
             consensus_builder: self.consensus_builder,
             engine_validator_builder: self.engine_validator_builder,
+            parlia_builder: self.parlia_builder,
             _marker: self._marker,
         }
     }
@@ -126,6 +132,7 @@ impl<Node, PoolB, PayloadB, NetworkB, ExecB, ConsB, EVB>
             executor_builder: f(self.executor_builder),
             consensus_builder: self.consensus_builder,
             engine_validator_builder: self.engine_validator_builder,
+            parlia_builder: self.parlia_builder,
             _marker: self._marker,
         }
     }
@@ -139,13 +146,14 @@ impl<Node, PoolB, PayloadB, NetworkB, ExecB, ConsB, EVB>
             executor_builder: self.executor_builder,
             consensus_builder: f(self.consensus_builder),
             engine_validator_builder: self.engine_validator_builder,
+            parlia_builder: self.parlia_builder,
             _marker: self._marker,
         }
     }
 }
 
-impl<Node, PoolB, PayloadB, NetworkB, ExecB, ConsB, EVB>
-    ComponentsBuilder<Node, PoolB, PayloadB, NetworkB, ExecB, ConsB, EVB>
+impl<Node, PoolB, PayloadB, NetworkB, ExecB, ConsB, EVB, ParliaB>
+    ComponentsBuilder<Node, PoolB, PayloadB, NetworkB, ExecB, ConsB, EVB, ParliaB>
 where
     Node: FullNodeTypes,
 {
@@ -156,7 +164,7 @@ where
     pub fn pool<PB>(
         self,
         pool_builder: PB,
-    ) -> ComponentsBuilder<Node, PB, PayloadB, NetworkB, ExecB, ConsB, EVB>
+    ) -> ComponentsBuilder<Node, PB, PayloadB, NetworkB, ExecB, ConsB, EVB, ParliaB>
     where
         PB: PoolBuilder<Node>,
     {
@@ -167,6 +175,7 @@ where
             executor_builder: evm_builder,
             consensus_builder,
             engine_validator_builder,
+            parlia_builder,
             _marker,
         } = self;
         ComponentsBuilder {
@@ -176,13 +185,14 @@ where
             executor_builder: evm_builder,
             consensus_builder,
             engine_validator_builder,
+            parlia_builder,
             _marker,
         }
     }
 }
 
-impl<Node, PoolB, PayloadB, NetworkB, ExecB, ConsB, EVB>
-    ComponentsBuilder<Node, PoolB, PayloadB, NetworkB, ExecB, ConsB, EVB>
+impl<Node, PoolB, PayloadB, NetworkB, ExecB, ConsB, EVB, ParliaB>
+    ComponentsBuilder<Node, PoolB, PayloadB, NetworkB, ExecB, ConsB, EVB, ParliaB>
 where
     Node: FullNodeTypes,
     PoolB: PoolBuilder<Node>,
@@ -194,7 +204,7 @@ where
     pub fn network<NB>(
         self,
         network_builder: NB,
-    ) -> ComponentsBuilder<Node, PoolB, PayloadB, NB, ExecB, ConsB, EVB>
+    ) -> ComponentsBuilder<Node, PoolB, PayloadB, NB, ExecB, ConsB, EVB, ParliaB>
     where
         NB: NetworkBuilder<Node, PoolB::Pool>,
     {
@@ -205,6 +215,7 @@ where
             executor_builder: evm_builder,
             consensus_builder,
             engine_validator_builder,
+            parlia_builder,
             _marker,
         } = self;
         ComponentsBuilder {
@@ -214,6 +225,7 @@ where
             executor_builder: evm_builder,
             consensus_builder,
             engine_validator_builder,
+            parlia_builder,
             _marker,
         }
     }
@@ -225,7 +237,7 @@ where
     pub fn payload<PB>(
         self,
         payload_builder: PB,
-    ) -> ComponentsBuilder<Node, PoolB, PB, NetworkB, ExecB, ConsB, EVB>
+    ) -> ComponentsBuilder<Node, PoolB, PB, NetworkB, ExecB, ConsB, EVB, ParliaB>
     where
         PB: PayloadServiceBuilder<Node, PoolB::Pool>,
     {
@@ -236,6 +248,7 @@ where
             executor_builder: evm_builder,
             consensus_builder,
             engine_validator_builder,
+            parlia_builder,
             _marker,
         } = self;
         ComponentsBuilder {
@@ -245,6 +258,7 @@ where
             executor_builder: evm_builder,
             consensus_builder,
             engine_validator_builder,
+            parlia_builder,
             _marker,
         }
     }
@@ -256,7 +270,7 @@ where
     pub fn executor<EB>(
         self,
         executor_builder: EB,
-    ) -> ComponentsBuilder<Node, PoolB, PayloadB, NetworkB, EB, ConsB, EVB>
+    ) -> ComponentsBuilder<Node, PoolB, PayloadB, NetworkB, EB, ConsB, EVB, ParliaB>
     where
         EB: ExecutorBuilder<Node>,
     {
@@ -267,6 +281,7 @@ where
             executor_builder: _,
             consensus_builder,
             engine_validator_builder,
+            parlia_builder,
             _marker,
         } = self;
         ComponentsBuilder {
@@ -276,6 +291,7 @@ where
             executor_builder,
             consensus_builder,
             engine_validator_builder,
+            parlia_builder,
             _marker,
         }
     }
@@ -287,7 +303,7 @@ where
     pub fn consensus<CB>(
         self,
         consensus_builder: CB,
-    ) -> ComponentsBuilder<Node, PoolB, PayloadB, NetworkB, ExecB, CB, EVB>
+    ) -> ComponentsBuilder<Node, PoolB, PayloadB, NetworkB, ExecB, CB, EVB, ParliaB>
     where
         CB: ConsensusBuilder<Node>,
     {
@@ -298,6 +314,7 @@ where
             executor_builder,
             consensus_builder: _,
             engine_validator_builder,
+            parlia_builder,
             _marker,
         } = self;
         ComponentsBuilder {
@@ -307,6 +324,7 @@ where
             executor_builder,
             consensus_builder,
             engine_validator_builder,
+            parlia_builder,
             _marker,
         }
     }
@@ -318,7 +336,7 @@ where
     pub fn engine_validator<EngineVB>(
         self,
         engine_validator_builder: EngineVB,
-    ) -> ComponentsBuilder<Node, PoolB, PayloadB, NetworkB, ExecB, ConsB, EngineVB>
+    ) -> ComponentsBuilder<Node, PoolB, PayloadB, NetworkB, ExecB, ConsB, EngineVB, ParliaB>
     where
         EngineVB: EngineValidatorBuilder<Node>,
     {
@@ -329,6 +347,7 @@ where
             executor_builder,
             consensus_builder,
             engine_validator_builder: _,
+            parlia_builder,
             _marker,
         } = self;
         ComponentsBuilder {
@@ -338,13 +357,47 @@ where
             executor_builder,
             consensus_builder,
             engine_validator_builder,
+            parlia_builder,
+            _marker,
+        }
+    }
+
+    /// Configures the parlia builder.
+    ///
+    /// This accepts a [`ParliaBuilder`] instance that will be used to create the node's
+    /// components for parlia.
+    pub fn parlia<PB>(
+        self,
+        parlia_builder: PB,
+    ) -> ComponentsBuilder<Node, PoolB, PayloadB, NetworkB, ExecB, ConsB, EVB, PB>
+    where
+        ParliaB: ParliaBuilder<Node>,
+    {
+        let Self {
+            pool_builder,
+            payload_builder,
+            network_builder,
+            executor_builder,
+            consensus_builder,
+            engine_validator_builder,
+            parlia_builder: _,
+            _marker,
+        } = self;
+        ComponentsBuilder {
+            pool_builder,
+            payload_builder,
+            network_builder,
+            executor_builder,
+            consensus_builder,
+            engine_validator_builder,
+            parlia_builder,
             _marker,
         }
     }
 }
 
-impl<Node, PoolB, PayloadB, NetworkB, ExecB, ConsB, EVB> NodeComponentsBuilder<Node>
-    for ComponentsBuilder<Node, PoolB, PayloadB, NetworkB, ExecB, ConsB, EVB>
+impl<Node, PoolB, PayloadB, NetworkB, ExecB, ConsB, EVB, ParliaB> NodeComponentsBuilder<Node>
+    for ComponentsBuilder<Node, PoolB, PayloadB, NetworkB, ExecB, ConsB, EVB, ParliaB>
 where
     Node: FullNodeTypes,
     PoolB: PoolBuilder<Node>,
@@ -353,6 +406,7 @@ where
     ExecB: ExecutorBuilder<Node>,
     ConsB: ConsensusBuilder<Node>,
     EVB: EngineValidatorBuilder<Node>,
+    ParliaB: ParliaBuilder<Node>,
 {
     type Components = Components<
         Node,
@@ -374,6 +428,7 @@ where
             executor_builder: evm_builder,
             consensus_builder,
             engine_validator_builder,
+            parlia_builder,
             _marker,
         } = self;
 
@@ -383,6 +438,8 @@ where
         let payload_builder = payload_builder.spawn_payload_service(context, pool.clone()).await?;
         let consensus = consensus_builder.build_consensus(context).await?;
         let engine_validator = engine_validator_builder.build_validator(context).await?;
+        #[cfg(feature = "bsc")]
+        let parlia = parlia_builder.build_parlia(context).await?;
 
         Ok(Components {
             transaction_pool: pool,
@@ -392,11 +449,13 @@ where
             executor,
             consensus,
             engine_validator,
+            #[cfg(feature = "bsc")]
+            parlia,
         })
     }
 }
 
-impl Default for ComponentsBuilder<(), (), (), (), (), (), ()> {
+impl Default for ComponentsBuilder<(), (), (), (), (), (), (), ()> {
     fn default() -> Self {
         Self {
             pool_builder: (),
@@ -405,6 +464,7 @@ impl Default for ComponentsBuilder<(), (), (), (), (), (), ()> {
             executor_builder: (),
             consensus_builder: (),
             engine_validator_builder: (),
+            parlia_builder: (),
             _marker: Default::default(),
         }
     }

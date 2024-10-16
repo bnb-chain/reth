@@ -16,7 +16,7 @@ use reth_consensus::Consensus;
 use reth_db::DatabaseEnv;
 use reth_engine_util::engine_store::{EngineMessageStore, StoredEngineApiMessage};
 #[cfg(feature = "bsc")]
-use reth_evm_bsc::{BscEvmConfig, BscExecutorProvider};
+use reth_bsc_evm::{BscEvmConfig, BscExecutorProvider};
 use reth_fs_util as fs;
 use reth_network::NetworkHandle;
 use reth_network_api::NetworkInfo;

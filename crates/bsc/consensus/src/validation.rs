@@ -1,5 +1,5 @@
 use alloy_primitives::{Bloom, B256};
-use reth_chainspec::{ChainSpec, EthereumHardforks};
+use reth_chainspec::EthereumHardforks;
 use reth_consensus::ConsensusError;
 use reth_primitives::{
     constants::eip4844::{DATA_GAS_PER_BLOB, MAX_DATA_GAS_PER_BLOCK},
@@ -42,7 +42,7 @@ pub fn validate_4844_header_of_bsc(header: &SealedHeader) -> Result<(), Consensu
 ///
 /// - Compares the receipts root in the block header to the block body
 /// - Compares the gas used in the block header to the actual gas usage after execution
-pub fn validate_block_post_execution(
+pub fn validate_block_post_execution<ChainSpec: EthereumHardforks>(
     block: &BlockWithSenders,
     chain_spec: &ChainSpec,
     receipts: &[Receipt],

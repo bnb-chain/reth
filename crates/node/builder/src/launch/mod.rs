@@ -10,7 +10,7 @@ use common::{Attached, LaunchContextWith, WithConfigs};
 pub use exex::ExExLauncher;
 
 use std::{future::Future, sync::Arc};
-
+use std::marker::PhantomData;
 use alloy_primitives::utils::format_ether;
 use alloy_rpc_types::engine::ClientVersionV1;
 use futures::{future::Either, stream, stream_select, StreamExt};
@@ -40,7 +40,7 @@ use reth_node_core::{
 use reth_node_events::{cl::ConsensusLayerHealthEvents, node};
 #[cfg(feature = "bsc")]
 use reth_primitives::parlia::ParliaConfig;
-use reth_provider::providers::BlockchainProvider;
+use reth_provider::{providers::BlockchainProvider, ChainSpecHardforks};
 use reth_rpc_engine_api::{capabilities::EngineCapabilities, EngineApi};
 use reth_tasks::TaskExecutor;
 use reth_tracing::tracing::{debug, info};
@@ -112,7 +112,7 @@ impl DefaultNodeLauncher {
 
 impl<Types, T, CB, AO> LaunchNode<NodeBuilderWithComponents<T, CB, AO>> for DefaultNodeLauncher
 where
-    Types: NodeTypesWithDB<ChainSpec: EthereumHardforks + EthChainSpec> + NodeTypesWithEngine,
+    Types: NodeTypesWithDB<ChainSpec: ChainSpecHardforks + EthChainSpec> + NodeTypesWithEngine,
     T: FullNodeTypes<Provider = BlockchainProvider<Types>, Types = Types>,
     CB: NodeComponentsBuilder<T>,
     AO: NodeAddOns<
@@ -289,12 +289,13 @@ where
                 let engine_rx = ctx.node_adapter().components.network().get_to_engine_rx();
                 let client = ParliaEngineBuilder::new(
                     ctx.chain_spec(),
-                    ParliaConfig::default(),
                     ctx.blockchain_db().clone(),
                     ctx.blockchain_db().clone(),
+                    ctx.components().parlia().clone(),
                     consensus_engine_tx.clone(),
                     engine_rx,
                     network_client.clone(),
+                    PhantomData::<Types>,
                 )
                 .build(ctx.node_config().debug.tip.is_none());
                 (pipeline, Either::Right(client))

@@ -14,7 +14,7 @@ use reth_db::tables;
 use reth_db_api::{cursor::DbCursorRO, transaction::DbTx};
 use reth_evm::execute::{BatchExecutor, BlockExecutorProvider};
 #[cfg(feature = "bsc")]
-use reth_evm_bsc::BscExecutorProvider;
+use reth_bsc_evm::BscExecutorProvider;
 use reth_network::NetworkHandle;
 use reth_network_api::NetworkInfo;
 use reth_network_p2p::full_block::FullBlockClient;

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use reth_auto_seal_consensus::AutoSealConsensus;
 use reth_basic_payload_builder::{BasicPayloadJobGenerator, BasicPayloadJobGeneratorConfig};
 use reth_beacon_consensus::EthBeaconConsensus;
+use reth_bsc_consensus::Parlia;
 use reth_chainspec::ChainSpec;
 use reth_ethereum_engine_primitives::{
     EthBuiltPayload, EthPayloadAttributes, EthPayloadBuilderAttributes, EthereumEngineValidator,
@@ -15,7 +16,7 @@ use reth_node_api::{ConfigureEvm, EngineValidator, FullNodeComponents, NodeAddOn
 use reth_node_builder::{
     components::{
         ComponentsBuilder, ConsensusBuilder, EngineValidatorBuilder, ExecutorBuilder,
-        NetworkBuilder, PayloadServiceBuilder, PoolBuilder,
+        NetworkBuilder, ParliaBuilder, PayloadServiceBuilder, PoolBuilder,
     },
     node::{FullNodeTypes, NodeTypes, NodeTypesWithEngine},
     BuilderContext, Node, PayloadBuilderConfig, PayloadTypes,
@@ -47,6 +48,7 @@ impl EthereumNode {
         EthereumExecutorBuilder,
         EthereumConsensusBuilder,
         EthereumEngineValidatorBuilder,
+        EthereumParliaBuilder,
     >
     where
         Node: FullNodeTypes<Types: NodeTypes<ChainSpec = ChainSpec>>,
@@ -64,6 +66,7 @@ impl EthereumNode {
             .executor(EthereumExecutorBuilder::default())
             .consensus(EthereumConsensusBuilder::default())
             .engine_validator(EthereumEngineValidatorBuilder::default())
+            .parlia(EthereumParliaBuilder::default())
     }
 }
 
@@ -98,6 +101,7 @@ where
         EthereumExecutorBuilder,
         EthereumConsensusBuilder,
         EthereumEngineValidatorBuilder,
+        EthereumParliaBuilder,
     >;
 
     type AddOns = EthereumAddOns;
@@ -339,5 +343,19 @@ where
 
     async fn build_validator(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Validator> {
         Ok(EthereumEngineValidator::new(ctx.chain_spec()))
+    }
+}
+
+/// A dummy bsc parlia builder.
+#[derive(Debug, Default, Clone)]
+#[non_exhaustive]
+pub struct EthereumParliaBuilder;
+
+impl<Node> ParliaBuilder<Node> for EthereumParliaBuilder
+where
+    Node: FullNodeTypes<Types: NodeTypes<ChainSpec = ChainSpec>>,
+{
+    async fn build_parlia(self, _ctx: &BuilderContext<Node>) -> eyre::Result<Parlia> {
+        Ok(Default::default())
     }
 }

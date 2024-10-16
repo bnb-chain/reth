@@ -1,11 +1,13 @@
-use crate::EXTRA_SEAL_LEN;
+use std::env;
+
 use alloy_primitives::{
     bytes::{BufMut, BytesMut},
     keccak256, B256, U256,
 };
 use alloy_rlp::Encodable;
 use reth_primitives::Header;
-use std::env;
+
+use crate::EXTRA_SEAL_LEN;
 
 const SECONDS_PER_DAY: u64 = 86400; // 24 * 60 * 60
 
@@ -94,9 +96,10 @@ fn rlp_header(header: &Header, chain_id: u64) -> alloy_rlp::Header {
 
 #[cfg(test)]
 mod tests {
-    use crate::{encode_header_with_chain_id, hash_with_chain_id};
     use alloy_primitives::{address, b256, hex, Bloom, Bytes, B64, U256};
     use reth_primitives::Header;
+
+    use crate::{encode_header_with_chain_id, hash_with_chain_id};
 
     #[test]
     fn test_encode_header_with_chain_id() {

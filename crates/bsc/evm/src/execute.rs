@@ -1,8 +1,10 @@
 //! Bsc block executor.
 
+use core::fmt::Display;
+use std::{collections::HashMap, num::NonZeroUsize, sync::Arc};
+
 use crate::{post_execution::PostExecutionInput, BscBlockExecutionError, BscEvmConfig};
 use alloy_primitives::{Address, BlockNumber, Bytes, B256, U256};
-use core::fmt::Display;
 use lazy_static::lazy_static;
 use lru::LruCache;
 use parking_lot::RwLock;
@@ -16,6 +18,7 @@ use reth_evm::{
     execute::{
         BatchExecutor, BlockExecutionInput, BlockExecutionOutput, BlockExecutorProvider, Executor,
     },
+    system_calls::{NoopHook, OnStateHook},
     ConfigureEvm,
 };
 use reth_primitives::{
@@ -31,7 +34,6 @@ use revm_primitives::{
     BlockEnv, CfgEnvWithHandlerCfg, EVMError, EnvWithHandlerCfg, EvmState, ResultAndState,
     TransactTo,
 };
-use std::{collections::HashMap, num::NonZeroUsize, sync::Arc};
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, warn};
 
@@ -81,7 +83,7 @@ where
         prefetch_tx: Option<UnboundedSender<EvmState>>,
     ) -> BscBlockExecutor<EvmConfig, DB, P>
     where
-        DB: Database<Error: Into<ProviderError> + std::fmt::Display>,
+        DB: Database<Error: Into<ProviderError> + Display>,
     {
         if let Some(tx) = prefetch_tx {
             BscBlockExecutor::new_with_prefetch_tx(
@@ -117,10 +119,10 @@ where
     P: ParliaProvider + Clone + Unpin + 'static,
     EvmConfig: ConfigureEvm<Header = Header>,
 {
-    type Executor<DB: Database<Error: Into<ProviderError> + std::fmt::Display>> =
+    type Executor<DB: Database<Error: Into<ProviderError> + Display>> =
         BscBlockExecutor<EvmConfig, DB, P>;
 
-    type BatchExecutor<DB: Database<Error: Into<ProviderError> + std::fmt::Display>> =
+    type BatchExecutor<DB: Database<Error: Into<ProviderError> + Display>> =
         BscBatchExecutor<EvmConfig, DB, P>;
 
     fn executor<DB>(
@@ -129,14 +131,14 @@ where
         prefetch_tx: Option<UnboundedSender<EvmState>>,
     ) -> Self::Executor<DB>
     where
-        DB: Database<Error: Into<ProviderError> + std::fmt::Display>,
+        DB: Database<Error: Into<ProviderError> + Display>,
     {
         self.bsc_executor(db, prefetch_tx)
     }
 
     fn batch_executor<DB>(&self, db: DB) -> Self::BatchExecutor<DB>
     where
-        DB: Database<Error: Into<ProviderError> + std::fmt::Display>,
+        DB: Database<Error: Into<ProviderError> + Display>,
     {
         let executor = self.bsc_executor(db, None);
         BscBatchExecutor {
@@ -172,22 +174,26 @@ where
     ///
     /// This applies the pre-execution changes, and executes the transactions.
     ///
+    /// The optional `state_hook` is unused for now.
+    ///
     /// # Note
     ///
     /// It does __not__ apply post-execution changes.
-    fn execute_pre_and_transactions<Ext, DB>(
+    fn execute_pre_and_transactions<Ext, DB, F>(
         &self,
         block: &BlockWithSenders,
         mut evm: Evm<'_, Ext, &mut State<DB>>,
+        _state_hook: Option<F>,
         tx: Option<UnboundedSender<EvmState>>,
     ) -> Result<(Vec<TransactionSigned>, Vec<Receipt>, u64), BlockExecutionError>
     where
-        DB: Database<Error: Into<ProviderError> + std::fmt::Display>,
+        DB: Database<Error: Into<ProviderError> + Display>,
+        F: OnStateHook,
     {
         // execute transactions
         let mut cumulative_gas_used = 0;
         let mut system_txs = Vec::with_capacity(2); // Normally there are 2 system transactions.
-        let mut receipts = Vec::with_capacity(block.body.len());
+        let mut receipts = Vec::with_capacity(block.body.transactions.len());
         for (sender, transaction) in block.transactions_with_sender() {
             if is_system_transaction(transaction, *sender, block.beneficiary) {
                 system_txs.push(transaction.clone());
@@ -363,19 +369,37 @@ where
         EnvWithHandlerCfg::new_with_cfg_env(cfg, block_env, Default::default())
     }
 
+    /// Convenience method to invoke `execute_without_verification_with_state_hook` setting the
+    /// state hook as `None`.
+    fn execute_without_verification(
+        &mut self,
+        block: &BlockWithSenders,
+        total_difficulty: U256,
+        ancestor: Option<&alloy_primitives::map::HashMap<B256, Header>>,
+    ) -> Result<BscExecuteOutput, BlockExecutionError> {
+        self.execute_without_verification_with_state_hook(
+            block,
+            total_difficulty,
+            ancestor,
+            None::<NoopHook>,
+        )
+    }
+
     /// Execute a single block and apply the state changes to the internal state.
     ///
     /// Returns the receipts of the transactions in the block and the total gas used.
     ///
-    /// Returns an error if execution fails or parlia verification fails.
-    ///
-    /// This function does not perform receipt root and gas used check.
-    fn execute_and_verify(
+    /// Returns an error if execution fails.
+    fn execute_without_verification_with_state_hook<F>(
         &mut self,
         block: &BlockWithSenders,
         total_difficulty: U256,
-        ancestor: Option<&HashMap<B256, Header>>,
-    ) -> Result<BscExecuteOutput, BlockExecutionError> {
+        ancestor: Option<&alloy_primitives::map::HashMap<B256, Header>>,
+        state_hook: Option<F>,
+    ) -> Result<BscExecuteOutput, BlockExecutionError>
+    where
+        F: OnStateHook,
+    {
         // 1. get parent header and snapshot
         let parent = &(self.get_header_by_hash(block.parent_hash, ancestor)?);
         let snapshot_reader = SnapshotReader::new(self.provider.clone(), self.parlia.clone());
@@ -398,7 +422,12 @@ where
 
         let (mut system_txs, mut receipts, mut gas_used) = {
             let evm = self.executor.evm_config.evm_with_env(&mut self.state, env.clone());
-            self.executor.execute_pre_and_transactions(block, evm, self.prefetch_tx.clone())
+            self.executor.execute_pre_and_transactions(
+                block,
+                evm,
+                state_hook,
+                self.prefetch_tx.clone(),
+            )
         }?;
 
         // 5. apply post execution changes
@@ -423,7 +452,7 @@ where
 
     pub(crate) fn get_justified_header(
         &self,
-        ancestor: Option<&HashMap<B256, Header>>,
+        ancestor: Option<&alloy_primitives::map::HashMap<B256, Header>>,
         snap: &Snapshot,
     ) -> Result<Header, BlockExecutionError> {
         if snap.vote_data.source_hash == B256::ZERO && snap.vote_data.target_hash == B256::ZERO {
@@ -442,7 +471,7 @@ where
     pub(crate) fn get_header_by_hash(
         &self,
         block_hash: B256,
-        ancestor: Option<&HashMap<B256, Header>>,
+        ancestor: Option<&alloy_primitives::map::HashMap<B256, Header>>,
     ) -> Result<Header, BlockExecutionError> {
         ancestor
             .and_then(|m| m.get(&block_hash).cloned())
@@ -479,7 +508,7 @@ where
                 let mut new_info = account.account_info().unwrap_or_default();
                 new_info.code_hash = v.clone().unwrap().hash_slow();
                 new_info.code = v;
-                let transition = account.change(new_info, HashMap::new());
+                let transition = account.change(new_info, Default::default());
 
                 self.state.apply_transition(vec![(k, transition)]);
             }
@@ -659,7 +688,11 @@ where
             let vote_addrs_map = if vote_addrs.is_empty() {
                 HashMap::new()
             } else {
-                validators.iter().copied().zip(vote_addrs).collect::<HashMap<_, _>>()
+                validators
+                    .iter()
+                    .copied()
+                    .zip(vote_addrs)
+                    .collect::<std::collections::HashMap<_, _>>()
             };
 
             output.current_validators = Some((validators, vote_addrs_map));
@@ -728,7 +761,7 @@ where
 impl<EvmConfig, DB, P> Executor<DB> for BscBlockExecutor<EvmConfig, DB, P>
 where
     EvmConfig: ConfigureEvm<Header = Header>,
-    DB: Database<Error: Into<ProviderError> + std::fmt::Display>,
+    DB: Database<Error: Into<ProviderError> + Display>,
     P: ParliaProvider,
 {
     type Input<'a> = BlockExecutionInput<'a, BlockWithSenders, Header>;
@@ -745,7 +778,61 @@ where
     fn execute(mut self, input: Self::Input<'_>) -> Result<Self::Output, Self::Error> {
         let BlockExecutionInput { block, total_difficulty, ancestor_headers } = input;
         let BscExecuteOutput { receipts, gas_used, snapshot } =
-            self.execute_and_verify(block, total_difficulty, ancestor_headers)?;
+            self.execute_without_verification(block, total_difficulty, ancestor_headers)?;
+
+        // NOTE: we need to merge keep the reverts for the bundle retention
+        self.state.merge_transitions(BundleRetention::Reverts);
+
+        Ok(BlockExecutionOutput {
+            state: self.state.take_bundle(),
+            receipts,
+            requests: Vec::default(),
+            gas_used,
+            snapshot,
+        })
+    }
+
+    fn execute_with_state_closure<F>(
+        mut self,
+        input: Self::Input<'_>,
+        mut witness: F,
+    ) -> Result<Self::Output, Self::Error>
+    where
+        F: FnMut(&State<DB>),
+    {
+        let BlockExecutionInput { block, total_difficulty, ancestor_headers } = input;
+        let BscExecuteOutput { receipts, gas_used, snapshot } =
+            self.execute_without_verification(block, total_difficulty, ancestor_headers)?;
+
+        // NOTE: we need to merge keep the reverts for the bundle retention
+        self.state.merge_transitions(BundleRetention::Reverts);
+        witness(&self.state);
+
+        Ok(BlockExecutionOutput {
+            state: self.state.take_bundle(),
+            receipts,
+            requests: Vec::default(),
+            gas_used,
+            snapshot,
+        })
+    }
+
+    fn execute_with_state_hook<F>(
+        mut self,
+        input: Self::Input<'_>,
+        state_hook: F,
+    ) -> Result<Self::Output, Self::Error>
+    where
+        F: OnStateHook,
+    {
+        let BlockExecutionInput { block, total_difficulty, ancestor_headers } = input;
+        let BscExecuteOutput { receipts, gas_used, snapshot } = self
+            .execute_without_verification_with_state_hook(
+                block,
+                total_difficulty,
+                ancestor_headers,
+                Some(state_hook),
+            )?;
 
         // NOTE: we need to merge keep the reverts for the bundle retention
         self.state.merge_transitions(BundleRetention::Reverts);
@@ -783,7 +870,7 @@ impl<EvmConfig, DB, P> BscBatchExecutor<EvmConfig, DB, P> {
 impl<EvmConfig, DB, P> BatchExecutor<DB> for BscBatchExecutor<EvmConfig, DB, P>
 where
     EvmConfig: ConfigureEvm<Header = Header>,
-    DB: Database<Error: Into<ProviderError> + std::fmt::Display>,
+    DB: Database<Error: Into<ProviderError> + Display>,
     P: ParliaProvider,
 {
     type Input<'a> = BlockExecutionInput<'a, BlockWithSenders, Header>;
@@ -793,7 +880,7 @@ where
     fn execute_and_verify_one(&mut self, input: Self::Input<'_>) -> Result<(), Self::Error> {
         let BlockExecutionInput { block, total_difficulty, .. } = input;
         let BscExecuteOutput { receipts, gas_used: _, snapshot } =
-            self.executor.execute_and_verify(block, total_difficulty, None)?;
+            self.executor.execute_without_verification(block, total_difficulty, None)?;
 
         validate_block_post_execution(block, self.executor.chain_spec(), &receipts)?;
 
@@ -858,7 +945,7 @@ where
     pub fn snapshot(
         &self,
         header: &Header,
-        ancestor: Option<&HashMap<B256, Header>>,
+        ancestor: Option<&alloy_primitives::map::HashMap<B256, Header>>,
     ) -> Result<Snapshot, BlockExecutionError> {
         let mut cache = RECENT_SNAPS.write();
 
@@ -980,7 +1067,7 @@ where
     fn get_header_by_hash(
         &self,
         block_hash: B256,
-        ancestor: Option<&HashMap<B256, Header>>,
+        ancestor: Option<&alloy_primitives::map::HashMap<B256, Header>>,
     ) -> Result<Header, BlockExecutionError> {
         ancestor
             .and_then(|m| m.get(&block_hash).cloned())
@@ -997,7 +1084,7 @@ where
     fn find_ancient_header(
         &self,
         header: &Header,
-        ancestor: Option<&HashMap<B256, Header>>,
+        ancestor: Option<&alloy_primitives::map::HashMap<B256, Header>>,
         count: u64,
     ) -> Result<Header, BlockExecutionError> {
         let mut result = header.clone();

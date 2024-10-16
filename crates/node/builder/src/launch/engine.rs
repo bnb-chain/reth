@@ -40,7 +40,7 @@ use reth_rpc_engine_api::{capabilities::EngineCapabilities, EngineApi};
 use reth_tasks::TaskExecutor;
 use reth_tokio_util::EventSender;
 use reth_tracing::tracing::{debug, error, info};
-use std::sync::Arc;
+use std::{marker::PhantomData, sync::Arc};
 use tokio::sync::{mpsc::unbounded_channel, oneshot};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
@@ -245,12 +245,13 @@ where
                 let engine_rx = ctx.node_adapter().components.network().get_to_engine_rx();
                 let client = ParliaEngineBuilder::new(
                     ctx.chain_spec(),
-                    ParliaConfig::default(),
                     ctx.blockchain_db().clone(),
                     ctx.blockchain_db().clone(),
+                    ctx.components().parlia().clone(),
                     consensus_engine_tx.clone(),
                     engine_rx,
                     network_client.clone(),
+                    PhantomData::<Types>,
                 )
                 .build(ctx.node_config().debug.tip.is_none());
                 let eth_service = EngineService::new(

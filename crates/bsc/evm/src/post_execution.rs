@@ -1,4 +1,5 @@
-use crate::{BscBlockExecutionError, BscBlockExecutor, SnapshotReader};
+use std::{collections::HashMap, fmt::Display};
+
 use alloy_primitives::{hex, Address, B256, U256};
 use bitset::BitSet;
 use reth_bsc_consensus::{
@@ -17,8 +18,9 @@ use reth_primitives::{
 use reth_provider::ParliaProvider;
 use reth_revm::bsc::SYSTEM_ADDRESS;
 use revm_primitives::{db::Database, EnvWithHandlerCfg};
-use std::collections::HashMap;
 use tracing::debug;
+
+use crate::{BscBlockExecutionError, BscBlockExecutor, SnapshotReader};
 
 /// Helper type for the input of post execution.
 #[allow(clippy::type_complexity)]
@@ -32,7 +34,7 @@ pub(crate) struct PostExecutionInput {
 impl<EvmConfig, DB, P> BscBlockExecutor<EvmConfig, DB, P>
 where
     EvmConfig: ConfigureEvm<Header = Header>,
-    DB: Database<Error: Into<ProviderError> + std::fmt::Display>,
+    DB: Database<Error: Into<ProviderError> + Display>,
     P: ParliaProvider,
 {
     /// Apply post execution state changes, including system txs and other state change.
@@ -41,7 +43,7 @@ where
         &mut self,
         block: &BlockWithSenders,
         parent: &Header,
-        ancestor: Option<&HashMap<B256, Header>>,
+        ancestor: Option<&alloy_primitives::map::HashMap<B256, Header>>,
         snap: &Snapshot,
         post_execution_input: PostExecutionInput,
         system_txs: &mut Vec<TransactionSigned>,
@@ -371,7 +373,7 @@ where
     fn distribute_finality_reward(
         &mut self,
         header: &Header,
-        ancestor: Option<&HashMap<B256, Header>>,
+        ancestor: Option<&alloy_primitives::map::HashMap<B256, Header>>,
         system_txs: &mut Vec<TransactionSigned>,
         receipts: &mut Vec<Receipt>,
         cumulative_gas_used: &mut u64,
@@ -447,8 +449,8 @@ where
         &self,
         attestation: &VoteAttestation,
         parent_header: &Header,
-        ancestor: Option<&HashMap<B256, Header>>,
-        accumulated_weights: &mut HashMap<Address, U256>,
+        ancestor: Option<&alloy_primitives::map::HashMap<B256, Header>>,
+        accumulated_weights: &mut std::collections::HashMap<Address, U256>,
     ) -> Result<(), BlockExecutionError> {
         let justified_header = self.get_header_by_hash(attestation.data.target_hash, ancestor)?;
         let parent = self.get_header_by_hash(justified_header.parent_hash, ancestor)?;
