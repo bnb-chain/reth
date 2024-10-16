@@ -12,11 +12,11 @@ use std::{
     sync::Arc,
 };
 
-use alloy_primitives::{BlockHash, BlockNumber, B256};
+use alloy_primitives::{BlockHash, BlockNumber, Sealable, B256};
 use reth_beacon_consensus::{BeaconEngineMessage, EngineNodeTypes};
 use reth_bsc_consensus::Parlia;
 use reth_bsc_evm::SnapshotReader;
-use reth_chainspec::ChainSpec;
+use reth_chainspec::{ChainSpec, EthChainSpec};
 use reth_engine_primitives::EngineTypes;
 use reth_network_api::events::EngineMessage;
 use reth_network_p2p::BlockClient;
@@ -37,9 +37,9 @@ const STORAGE_CACHE_NUM: usize = 1000;
 
 /// Builder type for configuring the setup
 #[derive(Debug)]
-pub struct ParliaEngineBuilder<Client, N, P>
+pub struct ParliaEngineBuilder<Client, N, Provider, SnapShotProvider>
 where
-    N: EngineNodeTypes
+    N: EngineNodeTypes,
 {
     chain_spec: Arc<N::ChainSpec>,
     cfg: ParliaConfig,
@@ -47,35 +47,34 @@ where
     to_engine: UnboundedSender<BeaconEngineMessage<N::Engine>>,
     network_block_event_rx: Arc<Mutex<UnboundedReceiver<EngineMessage>>>,
     fetch_client: Client,
-    provider: ,
+    provider: Provider,
     parlia: Parlia<N::ChainSpec>,
-    snapshot_reader: SnapshotReader<P>,
+    snapshot_reader: SnapshotReader<SnapShotProvider>,
 }
 
 // === impl ParliaEngineBuilder ===
 
-impl<Client, Provider, Engine, P> ParliaEngineBuilder<Client, Provider, Engine, P>
+impl<Client, N, Provider, SnapShotProvider>
+    ParliaEngineBuilder<Client, N, Provider, SnapShotProvider>
 where
     Client: BlockClient + 'static,
+    N: EngineNodeTypes + 'static,
     Provider: BlockReaderIdExt + CanonChainTracker + Clone + 'static,
-    Engine: EngineTypes + 'static,
-    P: ParliaProvider + 'static,
+    SnapShotProvider: ParliaProvider + 'static,
 {
     /// Creates a new builder instance to configure all parts.
     pub fn new(
-        chain_spec: Arc<ChainSpec>,
+        chain_spec: Arc<N::ChainSpec>,
         cfg: ParliaConfig,
         provider: Provider,
-        parlia_provider: P,
-        to_engine: UnboundedSender<BeaconEngineMessage<Engine>>,
+        parlia_provider: SnapShotProvider,
+        to_engine: UnboundedSender<BeaconEngineMessage<N::Engine>>,
         network_block_event_rx: Arc<Mutex<UnboundedReceiver<EngineMessage>>>,
         fetch_client: Client,
     ) -> Self {
-        let latest_header = provider
-            .latest_header()
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| chain_spec.sealed_genesis_header());
+        let latest_header = provider.latest_header().ok().flatten().unwrap_or_else(|| {
+            SealedHeader::new(chain_spec.genesis_header().clone(), chain_spec.genesis_hash())
+        });
         let parlia = Parlia::new(chain_spec.clone(), cfg.clone());
 
         let mut finalized_hash = None;
