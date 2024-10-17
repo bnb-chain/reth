@@ -6,7 +6,7 @@ use crate::common::{AccessRights, Environment, EnvironmentArgs};
 use alloy_eips::BlockHashOrNumber;
 use clap::Parser;
 use reth_beacon_consensus::EthBeaconConsensus;
-use reth_chainspec::{EthChainSpec, EthereumHardforks};
+use reth_chainspec::EthChainSpec;
 use reth_cli::chainspec::ChainSpecParser;
 use reth_cli_runner::CliContext;
 use reth_cli_util::get_secret_key;
@@ -33,7 +33,7 @@ use reth_node_metrics::{
     version::VersionInfo,
 };
 use reth_provider::{
-    writer::UnifiedStorageWriter, ChainSpecProvider, DatabaseProviderFactory,
+    writer::UnifiedStorageWriter, ChainSpecHardforks, ChainSpecProvider, DatabaseProviderFactory,
     StageCheckpointReader, StageCheckpointWriter, StaticFileProviderFactory,
 };
 use reth_stages::{
@@ -101,7 +101,7 @@ pub struct Command<C: ChainSpecParser> {
     network: NetworkArgs,
 }
 
-impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> Command<C> {
+impl<C: ChainSpecParser<ChainSpec: EthChainSpec + ChainSpecHardforks>> Command<C> {
     /// Execute `stage` command
     pub async fn execute<N, E, F>(self, ctx: CliContext, executor: F) -> eyre::Result<()>
     where
