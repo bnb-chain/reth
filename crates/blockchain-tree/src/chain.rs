@@ -30,7 +30,6 @@ use std::{
     clone::Clone,
     collections::{BTreeMap, HashMap},
     ops::{Deref, DerefMut},
-    sync::Arc,
     time::Instant,
 };
 
@@ -223,22 +222,25 @@ impl AppendableChain {
         let block_hash = block.hash();
         let block = block.unseal();
 
+        let execute_start = Instant::now();
         let state = executor.execute((&block, U256::MAX, ancestor_blocks).into())?;
         externals.consensus.validate_block_post_execution(
             &block,
             PostExecutionInput::new(&state.receipts, &state.requests),
         )?;
 
-        let initial_execution_outcome = ExecutionOutcome::from((state, block.number));
+        tracing::debug!(
+            target: "blockchain_tree::chain",
+            number = block.number,
+            duration = ?execute_start.elapsed(),
+            "executed and validated block"
+        );
 
-        // stop the prefetch task.
-        if let Some(interrupt_tx) = interrupt_tx {
-            let _ = interrupt_tx.send(());
-        }
+        let initial_execution_outcome = ExecutionOutcome::from((state, block.number));
 
         // check state root if the block extends the canonical chain __and__ if state root
         // validation was requested.
-        if block_validation_kind.is_exhaustive() {
+        let result = if block_validation_kind.is_exhaustive() {
             // calculate and check state root
             let start = Instant::now();
             let (state_root, trie_updates) = if block_attachment.is_canonical() {
@@ -283,7 +285,14 @@ impl AppendableChain {
             Ok((initial_execution_outcome, trie_updates))
         } else {
             Ok((initial_execution_outcome, None))
-        }
+        };
+
+        // stop the prefetch task.
+        if let Some(interrupt_tx) = interrupt_tx {
+            let _ = interrupt_tx.send(());
+        };
+
+        result
     }
 
     /// Validate and execute the given block, and append it to this chain.
@@ -356,18 +365,11 @@ impl AppendableChain {
         let (interrupt_tx, interrupt_rx) = tokio::sync::oneshot::channel();
 
         let mut trie_prefetch = TriePrefetch::new();
-        let consistent_view = if let Ok(view) =
-            ConsistentDbView::new_with_latest_tip(externals.provider_factory.clone())
-        {
-            view
-        } else {
-            tracing::debug!("Failed to create consistent view for trie prefetch");
-            return (None, None)
-        };
+        let provider_factory = externals.provider_factory.clone();
 
         tokio::spawn({
             async move {
-                trie_prefetch.run(Arc::new(consistent_view), prefetch_rx, interrupt_rx).await;
+                trie_prefetch.run(provider_factory, prefetch_rx, interrupt_rx).await;
             }
         });
 
