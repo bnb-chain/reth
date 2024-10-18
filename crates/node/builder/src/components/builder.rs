@@ -371,7 +371,7 @@ where
         parlia_builder: PB,
     ) -> ComponentsBuilder<Node, PoolB, PayloadB, NetworkB, ExecB, ConsB, EVB, PB>
     where
-        ParliaB: ParliaBuilder<Node>,
+        PB: ParliaBuilder<Node>,
     {
         let Self {
             pool_builder,

@@ -14,9 +14,10 @@ members = [
     "crates/blockchain-tree-api/",
     "crates/blockchain-tree/",
     "crates/chain-state/",
-    "crates/bsc/chainspec",
-    "crates/bsc/cli",
-    "crates/bsc/consensus",
+    "crates/bsc/bin/",
+    "crates/bsc/chainspec/",
+    "crates/bsc/cli/",
+    "crates/bsc/consensus/",
     "crates/bsc/evm/",
     "crates/bsc/node/",
     "crates/bsc/rpc/",
@@ -296,6 +297,7 @@ lto = "fat"
 
 [workspace.dependencies]
 # reth
+bsc-reth = { path = "crates/bsc/bin" }
 op-reth = { path = "crates/optimism/bin" }
 reth = { path = "bin/reth" }
 reth-auto-seal-consensus = { path = "crates/consensus/auto-seal" }

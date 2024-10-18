@@ -20,16 +20,16 @@ use std::{path::PathBuf, sync::Arc};
 use tracing::info;
 
 mod hashing_storage;
-use hashing_storage::dump_hashing_storage_stage;
+pub use hashing_storage::dump_hashing_storage_stage;
 
 mod hashing_account;
-use hashing_account::dump_hashing_account_stage;
+pub use hashing_account::dump_hashing_account_stage;
 
 mod execution;
-use execution::dump_execution_stage;
+pub use execution::dump_execution_stage;
 
 mod merkle;
-use merkle::dump_merkle_stage;
+pub use merkle::dump_merkle_stage;
 
 /// `reth dump-stage` command
 #[derive(Debug, Parser)]
@@ -73,6 +73,7 @@ pub struct StageCommand {
     dry_run: bool,
 }
 
+#[macro_export]
 macro_rules! handle_stage {
     ($stage_fn:ident, $tool:expr, $command:expr) => {{
         let StageCommand { output_datadir, from, to, dry_run, .. } = $command;
@@ -116,7 +117,7 @@ impl<C: ChainSpecParser<ChainSpec: EthChainSpec + ChainSpecHardforks>> Command<C
 
 /// Sets up the database and initial state on [`tables::BlockBodyIndices`]. Also returns the tip
 /// block number.
-pub(crate) fn setup<N: NodeTypesWithDB>(
+pub fn setup<N: NodeTypesWithDB>(
     from: u64,
     to: u64,
     output_db: &PathBuf,

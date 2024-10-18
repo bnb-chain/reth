@@ -69,10 +69,13 @@ reth-node-metrics.workspace = true
 reth-consensus.workspace = true
 reth-engine-util.workspace = true
 reth-prune.workspace = true
-reth-bsc-node = { workspace = true, optional = true, features = [
+reth-bsc-cli = { workspace = true, optional = true, features = [
     "bsc",
 ] }
 reth-bsc-evm = { workspace = true, optional = true, features = [
+    "bsc",
+] }
+reth-bsc-node = { workspace = true, optional = true, features = [
     "bsc",
 ] }
 
@@ -137,8 +140,9 @@ bsc = [
     "reth-stages/bsc",
     "reth-node-builder/bsc",
     "reth-beacon-consensus/bsc",
-    "reth-bsc-node/bsc",
+    "reth-bsc-cli/bsc",
     "reth-bsc-evm/bsc",
+    "reth-bsc-node/bsc",
 ]
 
 # no-op feature flag for switching between the `optimism` and default functionality in CI matrices

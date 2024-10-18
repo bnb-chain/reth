@@ -15,7 +15,7 @@ use reth_provider::{
 use reth_stages::{stages::AccountHashingStage, Stage, StageCheckpoint, UnwindInput};
 use tracing::info;
 
-pub(crate) async fn dump_hashing_account_stage<N: ProviderNodeTypes>(
+pub async fn dump_hashing_account_stage<N: ProviderNodeTypes>(
     db_tool: &DbTool<N>,
     from: BlockNumber,
     to: BlockNumber,

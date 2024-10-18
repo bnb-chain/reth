@@ -57,3 +57,4 @@ bsc = [
     "reth-config/bsc",
     "reth-bsc-consensus/bsc",
 ]
+asm-keccak = ["reth-primitives/asm-keccak"]

@@ -14,7 +14,7 @@ use reth_provider::{
 use reth_stages::{stages::StorageHashingStage, Stage, StageCheckpoint, UnwindInput};
 use tracing::info;
 
-pub(crate) async fn dump_hashing_storage_stage<N: ProviderNodeTypes>(
+pub async fn dump_hashing_storage_stage<N: ProviderNodeTypes>(
     db_tool: &DbTool<N>,
     from: u64,
     to: u64,

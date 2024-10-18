@@ -195,4 +195,4 @@ use aquamarine as _;
 #[cfg(feature = "bsc")]
 use reth_bsc_evm as _;
 #[cfg(feature = "bsc")]
-use reth_node_bsc as _;
+use reth_bsc_node as _;

@@ -25,7 +25,7 @@ use reth_stages::{
 };
 use tracing::info;
 
-pub(crate) async fn dump_merkle_stage<N: ProviderNodeTypes>(
+pub async fn dump_merkle_stage<N: ProviderNodeTypes>(
     db_tool: &DbTool<N>,
     from: BlockNumber,
     to: BlockNumber,

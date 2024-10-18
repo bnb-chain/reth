@@ -1653,6 +1653,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "bsc-reth"
+version = "1.0.5"
+dependencies = [
+ "clap",
+ "reth-bsc-chainspec",
+ "reth-bsc-cli",
+ "reth-bsc-consensus",
+ "reth-bsc-evm",
+ "reth-bsc-forks",
+ "reth-bsc-node",
+ "reth-cli-util",
+ "reth-node-builder",
+ "reth-provider",
+ "tracing",
+]
+
+[[package]]
 name = "bstr"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7027,6 +7044,7 @@ dependencies = [
  "reth-basic-payload-builder",
  "reth-beacon-consensus",
  "reth-blockchain-tree",
+ "reth-bsc-cli",
  "reth-bsc-evm",
  "reth-bsc-node",
  "reth-chainspec",
@@ -7299,11 +7317,48 @@ dependencies = [
 name = "reth-bsc-cli"
 version = "1.0.5"
 dependencies = [
+ "alloy-eips",
+ "alloy-primitives",
+ "alloy-rlp",
  "clap",
  "eyre",
+ "fdlimit",
+ "futures-util",
  "reth-bsc-chainspec",
+ "reth-bsc-consensus",
+ "reth-bsc-evm",
+ "reth-bsc-node",
+ "reth-chainspec",
  "reth-cli",
+ "reth-cli-commands",
+ "reth-cli-runner",
+ "reth-cli-util",
+ "reth-config",
+ "reth-consensus",
+ "reth-db",
+ "reth-db-api",
+ "reth-db-common",
+ "reth-downloaders",
+ "reth-errors",
+ "reth-execution-types",
+ "reth-exex",
+ "reth-network-p2p",
+ "reth-node-builder",
  "reth-node-core",
+ "reth-node-events",
+ "reth-node-metrics",
+ "reth-primitives",
+ "reth-provider",
+ "reth-prune",
+ "reth-stages",
+ "reth-stages-types",
+ "reth-static-file",
+ "reth-static-file-types",
+ "reth-tracing",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]

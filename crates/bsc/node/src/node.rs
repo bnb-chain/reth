@@ -87,9 +87,7 @@ impl<N: FullNodeComponents> NodeAddOns<N> for BSCAddOns {
 
 impl<N> Node<N> for BscNode
 where
-    N: FullNodeTypes<
-        Types: NodeTypesWithEngine<Engine = EthEngineTypes, ChainSpec = ChainSpec>,
-    >,
+    N: FullNodeTypes<Types: NodeTypesWithEngine<Engine = EthEngineTypes, ChainSpec = ChainSpec>>,
 {
     type ComponentsBuilder = ComponentsBuilder<
         N,
@@ -153,7 +151,7 @@ pub struct BscPoolBuilder {
     // TODO add options for txpool args
 }
 
-impl< Node> PoolBuilder<Node> for BscPoolBuilder
+impl<Node> PoolBuilder<Node> for BscPoolBuilder
 where
     Node: FullNodeTypes<Types: NodeTypes<ChainSpec = ChainSpec>>,
 {
@@ -267,9 +265,7 @@ impl BscPayloadBuilder {
 
 impl<Node, Pool> PayloadServiceBuilder<Node, Pool> for BscPayloadBuilder
 where
-    Node: FullNodeTypes<
-        Types: NodeTypesWithEngine<Engine = EthEngineTypes, ChainSpec = ChainSpec>,
-    >,
+    Node: FullNodeTypes<Types: NodeTypesWithEngine<Engine = EthEngineTypes, ChainSpec = ChainSpec>>,
     Pool: TransactionPool + Unpin + 'static,
 {
     async fn spawn_payload_service(
@@ -361,9 +357,7 @@ pub struct BscEngineValidatorBuilder;
 
 impl<Node> EngineValidatorBuilder<Node> for BscEngineValidatorBuilder
 where
-    Node: FullNodeTypes<
-        Types: NodeTypesWithEngine<Engine = EthEngineTypes, ChainSpec = ChainSpec>,
-    >,
+    Node: FullNodeTypes<Types: NodeTypesWithEngine<Engine = EthEngineTypes, ChainSpec = ChainSpec>>,
     BscEngineValidator: EngineValidator<<Node::Types as NodeTypesWithEngine>::Engine>,
 {
     type Validator = BscEngineValidator;

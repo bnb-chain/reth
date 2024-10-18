@@ -64,7 +64,7 @@ lazy_static! {
 }
 
 /// BSC parlia consensus implementation
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Parlia {
     chain_spec: Arc<ChainSpec>,
     epoch: u64,

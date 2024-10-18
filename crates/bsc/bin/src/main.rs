@@ -1,11 +1,12 @@
-#![allow(missing_docs)]
+#![allow(missing_docs, rustdoc::missing_crate_level_docs)]
+// The `bsc` feature must be enabled to use this crate.
+#![cfg(feature = "bsc")]
 
 #[global_allocator]
 static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::new_allocator();
 
 use clap::{Args, Parser};
-use reth::cli::Cli;
-use reth_bsc_cli::BscChainSpecParser;
+use reth_bsc_cli::{BscChainSpecParser, Cli};
 use reth_bsc_node::{node::BSCAddOns, BscNode};
 use reth_node_builder::{
     engine_tree_config::{
@@ -62,7 +63,7 @@ fn main() {
                     let handle = builder
                         .with_types_and_provider::<BscNode, BlockchainProvider2<_>>()
                         .with_components(BscNode::components())
-                        .with_add_ons:(BSCAddOns::default())
+                        .with_add_ons::<BSCAddOns>()
                         .launch_with_fn(|builder| {
                             let launcher = EngineNodeLauncher::new(
                                 builder.task_executor().clone(),
