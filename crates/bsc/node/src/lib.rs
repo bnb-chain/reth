@@ -1,10 +1,6 @@
 //! Standalone crate for ethereum-specific Reth configuration and builder types.
 
-#![doc(
-    html_logo_url = "https://raw.githubusercontent.com/paradigmxyz/reth/main/assets/reth-docs.png",
-    html_favicon_url = "https://avatars0.githubusercontent.com/u/97369466?s=256",
-    issue_tracker_base_url = "https://github.com/paradigmxyz/reth/issues/"
-)]
+#![allow(missing_docs)]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 // The `bsc` feature must be enabled to use this crate.
 #![cfg(feature = "bsc")]

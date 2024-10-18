@@ -1,4 +1,5 @@
-use crate::{BscBlockExecutionError, BscBlockExecutor, SnapshotReader};
+use std::fmt::Display;
+
 use alloy_primitives::B256;
 use bitset::BitSet;
 use blst::{
@@ -16,14 +17,15 @@ use reth_primitives::{
 };
 use reth_provider::ParliaProvider;
 use revm_primitives::db::Database;
-use std::collections::HashMap;
+
+use crate::{BscBlockExecutionError, BscBlockExecutor, SnapshotReader};
 
 const BLST_DST: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_";
 
 impl<EvmConfig, DB, P> BscBlockExecutor<EvmConfig, DB, P>
 where
     EvmConfig: ConfigureEvm<Header = Header>,
-    DB: Database<Error: Into<ProviderError> + std::fmt::Display>,
+    DB: Database<Error: Into<ProviderError> + Display>,
     P: ParliaProvider,
 {
     /// Apply settings and verify headers before a new block is executed.
@@ -31,7 +33,7 @@ where
         &mut self,
         header: &Header,
         parent: &Header,
-        ancestor: Option<&HashMap<B256, Header>>,
+        ancestor: Option<&alloy_primitives::map::HashMap<B256, Header>>,
         snap: &Snapshot,
     ) -> Result<(), BlockExecutionError> {
         // Set state clear flag if the block is after the Spurious Dragon hardfork.
@@ -45,7 +47,7 @@ where
         &self,
         header: &Header,
         parent: &Header,
-        ancestor: Option<&HashMap<B256, Header>>,
+        ancestor: Option<&alloy_primitives::map::HashMap<B256, Header>>,
         snap: &Snapshot,
     ) -> Result<(), BlockExecutionError> {
         self.verify_block_time_for_ramanujan(snap, header, parent)?;
@@ -82,7 +84,7 @@ where
         snap: &Snapshot,
         header: &Header,
         parent: &Header,
-        ancestor: Option<&HashMap<B256, Header>>,
+        ancestor: Option<&alloy_primitives::map::HashMap<B256, Header>>,
     ) -> Result<(), BlockExecutionError> {
         if !self.chain_spec().is_plato_active_at_block(header.number) {
             return Ok(());
@@ -226,11 +228,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::BLST_DST;
     use alloy_primitives::{b256, hex};
-
     use blst::min_pk::{PublicKey, Signature};
     use reth_primitives::parlia::{VoteAddress, VoteData, VoteSignature};
+
+    use super::BLST_DST;
 
     #[test]
     fn verify_vote_attestation() {

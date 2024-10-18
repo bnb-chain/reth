@@ -103,4 +103,5 @@ test-utils = ["reth-db/test-utils"]
 bsc = [
     "reth-bsc-engine/bsc",
     "reth-beacon-consensus/bsc",
+    "reth-bsc-consensus/bsc",
 ]

@@ -1,19 +1,19 @@
 //! BSC Node types config.
 
-use crate::EthEngineTypes;
+use std::sync::Arc;
+
 use reth_basic_payload_builder::{BasicPayloadJobGenerator, BasicPayloadJobGeneratorConfig};
+use reth_bsc_chainspec::BscChainSpec;
 use reth_bsc_consensus::Parlia;
-use reth_chainspec::ChainSpec;
-use reth_ethereum_engine_primitives::{
-    EthBuiltPayload, EthPayloadAttributes, EthPayloadBuilderAttributes, EthereumEngineValidator,
-};
-use reth_evm_bsc::{BscEvmConfig, BscExecutorProvider};
+use reth_bsc_engine::{BscEngineTypes, BscEngineValidator};
+use reth_bsc_evm::{BscEvmConfig, BscExecutorProvider};
+use reth_bsc_payload_builder::{BscBuiltPayload, BscPayloadBuilderAttributes};
 use reth_network::NetworkHandle;
 use reth_node_api::{ConfigureEvm, EngineValidator, FullNodeComponents, NodeAddOns};
 use reth_node_builder::{
     components::{
         ComponentsBuilder, ConsensusBuilder, EngineValidatorBuilder, ExecutorBuilder,
-        NetworkBuilder, PayloadServiceBuilder, PoolBuilder,
+        NetworkBuilder, ParliaBuilder, PayloadServiceBuilder, PoolBuilder,
     },
     node::{FullNodeTypes, NodeTypes, NodeTypesWithEngine},
     BuilderContext, Node, PayloadBuilderConfig, PayloadTypes,
@@ -27,7 +27,6 @@ use reth_transaction_pool::{
     blobstore::DiskFileBlobStore, EthTransactionPool, TransactionPool,
     TransactionValidationTaskExecutor,
 };
-use std::sync::Arc;
 
 /// Type configuration for a regular BSC node.
 #[derive(Debug, Default, Clone, Copy)]
@@ -44,13 +43,11 @@ impl BscNode {
         BscExecutorBuilder,
         BscConsensusBuilder,
         BscEngineValidatorBuilder,
+        BscParliaBuilder,
     >
     where
-        Node: FullNodeTypes<Types: NodeTypes<ChainSpec = ChainSpec>>,
-        <Node::Types as NodeTypesWithEngine>::Engine: PayloadTypes<
-            BuiltPayload = EthBuiltPayload,
-            PayloadAttributes = EthPayloadAttributes,
-            PayloadBuilderAttributes = EthPayloadBuilderAttributes,
+        Node: FullNodeTypes<
+            Types: NodeTypesWithEngine<Engine = BscEngineTypes, ChainSpec = BscChainSpec>,
         >,
     {
         ComponentsBuilder::default()
@@ -60,17 +57,18 @@ impl BscNode {
             .network(BscNetworkBuilder::default())
             .executor(BscExecutorBuilder::default())
             .consensus(BscConsensusBuilder::default())
-            .engine_validator(BscEngineValidator::default())
+            .engine_validator(BscEngineValidatorBuilder::default())
+            .parlia(BscParliaBuilder::default())
     }
 }
 
 impl NodeTypes for BscNode {
     type Primitives = ();
-    type ChainSpec = ChainSpec;
+    type ChainSpec = BscChainSpec;
 }
 
 impl NodeTypesWithEngine for BscNode {
-    type Engine = EthEngineTypes;
+    type Engine = BscEngineTypes;
 }
 
 /// Add-ons w.r.t. l1 bsc.
@@ -83,7 +81,7 @@ impl<N: FullNodeComponents> NodeAddOns<N> for BSCAddOns {
 
 impl<Types, N> Node<N> for BscNode
 where
-    Types: NodeTypesWithEngine<Engine = EthEngineTypes, ChainSpec = ChainSpec>,
+    Types: NodeTypesWithEngine<Engine = BscEngineTypes, ChainSpec = BscChainSpec>,
     N: FullNodeTypes<Types = Types>,
 {
     type ComponentsBuilder = ComponentsBuilder<
@@ -94,6 +92,7 @@ where
         BscExecutorBuilder,
         BscConsensusBuilder,
         BscEngineValidatorBuilder,
+        BscParliaBuilder,
     >;
 
     type AddOns = BSCAddOns;
@@ -112,10 +111,9 @@ where
 #[non_exhaustive]
 pub struct BscExecutorBuilder;
 
-impl<Types, Node> ExecutorBuilder<Node> for BscExecutorBuilder
+impl<Node> ExecutorBuilder<Node> for BscExecutorBuilder
 where
-    Types: NodeTypesWithEngine<ChainSpec = ChainSpec>,
-    Node: FullNodeTypes<Types = Types>,
+    Node: FullNodeTypes<Types: NodeTypes<ChainSpec = BscChainSpec>>,
 {
     type EVM = BscEvmConfig;
 
@@ -148,25 +146,26 @@ pub struct BscPoolBuilder {
     // TODO add options for txpool args
 }
 
-impl<Types, Node> PoolBuilder<Node> for BscPoolBuilder
+impl<Node> PoolBuilder<Node> for BscPoolBuilder
 where
-    Types: NodeTypesWithEngine<ChainSpec = ChainSpec>,
-    Node: FullNodeTypes<Types = Types>,
+    Node: FullNodeTypes<Types: NodeTypes<ChainSpec = BscChainSpec>>,
 {
     type Pool = EthTransactionPool<Node::Provider, DiskFileBlobStore>;
 
     async fn build_pool(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Pool> {
         let data_dir = ctx.config().datadir();
         let blob_store = DiskFileBlobStore::open(data_dir.blobstore(), Default::default())?;
-        let validator = TransactionValidationTaskExecutor::eth_builder(ctx.chain_spec())
-            .with_head_timestamp(ctx.head().timestamp)
-            .kzg_settings(ctx.kzg_settings()?)
-            .with_additional_tasks(1)
-            .build_with_tasks(
-                ctx.provider().clone(),
-                ctx.task_executor().clone(),
-                blob_store.clone(),
-            );
+        let validator = TransactionValidationTaskExecutor::eth_builder(Arc::new(
+            ctx.chain_spec().inner.clone(),
+        ))
+        .with_head_timestamp(ctx.head().timestamp)
+        .kzg_settings(ctx.kzg_settings()?)
+        .with_additional_tasks(1)
+        .build_with_tasks(
+            ctx.provider().clone(),
+            ctx.task_executor().clone(),
+            blob_store.clone(),
+        );
 
         let transaction_pool =
             reth_transaction_pool::Pool::eth_pool(validator, blob_store, ctx.pool_config());
@@ -225,18 +224,16 @@ impl BscPayloadBuilder {
         pool: Pool,
     ) -> eyre::Result<PayloadBuilderHandle<Types::Engine>>
     where
-        Types: NodeTypesWithEngine<ChainSpec = ChainSpec>,
+        Types: NodeTypesWithEngine<ChainSpec = BscChainSpec>,
         Node: FullNodeTypes<Types = Types>,
         Evm: ConfigureEvm<Header = Header>,
         Pool: TransactionPool + Unpin + 'static,
         Types::Engine: PayloadTypes<
-            BuiltPayload = EthBuiltPayload,
-            PayloadAttributes = EthPayloadAttributes,
-            PayloadBuilderAttributes = EthPayloadBuilderAttributes,
+            BuiltPayload = BscBuiltPayload,
+            PayloadBuilderAttributes = BscPayloadBuilderAttributes,
         >,
     {
-        let payload_builder =
-            reth_ethereum_payload_builder::EthereumPayloadBuilder::new(evm_config);
+        let payload_builder = reth_bsc_payload_builder::BscPayloadBuilder::new(evm_config);
         let conf = ctx.payload_builder_config();
 
         let payload_job_config = BasicPayloadJobGeneratorConfig::default()
@@ -263,20 +260,19 @@ impl BscPayloadBuilder {
 
 impl<Types, Node, Pool> PayloadServiceBuilder<Node, Pool> for BscPayloadBuilder
 where
-    Types: NodeTypesWithEngine<ChainSpec = ChainSpec>,
+    Types: NodeTypesWithEngine<ChainSpec = BscChainSpec>,
     Node: FullNodeTypes<Types = Types>,
     Pool: TransactionPool + Unpin + 'static,
     Types::Engine: PayloadTypes<
-        BuiltPayload = EthBuiltPayload,
-        PayloadAttributes = EthPayloadAttributes,
-        PayloadBuilderAttributes = EthPayloadBuilderAttributes,
+        BuiltPayload = BscBuiltPayload,
+        PayloadBuilderAttributes = BscPayloadBuilderAttributes,
     >,
 {
     async fn spawn_payload_service(
         self,
         ctx: &BuilderContext<Node>,
         pool: Pool,
-    ) -> eyre::Result<PayloadBuilderHandle<Types::Engine>> {
+    ) -> eyre::Result<PayloadBuilderHandle<<Node::Types as NodeTypesWithEngine>::Engine>> {
         self.spawn(BscEvmConfig::new(ctx.chain_spec()), ctx, pool)
     }
 }
@@ -289,7 +285,7 @@ pub struct BscNetworkBuilder {
 
 impl<Node, Pool> NetworkBuilder<Node, Pool> for BscNetworkBuilder
 where
-    Node: FullNodeTypes,
+    Node: FullNodeTypes<Types: NodeTypes<ChainSpec = BscChainSpec>>,
     Pool: TransactionPool + Unpin + 'static,
 {
     async fn build_network(
@@ -311,7 +307,7 @@ pub struct BscConsensusBuilder;
 
 impl<Node> ConsensusBuilder<Node> for BscConsensusBuilder
 where
-    Node: FullNodeTypes<Types: NodeTypes<ChainSpec = ChainSpec>>,
+    Node: FullNodeTypes<Types: NodeTypes<ChainSpec = BscChainSpec>>,
 {
     type Consensus = Parlia;
 
@@ -320,33 +316,35 @@ where
     }
 }
 
-/// Validator for the ethereum engine API.
-#[derive(Debug, Clone)]
-pub struct BscEngineValidator {
-    chain_spec: Arc<ChainSpec>,
-}
-
-impl BscEngineValidator {
-    /// Instantiates a new validator.
-    pub const fn new(chain_spec: Arc<ChainSpec>) -> Self {
-        Self { chain_spec }
-    }
-}
-
 /// Builder for [`BscEngineValidatorBuilder`].
 #[derive(Debug, Default, Clone)]
 #[non_exhaustive]
 pub struct BscEngineValidatorBuilder;
 
-impl<Node, Types> EngineValidatorBuilder<Node> for BscEngineValidatorBuilder
+impl<Node> EngineValidatorBuilder<Node> for BscEngineValidatorBuilder
 where
-    Types: NodeTypesWithEngine<ChainSpec = ChainSpec>,
-    Node: FullNodeTypes<Types = Types>,
-    BscEngineValidatorBuilder: EngineValidator<Types::Engine>,
+    Node: FullNodeTypes<
+        Types: NodeTypesWithEngine<Engine = BscEngineTypes, ChainSpec = BscChainSpec>,
+    >,
+    BscEngineValidator: EngineValidator<<Node::Types as NodeTypesWithEngine>::Engine>,
 {
     type Validator = BscEngineValidator;
 
-    async fn build_validator(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Validator> {
-        Ok(BscEngineValidator::new(ctx.chain_spec()))
+    async fn build_validator(self, _ctx: &BuilderContext<Node>) -> eyre::Result<Self::Validator> {
+        Ok(BscEngineValidator {})
+    }
+}
+
+/// A basic bsc parlia builder.
+#[derive(Debug, Default, Clone)]
+#[non_exhaustive]
+pub struct BscParliaBuilder;
+
+impl<Node> ParliaBuilder<Node> for BscParliaBuilder
+where
+    Node: FullNodeTypes<Types: NodeTypes<ChainSpec = BscChainSpec>>,
+{
+    async fn build_parlia(self, ctx: &BuilderContext<Node>) -> eyre::Result<Parlia> {
+        Ok(Parlia::new(ctx.chain_spec(), ctx.reth_config().parlia.clone()))
     }
 }

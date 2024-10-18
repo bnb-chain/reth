@@ -10,7 +10,7 @@ use reth_beacon_consensus::EthBeaconConsensus;
 use reth_blockchain_tree::{
     BlockchainTree, BlockchainTreeConfig, ShareableBlockchainTree, TreeExternals,
 };
-use reth_chainspec::{Chain, EthChainSpec, EthereumHardforks};
+use reth_chainspec::{Chain, EthChainSpec};
 use reth_config::{config::EtlConfig, PruneConfig};
 use reth_consensus::Consensus;
 use reth_db_api::database::Database;
@@ -40,9 +40,9 @@ use reth_node_metrics::{
 use reth_primitives::Head;
 use reth_provider::{
     providers::{BlockchainProvider, BlockchainProvider2, ProviderNodeTypes, StaticFileProvider},
-    BlockHashReader, CanonStateNotificationSender, ChainSpecProvider, ProviderFactory,
-    ProviderResult, StageCheckpointReader, StateProviderFactory, StaticFileProviderFactory,
-    TreeViewer,
+    BlockHashReader, CanonStateNotificationSender, ChainSpecHardforks, ChainSpecProvider,
+    ProviderFactory, ProviderResult, StageCheckpointReader, StateProviderFactory,
+    StaticFileProviderFactory, TreeViewer,
 };
 use reth_prune::{PruneModes, PrunerBuilder};
 use reth_rpc_api::clients::EthApiClient;
@@ -400,7 +400,7 @@ impl<R, ChainSpec: EthChainSpec> LaunchContextWith<Attached<WithConfigs<ChainSpe
 impl<DB, ChainSpec> LaunchContextWith<Attached<WithConfigs<ChainSpec>, DB>>
 where
     DB: Database + Clone + 'static,
-    ChainSpec: EthChainSpec + EthereumHardforks + 'static,
+    ChainSpec: EthChainSpec + ChainSpecHardforks + 'static,
 {
     /// Returns the [`ProviderFactory`] for the attached storage after executing a consistent check
     /// between the database and static files. **It may execute a pipeline unwind if it fails this
@@ -484,7 +484,7 @@ where
 
 impl<T> LaunchContextWith<Attached<WithConfigs<T::ChainSpec>, ProviderFactory<T>>>
 where
-    T: NodeTypesWithDB<ChainSpec: EthereumHardforks + EthChainSpec>,
+    T: NodeTypesWithDB<ChainSpec: EthChainSpec + ChainSpecHardforks>,
 {
     /// Returns access to the underlying database.
     pub const fn database(&self) -> &T::DB {
@@ -758,7 +758,7 @@ impl<T, CB>
 where
     T: FullNodeTypes<
         Provider: WithTree,
-        Types: NodeTypes<ChainSpec: EthChainSpec + EthereumHardforks>,
+        Types: NodeTypes<ChainSpec: EthChainSpec + ChainSpecHardforks>,
     >,
     CB: NodeComponentsBuilder<T>,
 {
@@ -890,7 +890,7 @@ impl<T, CB>
 where
     T: FullNodeTypes<
         Provider: WithTree + StateProviderFactory + ChainSpecProvider,
-        Types: NodeTypes<ChainSpec: EthereumHardforks>,
+        Types: NodeTypes<ChainSpec: ChainSpecHardforks>,
     >,
     CB: NodeComponentsBuilder<T>,
 {

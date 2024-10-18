@@ -13,13 +13,10 @@ use reth_consensus::Consensus;
 use reth_db::tables;
 use reth_db_api::{cursor::DbCursorRO, transaction::DbTx};
 use reth_evm::execute::{BatchExecutor, BlockExecutorProvider};
-#[cfg(feature = "bsc")]
-use reth_evm_bsc::BscExecutorProvider;
 use reth_network::NetworkHandle;
 use reth_network_api::NetworkInfo;
 use reth_network_p2p::full_block::FullBlockClient;
 use reth_node_api::{NodeTypesWithDB, NodeTypesWithEngine};
-#[cfg(not(feature = "bsc"))]
 use reth_node_ethereum::EthExecutorProvider;
 use reth_primitives::BlockHashOrNumber;
 use reth_provider::{
@@ -103,11 +100,7 @@ impl<C: ChainSpecParser<ChainSpec = ChainSpec>> Command<C> {
             )
             .await?;
 
-        #[cfg(not(feature = "bsc"))]
         let executor_provider = EthExecutorProvider::ethereum(provider_factory.chain_spec());
-        #[cfg(feature = "bsc")]
-        let executor_provider =
-            BscExecutorProvider::bsc(provider_factory.chain_spec(), provider_factory.clone());
 
         // Initialize the fetch client
         info!(target: "reth::cli", target_block_number=self.to, "Downloading tip of block range");

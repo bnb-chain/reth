@@ -1,12 +1,18 @@
-use crate::{client::ParliaClient, Storage};
+use std::{
+    clone::Clone,
+    fmt,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use alloy_primitives::{Sealable, B256};
 use alloy_rpc_types::{engine::ForkchoiceState, BlockId, RpcBlockHash};
-use reth_beacon_consensus::{BeaconEngineMessage, ForkchoiceStatus, MIN_BLOCKS_FOR_PIPELINE_RUN};
+use reth_beacon_consensus::{
+    BeaconEngineMessage, EngineNodeTypes, ForkchoiceStatus, MIN_BLOCKS_FOR_PIPELINE_RUN,
+};
 use reth_bsc_consensus::Parlia;
-use reth_chainspec::ChainSpec;
-use reth_engine_primitives::EngineTypes;
-use reth_evm_bsc::SnapshotReader;
+use reth_bsc_evm::SnapshotReader;
+use reth_chainspec::EthChainSpec;
 use reth_network_api::events::EngineMessage;
 use reth_network_p2p::{
     headers::client::{HeadersClient, HeadersDirection, HeadersRequest},
@@ -15,12 +21,6 @@ use reth_network_p2p::{
 };
 use reth_primitives::{Block, BlockBody, BlockHashOrNumber, SealedHeader};
 use reth_provider::{BlockReaderIdExt, CanonChainTracker, ParliaProvider};
-use std::{
-    clone::Clone,
-    fmt,
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
-};
 use tokio::{
     signal,
     sync::{
@@ -30,6 +30,8 @@ use tokio::{
     time::{interval, timeout, Duration},
 };
 use tracing::{debug, error, info, trace};
+
+use crate::{client::ParliaClient, Storage};
 
 /// All message variants that can be sent to beacon engine.
 #[derive(Debug)]
@@ -55,19 +57,19 @@ struct BlockInfo {
 
 /// A Future that listens for new headers and puts into storage
 pub(crate) struct ParliaEngineTask<
-    Engine: EngineTypes,
+    N: EngineNodeTypes,
     Provider: BlockReaderIdExt + CanonChainTracker,
-    P: ParliaProvider,
+    SnapshotProvider: ParliaProvider,
     Client: BlockClient,
 > {
     /// The configured chain spec
-    chain_spec: Arc<ChainSpec>,
+    chain_spec: Arc<N::ChainSpec>,
     /// The consensus instance
     consensus: Parlia,
     /// The provider used to read the block and header from the inserted chain
     provider: Provider,
     /// The snapshot reader used to read the snapshot
-    snapshot_reader: Arc<SnapshotReader<P>>,
+    snapshot_reader: Arc<SnapshotReader<SnapshotProvider>>,
     /// The client used to fetch headers
     block_fetcher: ParliaClient<Client>,
     /// The interval of the block producing
@@ -75,7 +77,7 @@ pub(crate) struct ParliaEngineTask<
     /// Shared storage to insert new headers
     storage: Storage,
     /// The engine to send messages to the beacon engine
-    to_engine: UnboundedSender<BeaconEngineMessage<Engine>>,
+    to_engine: UnboundedSender<BeaconEngineMessage<N::Engine>>,
     /// The watch for the network block event receiver
     network_block_event_rx: Arc<Mutex<UnboundedReceiver<EngineMessage>>>,
     /// The channel to send fork choice messages
@@ -90,20 +92,20 @@ pub(crate) struct ParliaEngineTask<
 
 // === impl ParliaEngineTask ===
 impl<
-        Engine: EngineTypes + 'static,
+        N: EngineNodeTypes + 'static,
         Provider: BlockReaderIdExt + CanonChainTracker + Clone + 'static,
-        P: ParliaProvider + 'static,
+        SnapshotProvider: ParliaProvider + 'static,
         Client: BlockClient + 'static,
-    > ParliaEngineTask<Engine, Provider, P, Client>
+    > ParliaEngineTask<N, Provider, SnapshotProvider, Client>
 {
     /// Creates a new instance of the task
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn start(
-        chain_spec: Arc<ChainSpec>,
+        chain_spec: Arc<N::ChainSpec>,
         consensus: Parlia,
         provider: Provider,
-        snapshot_reader: SnapshotReader<P>,
-        to_engine: UnboundedSender<BeaconEngineMessage<Engine>>,
+        snapshot_reader: SnapshotReader<SnapshotProvider>,
+        to_engine: UnboundedSender<BeaconEngineMessage<N::Engine>>,
         network_block_event_rx: Arc<Mutex<UnboundedReceiver<EngineMessage>>>,
         storage: Storage,
         block_fetcher: ParliaClient<Client>,
@@ -239,13 +241,20 @@ impl<
                     .sealed_header_by_id(BlockId::Hash(RpcBlockHash::from(finalized_hash)))
                     .ok()
                     .flatten()
-                    .unwrap_or_else(|| chain_spec.sealed_genesis_header());
+                    .unwrap_or_else(|| {
+                        SealedHeader::new(
+                            chain_spec.genesis_header().clone(),
+                            chain_spec.genesis_hash(),
+                        )
+                    });
                 debug!(target: "consensus::parlia", { finalized_header_number = ?finalized_header.number, finalized_header_hash = ?finalized_header.hash() }, "Latest finalized header");
-                let latest_unsafe_header = client
-                    .latest_header()
-                    .ok()
-                    .flatten()
-                    .unwrap_or_else(|| chain_spec.sealed_genesis_header());
+                let latest_unsafe_header =
+                    client.latest_header().ok().flatten().unwrap_or_else(|| {
+                        SealedHeader::new(
+                            chain_spec.genesis_header().clone(),
+                            chain_spec.genesis_hash(),
+                        )
+                    });
                 debug!(target: "consensus::parlia", { latest_unsafe_header_number = ?latest_unsafe_header.number, latest_unsafe_header_hash = ?latest_unsafe_header.hash() }, "Latest unsafe header");
 
                 let mut trusted_header = latest_unsafe_header.clone();
@@ -262,7 +271,9 @@ impl<
                 // than the predicted timestamp and less than the current timestamp.
                 let predicted_timestamp = trusted_header.timestamp +
                     block_interval * (latest_header.number - 1 - trusted_header.number);
-                let sealed_header = latest_header.clone().seal_slow();
+                let sealed = latest_header.clone().seal_slow();
+                let (header, seal) = sealed.into_parts();
+                let sealed_header = SealedHeader::new(header, seal);
                 let is_valid_header = match consensus
                     .validate_header_with_predicted_timestamp(&sealed_header, predicted_timestamp)
                 {
@@ -323,7 +334,9 @@ impl<
                     }
                     let mut parent_hash = sealed_header.parent_hash;
                     for (i, _) in headers.iter().enumerate() {
-                        let sealed_header = headers[i].clone().seal_slow();
+                        let sealed = headers[i].clone().seal_slow();
+                        let (header, seal) = sealed.into_parts();
+                        let sealed_header = SealedHeader::new(header, seal);
                         if sealed_header.hash_slow() != parent_hash {
                             break;
                         }
@@ -541,11 +554,11 @@ impl<
 }
 
 impl<
-        Engine: EngineTypes,
+        N: EngineNodeTypes,
         Provider: BlockReaderIdExt + CanonChainTracker,
-        P: ParliaProvider,
+        SnapshotProvider: ParliaProvider,
         Client: BlockClient,
-    > fmt::Debug for ParliaEngineTask<Engine, Provider, P, Client>
+    > fmt::Debug for ParliaEngineTask<N, Provider, SnapshotProvider, Client>
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("chain_spec")

@@ -1,5 +1,5 @@
 [package]
-name = "reth-node-bsc"
+name = "reth-bsc-node"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -22,12 +22,17 @@ reth-tracing.workspace = true
 reth-provider.workspace = true
 reth-transaction-pool.workspace = true
 reth-network.workspace = true
-reth-evm-bsc.workspace = true
-reth-bsc-consensus.workspace = true
 reth-primitives.workspace = true
 reth-config.workspace = true
 reth-rpc.workspace = true
 reth-node-api.workspace = true
+
+# bsc-reth
+reth-bsc-chainspec.workspace = true
+reth-bsc-consensus.workspace = true
+reth-bsc-evm.workspace = true
+reth-bsc-payload-builder.workspace = true
+reth-bsc-engine.workspace = true
 
 # misc
 eyre.workspace = true
@@ -44,13 +49,17 @@ futures.workspace = true
 tokio.workspace = true
 futures-util.workspace = true
 serde_json.workspace = true
-reth-evm-bsc.workspace = true
+reth-bsc-evm.workspace = true
 
 [features]
 bsc = [
-    "reth-network/bsc",
-    "reth-evm-bsc/bsc",
-    "reth-primitives/bsc",
     "reth-config/bsc",
+    "reth-network/bsc",
+    "reth-node-builder/bsc",
+    "reth-primitives/bsc",
     "reth-bsc-consensus/bsc",
+    "reth-bsc-evm/bsc",
+    "reth-bsc-payload-builder/bsc",
+    "reth-bsc-engine/bsc",
 ]
+asm-keccak = ["reth-primitives/asm-keccak"]

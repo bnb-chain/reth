@@ -30,6 +30,9 @@ reth-node-api.workspace = true
 reth-chainspec.workspace = true
 reth-primitives.workspace = true
 
+# bsc
+reth-bsc-consensus.workspace = true
+
 # misc
 eyre.workspace = true
 

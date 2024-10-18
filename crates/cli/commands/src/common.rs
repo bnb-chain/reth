@@ -3,7 +3,7 @@
 use alloy_primitives::B256;
 use clap::Parser;
 use reth_beacon_consensus::EthBeaconConsensus;
-use reth_chainspec::{EthChainSpec, EthereumHardforks};
+use reth_chainspec::EthChainSpec;
 use reth_cli::chainspec::ChainSpecParser;
 use reth_config::{config::EtlConfig, Config};
 use reth_db::{init_db, open_db_read_only, DatabaseEnv};
@@ -15,7 +15,9 @@ use reth_node_core::{
     args::{DatabaseArgs, DatadirArgs, PerformanceOptimizationArgs},
     dirs::{ChainPath, DataDirPath},
 };
-use reth_provider::{providers::StaticFileProvider, ProviderFactory, StaticFileProviderFactory};
+use reth_provider::{
+    providers::StaticFileProvider, ChainSpecHardforks, ProviderFactory, StaticFileProviderFactory,
+};
 use reth_stages::{sets::DefaultStages, Pipeline, PipelineTarget};
 use reth_static_file::StaticFileProducer;
 use std::{path::PathBuf, sync::Arc};
@@ -54,7 +56,7 @@ pub struct EnvironmentArgs<C: ChainSpecParser> {
     pub performance_optimization: PerformanceOptimizationArgs,
 }
 
-impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> EnvironmentArgs<C> {
+impl<C: ChainSpecParser<ChainSpec: EthChainSpec + ChainSpecHardforks>> EnvironmentArgs<C> {
     /// Initializes environment according to [`AccessRights`] and returns an instance of
     /// [`Environment`].
     pub fn init<N: NodeTypesWithEngine<ChainSpec = C::ChainSpec>>(

@@ -192,7 +192,3 @@ pub use reth_cli_runner::{tokio_runtime, CliContext, CliRunner};
 
 // for rendering diagrams
 use aquamarine as _;
-#[cfg(feature = "bsc")]
-use reth_evm_bsc as _;
-#[cfg(feature = "bsc")]
-use reth_node_bsc as _;

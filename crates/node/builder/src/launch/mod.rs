@@ -9,8 +9,6 @@ pub use common::LaunchContext;
 use common::{Attached, LaunchContextWith, WithConfigs};
 pub use exex::ExExLauncher;
 
-use std::{future::Future, sync::Arc};
-
 use alloy_primitives::utils::format_ether;
 use alloy_rpc_types::engine::ClientVersionV1;
 use futures::{future::Either, stream, stream_select, StreamExt};
@@ -21,7 +19,7 @@ use reth_beacon_consensus::{
 use reth_blockchain_tree::{noop::NoopBlockchainTree, BlockchainTreeConfig};
 #[cfg(feature = "bsc")]
 use reth_bsc_engine::ParliaEngineBuilder;
-use reth_chainspec::{EthChainSpec, EthereumHardforks};
+use reth_chainspec::EthChainSpec;
 use reth_consensus_debug_client::{DebugConsensusClient, EtherscanBlockProvider, RpcBlockProvider};
 use reth_engine_util::EngineMessageStreamExt;
 use reth_exex::ExExManagerHandle;
@@ -38,13 +36,12 @@ use reth_node_core::{
     version::{CARGO_PKG_VERSION, CLIENT_CODE, NAME_CLIENT, VERGEN_GIT_SHA},
 };
 use reth_node_events::{cl::ConsensusLayerHealthEvents, node};
-#[cfg(feature = "bsc")]
-use reth_primitives::parlia::ParliaConfig;
-use reth_provider::providers::BlockchainProvider;
+use reth_provider::{providers::BlockchainProvider, ChainSpecHardforks};
 use reth_rpc_engine_api::{capabilities::EngineCapabilities, EngineApi};
 use reth_tasks::TaskExecutor;
 use reth_tracing::tracing::{debug, info};
 use reth_transaction_pool::TransactionPool;
+use std::{future::Future, marker::PhantomData, sync::Arc};
 use tokio::sync::{mpsc::unbounded_channel, oneshot};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
@@ -112,7 +109,7 @@ impl DefaultNodeLauncher {
 
 impl<Types, T, CB, AO> LaunchNode<NodeBuilderWithComponents<T, CB, AO>> for DefaultNodeLauncher
 where
-    Types: NodeTypesWithDB<ChainSpec: EthereumHardforks + EthChainSpec> + NodeTypesWithEngine,
+    Types: NodeTypesWithDB<ChainSpec: ChainSpecHardforks + EthChainSpec> + NodeTypesWithEngine,
     T: FullNodeTypes<Provider = BlockchainProvider<Types>, Types = Types>,
     CB: NodeComponentsBuilder<T>,
     AO: NodeAddOns<
@@ -289,12 +286,13 @@ where
                 let engine_rx = ctx.node_adapter().components.network().get_to_engine_rx();
                 let client = ParliaEngineBuilder::new(
                     ctx.chain_spec(),
-                    ParliaConfig::default(),
                     ctx.blockchain_db().clone(),
                     ctx.blockchain_db().clone(),
+                    ctx.components().parlia().clone(),
                     consensus_engine_tx.clone(),
                     engine_rx,
                     network_client.clone(),
+                    PhantomData::<Types>,
                 )
                 .build(ctx.node_config().debug.tip.is_none());
                 (pipeline, Either::Right(client))

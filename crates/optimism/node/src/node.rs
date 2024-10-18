@@ -3,14 +3,16 @@
 use std::sync::Arc;
 
 use reth_basic_payload_builder::{BasicPayloadJobGenerator, BasicPayloadJobGeneratorConfig};
-use reth_chainspec::{EthChainSpec, Hardforks};
+use reth_bsc_consensus::Parlia;
+use reth_chainspec::{ChainSpec, EthChainSpec, Hardforks};
 use reth_evm::ConfigureEvm;
 use reth_network::{NetworkConfig, NetworkHandle, NetworkManager};
 use reth_node_api::{EngineValidator, FullNodeComponents, NodeAddOns};
 use reth_node_builder::{
     components::{
         ComponentsBuilder, ConsensusBuilder, EngineValidatorBuilder, ExecutorBuilder,
-        NetworkBuilder, PayloadServiceBuilder, PoolBuilder, PoolBuilderConfigOverrides,
+        NetworkBuilder, ParliaBuilder, PayloadServiceBuilder, PoolBuilder,
+        PoolBuilderConfigOverrides,
     },
     node::{FullNodeTypes, NodeTypes, NodeTypesWithEngine},
     BuilderContext, Node, PayloadBuilderConfig,
@@ -60,6 +62,7 @@ impl OptimismNode {
         OptimismExecutorBuilder,
         OptimismConsensusBuilder,
         OptimismEngineValidatorBuilder,
+        OptimismParliaBuilder,
     >
     where
         Node: FullNodeTypes<
@@ -78,6 +81,7 @@ impl OptimismNode {
             .executor(OptimismExecutorBuilder::default())
             .consensus(OptimismConsensusBuilder::default())
             .engine_validator(OptimismEngineValidatorBuilder::default())
+            .parlia(OptimismParliaBuilder::default())
     }
 }
 
@@ -95,6 +99,7 @@ where
         OptimismExecutorBuilder,
         OptimismConsensusBuilder,
         OptimismEngineValidatorBuilder,
+        OptimismParliaBuilder,
     >;
 
     type AddOns = OptimismAddOns;
@@ -432,5 +437,19 @@ where
 
     async fn build_validator(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Validator> {
         Ok(OptimismEngineValidator::new(ctx.chain_spec()))
+    }
+}
+
+/// A dummy bsc parlia builder.
+#[derive(Debug, Default, Clone)]
+#[non_exhaustive]
+pub struct OptimismParliaBuilder;
+
+impl<Node> ParliaBuilder<Node> for OptimismParliaBuilder
+where
+    Node: FullNodeTypes<Types: NodeTypes<ChainSpec = OpChainSpec>>,
+{
+    async fn build_parlia(self, _ctx: &BuilderContext<Node>) -> eyre::Result<Parlia> {
+        Ok(Default::default())
     }
 }
