@@ -6,14 +6,12 @@
 
 extern crate alloc;
 
-pub mod hardfork;
-
-mod dev;
-
-pub use dev::DEV_HARDFORKS;
-pub use hardfork::BscHardfork;
-
 use reth_ethereum_forks::EthereumHardforks;
+
+pub mod hardfork;
+pub use hardfork::BscHardfork;
+mod dev;
+pub use dev::DEV_HARDFORKS;
 
 /// Extends [`EthereumHardforks`] with bsc helper methods.
 pub trait BscHardforks: EthereumHardforks {

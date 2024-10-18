@@ -20,12 +20,9 @@ use reth_cli_runner::CliContext;
 use reth_consensus::Consensus;
 use reth_errors::RethResult;
 use reth_evm::execute::{BlockExecutorProvider, Executor};
-#[cfg(feature = "bsc")]
-use reth_evm_bsc::{BscEvmConfig, BscExecutorProvider};
 use reth_execution_types::ExecutionOutcome;
 use reth_fs_util as fs;
 use reth_node_api::{NodeTypesWithDB, NodeTypesWithEngine, PayloadBuilderAttributes};
-#[cfg(not(feature = "bsc"))]
 use reth_node_ethereum::{EthEvmConfig, EthExecutorProvider};
 use reth_payload_builder::database::CachedReads;
 use reth_primitives::{
@@ -130,11 +127,7 @@ impl<C: ChainSpecParser<ChainSpec = ChainSpec>> Command<C> {
         let consensus: Arc<dyn Consensus> =
             Arc::new(EthBeaconConsensus::new(provider_factory.chain_spec()));
 
-        #[cfg(not(feature = "bsc"))]
         let executor = EthExecutorProvider::ethereum(provider_factory.chain_spec());
-        #[cfg(feature = "bsc")]
-        let executor =
-            BscExecutorProvider::bsc(provider_factory.chain_spec(), provider_factory.clone());
 
         // configure blockchain tree
         let tree_externals =
@@ -246,13 +239,8 @@ impl<C: ChainSpecParser<ChainSpec = ChainSpec>> Command<C> {
             None,
         );
 
-        #[cfg(not(feature = "bsc"))]
         let payload_builder = reth_ethereum_payload_builder::EthereumPayloadBuilder::new(
             EthEvmConfig::new(provider_factory.chain_spec()),
-        );
-        #[cfg(feature = "bsc")]
-        let payload_builder = reth_ethereum_payload_builder::EthereumPayloadBuilder::new(
-            BscEvmConfig::new(provider_factory.chain_spec()),
         );
 
         match payload_builder.try_build(args)? {
@@ -269,15 +257,8 @@ impl<C: ChainSpecParser<ChainSpec = ChainSpec>> Command<C> {
                     SealedBlockWithSenders::new(block.clone(), senders).unwrap();
 
                 let db = StateProviderDatabase::new(blockchain_db.latest()?);
-                #[cfg(not(feature = "bsc"))]
                 let executor =
                     EthExecutorProvider::ethereum(provider_factory.chain_spec()).executor(db, None);
-                #[cfg(feature = "bsc")]
-                let executor = BscExecutorProvider::bsc(
-                    provider_factory.chain_spec(),
-                    provider_factory.clone(),
-                )
-                .executor(db, None);
 
                 let block_execution_output = executor
                     .execute((&block_with_senders.clone().unseal(), U256::MAX, None).into())?;

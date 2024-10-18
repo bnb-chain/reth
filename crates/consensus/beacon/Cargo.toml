@@ -28,7 +28,6 @@ reth-tokio-util.workspace = true
 reth-engine-primitives.workspace = true
 reth-network-p2p.workspace = true
 reth-node-types.workspace = true
-reth-bsc-consensus = { workspace = true, optional = true }
 
 # ethereum
 alloy-primitives.workspace = true
@@ -85,5 +84,5 @@ optimism = [
     "reth-chainspec"
 ]
 bsc = [
-    "reth-bsc-consensus/bsc",
+    "reth-provider/bsc",
 ]

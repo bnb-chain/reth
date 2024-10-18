@@ -59,7 +59,7 @@ bincode.workspace = true
 reth-chainspec.workspace = true
 reth-primitives = { workspace = true, features = ["test-utils", "arbitrary"] }
 reth-db = { workspace = true, features = ["test-utils", "mdbx"] }
-reth-evm-bsc.workspace = true
+reth-bsc-evm.workspace = true
 reth-evm-ethereum.workspace = true
 reth-execution-errors.workspace = true
 reth-consensus = { workspace = true, features = ["test-utils"] }
@@ -104,7 +104,7 @@ test-utils = [
     "dep:tempfile",
 ]
 bsc = [
-    "reth-evm-bsc/bsc",
+    "reth-bsc-evm/bsc",
 ]
 
 [[bench]]

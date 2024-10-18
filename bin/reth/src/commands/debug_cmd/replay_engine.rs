@@ -15,15 +15,11 @@ use reth_config::Config;
 use reth_consensus::Consensus;
 use reth_db::DatabaseEnv;
 use reth_engine_util::engine_store::{EngineMessageStore, StoredEngineApiMessage};
-#[cfg(feature = "bsc")]
-use reth_evm_bsc::{BscEvmConfig, BscExecutorProvider};
 use reth_fs_util as fs;
 use reth_network::NetworkHandle;
 use reth_network_api::NetworkInfo;
 use reth_node_api::{NodeTypesWithDB, NodeTypesWithDBAdapter, NodeTypesWithEngine};
-use reth_node_ethereum::EthEngineTypes;
-#[cfg(not(feature = "bsc"))]
-use reth_node_ethereum::{EthEvmConfig, EthExecutorProvider};
+use reth_node_ethereum::{EthEngineTypes, EthEvmConfig, EthExecutorProvider};
 use reth_payload_builder::{PayloadBuilderHandle, PayloadBuilderService};
 use reth_provider::{
     providers::BlockchainProvider, CanonStateSubscriptions, ChainSpecProvider, ProviderFactory,
@@ -92,11 +88,7 @@ impl<C: ChainSpecParser<ChainSpec = ChainSpec>> Command<C> {
         let consensus: Arc<dyn Consensus> =
             Arc::new(EthBeaconConsensus::new(provider_factory.chain_spec()));
 
-        #[cfg(not(feature = "bsc"))]
         let executor = EthExecutorProvider::ethereum(provider_factory.chain_spec());
-        #[cfg(feature = "bsc")]
-        let executor =
-            BscExecutorProvider::bsc(provider_factory.chain_spec(), provider_factory.clone());
 
         // Configure blockchain tree
         let tree_externals =
@@ -121,13 +113,8 @@ impl<C: ChainSpecParser<ChainSpec = ChainSpec>> Command<C> {
             .await?;
 
         // Set up payload builder
-        #[cfg(not(feature = "bsc"))]
         let payload_builder = reth_ethereum_payload_builder::EthereumPayloadBuilder::new(
             EthEvmConfig::new(provider_factory.chain_spec()),
-        );
-        #[cfg(feature = "bsc")]
-        let payload_builder = reth_ethereum_payload_builder::EthereumPayloadBuilder::new(
-            BscEvmConfig::new(provider_factory.chain_spec()),
         );
 
         let payload_generator = BasicPayloadJobGenerator::with_builder(

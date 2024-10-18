@@ -1,7 +1,7 @@
 //! Database debugging tool
 use crate::common::{AccessRights, Environment, EnvironmentArgs};
 use clap::Parser;
-use reth_chainspec::{EthChainSpec, EthereumHardforks};
+use reth_chainspec::EthChainSpec;
 use reth_cli::chainspec::ChainSpecParser;
 use reth_db::{init_db, mdbx::DatabaseArguments, tables, DatabaseEnv};
 use reth_db_api::{
@@ -15,20 +15,21 @@ use reth_node_core::{
     args::DatadirArgs,
     dirs::{DataDirPath, PlatformPath},
 };
+use reth_provider::ChainSpecHardforks;
 use std::{path::PathBuf, sync::Arc};
 use tracing::info;
 
 mod hashing_storage;
-use hashing_storage::dump_hashing_storage_stage;
+pub use hashing_storage::dump_hashing_storage_stage;
 
 mod hashing_account;
-use hashing_account::dump_hashing_account_stage;
+pub use hashing_account::dump_hashing_account_stage;
 
 mod execution;
-use execution::dump_execution_stage;
+pub use execution::dump_execution_stage;
 
 mod merkle;
-use merkle::dump_merkle_stage;
+pub use merkle::dump_merkle_stage;
 
 /// `reth dump-stage` command
 #[derive(Debug, Parser)]
@@ -58,20 +59,21 @@ pub enum Stages {
 pub struct StageCommand {
     /// The path to the new datadir folder.
     #[arg(long, value_name = "OUTPUT_PATH", verbatim_doc_comment)]
-    output_datadir: PlatformPath<DataDirPath>,
+    pub output_datadir: PlatformPath<DataDirPath>,
 
     /// From which block.
     #[arg(long, short)]
-    from: u64,
+    pub from: u64,
     /// To which block.
     #[arg(long, short)]
-    to: u64,
+    pub to: u64,
     /// If passed, it will dry-run a stage execution from the newly created database right after
     /// dumping.
     #[arg(long, short, default_value = "false")]
-    dry_run: bool,
+    pub dry_run: bool,
 }
 
+#[macro_export]
 macro_rules! handle_stage {
     ($stage_fn:ident, $tool:expr, $command:expr) => {{
         let StageCommand { output_datadir, from, to, dry_run, .. } = $command;
@@ -88,7 +90,7 @@ macro_rules! handle_stage {
     }};
 }
 
-impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> Command<C> {
+impl<C: ChainSpecParser<ChainSpec: EthChainSpec + ChainSpecHardforks>> Command<C> {
     /// Execute `dump-stage` command
     pub async fn execute<N, E, F>(self, executor: F) -> eyre::Result<()>
     where
@@ -115,7 +117,7 @@ impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> Command<C>
 
 /// Sets up the database and initial state on [`tables::BlockBodyIndices`]. Also returns the tip
 /// block number.
-pub(crate) fn setup<N: NodeTypesWithDB>(
+pub fn setup<N: NodeTypesWithDB>(
     from: u64,
     to: u64,
     output_db: &PathBuf,

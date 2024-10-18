@@ -31,9 +31,6 @@ reth-rpc-server-types.workspace = true
 reth-network-api.workspace = true
 reth-trie.workspace = true
 
-# bsc
-reth-bsc-forks.workspace = true
-
 # ethereum
 alloy-eips.workspace = true
 alloy-dyn-abi = { workspace = true, features = ["eip712"] }

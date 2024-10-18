@@ -59,7 +59,7 @@ install-op: ## Build and install the op-reth binary under `~/.cargo/bin`.
 
 .PHONY: install-bsc
 install-bsc: ## Build and install the bsc-reth binary under `~/.cargo/bin`.
-	cargo install --path bin/reth --bin bsc-reth --force --locked \
+	cargo install --path crates/bsc/bin --bin bsc-reth --force --locked \
 		--features "bsc $(FEATURES)" \
 		--profile "$(PROFILE)" \
 		$(CARGO_INSTALL_EXTRA_FLAGS)
@@ -78,7 +78,7 @@ build-op: ## Build the op-reth binary into `target` directory.
 
 .PHONY: build-bsc
 build-bsc: ## Build the bsc-reth binary into `target` directory.
-	cargo build --bin bsc-reth --features "bsc $(FEATURES)" --profile "$(PROFILE)"
+	cargo build --bin bsc-reth --features "bsc $(FEATURES)" --profile "$(PROFILE)" --manifest-path crates/bsc/bin/Cargo.toml
 
 # Builds the reth binary natively.
 build-native-%:
@@ -88,7 +88,7 @@ op-build-native-%:
 	cargo build --bin op-reth --target $* --features "optimism,opbnb,$(FEATURES)" --profile "$(PROFILE)" --manifest-path crates/optimism/bin/Cargo.toml
 
 bsc-build-native-%:
-	cargo build --bin bsc-reth --target $* --features "bsc $(FEATURES)" --profile "$(PROFILE)"
+	cargo build --bin bsc-reth --target $* --features "bsc $(FEATURES)" --profile "$(PROFILE)" --manifest-path crates/bsc/bin/Cargo.toml
 
 # The following commands use `cross` to build a cross-compile.
 #

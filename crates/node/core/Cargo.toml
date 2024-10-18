@@ -35,7 +35,6 @@ reth-network-peers.workspace = true
 reth-consensus-common.workspace = true
 reth-prune-types.workspace = true
 reth-stages-types.workspace = true
-reth-bsc-chainspec = { workspace = true, optional = true }
 
 # ethereum
 alloy-primitives.workspace = true
@@ -85,7 +84,6 @@ opbnb = [
 ]
 bsc = [
     "reth-primitives/bsc",
-    "dep:reth-bsc-chainspec",
 ]
 
 # Features for vergen to generate correct env vars

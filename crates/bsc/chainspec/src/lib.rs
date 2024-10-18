@@ -10,25 +10,125 @@
 #[cfg(not(feature = "std"))]
 extern crate alloc;
 
-mod bsc;
-mod bsc_chapel;
-mod bsc_rialto;
-mod dev;
+use core::fmt::Display;
 
+use alloy_genesis::Genesis;
+use alloy_primitives::{B256, U256};
+use derive_more::{Constructor, Deref, Into};
+use reth_bsc_forks::BscHardforks;
+use reth_chainspec::{BaseFeeParams, ChainSpec, DepositContract, EthChainSpec};
+use reth_ethereum_forks::{EthereumHardforks, ForkFilter, ForkId, Hardforks, Head};
+use reth_network_peers::NodeRecord;
+use reth_primitives_traits::Header;
+
+mod bsc;
 pub use bsc::BSC_MAINNET;
+
+mod bsc_chapel;
 pub use bsc_chapel::BSC_CHAPEL;
+
+mod bsc_rialto;
 pub use bsc_rialto::BSC_RIALTO;
+
+mod dev;
 pub use dev::BSC_DEV;
 
-use derive_more::{Constructor, Deref, Into};
-use reth_chainspec::ChainSpec;
-
 /// Bsc chain spec type.
-#[derive(Debug, Deref, Into, Constructor)]
+#[derive(Debug, Default, Clone, Deref, Into, Constructor, PartialEq, Eq)]
 pub struct BscChainSpec {
     /// [`ChainSpec`].
     pub inner: ChainSpec,
 }
+
+impl EthChainSpec for BscChainSpec {
+    fn chain(&self) -> alloy_chains::Chain {
+        self.inner.chain()
+    }
+
+    fn base_fee_params_at_block(&self, block_number: u64) -> BaseFeeParams {
+        self.inner.base_fee_params_at_block(block_number)
+    }
+
+    fn base_fee_params_at_timestamp(&self, timestamp: u64) -> BaseFeeParams {
+        self.inner.base_fee_params_at_timestamp(timestamp)
+    }
+
+    fn deposit_contract(&self) -> Option<&DepositContract> {
+        None
+    }
+
+    fn genesis_hash(&self) -> B256 {
+        self.inner.genesis_hash()
+    }
+
+    fn prune_delete_limit(&self) -> usize {
+        self.inner.prune_delete_limit()
+    }
+
+    fn display_hardforks(&self) -> impl Display {
+        self.inner.display_hardforks()
+    }
+
+    fn genesis_header(&self) -> &Header {
+        self.inner.genesis_header()
+    }
+
+    fn genesis(&self) -> &Genesis {
+        self.inner.genesis()
+    }
+
+    fn max_gas_limit(&self) -> u64 {
+        self.inner.max_gas_limit()
+    }
+
+    fn bootnodes(&self) -> Option<Vec<NodeRecord>> {
+        self.inner.bootnodes()
+    }
+
+    fn is_optimism(&self) -> bool {
+        false
+    }
+
+    fn is_bsc(&self) -> bool {
+        true
+    }
+}
+
+impl Hardforks for BscChainSpec {
+    fn fork<H: reth_chainspec::Hardfork>(&self, fork: H) -> reth_chainspec::ForkCondition {
+        self.inner.fork(fork)
+    }
+
+    fn forks_iter(
+        &self,
+    ) -> impl Iterator<Item = (&dyn reth_chainspec::Hardfork, reth_chainspec::ForkCondition)> {
+        self.inner.forks_iter()
+    }
+
+    fn fork_id(&self, head: &Head) -> ForkId {
+        self.inner.fork_id(head)
+    }
+
+    fn latest_fork_id(&self) -> ForkId {
+        self.inner.latest_fork_id()
+    }
+
+    fn fork_filter(&self, head: Head) -> ForkFilter {
+        self.inner.fork_filter(head)
+    }
+}
+
+impl EthereumHardforks for BscChainSpec {
+    fn get_final_paris_total_difficulty(&self) -> Option<U256> {
+        self.inner.get_final_paris_total_difficulty()
+    }
+
+    fn final_paris_total_difficulty(&self, block_number: u64) -> Option<U256> {
+        self.inner.final_paris_total_difficulty(block_number)
+    }
+}
+
+impl BscHardforks for BscChainSpec {}
 
 // #[cfg(test)]
 // mod tests {

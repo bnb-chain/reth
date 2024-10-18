@@ -1,12 +1,11 @@
 //! Helper provider traits to encapsulate all provider traits for simplicity.
 
 use crate::{
-    AccountReader, BlockReaderIdExt, ChainSpecProvider, ChangeSetReader, DatabaseProviderFactory,
-    EvmEnvProvider, HeaderProvider, ParliaSnapshotReader, StageCheckpointReader,
-    StateProviderFactory, StaticFileProviderFactory, TransactionsProvider,
+    AccountReader, BlockReaderIdExt, ChainSpecHardforks, ChainSpecProvider, ChangeSetReader,
+    DatabaseProviderFactory, EvmEnvProvider, HeaderProvider, ParliaSnapshotReader,
+    StageCheckpointReader, StateProviderFactory, StaticFileProviderFactory, TransactionsProvider,
 };
 use reth_chain_state::{CanonStateSubscriptions, ForkChoiceSubscriptions};
-use reth_chainspec::EthereumHardforks;
 use reth_node_types::NodeTypesWithDB;
 
 /// Helper trait to unify all provider traits for simplicity.
@@ -55,7 +54,7 @@ impl<T, N: NodeTypesWithDB> FullProvider<N> for T where
 pub trait FullRpcProvider:
     StateProviderFactory
     + EvmEnvProvider
-    + ChainSpecProvider<ChainSpec: EthereumHardforks>
+    + ChainSpecProvider<ChainSpec: ChainSpecHardforks>
     + BlockReaderIdExt
     + HeaderProvider
     + TransactionsProvider
@@ -69,7 +68,7 @@ pub trait FullRpcProvider:
 impl<T> FullRpcProvider for T where
     T: StateProviderFactory
         + EvmEnvProvider
-        + ChainSpecProvider<ChainSpec: EthereumHardforks>
+        + ChainSpecProvider<ChainSpec: ChainSpecHardforks>
         + BlockReaderIdExt
         + HeaderProvider
         + TransactionsProvider

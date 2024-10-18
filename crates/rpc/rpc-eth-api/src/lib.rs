@@ -11,6 +11,7 @@
 )]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
+#![feature(trait_alias)]
 
 pub mod bundle;
 pub mod core;
@@ -34,6 +35,3 @@ pub use bundle::{EthBundleApiClient, EthCallBundleApiClient};
 pub use core::EthApiClient;
 #[cfg(feature = "client")]
 pub use filter::EthFilterApiClient;
-
-/// fix lint errors
-use reth_bsc_forks as _;

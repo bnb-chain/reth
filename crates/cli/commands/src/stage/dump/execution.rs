@@ -16,7 +16,7 @@ use reth_provider::{
 use reth_stages::{stages::ExecutionStage, Stage, StageCheckpoint, UnwindInput};
 use tracing::info;
 
-pub(crate) async fn dump_execution_stage<N, E>(
+pub async fn dump_execution_stage<N, E>(
     db_tool: &DbTool<N>,
     from: u64,
     to: u64,

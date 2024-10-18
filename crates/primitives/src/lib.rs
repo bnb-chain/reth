@@ -108,9 +108,6 @@ mod bsc {
 #[cfg(feature = "bsc")]
 pub use bsc::*;
 
-use reth_bsc_forks as _;
-use reth_chainspec as _;
-
 // to make lint happy
 #[cfg(any(feature = "bsc", feature = "opbnb"))]
 use revm as _;

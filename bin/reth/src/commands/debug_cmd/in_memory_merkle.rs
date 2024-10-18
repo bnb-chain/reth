@@ -14,13 +14,10 @@ use reth_cli_util::get_secret_key;
 use reth_config::Config;
 use reth_errors::BlockValidationError;
 use reth_evm::execute::{BlockExecutorProvider, Executor};
-#[cfg(feature = "bsc")]
-use reth_evm_bsc::BscExecutorProvider;
 use reth_execution_types::ExecutionOutcome;
 use reth_network::NetworkHandle;
 use reth_network_api::NetworkInfo;
 use reth_node_api::{NodeTypesWithDB, NodeTypesWithEngine};
-#[cfg(not(feature = "bsc"))]
 use reth_node_ethereum::EthExecutorProvider;
 use reth_primitives::BlockHashOrNumber;
 use reth_provider::{
@@ -139,13 +136,8 @@ impl<C: ChainSpecParser<ChainSpec = ChainSpec>> Command<C> {
             provider_factory.static_file_provider(),
         ));
 
-        #[cfg(not(feature = "bsc"))]
         let executor =
             EthExecutorProvider::ethereum(provider_factory.chain_spec()).executor(db, None);
-        #[cfg(feature = "bsc")]
-        let executor =
-            BscExecutorProvider::bsc(provider_factory.chain_spec(), provider_factory.clone())
-                .executor(db, None);
 
         let merkle_block_td =
             provider.header_td_by_number(merkle_block_number)?.unwrap_or_default();

@@ -25,10 +25,14 @@ reth-engine-primitives.workspace = true
 reth-network-p2p.workspace = true
 reth-network-peers.workspace = true
 reth-beacon-consensus.workspace = true
-reth-bsc-consensus.workspace = true
-reth-evm-bsc.workspace = true
 reth-evm.workspace = true
 reth-primitives-traits.workspace = true
+
+# bsc
+reth-bsc-chainspec.workspace = true
+reth-bsc-consensus.workspace = true
+reth-bsc-evm.workspace = true
+reth-bsc-payload-builder.workspace = true
 
 # eth
 alloy-primitives.workspace = true
@@ -66,9 +70,9 @@ rand = "0.8.5"
 
 [features]
 bsc = [
-    "reth-primitives/bsc",
-    "reth-consensus-common/bsc",
     "reth-bsc-consensus/bsc",
-    "reth-evm-bsc/bsc",
+    "reth-bsc-evm/bsc",
+    "reth-bsc-payload-builder/bsc",
     "reth-beacon-consensus/bsc",
-]
+    "reth-primitives/bsc",
+    "reth-consensus-common/bsc",]

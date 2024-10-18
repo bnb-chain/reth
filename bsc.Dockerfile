@@ -28,11 +28,11 @@ ENV FEATURES $FEATURES
 RUN apt-get update && apt-get -y upgrade && apt-get install -y libclang-dev pkg-config
 
 # Builds dependencies
-RUN cargo chef cook --profile $BUILD_PROFILE --features "$FEATURES" --recipe-path recipe.json
+RUN cargo chef cook --profile $BUILD_PROFILE --features "$FEATURES" --recipe-path recipe.json --manifest-path crates/bsc/bin/Cargo.toml
 
 # Build application
 COPY . .
-RUN cargo build --profile $BUILD_PROFILE --features "$FEATURES" --locked --bin bsc-reth
+RUN cargo build --profile $BUILD_PROFILE --features "$FEATURES" --locked --bin bsc-reth --manifest-path crates/bsc/bin/Cargo.toml
 
 # ARG is not resolved in COPY so we have to hack around it by copying the
 # binary to a temporary location

@@ -1,0 +1,55 @@
+[package]
+name = "bsc-reth"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+exclude.workspace = true
+
+[dependencies]
+# reth
+reth-node-builder.workspace = true
+reth-cli-util.workspace = true
+reth-provider.workspace = true
+reth-rpc.workspace = true
+
+# bsc
+reth-bsc-chainspec.workspace = true
+reth-bsc-cli.workspace = true
+reth-bsc-consensus.workspace = true
+reth-bsc-evm.workspace = true
+reth-bsc-forks.workspace = true
+reth-bsc-node.workspace = true
+
+clap = { workspace = true, features = ["derive", "env"] }
+tracing.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["jemalloc"]
+
+jemalloc = ["reth-cli-util/jemalloc", "reth-bsc-cli/jemalloc"]
+jemalloc-prof = ["reth-cli-util/jemalloc-prof"]
+tracy-allocator = ["reth-cli-util/tracy-allocator"]
+
+asm-keccak = ["reth-bsc-cli/asm-keccak", "reth-bsc-node/asm-keccak"]
+
+bsc = [
+    "reth-bsc-cli/bsc",
+    "reth-bsc-node/bsc",
+    "reth-rpc/bsc",
+]
+
+min-error-logs = ["tracing/release_max_level_error"]
+min-warn-logs = ["tracing/release_max_level_warn"]
+min-info-logs = ["tracing/release_max_level_info"]
+min-debug-logs = ["tracing/release_max_level_debug"]
+min-trace-logs = ["tracing/release_max_level_trace"]
+
+[[bin]]
+name = "bsc-reth"
+path = "src/main.rs"

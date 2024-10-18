@@ -5,22 +5,32 @@
 // The `bsc` feature must be enabled to use this crate.
 #![cfg(feature = "bsc")]
 
-use alloy_primitives::{BlockHash, BlockNumber, B256};
-use reth_beacon_consensus::BeaconEngineMessage;
-use reth_bsc_consensus::Parlia;
-use reth_chainspec::ChainSpec;
-use reth_engine_primitives::EngineTypes;
-use reth_evm_bsc::SnapshotReader;
-use reth_network_api::events::EngineMessage;
-use reth_network_p2p::BlockClient;
-use reth_primitives::{parlia::ParliaConfig, BlockBody, BlockHashOrNumber, SealedHeader};
-use reth_provider::{BlockReaderIdExt, CanonChainTracker, ParliaProvider};
 use std::{
     clone::Clone,
     collections::{HashMap, VecDeque},
     fmt::Debug,
+    marker::PhantomData,
     sync::Arc,
 };
+
+use alloy_primitives::{BlockHash, BlockNumber, B256};
+use alloy_rpc_types::engine::{
+    ExecutionPayloadEnvelopeV2, ExecutionPayloadEnvelopeV3, ExecutionPayloadEnvelopeV4,
+    ExecutionPayloadV1, PayloadAttributes,
+};
+use reth_beacon_consensus::{BeaconEngineMessage, EngineNodeTypes};
+use reth_bsc_consensus::Parlia;
+use reth_bsc_evm::SnapshotReader;
+use reth_bsc_payload_builder::{BscBuiltPayload, BscPayloadBuilderAttributes};
+use reth_chainspec::EthChainSpec;
+use reth_engine_primitives::{
+    EngineApiMessageVersion, EngineObjectValidationError, EngineTypes, EngineValidator,
+    PayloadOrAttributes, PayloadTypes,
+};
+use reth_network_api::events::EngineMessage;
+use reth_network_p2p::BlockClient;
+use reth_primitives::{BlockBody, BlockHashOrNumber, SealedHeader};
+use reth_provider::{BlockReaderIdExt, CanonChainTracker, ParliaProvider};
 use tokio::sync::{
     mpsc::{UnboundedReceiver, UnboundedSender},
     Mutex, RwLockReadGuard, RwLockWriteGuard,
@@ -33,47 +43,113 @@ use client::*;
 mod task;
 use task::*;
 
+// === impl BscEngineTypes ===
+
+/// The types used in the default mainnet ethereum beacon consensus engine.
+#[derive(Debug, Default, Clone, serde::Deserialize, serde::Serialize)]
+#[non_exhaustive]
+pub struct BscEngineTypes<T: PayloadTypes = BscPayloadTypes> {
+    _marker: PhantomData<T>,
+}
+
+impl<T: PayloadTypes> PayloadTypes for BscEngineTypes<T> {
+    type BuiltPayload = T::BuiltPayload;
+    type PayloadAttributes = T::PayloadAttributes;
+    type PayloadBuilderAttributes = T::PayloadBuilderAttributes;
+}
+
+impl<T: PayloadTypes> EngineTypes for BscEngineTypes<T>
+where
+    T::BuiltPayload: TryInto<ExecutionPayloadV1>
+        + TryInto<ExecutionPayloadEnvelopeV2>
+        + TryInto<ExecutionPayloadEnvelopeV3>
+        + TryInto<ExecutionPayloadEnvelopeV4>,
+{
+    type ExecutionPayloadV1 = ExecutionPayloadV1;
+    type ExecutionPayloadV2 = ExecutionPayloadEnvelopeV2;
+    type ExecutionPayloadV3 = ExecutionPayloadEnvelopeV3;
+    type ExecutionPayloadV4 = ExecutionPayloadEnvelopeV4;
+}
+
+/// A default payload type for [`BscEngineTypes`]
+#[derive(Debug, Default, Clone, serde::Deserialize, serde::Serialize)]
+#[non_exhaustive]
+pub struct BscPayloadTypes;
+
+impl PayloadTypes for BscPayloadTypes {
+    type BuiltPayload = BscBuiltPayload;
+    type PayloadAttributes = PayloadAttributes;
+    type PayloadBuilderAttributes = BscPayloadBuilderAttributes;
+}
+
+/// Validator for the bsc engine API.
+#[derive(Debug, Clone)]
+pub struct BscEngineValidator {}
+
+impl<Types> EngineValidator<Types> for BscEngineValidator
+where
+    Types: EngineTypes<PayloadAttributes = PayloadAttributes>,
+{
+    fn validate_version_specific_fields(
+        &self,
+        _version: EngineApiMessageVersion,
+        _payload_or_attrs: PayloadOrAttributes<'_, PayloadAttributes>,
+    ) -> Result<(), EngineObjectValidationError> {
+        Ok(())
+    }
+
+    fn ensure_well_formed_attributes(
+        &self,
+        _version: EngineApiMessageVersion,
+        _attributes: &PayloadAttributes,
+    ) -> Result<(), EngineObjectValidationError> {
+        Ok(())
+    }
+}
+
 const STORAGE_CACHE_NUM: usize = 1000;
 
 /// Builder type for configuring the setup
 #[derive(Debug)]
-pub struct ParliaEngineBuilder<Client, Provider, Engine: EngineTypes, P> {
-    chain_spec: Arc<ChainSpec>,
-    cfg: ParliaConfig,
+pub struct ParliaEngineBuilder<Client, N, Provider, SnapShotProvider>
+where
+    N: EngineNodeTypes,
+{
+    chain_spec: Arc<N::ChainSpec>,
     storage: Storage,
-    to_engine: UnboundedSender<BeaconEngineMessage<Engine>>,
+    to_engine: UnboundedSender<BeaconEngineMessage<N::Engine>>,
     network_block_event_rx: Arc<Mutex<UnboundedReceiver<EngineMessage>>>,
     fetch_client: Client,
     provider: Provider,
     parlia: Parlia,
-    snapshot_reader: SnapshotReader<P>,
+    snapshot_reader: SnapshotReader<SnapShotProvider>,
+    _marker: PhantomData<N>,
 }
 
 // === impl ParliaEngineBuilder ===
 
-impl<Client, Provider, Engine, P> ParliaEngineBuilder<Client, Provider, Engine, P>
+impl<Client, N, Provider, SnapShotProvider>
+    ParliaEngineBuilder<Client, N, Provider, SnapShotProvider>
 where
     Client: BlockClient + 'static,
+    N: EngineNodeTypes + 'static,
     Provider: BlockReaderIdExt + CanonChainTracker + Clone + 'static,
-    Engine: EngineTypes + 'static,
-    P: ParliaProvider + 'static,
+    SnapShotProvider: ParliaProvider + 'static,
 {
     /// Creates a new builder instance to configure all parts.
     pub fn new(
-        chain_spec: Arc<ChainSpec>,
-        cfg: ParliaConfig,
+        chain_spec: Arc<N::ChainSpec>,
         provider: Provider,
-        parlia_provider: P,
-        to_engine: UnboundedSender<BeaconEngineMessage<Engine>>,
+        parlia_provider: SnapShotProvider,
+        parlia: Parlia,
+        to_engine: UnboundedSender<BeaconEngineMessage<N::Engine>>,
         network_block_event_rx: Arc<Mutex<UnboundedReceiver<EngineMessage>>>,
         fetch_client: Client,
+        _marker: PhantomData<N>,
     ) -> Self {
-        let latest_header = provider
-            .latest_header()
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| chain_spec.sealed_genesis_header());
-        let parlia = Parlia::new(chain_spec.clone(), cfg.clone());
+        let latest_header = provider.latest_header().ok().flatten().unwrap_or_else(|| {
+            SealedHeader::new(chain_spec.genesis_header().clone(), chain_spec.genesis_hash())
+        });
 
         let mut finalized_hash = None;
         let mut safe_hash = None;
@@ -88,7 +164,6 @@ where
 
         Self {
             chain_spec,
-            cfg,
             provider,
             snapshot_reader,
             parlia,
@@ -96,6 +171,7 @@ where
             to_engine,
             network_block_event_rx,
             fetch_client,
+            _marker,
         }
     }
 
@@ -104,7 +180,6 @@ where
     pub fn build(self, start_engine_task: bool) -> ParliaClient<Client> {
         let Self {
             chain_spec,
-            cfg,
             storage,
             to_engine,
             network_block_event_rx,
@@ -112,10 +187,12 @@ where
             provider,
             parlia,
             snapshot_reader,
+            _marker,
         } = self;
         let parlia_client = ParliaClient::new(storage.clone(), fetch_client);
+        let period = parlia.period();
         if start_engine_task {
-            ParliaEngineTask::start(
+            ParliaEngineTask::<N, Provider, SnapShotProvider, Client>::start(
                 chain_spec,
                 parlia,
                 provider,
@@ -124,7 +201,7 @@ where
                 network_block_event_rx,
                 storage,
                 parlia_client.clone(),
-                cfg.period,
+                period,
             );
         }
         parlia_client
@@ -281,9 +358,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloy_primitives::Sealable;
     use reth_primitives::SealedHeader;
+
+    use super::*;
 
     #[test]
     fn test_inner_storage() {
