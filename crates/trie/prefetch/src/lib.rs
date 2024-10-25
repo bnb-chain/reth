@@ -7,8 +7,11 @@
 )]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
+pub use prefetch::TriePrefetch;
 pub use reth_trie_parallel::StorageRootTargets;
 
+/// Trie prefetch stats.
+pub mod stats;
+
 /// Implementation of trie prefetch.
-mod prefetch;
-pub use prefetch::TriePrefetch;
+pub mod prefetch;

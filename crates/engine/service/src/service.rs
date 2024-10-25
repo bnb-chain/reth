@@ -80,6 +80,7 @@ where
         invalid_block_hook: Box<dyn InvalidBlockHook>,
         sync_metrics_tx: MetricEventsSender,
         skip_state_root_validation: bool,
+        enable_prefetch: bool,
     ) -> Self {
         let engine_kind =
             if chain_spec.is_optimism() { EngineApiKind::OpStack } else { EngineApiKind::Ethereum };
@@ -104,6 +105,7 @@ where
             invalid_block_hook,
             engine_kind,
             skip_state_root_validation,
+            enable_prefetch,
         );
 
         let engine_handler = EngineApiRequestHandler::new(to_tree_tx, from_tree);
@@ -216,6 +218,7 @@ mod tests {
             TreeConfig::default(),
             Box::new(NoopInvalidBlockHook::default()),
             sync_metrics_tx,
+            false,
             false,
         );
     }

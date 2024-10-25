@@ -33,7 +33,8 @@ use reth_payload_builder::PayloadBuilderHandle;
 use reth_payload_primitives::{PayloadAttributes, PayloadBuilder, PayloadBuilderAttributes};
 use reth_payload_validator::ExecutionPayloadValidator;
 use reth_primitives::{
-    Block, GotExpected, Header, SealedBlock, SealedBlockWithSenders, SealedHeader,
+    revm_primitives::EvmState, Block, GotExpected, Header, SealedBlock, SealedBlockWithSenders,
+    SealedHeader,
 };
 use reth_provider::{
     providers::ConsistentDbView, BlockReader, DatabaseProviderFactory, ExecutionOutcome,
@@ -44,6 +45,7 @@ use reth_revm::database::StateProviderDatabase;
 use reth_stages_api::ControlFlow;
 use reth_trie::{updates::TrieUpdates, HashedPostState, TrieInput};
 use reth_trie_parallel::parallel_root::{ParallelStateRoot, ParallelStateRootError};
+use reth_trie_prefetch::TriePrefetch;
 use std::{
     cmp::Ordering,
     collections::{btree_map, hash_map, BTreeMap, VecDeque},
@@ -505,6 +507,8 @@ pub struct EngineApiTreeHandler<P, E, T: EngineTypes, Spec> {
     engine_kind: EngineApiKind,
     /// Flag indicating whether the state root validation should be skipped.
     skip_state_root_validation: bool,
+    /// Flag indicating whether to enable prefetch.
+    enable_prefetch: bool,
 }
 
 impl<P: Debug, E: Debug, T: EngineTypes + Debug, Spec: Debug> std::fmt::Debug
@@ -527,6 +531,8 @@ impl<P: Debug, E: Debug, T: EngineTypes + Debug, Spec: Debug> std::fmt::Debug
             .field("metrics", &self.metrics)
             .field("invalid_block_hook", &format!("{:p}", self.invalid_block_hook))
             .field("engine_kind", &self.engine_kind)
+            .field("skip_state_root_validation", &self.skip_state_root_validation)
+            .field("enable_prefetch", &self.enable_prefetch)
             .finish()
     }
 }
@@ -555,6 +561,7 @@ where
         config: TreeConfig,
         engine_kind: EngineApiKind,
         skip_state_root_validation: bool,
+        enable_prefetch: bool,
     ) -> Self {
         let (incoming_tx, incoming) = std::sync::mpsc::channel();
 
@@ -577,6 +584,7 @@ where
             invalid_block_hook: Box::new(NoopInvalidBlockHook),
             engine_kind,
             skip_state_root_validation,
+            enable_prefetch,
         }
     }
 
@@ -603,6 +611,7 @@ where
         invalid_block_hook: Box<dyn InvalidBlockHook>,
         kind: EngineApiKind,
         skip_state_root_validation: bool,
+        enable_prefetch: bool,
     ) -> (Sender<FromEngine<EngineApiRequest<T>>>, UnboundedReceiver<EngineApiEvent>) {
         let best_block_number = provider.best_block_number().unwrap_or(0);
         let header = provider.sealed_header(best_block_number).ok().flatten().unwrap_or_default();
@@ -634,10 +643,20 @@ where
             config,
             kind,
             skip_state_root_validation,
+            enable_prefetch,
         );
         task.set_invalid_block_hook(invalid_block_hook);
         let incoming = task.incoming_tx.clone();
-        std::thread::Builder::new().name("Tree Task".to_string()).spawn(|| task.run()).unwrap();
+        std::thread::Builder::new()
+            .name("Tree Task".to_string())
+            .spawn(move || {
+                let runtime =
+                    tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+                runtime.block_on(async {
+                    task.run();
+                });
+            })
+            .unwrap();
         (incoming, outgoing)
     }
 
@@ -2175,8 +2194,16 @@ where
         }
 
         trace!(target: "engine::tree", block=?block.num_hash(), "Executing block");
-        let executor =
-            self.executor_provider.executor(StateProviderDatabase::new(&state_provider), None);
+        let (prefetch_tx, interrupt_tx) =
+            if self.enable_prefetch && !self.skip_state_root_validation {
+                self.setup_prefetch()
+            } else {
+                (None, None)
+            };
+
+        let executor = self
+            .executor_provider
+            .executor(StateProviderDatabase::new(&state_provider), prefetch_tx);
 
         let block_number = block.number;
         let block_hash = block.hash();
@@ -2245,6 +2272,11 @@ where
             } else {
                 debug!(target: "engine::tree", persistence_in_progress, "Failed to compute state root in parallel");
                 state_provider.state_root_with_updates(hashed_state.clone())?
+            };
+
+            // stop the prefetch task.
+            if let Some(interrupt_tx) = interrupt_tx {
+                let _ = interrupt_tx.send(());
             };
 
             if state_root != block.state_root {
@@ -2575,6 +2607,22 @@ where
         );
         Ok(())
     }
+
+    fn setup_prefetch(&self) -> (Option<UnboundedSender<EvmState>>, Option<oneshot::Sender<()>>) {
+        let (prefetch_tx, prefetch_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (interrupt_tx, interrupt_rx) = oneshot::channel();
+
+        let mut trie_prefetch = TriePrefetch::new();
+        let provider_factory = self.provider.clone();
+
+        tokio::spawn({
+            async move {
+                trie_prefetch.run(provider_factory, prefetch_rx, interrupt_rx).await;
+            }
+        });
+
+        (Some(prefetch_tx), Some(interrupt_tx))
+    }
 }
 
 /// This is an error that can come from advancing persistence. Either this can be a
@@ -2727,6 +2775,7 @@ mod tests {
                 payload_builder,
                 TreeConfig::default(),
                 EngineApiKind::Ethereum,
+                false,
                 false,
             );
 

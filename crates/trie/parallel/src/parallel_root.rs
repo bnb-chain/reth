@@ -148,14 +148,17 @@ where
             hashed_cursor_factory.hashed_account_cursor().map_err(ProviderError::Database)?,
         );
 
+        let account_tree_start = std::time::Instant::now();
         let mut hash_builder = HashBuilder::default().with_updates(retain_updates);
         let mut account_rlp = Vec::with_capacity(128);
         while let Some(node) = account_node_iter.try_next().map_err(ProviderError::Database)? {
             match node {
                 TrieElement::Branch(node) => {
+                    tracker.inc_branch();
                     hash_builder.add_branch(node.key, node.value, node.children_are_in_trie);
                 }
                 TrieElement::Leaf(hashed_address, account) => {
+                    tracker.inc_leaf();
                     let (storage_root, _, updates) = match storage_roots.remove(&hashed_address) {
                         Some(rx) => rx.recv().map_err(|_| {
                             ParallelStateRootError::StorageRoot(StorageRootError::Database(
@@ -199,15 +202,18 @@ where
             prefix_sets.destroyed_accounts,
         );
 
+        let account_tree_duration = account_tree_start.elapsed();
         let stats = tracker.finish();
 
         #[cfg(feature = "metrics")]
         self.metrics.record_state_trie(stats);
 
-        trace!(
+        debug!(
             target: "trie::parallel_state_root",
             %root,
             duration = ?stats.duration(),
+            account_tree_duration = ?account_tree_duration,
+            storage_trees_duration = ?(stats.duration() - account_tree_duration),
             branches_added = stats.branches_added(),
             leaves_added = stats.leaves_added(),
             missed_leaves = stats.missed_leaves(),
