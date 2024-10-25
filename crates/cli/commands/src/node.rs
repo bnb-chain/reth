@@ -189,6 +189,7 @@ impl<
             pruning,
             enable_prefetch,
             skip_state_root_validation: performance_optimization.skip_state_root_validation,
+            enable_execution_cache: performance_optimization.enable_execution_cache,
         };
 
         // Register the prometheus recorder before creating the database,

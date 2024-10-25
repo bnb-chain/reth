@@ -80,14 +80,19 @@ where
         invalid_block_hook: Box<dyn InvalidBlockHook>,
         sync_metrics_tx: MetricEventsSender,
         skip_state_root_validation: bool,
+        enable_execution_cache: bool,
     ) -> Self {
         let engine_kind =
             if chain_spec.is_optimism() { EngineApiKind::OpStack } else { EngineApiKind::Ethereum };
 
         let downloader = BasicBlockDownloader::new(client, consensus.clone());
 
-        let persistence_handle =
-            PersistenceHandle::spawn_service(provider, pruner, sync_metrics_tx);
+        let persistence_handle = PersistenceHandle::spawn_service(
+            provider,
+            pruner,
+            sync_metrics_tx,
+            enable_execution_cache,
+        );
         let payload_validator = ExecutionPayloadValidator::new(chain_spec);
 
         let canonical_in_memory_state = blockchain_db.canonical_in_memory_state();
@@ -104,6 +109,7 @@ where
             invalid_block_hook,
             engine_kind,
             skip_state_root_validation,
+            enable_execution_cache,
         );
 
         let engine_handler = EngineApiRequestHandler::new(to_tree_tx, from_tree);
@@ -216,6 +222,7 @@ mod tests {
             TreeConfig::default(),
             Box::new(NoopInvalidBlockHook::default()),
             sync_metrics_tx,
+            false,
             false,
         );
     }

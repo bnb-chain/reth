@@ -57,7 +57,7 @@ where
         mode: MiningMode,
     ) -> Self {
         let persistence_handle =
-            PersistenceHandle::spawn_service(provider, pruner, sync_metrics_tx);
+            PersistenceHandle::spawn_service(provider, pruner, sync_metrics_tx, false);
 
         Self {
             payload_builder,

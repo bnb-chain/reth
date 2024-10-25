@@ -22,7 +22,8 @@ use reth_blockchain_tree::{
     BlockBuffer, BlockStatus2, InsertPayloadOk2,
 };
 use reth_chain_state::{
-    CanonicalInMemoryState, ExecutedBlock, MemoryOverlayStateProvider, NewCanonicalChain,
+    CachedStateProvider, CanonicalInMemoryState, ExecutedBlock, MemoryOverlayStateProvider,
+    NewCanonicalChain,
 };
 use reth_chainspec::EthereumHardforks;
 use reth_consensus::{Consensus, PostExecutionInput};
@@ -505,6 +506,8 @@ pub struct EngineApiTreeHandler<P, E, T: EngineTypes, Spec> {
     engine_kind: EngineApiKind,
     /// Flag indicating whether the state root validation should be skipped.
     skip_state_root_validation: bool,
+    /// Flag indicating whether the cache for execution is enabled.
+    enable_execution_cache: bool,
 }
 
 impl<P: Debug, E: Debug, T: EngineTypes + Debug, Spec: Debug> std::fmt::Debug
@@ -527,6 +530,8 @@ impl<P: Debug, E: Debug, T: EngineTypes + Debug, Spec: Debug> std::fmt::Debug
             .field("metrics", &self.metrics)
             .field("invalid_block_hook", &format!("{:p}", self.invalid_block_hook))
             .field("engine_kind", &self.engine_kind)
+            .field("skip_state_root_validation", &self.skip_state_root_validation)
+            .field("enable_execution_cache", &self.enable_execution_cache)
             .finish()
     }
 }
@@ -555,6 +560,7 @@ where
         config: TreeConfig,
         engine_kind: EngineApiKind,
         skip_state_root_validation: bool,
+        enable_execution_cache: bool,
     ) -> Self {
         let (incoming_tx, incoming) = std::sync::mpsc::channel();
 
@@ -577,6 +583,7 @@ where
             invalid_block_hook: Box::new(NoopInvalidBlockHook),
             engine_kind,
             skip_state_root_validation,
+            enable_execution_cache,
         }
     }
 
@@ -603,6 +610,7 @@ where
         invalid_block_hook: Box<dyn InvalidBlockHook>,
         kind: EngineApiKind,
         skip_state_root_validation: bool,
+        enable_execution_cache: bool,
     ) -> (Sender<FromEngine<EngineApiRequest<T>>>, UnboundedReceiver<EngineApiEvent>) {
         let best_block_number = provider.best_block_number().unwrap_or(0);
         let header = provider.sealed_header(best_block_number).ok().flatten().unwrap_or_default();
@@ -634,6 +642,7 @@ where
             config,
             kind,
             skip_state_root_validation,
+            enable_execution_cache,
         );
         task.set_invalid_block_hook(invalid_block_hook);
         let incoming = task.incoming_tx.clone();
@@ -1328,6 +1337,11 @@ where
         // the canonical chain
         self.canonical_in_memory_state.clear_state();
 
+        // clear execution state cache
+        if self.enable_execution_cache {
+            reth_chain_state::cache::clear_cache();
+        }
+
         if let Ok(Some(new_head)) = self.provider.sealed_header(backfill_height) {
             // update the tracked chain height, after backfill sync both the canonical height and
             // persisted height are the same
@@ -1592,6 +1606,12 @@ where
             trace!(target: "engine::tree", %hash, "found canonical state for block in memory");
             // the block leads back to the canonical chain
             let historical = self.provider.state_by_block_hash(historical)?;
+            if self.enable_execution_cache {
+                return Ok(Some(Box::new(MemoryOverlayStateProvider::new(
+                    CachedStateProvider::new(historical).boxed(),
+                    blocks,
+                ))))
+            }
             return Ok(Some(Box::new(MemoryOverlayStateProvider::new(historical, blocks))))
         }
 
@@ -2727,6 +2747,7 @@ mod tests {
                 payload_builder,
                 TreeConfig::default(),
                 EngineApiKind::Ethereum,
+                false,
                 false,
             );
 

@@ -133,6 +133,9 @@ pub struct NodeConfig<ChainSpec> {
 
     /// Disable hashing stages to skip merkle tree building
     pub skip_state_root_validation: bool,
+
+    /// Enable execution cache during block insertion
+    pub enable_execution_cache: bool,
 }
 
 impl NodeConfig<ChainSpec> {
@@ -163,6 +166,7 @@ impl<ChainSpec> NodeConfig<ChainSpec> {
             datadir: DatadirArgs::default(),
             enable_prefetch: false,
             skip_state_root_validation: false,
+            enable_execution_cache: false,
         }
     }
 
@@ -456,6 +460,7 @@ impl<ChainSpec> Clone for NodeConfig<ChainSpec> {
             datadir: self.datadir.clone(),
             enable_prefetch: false,
             skip_state_root_validation: false,
+            enable_execution_cache: false,
         }
     }
 }
