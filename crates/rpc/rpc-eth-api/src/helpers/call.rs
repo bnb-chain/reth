@@ -16,12 +16,8 @@ use alloy_rpc_types_eth::transaction::TransactionRequest;
 use cfg_if::cfg_if;
 use futures::Future;
 #[cfg(feature = "bsc")]
-use reth_bsc_forks::BscHardforks;
-#[cfg(feature = "bsc")]
-use reth_bsc_primitives::system_contracts::{get_upgrade_system_contracts, is_system_transaction};
+use reth_bsc_primitives::system_contracts::is_system_transaction;
 use reth_chainspec::{EthChainSpec, MIN_TRANSACTION_GAS};
-#[cfg(feature = "bsc")]
-use reth_errors::RethError;
 use reth_evm::{ConfigureEvm, ConfigureEvmEnv};
 use reth_primitives::{
     revm_primitives::{
@@ -43,10 +39,6 @@ use reth_rpc_eth_types::{
     EthApiError, RevertError, RpcInvalidTransactionError, StateCacheDb,
 };
 use reth_rpc_server_types::constants::gas_oracle::{CALL_STIPEND_GAS, ESTIMATE_GAS_ERROR_RATIO};
-#[cfg(feature = "bsc")]
-use revm::bsc::SYSTEM_ADDRESS;
-#[cfg(feature = "bsc")]
-use revm::db::AccountState::{NotExisting, Touched};
 use revm::{Database, DatabaseCommit, GetInspector};
 use revm_inspectors::{access_list::AccessListInspector, transfer::TransferInspector};
 use tracing::trace;
@@ -686,84 +678,7 @@ pub trait Call: LoadState + SpawnBlocking {
 
         let mut evm = self.evm_config().evm_with_env(db, env);
         let mut index = 0;
-        #[cfg(feature = "bsc")]
-        let mut before_system_tx = true;
-
-        // try to upgrade system contracts before all txs if feynman is not active
-        #[cfg(feature = "bsc")]
-        if !self.provider().chain_spec().is_feynman_active_at_timestamp(block_env.timestamp.to()) {
-            let contracts = get_upgrade_system_contracts(
-                self.provider().chain_spec().as_ref(),
-                block_env.number.to(),
-                block_env.timestamp.to(),
-                parent_timestamp,
-            )
-            .expect("get upgrade system contracts failed");
-
-            for (k, v) in contracts {
-                let account = evm.db_mut().load_account(k).map_err(|error| {
-                    EthApiError::Internal(RethError::Other("load account failed".into()))
-                })?;
-                if account.account_state == NotExisting {
-                    account.account_state = Touched;
-                }
-                account.info.code_hash = v.clone().unwrap().hash_slow();
-                account.info.code = v;
-            }
-        }
-
         for tx in transactions {
-            // check if the transaction is a system transaction
-            // this should be done before return
-            #[cfg(feature = "bsc")]
-            if before_system_tx && is_system_transaction(&tx, tx.signer(), block_env.coinbase) {
-                let sys_acc = evm.db_mut().load_account(SYSTEM_ADDRESS).map_err(|error| {
-                    EthApiError::Internal(RethError::Other("load account failed".into()))
-                })?;
-                let balance = sys_acc.info.balance;
-                if balance > U256::ZERO {
-                    sys_acc.info.balance = U256::ZERO;
-
-                    let val_acc =
-                        evm.db_mut().load_account(block_env.coinbase).map_err(|error| {
-                            EthApiError::Internal(RethError::Other("load account failed".into()))
-                        })?;
-                    if val_acc.account_state == NotExisting {
-                        val_acc.account_state = Touched;
-                    }
-                    val_acc.info.balance += balance;
-                }
-
-                // try to upgrade system contracts between normal txs and system txs
-                // if feynman is active
-                if !self
-                    .provider()
-                    .chain_spec()
-                    .is_feynman_active_at_timestamp(block_env.timestamp.to())
-                {
-                    let contracts = get_upgrade_system_contracts(
-                        self.provider().chain_spec().as_ref(),
-                        block_env.number.to(),
-                        block_env.timestamp.to(),
-                        parent_timestamp,
-                    )
-                    .expect("get upgrade system contracts failed");
-
-                    for (k, v) in contracts {
-                        let account = evm.db_mut().load_account(k).map_err(|error| {
-                            EthApiError::Internal(RethError::Other("load account failed".into()))
-                        })?;
-                        if account.account_state == NotExisting {
-                            account.account_state = Touched;
-                        }
-                        account.info.code_hash = v.clone().unwrap().hash_slow();
-                        account.info.code = v;
-                    }
-                }
-
-                before_system_tx = false;
-            }
-
             if tx.hash() == target_tx_hash {
                 // reached the target transaction
                 break
@@ -771,12 +686,6 @@ pub trait Call: LoadState + SpawnBlocking {
 
             let sender = tx.signer();
             self.evm_config().fill_tx_env(evm.tx_mut(), &tx.into_signed(), sender);
-
-            #[cfg(feature = "bsc")]
-            if !before_system_tx {
-                evm.tx_mut().bsc.is_system_transaction = Some(true);
-            };
-
             evm.transact_commit().map_err(Self::Error::from_evm_err)?;
             index += 1;
         }

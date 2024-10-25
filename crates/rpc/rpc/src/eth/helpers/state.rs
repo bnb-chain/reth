@@ -1,6 +1,7 @@
 //! Contains RPC handler implementations specific to state.
 
-use reth_provider::{ChainSpecHardforks, ChainSpecProvider, StateProviderFactory};
+use reth_chainspec::EthereumHardforks;
+use reth_provider::{ChainSpecProvider, StateProviderFactory};
 use reth_transaction_pool::TransactionPool;
 
 use reth_rpc_eth_api::helpers::{EthState, LoadState, SpawnBlocking};
@@ -20,13 +21,13 @@ where
 impl<Provider, Pool, Network, EvmConfig> LoadState for EthApi<Provider, Pool, Network, EvmConfig>
 where
     Self: Send + Sync,
-    Provider: StateProviderFactory + ChainSpecProvider<ChainSpec: ChainSpecHardforks>,
+    Provider: StateProviderFactory + ChainSpecProvider<ChainSpec: EthereumHardforks>,
     Pool: TransactionPool,
 {
     #[inline]
     fn provider(
         &self,
-    ) -> impl StateProviderFactory + ChainSpecProvider<ChainSpec: ChainSpecHardforks> {
+    ) -> impl StateProviderFactory + ChainSpecProvider<ChainSpec: EthereumHardforks> {
         self.inner.provider()
     }
 
@@ -80,6 +81,7 @@ mod tests {
             FeeHistoryCache::new(cache, FeeHistoryCacheConfig::default()),
             evm_config,
             DEFAULT_PROOF_PERMITS,
+            None,
         )
     }
 
@@ -107,6 +109,7 @@ mod tests {
             FeeHistoryCache::new(cache, FeeHistoryCacheConfig::default()),
             evm_config,
             DEFAULT_PROOF_PERMITS,
+            None,
         )
     }
 

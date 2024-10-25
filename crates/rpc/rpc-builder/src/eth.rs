@@ -1,5 +1,4 @@
-use std::marker::PhantomData;
-
+use reth_bsc_consensus::BscTraceHelper;
 use reth_evm::ConfigureEvm;
 use reth_primitives::Header;
 use reth_provider::{BlockReader, CanonStateSubscriptions, EvmEnvProvider, StateProviderFactory};
@@ -9,6 +8,7 @@ use reth_rpc_eth_types::{
     cache::cache_new_blocks_task, EthApiBuilderCtx, EthConfig, EthStateCache,
 };
 use reth_tasks::TaskSpawner;
+use std::marker::PhantomData;
 
 /// Alias for `eth` namespace API builder.
 pub type DynEthApiBuilder<Provider, Pool, EvmConfig, Network, Tasks, Events, EthApi> = Box<
@@ -57,6 +57,7 @@ where
             Events,
             EthApi,
         >,
+        bsc_trace_helper: Option<BscTraceHelper>,
     ) -> Self
     where
         EvmConfig: ConfigureEvm<Header = Header>,
@@ -87,6 +88,7 @@ where
             executor,
             events,
             cache,
+            bsc_trace_helper,
             _rpc_ty_builders: PhantomData,
         };
 

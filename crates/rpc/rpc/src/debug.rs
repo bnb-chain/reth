@@ -14,21 +14,17 @@ use alloy_rpc_types_trace::geth::{
 use async_trait::async_trait;
 use cfg_if::cfg_if;
 use jsonrpsee::core::RpcResult;
-#[cfg(feature = "bsc")]
-use reth_bsc_forks::BscHardforks;
-#[cfg(feature = "bsc")]
-use reth_bsc_primitives::system_contracts::{get_upgrade_system_contracts, is_system_transaction};
+use reth_bsc_consensus::BscTraceHelper;
+use reth_bsc_primitives::system_contracts::is_system_transaction;
 use reth_chainspec::EthereumHardforks;
-#[cfg(feature = "bsc")]
-use reth_errors::RethError;
 use reth_evm::{
     execute::{BlockExecutorProvider, Executor},
     ConfigureEvmEnv,
 };
 use reth_primitives::{Block, BlockId, BlockNumberOrTag, TransactionSignedEcRecovered};
 use reth_provider::{
-    BlockReaderIdExt, ChainSpecHardforks, ChainSpecProvider, EvmEnvProvider, HeaderProvider,
-    StateProofProvider, StateProviderFactory, TransactionVariant,
+    BlockReaderIdExt, ChainSpecProvider, EvmEnvProvider, HeaderProvider, StateProofProvider,
+    StateProviderFactory, TransactionVariant,
 };
 use reth_revm::database::StateProviderDatabase;
 use reth_rpc_api::DebugApiServer;
@@ -40,10 +36,6 @@ use reth_rpc_eth_types::{EthApiError, StateCacheDb};
 use reth_rpc_server_types::{result::internal_rpc_err, ToRpcResult};
 use reth_tasks::pool::BlockingTaskGuard;
 use reth_trie::{HashedPostState, HashedStorage};
-#[cfg(feature = "bsc")]
-use revm::bsc::SYSTEM_ADDRESS;
-#[cfg(feature = "bsc")]
-use revm::db::AccountState::{NotExisting, Touched};
 use revm::{
     db::CacheDB,
     primitives::{db::DatabaseCommit, BlockEnv, CfgEnvWithHandlerCfg, Env, EnvWithHandlerCfg},
@@ -60,6 +52,7 @@ use tokio::sync::{AcquireError, OwnedSemaphorePermit};
 /// This type provides the functionality for handling `debug` related requests.
 pub struct DebugApi<Provider, Eth, BlockExecutor> {
     inner: Arc<DebugApiInner<Provider, Eth, BlockExecutor>>,
+    bsc_trace_helper: Option<BscTraceHelper>,
 }
 
 // === impl DebugApi ===
@@ -71,10 +64,11 @@ impl<Provider, Eth, BlockExecutor> DebugApi<Provider, Eth, BlockExecutor> {
         eth: Eth,
         blocking_task_guard: BlockingTaskGuard,
         block_executor: BlockExecutor,
+        bsc_trace_helper: Option<BscTraceHelper>,
     ) -> Self {
         let inner =
             Arc::new(DebugApiInner { provider, eth_api: eth, blocking_task_guard, block_executor });
-        Self { inner }
+        Self { inner, bsc_trace_helper }
     }
 
     /// Access the underlying `Eth` API.
@@ -89,7 +83,7 @@ impl<Provider, Eth, BlockExecutor> DebugApi<Provider, Eth, BlockExecutor>
 where
     Provider: BlockReaderIdExt
         + HeaderProvider
-        + ChainSpecProvider<ChainSpec: ChainSpecHardforks>
+        + ChainSpecProvider<ChainSpec: EthereumHardforks>
         + StateProviderFactory
         + EvmEnvProvider
         + 'static,
@@ -117,13 +111,6 @@ where
             return Ok(Vec::new())
         }
 
-        #[cfg(feature = "bsc")]
-        let is_feynman_active = self
-            .inner
-            .provider
-            .chain_spec()
-            .is_feynman_active_at_timestamp(block_env.timestamp.to());
-
         // replay all transactions of the block
         let this = self.clone();
         self.eth_api()
@@ -132,77 +119,41 @@ where
                 let mut results = Vec::with_capacity(transactions.len());
                 let mut db = CacheDB::new(StateProviderDatabase::new(state));
                 let mut transactions = transactions.into_iter().enumerate().peekable();
-                #[cfg(feature = "bsc")]
-                let mut before_system_tx = true;
 
-                // try to upgrade system contracts before all txs if feynman is not active
-                #[cfg(feature = "bsc")]
-                if !is_feynman_active {
-                    let contracts = get_upgrade_system_contracts(
-                        this.inner.provider.chain_spec().as_ref(),
-                        block_env.number.to(),
-                        block_env.timestamp.to(),
-                        parent_timestamp,
-                    )
-                    .expect("get upgrade system contracts failed");
+                let is_bsc = this.bsc_trace_helper.is_some();
+                let mut before_system_tx = is_bsc;
 
-                    for (k, v) in contracts {
-                        let account = db.load_account(k).map_err(|error| {
-                            EthApiError::Internal(RethError::Other("load account failed".into()))
-                        })?;
-                        if account.account_state == NotExisting {
-                            account.account_state = Touched;
-                        }
-                        account.info.code_hash = v.clone().unwrap().hash_slow();
-                        account.info.code = v;
+                // try to upgrade system contracts for bsc before all txs if feynman is not active
+                if is_bsc {
+                    if let Some(trace_helper) = this.bsc_trace_helper.as_ref() {
+                        trace_helper.upgrade_system_contracts(
+                            &mut db,
+                            &block_env,
+                            parent_timestamp,
+                            true,
+                        );
                     }
                 }
 
                 while let Some((index, tx)) = transactions.next() {
                     let tx_hash = tx.hash;
 
-                    #[cfg(feature = "bsc")]
-                    if before_system_tx &&
+                    if is_bsc &&
+                        before_system_tx &&
                         is_system_transaction(&tx, tx.signer(), block_env.coinbase)
                     {
-                        let sys_acc =
-                            db.load_account(SYSTEM_ADDRESS).expect("load system account failed");
-                        let balance = sys_acc.info.balance;
-                        if balance > U256::ZERO {
-                            sys_acc.info.balance = U256::ZERO;
+                        if let Some(trace_helper) = this.bsc_trace_helper.as_ref() {
+                            // move block reward from the system address to the coinbase
+                            trace_helper.add_block_reward(&mut db, &block_env);
 
-                            let val_acc = db
-                                .load_account(block_env.coinbase)
-                                .expect("load validator account failed");
-                            if val_acc.account_state == NotExisting {
-                                val_acc.account_state = Touched;
-                            }
-                            val_acc.info.balance += balance;
-                        }
-
-                        // try to upgrade system contracts between normal txs and system txs
-                        // if feynman is active
-                        if is_feynman_active {
-                            let contracts = get_upgrade_system_contracts(
-                                this.inner.provider.chain_spec().as_ref(),
-                                block_env.number.to(),
-                                block_env.timestamp.to(),
+                            // try to upgrade system contracts between normal txs and system txs
+                            // if feynman is active
+                            trace_helper.upgrade_system_contracts(
+                                &mut db,
+                                &block_env,
                                 parent_timestamp,
-                            )
-                            .expect("get upgrade system contracts failed");
-
-                            for (k, v) in contracts {
-                                let account = db.load_account(k).map_err(|error| {
-                                    EthApiError::Internal(RethError::Other(
-                                        "load account failed".into(),
-                                    ))
-                                })?;
-                                if account.account_state == NotExisting {
-                                    account.account_state = Touched;
-                                }
-                                account.info.code_hash = v.clone().unwrap().hash_slow();
-                                account.info.code = v;
-                            }
+                                false,
+                            );
                         }
 
                         before_system_tx = false;
@@ -951,7 +902,7 @@ impl<Provider, Eth, BlockExecutor> DebugApiServer for DebugApi<Provider, Eth, Bl
 where
     Provider: BlockReaderIdExt
         + HeaderProvider
-        + ChainSpecProvider<ChainSpec: ChainSpecHardforks>
+        + ChainSpecProvider<ChainSpec: EthereumHardforks>
         + StateProviderFactory
         + EvmEnvProvider
         + 'static,
@@ -1342,7 +1293,7 @@ impl<Provider, Eth, BlockExecutor> std::fmt::Debug for DebugApi<Provider, Eth, B
 
 impl<Provider, Eth, BlockExecutor> Clone for DebugApi<Provider, Eth, BlockExecutor> {
     fn clone(&self) -> Self {
-        Self { inner: Arc::clone(&self.inner) }
+        Self { inner: Arc::clone(&self.inner), bsc_trace_helper: self.bsc_trace_helper.clone() }
     }
 }
 

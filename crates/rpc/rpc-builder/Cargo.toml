@@ -30,6 +30,9 @@ reth-evm.workspace = true
 reth-engine-primitives.workspace = true
 reth-primitives.workspace = true
 
+# bsc
+reth-bsc-consensus.workspace = true
+
 # ethereum
 alloy-network.workspace = true
 alloy-rpc-types.workspace = true

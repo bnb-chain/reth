@@ -167,6 +167,7 @@ use jsonrpsee::{
     },
     Methods, RpcModule,
 };
+use reth_bsc_consensus::BscTraceHelper;
 use reth_chainspec::EthereumHardforks;
 use reth_engine_primitives::EngineTypes;
 use reth_evm::{execute::BlockExecutorProvider, ConfigureEvm};
@@ -286,6 +287,8 @@ pub struct RpcModuleBuilder<Provider, Pool, Network, Tasks, Events, EvmConfig, B
     evm_config: EvmConfig,
     /// The provider for getting a block executor that executes blocks
     block_executor: BlockExecutor,
+    /// Bsc trace helper
+    bsc_trace_helper: Option<BscTraceHelper>,
 }
 
 // === impl RpcBuilder ===
@@ -303,7 +306,16 @@ impl<Provider, Pool, Network, Tasks, Events, EvmConfig, BlockExecutor>
         evm_config: EvmConfig,
         block_executor: BlockExecutor,
     ) -> Self {
-        Self { provider, pool, network, executor, events, evm_config, block_executor }
+        Self {
+            provider,
+            pool,
+            network,
+            executor,
+            events,
+            evm_config,
+            block_executor,
+            bsc_trace_helper: None,
+        }
     }
 
     /// Configure the provider instance.
@@ -314,8 +326,26 @@ impl<Provider, Pool, Network, Tasks, Events, EvmConfig, BlockExecutor>
     where
         P: BlockReader + StateProviderFactory + EvmEnvProvider + 'static,
     {
-        let Self { pool, network, executor, events, evm_config, block_executor, .. } = self;
-        RpcModuleBuilder { provider, network, pool, executor, events, evm_config, block_executor }
+        let Self {
+            pool,
+            network,
+            executor,
+            events,
+            evm_config,
+            block_executor,
+            bsc_trace_helper,
+            ..
+        } = self;
+        RpcModuleBuilder {
+            provider,
+            network,
+            pool,
+            executor,
+            events,
+            evm_config,
+            block_executor,
+            bsc_trace_helper,
+        }
     }
 
     /// Configure the transaction pool instance.
@@ -326,8 +356,26 @@ impl<Provider, Pool, Network, Tasks, Events, EvmConfig, BlockExecutor>
     where
         P: TransactionPool + 'static,
     {
-        let Self { provider, network, executor, events, evm_config, block_executor, .. } = self;
-        RpcModuleBuilder { provider, network, pool, executor, events, evm_config, block_executor }
+        let Self {
+            provider,
+            network,
+            executor,
+            events,
+            evm_config,
+            block_executor,
+            bsc_trace_helper,
+            ..
+        } = self;
+        RpcModuleBuilder {
+            provider,
+            network,
+            pool,
+            executor,
+            events,
+            evm_config,
+            block_executor,
+            bsc_trace_helper,
+        }
     }
 
     /// Configure a [`NoopTransactionPool`] instance.
@@ -346,7 +394,16 @@ impl<Provider, Pool, Network, Tasks, Events, EvmConfig, BlockExecutor>
         EvmConfig,
         BlockExecutor,
     > {
-        let Self { provider, executor, events, network, evm_config, block_executor, .. } = self;
+        let Self {
+            provider,
+            executor,
+            events,
+            network,
+            evm_config,
+            block_executor,
+            bsc_trace_helper,
+            ..
+        } = self;
         RpcModuleBuilder {
             provider,
             executor,
@@ -355,6 +412,7 @@ impl<Provider, Pool, Network, Tasks, Events, EvmConfig, BlockExecutor>
             evm_config,
             block_executor,
             pool: NoopTransactionPool::default(),
+            bsc_trace_helper,
         }
     }
 
@@ -366,8 +424,26 @@ impl<Provider, Pool, Network, Tasks, Events, EvmConfig, BlockExecutor>
     where
         N: NetworkInfo + Peers + 'static,
     {
-        let Self { provider, pool, executor, events, evm_config, block_executor, .. } = self;
-        RpcModuleBuilder { provider, network, pool, executor, events, evm_config, block_executor }
+        let Self {
+            provider,
+            pool,
+            executor,
+            events,
+            evm_config,
+            block_executor,
+            bsc_trace_helper,
+            ..
+        } = self;
+        RpcModuleBuilder {
+            provider,
+            network,
+            pool,
+            executor,
+            events,
+            evm_config,
+            block_executor,
+            bsc_trace_helper,
+        }
     }
 
     /// Configure a [`NoopNetwork`] instance.
@@ -379,7 +455,16 @@ impl<Provider, Pool, Network, Tasks, Events, EvmConfig, BlockExecutor>
         self,
     ) -> RpcModuleBuilder<Provider, Pool, NoopNetwork, Tasks, Events, EvmConfig, BlockExecutor>
     {
-        let Self { provider, pool, executor, events, evm_config, block_executor, .. } = self;
+        let Self {
+            provider,
+            pool,
+            executor,
+            events,
+            evm_config,
+            block_executor,
+            bsc_trace_helper,
+            ..
+        } = self;
         RpcModuleBuilder {
             provider,
             pool,
@@ -388,6 +473,7 @@ impl<Provider, Pool, Network, Tasks, Events, EvmConfig, BlockExecutor>
             network: NoopNetwork::default(),
             evm_config,
             block_executor,
+            bsc_trace_helper,
         }
     }
 
@@ -399,8 +485,26 @@ impl<Provider, Pool, Network, Tasks, Events, EvmConfig, BlockExecutor>
     where
         T: TaskSpawner + 'static,
     {
-        let Self { pool, network, provider, events, evm_config, block_executor, .. } = self;
-        RpcModuleBuilder { provider, network, pool, executor, events, evm_config, block_executor }
+        let Self {
+            pool,
+            network,
+            provider,
+            events,
+            evm_config,
+            block_executor,
+            bsc_trace_helper,
+            ..
+        } = self;
+        RpcModuleBuilder {
+            provider,
+            network,
+            pool,
+            executor,
+            events,
+            evm_config,
+            block_executor,
+            bsc_trace_helper,
+        }
     }
 
     /// Configure [`TokioTaskExecutor`] as the task executor to use for additional tasks.
@@ -418,7 +522,16 @@ impl<Provider, Pool, Network, Tasks, Events, EvmConfig, BlockExecutor>
         EvmConfig,
         BlockExecutor,
     > {
-        let Self { pool, network, provider, events, evm_config, block_executor, .. } = self;
+        let Self {
+            pool,
+            network,
+            provider,
+            events,
+            evm_config,
+            block_executor,
+            bsc_trace_helper,
+            ..
+        } = self;
         RpcModuleBuilder {
             provider,
             network,
@@ -427,6 +540,7 @@ impl<Provider, Pool, Network, Tasks, Events, EvmConfig, BlockExecutor>
             executor: TokioTaskExecutor::default(),
             evm_config,
             block_executor,
+            bsc_trace_helper,
         }
     }
 
@@ -438,8 +552,26 @@ impl<Provider, Pool, Network, Tasks, Events, EvmConfig, BlockExecutor>
     where
         E: CanonStateSubscriptions + 'static,
     {
-        let Self { provider, pool, executor, network, evm_config, block_executor, .. } = self;
-        RpcModuleBuilder { provider, network, pool, executor, events, evm_config, block_executor }
+        let Self {
+            provider,
+            pool,
+            executor,
+            network,
+            evm_config,
+            block_executor,
+            bsc_trace_helper,
+            ..
+        } = self;
+        RpcModuleBuilder {
+            provider,
+            network,
+            pool,
+            executor,
+            events,
+            evm_config,
+            block_executor,
+            bsc_trace_helper,
+        }
     }
 
     /// Configure the evm configuration type
@@ -450,8 +582,26 @@ impl<Provider, Pool, Network, Tasks, Events, EvmConfig, BlockExecutor>
     where
         E: ConfigureEvm + 'static,
     {
-        let Self { provider, pool, executor, network, events, block_executor, .. } = self;
-        RpcModuleBuilder { provider, network, pool, executor, events, evm_config, block_executor }
+        let Self {
+            provider,
+            pool,
+            executor,
+            network,
+            events,
+            block_executor,
+            bsc_trace_helper,
+            ..
+        } = self;
+        RpcModuleBuilder {
+            provider,
+            network,
+            pool,
+            executor,
+            events,
+            evm_config,
+            block_executor,
+            bsc_trace_helper,
+        }
     }
 
     /// Configure the block executor provider
@@ -462,8 +612,35 @@ impl<Provider, Pool, Network, Tasks, Events, EvmConfig, BlockExecutor>
     where
         BE: BlockExecutorProvider,
     {
-        let Self { provider, network, pool, executor, events, evm_config, .. } = self;
-        RpcModuleBuilder { provider, network, pool, executor, events, evm_config, block_executor }
+        let Self {
+            provider, network, pool, executor, events, evm_config, bsc_trace_helper, ..
+        } = self;
+        RpcModuleBuilder {
+            provider,
+            network,
+            pool,
+            executor,
+            events,
+            evm_config,
+            block_executor,
+            bsc_trace_helper,
+        }
+    }
+
+    /// Configure the bsc trace helper
+    pub fn with_bsc_trace_helper(self, bsc_trace_helper: Option<BscTraceHelper>) -> Self {
+        let Self { provider, network, pool, executor, events, evm_config, block_executor, .. } =
+            self;
+        Self {
+            provider,
+            network,
+            pool,
+            executor,
+            events,
+            evm_config,
+            block_executor,
+            bsc_trace_helper,
+        }
     }
 }
 
@@ -500,7 +677,16 @@ where
         EngineApi: EngineApiServer<EngineT>,
         EthApi: FullEthApiServer,
     {
-        let Self { provider, pool, network, executor, events, evm_config, block_executor } = self;
+        let Self {
+            provider,
+            pool,
+            network,
+            executor,
+            events,
+            evm_config,
+            block_executor,
+            bsc_trace_helper,
+        } = self;
 
         let config = module_config.config.clone().unwrap_or_default();
 
@@ -514,6 +700,7 @@ where
             evm_config,
             eth,
             block_executor,
+            bsc_trace_helper,
         );
 
         let modules = registry.create_transport_rpc_modules(module_config);
@@ -563,7 +750,16 @@ where
     where
         EthApi: EthApiTypes + 'static,
     {
-        let Self { provider, pool, network, executor, events, evm_config, block_executor } = self;
+        let Self {
+            provider,
+            pool,
+            network,
+            executor,
+            events,
+            evm_config,
+            block_executor,
+            bsc_trace_helper,
+        } = self;
         RpcRegistryInner::new(
             provider,
             pool,
@@ -574,6 +770,7 @@ where
             evm_config,
             eth,
             block_executor,
+            bsc_trace_helper,
         )
     }
 
@@ -589,7 +786,16 @@ where
     {
         let mut modules = TransportRpcModules::default();
 
-        let Self { provider, pool, network, executor, events, evm_config, block_executor } = self;
+        let Self {
+            provider,
+            pool,
+            network,
+            executor,
+            events,
+            evm_config,
+            block_executor,
+            bsc_trace_helper,
+        } = self;
 
         if !module_config.is_empty() {
             let TransportRpcModuleConfig { http, ws, ipc, config } = module_config.clone();
@@ -604,6 +810,7 @@ where
                 evm_config,
                 eth,
                 block_executor,
+                bsc_trace_helper,
             );
 
             modules.config = module_config;
@@ -713,6 +920,8 @@ pub struct RpcRegistryInner<
     blocking_pool_guard: BlockingTaskGuard,
     /// Contains the [Methods] of a module
     modules: HashMap<RethRpcModule, Methods>,
+    /// bsc trace helper
+    bsc_trace_helper: Option<BscTraceHelper>,
 }
 
 // === impl RpcRegistryInner ===
@@ -748,6 +957,7 @@ where
             EthApi,
         >,
         block_executor: BlockExecutor,
+        bsc_trace_helper: Option<BscTraceHelper>,
     ) -> Self
     where
         EvmConfig: ConfigureEvm<Header = Header>,
@@ -763,6 +973,7 @@ where
             executor.clone(),
             events.clone(),
             eth_api_builder,
+            bsc_trace_helper.clone(),
         );
 
         Self {
@@ -775,6 +986,7 @@ where
             blocking_pool_guard,
             events,
             block_executor,
+            bsc_trace_helper,
         }
     }
 }
@@ -1042,6 +1254,7 @@ where
             self.eth_api().clone(),
             self.blocking_pool_guard.clone(),
             self.block_executor.clone(),
+            self.bsc_trace_helper.clone(),
         )
     }
 
@@ -1167,6 +1380,7 @@ where
                             eth_api.clone(),
                             self.blocking_pool_guard.clone(),
                             self.block_executor.clone(),
+                            self.bsc_trace_helper.clone(),
                         )
                         .into_rpc()
                         .into(),

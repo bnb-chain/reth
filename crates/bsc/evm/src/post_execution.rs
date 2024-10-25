@@ -128,10 +128,10 @@ where
         {
             let max_elected_validators = post_execution_input
                 .max_elected_validators
-                .ok_or_else(|| BscBlockExecutionError::InvalidValidatorsElectionInfoData)?;
+                .ok_or(BscBlockExecutionError::InvalidValidatorsElectionInfoData)?;
             let validators_election_info = post_execution_input
                 .validators_election_info
-                .ok_or_else(|| BscBlockExecutionError::InvalidValidatorsElectionInfoData)?;
+                .ok_or(BscBlockExecutionError::InvalidValidatorsElectionInfoData)?;
 
             self.update_validator_set_v2(
                 max_elected_validators,
@@ -202,8 +202,8 @@ where
             return Ok(())
         };
 
-        let (mut validators, mut vote_addrs_map) = current_validators
-            .ok_or_else(|| BscBlockExecutionError::InvalidCurrentValidatorsData)?;
+        let (mut validators, mut vote_addrs_map) =
+            current_validators.ok_or(BscBlockExecutionError::InvalidCurrentValidatorsData)?;
         validators.sort();
 
         let validator_num = validators.len();

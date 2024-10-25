@@ -6,6 +6,7 @@ use std::{
 };
 
 use futures::TryFutureExt;
+use reth_bsc_consensus::BscTraceHelper;
 use reth_node_api::{BuilderProvider, FullNodeComponents, NodeTypes, NodeTypesWithEngine};
 use reth_node_core::{
     node_config::NodeConfig,
@@ -299,6 +300,7 @@ pub async fn launch_rpc_servers<Node, Engine, EthApi>(
     config: &NodeConfig<<Node::Types as NodeTypes>::ChainSpec>,
     jwt_secret: JwtSecret,
     add_ons: RpcAddOns<Node, EthApi>,
+    bsc_trace_helper: Option<BscTraceHelper>,
 ) -> eyre::Result<(RethRpcServerHandles, RpcRegistry<Node, EthApi>)>
 where
     Node: FullNodeComponents<Types: ProviderNodeTypes> + Clone,
@@ -317,6 +319,7 @@ where
         .with_executor(node.task_executor().clone())
         .with_evm_config(node.evm_config().clone())
         .with_block_executor(node.block_executor().clone())
+        .with_bsc_trace_helper(bsc_trace_helper)
         .build_with_auth_server(module_config, engine_api, EthApi::eth_api_builder());
 
     let mut registry = RpcRegistry { registry };

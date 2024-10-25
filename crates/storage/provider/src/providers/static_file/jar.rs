@@ -331,7 +331,7 @@ impl ReceiptProvider for StaticFileJarProvider<'_> {
     }
 }
 
-impl<'a> SidecarsProvider for StaticFileJarProvider<'a> {
+impl SidecarsProvider for StaticFileJarProvider<'_> {
     fn sidecars(&self, block_hash: &BlockHash) -> ProviderResult<Option<BlobSidecars>> {
         Ok(self
             .cursor()?

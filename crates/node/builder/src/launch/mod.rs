@@ -9,6 +9,14 @@ pub use common::LaunchContext;
 use common::{Attached, LaunchContextWith, WithConfigs};
 pub use exex::ExExLauncher;
 
+use crate::{
+    builder::{NodeAdapter, NodeTypesAdapter},
+    components::{NodeComponents, NodeComponentsBuilder},
+    hooks::NodeHooks,
+    node::FullNode,
+    rpc::EthApiBuilderProvider,
+    AddOns, NodeBuilderWithComponents, NodeHandle,
+};
 use alloy_primitives::utils::format_ether;
 use alloy_rpc_types::engine::ClientVersionV1;
 use futures::{future::Either, stream, stream_select, StreamExt};
@@ -17,6 +25,8 @@ use reth_beacon_consensus::{
     BeaconConsensusEngine,
 };
 use reth_blockchain_tree::{noop::NoopBlockchainTree, BlockchainTreeConfig};
+#[cfg(feature = "bsc")]
+use reth_bsc_consensus::BscTraceHelper;
 #[cfg(feature = "bsc")]
 use reth_bsc_engine::ParliaEngineBuilder;
 use reth_chainspec::EthChainSpec;
@@ -46,15 +56,6 @@ use std::marker::PhantomData;
 use std::{future::Future, sync::Arc};
 use tokio::sync::{mpsc::unbounded_channel, oneshot};
 use tokio_stream::wrappers::UnboundedReceiverStream;
-
-use crate::{
-    builder::{NodeAdapter, NodeTypesAdapter},
-    components::{NodeComponents, NodeComponentsBuilder},
-    hooks::NodeHooks,
-    node::FullNode,
-    rpc::EthApiBuilderProvider,
-    AddOns, NodeBuilderWithComponents, NodeHandle,
-};
 
 /// Alias for [`reth_rpc_eth_types::EthApiBuilderCtx`], adapter for [`FullNodeComponents`].
 pub type EthApiBuilderCtx<N, Eth> = reth_rpc_eth_types::EthApiBuilderCtx<
@@ -384,6 +385,12 @@ where
         // extract the jwt secret from the args if possible
         let jwt_secret = ctx.auth_jwt_secret()?;
 
+        #[cfg(not(feature = "bsc"))]
+        let bsc_trace_helper = None;
+        #[cfg(feature = "bsc")]
+        let bsc_trace_helper =
+            Some(BscTraceHelper::new(Arc::new(ctx.components().parlia().clone())));
+
         // Start RPC servers
         let (rpc_server_handles, rpc_registry) = crate::rpc::launch_rpc_servers(
             ctx.node_adapter().clone(),
@@ -391,6 +398,7 @@ where
             ctx.node_config(),
             jwt_secret,
             rpc,
+            bsc_trace_helper,
         )
         .await?;
 

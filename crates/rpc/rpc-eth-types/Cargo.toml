@@ -27,6 +27,9 @@ reth-tasks.workspace = true
 reth-transaction-pool.workspace = true
 reth-trie.workspace = true
 
+# bsc
+reth-bsc-consensus.workspace = true
+
 # ethereum
 alloy-primitives.workspace = true
 alloy-consensus.workspace = true

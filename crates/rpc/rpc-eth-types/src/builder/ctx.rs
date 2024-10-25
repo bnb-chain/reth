@@ -1,11 +1,11 @@
 //! Context required for building `eth` namespace APIs.
 
-use std::marker::PhantomData;
-
+use reth_bsc_consensus::BscTraceHelper;
 use reth_chain_state::CanonStateSubscriptions;
 use reth_chainspec::ChainSpecProvider;
 use reth_storage_api::BlockReaderIdExt;
 use reth_tasks::TaskSpawner;
+use std::marker::PhantomData;
 
 use crate::{
     fee_history::fee_history_cache_new_blocks_task, EthConfig, EthStateCache, FeeHistoryCache,
@@ -31,6 +31,8 @@ pub struct EthApiBuilderCtx<Provider, Pool, EvmConfig, Network, Tasks, Events, E
     pub events: Events,
     /// RPC cache handle.
     pub cache: EthStateCache,
+    /// Bsc trace helper.
+    pub bsc_trace_helper: Option<BscTraceHelper>,
     /// RPC type builders.
     pub _rpc_ty_builders: PhantomData<Eth>,
 }

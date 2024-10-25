@@ -1,5 +1,13 @@
 //! Engine node related functionality.
 
+use crate::{
+    common::{Attached, LaunchContextWith, WithConfigs},
+    hooks::NodeHooks,
+    rpc::{launch_rpc_servers, EthApiBuilderProvider},
+    setup::build_networked_pipeline,
+    AddOns, ExExLauncher, FullNode, LaunchContext, LaunchNode, NodeAdapter,
+    NodeBuilderWithComponents, NodeComponents, NodeComponentsBuilder, NodeHandle, NodeTypesAdapter,
+};
 use alloy_rpc_types::engine::ClientVersionV1;
 use futures::{future::Either, stream, stream_select, StreamExt};
 use reth_beacon_consensus::{
@@ -7,6 +15,8 @@ use reth_beacon_consensus::{
     BeaconConsensusEngineHandle,
 };
 use reth_blockchain_tree::BlockchainTreeConfig;
+#[cfg(feature = "bsc")]
+use reth_bsc_consensus::BscTraceHelper;
 #[cfg(feature = "bsc")]
 use reth_bsc_engine::ParliaEngineBuilder;
 use reth_chainspec::EthChainSpec;
@@ -43,15 +53,6 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use tokio::sync::{mpsc::unbounded_channel, oneshot};
 use tokio_stream::wrappers::UnboundedReceiverStream;
-
-use crate::{
-    common::{Attached, LaunchContextWith, WithConfigs},
-    hooks::NodeHooks,
-    rpc::{launch_rpc_servers, EthApiBuilderProvider},
-    setup::build_networked_pipeline,
-    AddOns, ExExLauncher, FullNode, LaunchContext, LaunchNode, NodeAdapter,
-    NodeBuilderWithComponents, NodeComponents, NodeComponentsBuilder, NodeHandle, NodeTypesAdapter,
-};
 
 /// The engine node launcher.
 #[derive(Debug)]
@@ -329,6 +330,12 @@ where
         // extract the jwt secret from the args if possible
         let jwt_secret = ctx.auth_jwt_secret()?;
 
+        #[cfg(not(feature = "bsc"))]
+        let bsc_trace_helper = None;
+        #[cfg(feature = "bsc")]
+        let bsc_trace_helper =
+            Some(BscTraceHelper::new(Arc::new(ctx.components().parlia().clone())));
+
         // Start RPC servers
         let (rpc_server_handles, rpc_registry) = launch_rpc_servers(
             ctx.node_adapter().clone(),
@@ -336,6 +343,7 @@ where
             ctx.node_config(),
             jwt_secret,
             rpc,
+            bsc_trace_helper,
         )
         .await?;
 
