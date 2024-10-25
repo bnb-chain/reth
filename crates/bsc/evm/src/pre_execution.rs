@@ -150,9 +150,10 @@ where
                     continue;
                 }
 
-                let val_info = snap.validators_map.get(val).ok_or_else(|| {
-                    BscBlockExecutionError::VoteAddrNotFoundInSnap { address: *val }
-                })?;
+                let val_info = snap
+                    .validators_map
+                    .get(val)
+                    .ok_or(BscBlockExecutionError::VoteAddrNotFoundInSnap { address: *val })?;
                 vote_addrs.push(val_info.vote_addr);
             }
 

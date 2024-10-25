@@ -73,7 +73,6 @@ reth-cli-commands.workspace = true
 [features]
 bsc = [
     "reth-bsc-evm/bsc",
-    "reth-provider/bsc",
     "reth-node-core/bsc",
     "reth-bsc-node/bsc",
 ]

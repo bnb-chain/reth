@@ -8,6 +8,8 @@ use reth_beacon_consensus::{
 };
 use reth_blockchain_tree::BlockchainTreeConfig;
 #[cfg(feature = "bsc")]
+use reth_bsc_consensus::BscTraceHelper;
+#[cfg(feature = "bsc")]
 use reth_bsc_engine::ParliaEngineBuilder;
 use reth_chainspec::EthChainSpec;
 use reth_consensus_debug_client::{DebugConsensusClient, EtherscanBlockProvider};
@@ -333,6 +335,12 @@ where
         // extract the jwt secret from the args if possible
         let jwt_secret = ctx.auth_jwt_secret()?;
 
+        #[cfg(not(feature = "bsc"))]
+        let bsc_trace_helper = None;
+        #[cfg(feature = "bsc")]
+        let bsc_trace_helper =
+            Some(BscTraceHelper::new(Arc::new(ctx.components().parlia().clone())));
+
         // Start RPC servers
         let (rpc_server_handles, rpc_registry) = launch_rpc_servers(
             ctx.node_adapter().clone(),
@@ -340,6 +348,7 @@ where
             ctx.node_config(),
             jwt_secret,
             rpc,
+            bsc_trace_helper,
         )
         .await?;
 

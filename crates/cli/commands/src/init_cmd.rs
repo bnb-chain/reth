@@ -2,10 +2,10 @@
 
 use crate::common::{AccessRights, Environment, EnvironmentArgs};
 use clap::Parser;
-use reth_chainspec::EthChainSpec;
+use reth_chainspec::{EthChainSpec, EthereumHardforks};
 use reth_cli::chainspec::ChainSpecParser;
 use reth_node_builder::NodeTypesWithEngine;
-use reth_provider::{BlockHashReader, ChainSpecHardforks};
+use reth_provider::BlockHashReader;
 use tracing::info;
 
 /// Initializes the database with the genesis block.
@@ -15,7 +15,7 @@ pub struct InitCommand<C: ChainSpecParser> {
     env: EnvironmentArgs<C>,
 }
 
-impl<C: ChainSpecParser<ChainSpec: EthChainSpec + ChainSpecHardforks>> InitCommand<C> {
+impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> InitCommand<C> {
     /// Execute the `init` command
     pub async fn execute<N: NodeTypesWithEngine<ChainSpec = C::ChainSpec>>(
         self,

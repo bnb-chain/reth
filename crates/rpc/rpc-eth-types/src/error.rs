@@ -5,6 +5,7 @@ use std::time::Duration;
 use alloy_primitives::{Address, Bytes, U256};
 use alloy_rpc_types::{error::EthRpcErrorCode, request::TransactionInputError, BlockError};
 use alloy_sol_types::decode_revert_reason;
+use reth_bsc_consensus::BscTraceHelperError;
 use reth_errors::RethError;
 use reth_primitives::{revm_primitives::InvalidHeader, BlockId};
 use reth_rpc_server_types::result::{
@@ -139,6 +140,9 @@ pub enum EthApiError {
     /// Error thrown when tracing with a muxTracer fails
     #[error(transparent)]
     MuxTracerError(#[from] MuxError),
+    /// Error thrown when set trace env failed
+    #[error("set trace env failed")]
+    SetTraceEnvFailed,
     /// Any other error
     #[error("{0}")]
     Other(Box<dyn ToRpcError>),
@@ -178,7 +182,8 @@ impl From<EthApiError> for jsonrpsee_types::error::ErrorObject<'static> {
             EthApiError::TransactionNotFound |
             EthApiError::EvmCustom(_) |
             EthApiError::EvmPrecompile(_) |
-            EthApiError::InvalidRewardPercentiles => internal_rpc_err(error.to_string()),
+            EthApiError::InvalidRewardPercentiles |
+            EthApiError::SetTraceEnvFailed => internal_rpc_err(error.to_string()),
             EthApiError::UnknownBlockOrTxIndex | EthApiError::UnknownParentBlock => {
                 rpc_error_with_code(EthRpcErrorCode::ResourceNotFound.code(), error.to_string())
             }
@@ -275,6 +280,15 @@ where
             EVMError::Database(err) => err.into(),
             EVMError::Custom(err) => Self::EvmCustom(err),
             EVMError::Precompile(err) => Self::EvmPrecompile(err),
+        }
+    }
+}
+
+impl From<BscTraceHelperError> for EthApiError {
+    fn from(error: BscTraceHelperError) -> Self {
+        match error {
+            BscTraceHelperError::LoadAccountFailed |
+            BscTraceHelperError::GetUpgradeSystemContractsFailed => Self::SetTraceEnvFailed,
         }
     }
 }

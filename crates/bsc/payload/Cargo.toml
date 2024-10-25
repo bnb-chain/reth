@@ -44,5 +44,4 @@ tracing.workspace = true
 bsc = [
     "reth-chainspec/bsc",
     "reth-primitives/bsc",
-    "reth-provider/bsc",
 ]

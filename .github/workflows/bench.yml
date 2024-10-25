@@ -11,7 +11,6 @@ env:
   BASELINE: base
   IAI_CALLGRIND_RUNNER: iai-callgrind-runner
   TOOL_CHAIN: "1.81"
-  TOOL_CHAIN_NIGHTLY: "nightly-2024-09-09"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -30,7 +29,7 @@ jobs:
         run: sudo apt update && sudo apt install valgrind
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ env.TOOL_CHAIN_NIGHTLY }}
+          toolchain: ${{ env.TOOL_CHAIN }}
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true

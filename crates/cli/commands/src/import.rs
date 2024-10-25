@@ -4,7 +4,7 @@ use alloy_primitives::B256;
 use clap::Parser;
 use futures::{Stream, StreamExt};
 use reth_beacon_consensus::EthBeaconConsensus;
-use reth_chainspec::EthChainSpec;
+use reth_chainspec::{EthChainSpec, EthereumHardforks};
 use reth_cli::chainspec::ChainSpecParser;
 use reth_config::Config;
 use reth_consensus::Consensus;
@@ -24,8 +24,8 @@ use reth_node_builder::NodeTypesWithEngine;
 use reth_node_core::version::SHORT_VERSION;
 use reth_node_events::node::NodeEvent;
 use reth_provider::{
-    providers::ProviderNodeTypes, BlockNumReader, ChainSpecHardforks, ChainSpecProvider,
-    HeaderProvider, ProviderError, ProviderFactory, StageCheckpointReader,
+    providers::ProviderNodeTypes, BlockNumReader, ChainSpecProvider, HeaderProvider, ProviderError,
+    ProviderFactory, StageCheckpointReader,
 };
 use reth_prune::PruneModes;
 use reth_stages::{prelude::*, Pipeline, StageId, StageSet};
@@ -56,7 +56,7 @@ pub struct ImportCommand<C: ChainSpecParser> {
     path: PathBuf,
 }
 
-impl<C: ChainSpecParser<ChainSpec: EthChainSpec + ChainSpecHardforks>> ImportCommand<C> {
+impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> ImportCommand<C> {
     /// Execute `import` command
     pub async fn execute<N, E, F>(self, executor: F) -> eyre::Result<()>
     where

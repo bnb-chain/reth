@@ -1,5 +1,9 @@
 use std::{marker::PhantomData, pin::Pin};
 
+use crate::{
+    engine_api::EngineApiTestContext, network::NetworkTestContext, payload::PayloadTestContext,
+    rpc::RpcTestContext, traits::PayloadEnvelopeExt,
+};
 use alloy_primitives::{BlockHash, BlockNumber, Bytes, B256};
 use alloy_rpc_types::BlockNumberOrTag;
 use eyre::Ok;
@@ -17,15 +21,10 @@ use reth::{
         types::engine::PayloadStatusEnum,
     },
 };
+use reth_chainspec::EthereumHardforks;
 use reth_node_builder::{NodeAddOns, NodeTypesWithEngine};
-use reth_provider::ChainSpecHardforks;
 use reth_stages_types::StageId;
 use tokio_stream::StreamExt;
-
-use crate::{
-    engine_api::EngineApiTestContext, network::NetworkTestContext, payload::PayloadTestContext,
-    rpc::RpcTestContext, traits::PayloadEnvelopeExt,
-};
 
 /// An helper struct to handle node actions
 #[allow(missing_debug_implementations)]
@@ -50,7 +49,7 @@ impl<Node, Engine, AddOns> NodeTestContext<Node, AddOns>
 where
     Engine: EngineTypes,
     Node: FullNodeComponents,
-    Node::Types: NodeTypesWithEngine<ChainSpec: ChainSpecHardforks, Engine = Engine>,
+    Node::Types: NodeTypesWithEngine<ChainSpec: EthereumHardforks, Engine = Engine>,
     Node::Network: PeersHandleProvider,
     AddOns: NodeAddOns<Node>,
 {

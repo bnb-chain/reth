@@ -3,9 +3,11 @@
 
 use std::sync::Arc;
 
+use crate::eth::EthTxBuilder;
 use alloy_network::AnyNetwork;
 use alloy_primitives::U256;
 use derive_more::Deref;
+use reth_bsc_consensus::BscTraceHelper;
 use reth_node_api::{BuilderProvider, FullNodeComponents};
 use reth_primitives::BlockNumberOrTag;
 use reth_provider::{BlockReaderIdExt, CanonStateSubscriptions, ChainSpecProvider};
@@ -23,8 +25,6 @@ use reth_tasks::{
 };
 use tokio::sync::Mutex;
 
-use crate::eth::EthTxBuilder;
-
 /// `Eth` API implementation.
 ///
 /// This type provides the functionality for handling `eth_` related requests.
@@ -37,12 +37,14 @@ use crate::eth::EthTxBuilder;
 #[derive(Deref)]
 pub struct EthApi<Provider, Pool, Network, EvmConfig> {
     /// All nested fields bundled together.
+    #[deref]
     pub(super) inner: Arc<EthApiInner<Provider, Pool, Network, EvmConfig>>,
+    pub(super) bsc_trace_helper: Option<BscTraceHelper>,
 }
 
 impl<Provider, Pool, Network, EvmConfig> Clone for EthApi<Provider, Pool, Network, EvmConfig> {
     fn clone(&self) -> Self {
-        Self { inner: self.inner.clone() }
+        Self { inner: self.inner.clone(), bsc_trace_helper: self.bsc_trace_helper.clone() }
     }
 }
 
@@ -65,6 +67,7 @@ where
         fee_history_cache: FeeHistoryCache,
         evm_config: EvmConfig,
         proof_permits: usize,
+        bsc_trace_helper: Option<BscTraceHelper>,
     ) -> Self {
         let inner = EthApiInner::new(
             provider,
@@ -82,7 +85,7 @@ where
             proof_permits,
         );
 
-        Self { inner: Arc::new(inner) }
+        Self { inner: Arc::new(inner), bsc_trace_helper }
     }
 }
 
@@ -120,7 +123,7 @@ where
             ctx.config.proof_permits,
         );
 
-        Self { inner: Arc::new(inner) }
+        Self { inner: Arc::new(inner), bsc_trace_helper: ctx.bsc_trace_helper.clone() }
     }
 }
 
@@ -428,6 +431,7 @@ mod tests {
             fee_history_cache,
             evm_config,
             DEFAULT_PROOF_PERMITS,
+            None,
         )
     }
 

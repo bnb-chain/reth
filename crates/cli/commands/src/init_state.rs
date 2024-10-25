@@ -3,12 +3,12 @@
 use crate::common::{AccessRights, Environment, EnvironmentArgs};
 use alloy_primitives::B256;
 use clap::Parser;
-use reth_chainspec::EthChainSpec;
+use reth_chainspec::{EthChainSpec, EthereumHardforks};
 use reth_cli::chainspec::ChainSpecParser;
 use reth_config::config::EtlConfig;
 use reth_db_common::init::init_from_state_dump;
 use reth_node_builder::NodeTypesWithEngine;
-use reth_provider::{providers::ProviderNodeTypes, ChainSpecHardforks, ProviderFactory};
+use reth_provider::{providers::ProviderNodeTypes, ProviderFactory};
 
 use std::{fs::File, io::BufReader, path::PathBuf};
 use tracing::info;
@@ -40,7 +40,7 @@ pub struct InitStateCommand<C: ChainSpecParser> {
     pub state: PathBuf,
 }
 
-impl<C: ChainSpecParser<ChainSpec: EthChainSpec + ChainSpecHardforks>> InitStateCommand<C> {
+impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> InitStateCommand<C> {
     /// Execute the `init` command
     pub async fn execute<N: NodeTypesWithEngine<ChainSpec = C::ChainSpec>>(
         self,

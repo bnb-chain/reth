@@ -19,6 +19,7 @@ use alloy_rlp::Decodable;
 use lazy_static::lazy_static;
 use lru::LruCache;
 use parking_lot::RwLock;
+use reth_bsc_chainspec::BscChainSpec;
 use reth_bsc_forks::BscHardforks;
 use reth_chainspec::{ChainSpec, EthChainSpec, EthereumHardforks};
 use reth_consensus::{Consensus, ConsensusError, PostExecutionInput};
@@ -50,15 +51,15 @@ mod go_rng;
 pub use go_rng::{RngSource, Shuffle};
 mod abi;
 pub use abi::*;
-use reth_bsc_chainspec::BscChainSpec;
+mod system_tx;
+mod trace_helper;
+pub use trace_helper::{BscTraceHelper, BscTraceHelperError};
 
 mod validation;
 pub use validation::{
     validate_4844_header_of_bsc, validate_against_parent_eip1559_base_fee_of_bsc,
     validate_block_post_execution_of_bsc,
 };
-
-mod system_tx;
 
 const RECOVERED_PROPOSER_CACHE_NUM: usize = 4096;
 

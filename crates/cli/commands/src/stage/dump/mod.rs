@@ -1,7 +1,7 @@
 //! Database debugging tool
 use crate::common::{AccessRights, Environment, EnvironmentArgs};
 use clap::Parser;
-use reth_chainspec::EthChainSpec;
+use reth_chainspec::{EthChainSpec, EthereumHardforks};
 use reth_cli::chainspec::ChainSpecParser;
 use reth_db::{init_db, mdbx::DatabaseArguments, tables, DatabaseEnv};
 use reth_db_api::{
@@ -15,7 +15,6 @@ use reth_node_core::{
     args::DatadirArgs,
     dirs::{DataDirPath, PlatformPath},
 };
-use reth_provider::ChainSpecHardforks;
 use std::{path::PathBuf, sync::Arc};
 use tracing::info;
 
@@ -90,7 +89,7 @@ macro_rules! handle_stage {
     }};
 }
 
-impl<C: ChainSpecParser<ChainSpec: EthChainSpec + ChainSpecHardforks>> Command<C> {
+impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> Command<C> {
     /// Execute `dump-stage` command
     pub async fn execute<N, E, F>(self, executor: F) -> eyre::Result<()>
     where

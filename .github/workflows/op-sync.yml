@@ -11,7 +11,6 @@ on:
 env:
   CARGO_TERM_COLOR: always
   TOOL_CHAIN: "1.81"
-  TOOL_CHAIN_NIGHTLY: "nightly-2024-09-09"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -32,7 +31,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ env.TOOL_CHAIN_NIGHTLY }}
+          toolchain: ${{ env.TOOL_CHAIN }}
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true

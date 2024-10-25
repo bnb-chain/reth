@@ -4,13 +4,13 @@
 use alloy_primitives::{Address, Bytes, B256, U256};
 use alloy_rpc_types::{serde_helpers::JsonStorageKey, Account, EIP1186AccountProofResponse};
 use futures::Future;
-use reth_chainspec::EthChainSpec;
+use reth_chainspec::{EthChainSpec, EthereumHardforks};
 use reth_errors::RethError;
 use reth_evm::ConfigureEvmEnv;
 use reth_primitives::{BlockId, Header, KECCAK_EMPTY};
 use reth_provider::{
-    BlockIdReader, BlockNumReader, ChainSpecHardforks, ChainSpecProvider, StateProvider,
-    StateProviderBox, StateProviderFactory,
+    BlockIdReader, BlockNumReader, ChainSpecProvider, StateProvider, StateProviderBox,
+    StateProviderFactory,
 };
 use reth_rpc_eth_types::{EthApiError, EthStateCache, PendingBlockEnv, RpcInvalidTransactionError};
 use reth_rpc_types_compat::proof::from_primitive_account_proof;
@@ -172,7 +172,7 @@ pub trait LoadState: EthApiTypes {
     /// Data access in default trait method implementations.
     fn provider(
         &self,
-    ) -> impl StateProviderFactory + ChainSpecProvider<ChainSpec: EthChainSpec + ChainSpecHardforks>;
+    ) -> impl StateProviderFactory + ChainSpecProvider<ChainSpec: EthChainSpec + EthereumHardforks>;
 
     /// Returns a handle for reading data from memory.
     ///

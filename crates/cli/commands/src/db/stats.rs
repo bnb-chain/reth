@@ -4,16 +4,14 @@ use comfy_table::{Cell, Row, Table as ComfyTable};
 use eyre::WrapErr;
 use human_bytes::human_bytes;
 use itertools::Itertools;
+use reth_chainspec::EthereumHardforks;
 use reth_db::{mdbx, static_file::iter_static_files, DatabaseEnv, TableViewer, Tables};
 use reth_db_api::database::Database;
 use reth_db_common::DbTool;
 use reth_fs_util as fs;
 use reth_node_builder::{NodeTypesWithDB, NodeTypesWithDBAdapter, NodeTypesWithEngine};
 use reth_node_core::dirs::{ChainPath, DataDirPath};
-use reth_provider::{
-    providers::{ProviderNodeTypes, StaticFileProvider},
-    ChainSpecHardforks,
-};
+use reth_provider::providers::{ProviderNodeTypes, StaticFileProvider};
 use reth_static_file_types::SegmentRangeInclusive;
 use std::{sync::Arc, time::Duration};
 
@@ -40,7 +38,7 @@ pub struct Command {
 
 impl Command {
     /// Execute `db stats` command
-    pub fn execute<N: NodeTypesWithEngine<ChainSpec: ChainSpecHardforks>>(
+    pub fn execute<N: NodeTypesWithEngine<ChainSpec: EthereumHardforks>>(
         self,
         data_dir: ChainPath<DataDirPath>,
         tool: &DbTool<NodeTypesWithDBAdapter<N, Arc<DatabaseEnv>>>,

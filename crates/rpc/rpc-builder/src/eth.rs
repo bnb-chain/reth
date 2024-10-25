@@ -1,5 +1,6 @@
 use std::marker::PhantomData;
 
+use reth_bsc_consensus::BscTraceHelper;
 use reth_evm::ConfigureEvm;
 use reth_primitives::Header;
 use reth_provider::{BlockReader, CanonStateSubscriptions, EvmEnvProvider, StateProviderFactory};
@@ -57,6 +58,7 @@ where
             Events,
             EthApi,
         >,
+        bsc_trace_helper: Option<BscTraceHelper>,
     ) -> Self
     where
         EvmConfig: ConfigureEvm<Header = Header>,
@@ -87,6 +89,7 @@ where
             executor,
             events,
             cache,
+            bsc_trace_helper,
             _rpc_ty_builders: PhantomData,
         };
 

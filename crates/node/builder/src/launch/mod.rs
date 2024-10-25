@@ -18,8 +18,10 @@ use reth_beacon_consensus::{
 };
 use reth_blockchain_tree::{noop::NoopBlockchainTree, BlockchainTreeConfig};
 #[cfg(feature = "bsc")]
+use reth_bsc_consensus::BscTraceHelper;
+#[cfg(feature = "bsc")]
 use reth_bsc_engine::ParliaEngineBuilder;
-use reth_chainspec::EthChainSpec;
+use reth_chainspec::{EthChainSpec, EthereumHardforks};
 use reth_consensus_debug_client::{DebugConsensusClient, EtherscanBlockProvider, RpcBlockProvider};
 use reth_engine_util::EngineMessageStreamExt;
 use reth_exex::ExExManagerHandle;
@@ -36,7 +38,7 @@ use reth_node_core::{
     version::{CARGO_PKG_VERSION, CLIENT_CODE, NAME_CLIENT, VERGEN_GIT_SHA},
 };
 use reth_node_events::{cl::ConsensusLayerHealthEvents, node};
-use reth_provider::{providers::BlockchainProvider, ChainSpecHardforks};
+use reth_provider::providers::BlockchainProvider;
 use reth_rpc_engine_api::{capabilities::EngineCapabilities, EngineApi};
 use reth_tasks::TaskExecutor;
 use reth_tracing::tracing::{debug, info};
@@ -111,7 +113,7 @@ impl DefaultNodeLauncher {
 
 impl<Types, T, CB, AO> LaunchNode<NodeBuilderWithComponents<T, CB, AO>> for DefaultNodeLauncher
 where
-    Types: NodeTypesWithDB<ChainSpec: ChainSpecHardforks + EthChainSpec> + NodeTypesWithEngine,
+    Types: NodeTypesWithDB<ChainSpec: EthereumHardforks + EthChainSpec> + NodeTypesWithEngine,
     T: FullNodeTypes<Provider = BlockchainProvider<Types>, Types = Types>,
     CB: NodeComponentsBuilder<T>,
     AO: NodeAddOns<
@@ -384,6 +386,12 @@ where
         // extract the jwt secret from the args if possible
         let jwt_secret = ctx.auth_jwt_secret()?;
 
+        #[cfg(not(feature = "bsc"))]
+        let bsc_trace_helper = None;
+        #[cfg(feature = "bsc")]
+        let bsc_trace_helper =
+            Some(BscTraceHelper::new(Arc::new(ctx.components().parlia().clone())));
+
         // Start RPC servers
         let (rpc_server_handles, rpc_registry) = crate::rpc::launch_rpc_servers(
             ctx.node_adapter().clone(),
@@ -391,6 +399,7 @@ where
             ctx.node_config(),
             jwt_secret,
             rpc,
+            bsc_trace_helper,
         )
         .await?;
 

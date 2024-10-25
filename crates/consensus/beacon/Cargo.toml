@@ -83,6 +83,4 @@ optimism = [
     "reth-blockchain-tree/optimism",
     "reth-chainspec"
 ]
-bsc = [
-    "reth-provider/bsc",
-]
+bsc = []

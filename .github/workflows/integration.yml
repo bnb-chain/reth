@@ -13,7 +13,6 @@ env:
   CARGO_TERM_COLOR: always
   SEED: rustethereumethereumrust
   TOOL_CHAIN: "1.81"
-  TOOL_CHAIN_NIGHTLY: "nightly-2024-09-09"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -39,7 +38,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ env.TOOL_CHAIN_NIGHTLY }}
+          toolchain: ${{ env.TOOL_CHAIN }}
       - name: Install Geth
         run: .github/assets/install_geth.sh
       - uses: taiki-e/install-action@nextest

@@ -6,12 +6,10 @@ LABEL org.opencontainers.image.licenses="MIT OR Apache-2.0"
 
 # Builds a cargo-chef plan
 FROM chef AS planner
-RUN rustup toolchain install nightly
 COPY . .
-RUN cargo +nightly chef prepare --recipe-path recipe.json
+RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
-RUN rustup toolchain install nightly
 COPY --from=planner /app/recipe.json recipe.json
 
 # Build profile, release by default
@@ -30,11 +28,11 @@ ENV FEATURES $FEATURES
 RUN apt-get update && apt-get -y upgrade && apt-get install -y libclang-dev pkg-config
 
 # Builds dependencies
-RUN cargo +nightly chef cook --profile $BUILD_PROFILE --features "$FEATURES" --recipe-path recipe.json --manifest-path crates/optimism/bin/Cargo.toml
+RUN cargo chef cook --profile $BUILD_PROFILE --features "$FEATURES" --recipe-path recipe.json --manifest-path crates/optimism/bin/Cargo.toml
 
 # Build application
 COPY . .
-RUN cargo +nightly build --profile $BUILD_PROFILE --features "$FEATURES" --locked --bin op-reth --manifest-path crates/optimism/bin/Cargo.toml
+RUN cargo build --profile $BUILD_PROFILE --features "$FEATURES" --locked --bin op-reth --manifest-path crates/optimism/bin/Cargo.toml
 
 # ARG is not resolved in COPY so we have to hack around it by copying the
 # binary to a temporary location

@@ -2,7 +2,7 @@
 use crate::common::{AccessRights, Environment, EnvironmentArgs};
 use clap::Parser;
 use itertools::Itertools;
-use reth_chainspec::EthChainSpec;
+use reth_chainspec::{EthChainSpec, EthereumHardforks};
 use reth_cli::chainspec::ChainSpecParser;
 use reth_db::{static_file::iter_static_files, tables};
 use reth_db_api::transaction::{DbTx, DbTxMut};
@@ -12,7 +12,7 @@ use reth_db_common::{
 };
 use reth_node_builder::NodeTypesWithEngine;
 use reth_node_core::args::StageEnum;
-use reth_provider::{writer::UnifiedStorageWriter, ChainSpecHardforks, StaticFileProviderFactory};
+use reth_provider::{writer::UnifiedStorageWriter, StaticFileProviderFactory};
 use reth_prune::PruneSegment;
 use reth_stages::StageId;
 use reth_static_file_types::StaticFileSegment;
@@ -26,7 +26,7 @@ pub struct Command<C: ChainSpecParser> {
     stage: StageEnum,
 }
 
-impl<C: ChainSpecParser<ChainSpec: EthChainSpec + ChainSpecHardforks>> Command<C> {
+impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> Command<C> {
     /// Execute `db` command
     pub async fn execute<N: NodeTypesWithEngine<ChainSpec = C::ChainSpec>>(
         self,

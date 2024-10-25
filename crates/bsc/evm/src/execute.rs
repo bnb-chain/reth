@@ -570,7 +570,7 @@ where
             return Err(BscBlockExecutionError::EthCallFailed.into());
         }
 
-        let output = result.output().ok_or_else(|| BscBlockExecutionError::EthCallFailed)?;
+        let output = result.output().ok_or(BscBlockExecutionError::EthCallFailed)?;
         Ok(output.clone())
     }
 
@@ -1008,7 +1008,7 @@ where
             }
         }
 
-        let mut snap = snap.ok_or_else(|| BscBlockExecutionError::SnapshotNotFound)?;
+        let mut snap = snap.ok_or(BscBlockExecutionError::SnapshotNotFound)?;
 
         // the old snapshots don't have turn length, make sure we initialize it with default
         // before accessing it
@@ -1061,7 +1061,7 @@ where
                     turn_length,
                     self.parlia.chain_spec().is_bohr_active_at_timestamp(header.timestamp),
                 )
-                .ok_or_else(|| BscBlockExecutionError::ApplySnapshotFailed)?;
+                .ok_or(BscBlockExecutionError::ApplySnapshotFailed)?;
 
             cache.put(snap.block_hash, snap.clone());
         }

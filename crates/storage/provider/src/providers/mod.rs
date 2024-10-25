@@ -1,9 +1,9 @@
 use crate::{
     AccountReader, BlockHashReader, BlockIdReader, BlockNumReader, BlockReader, BlockReaderIdExt,
     BlockSource, BlockchainTreePendingStateProvider, CanonChainTracker, CanonStateNotifications,
-    CanonStateSubscriptions, ChainSpecHardforks, ChainSpecProvider, ChainStateBlockReader,
-    ChangeSetReader, DatabaseProviderFactory, EvmEnvProvider, FullExecutionDataProvider,
-    HeaderProvider, ParliaSnapshotReader, ProviderError, PruneCheckpointReader, ReceiptProvider,
+    CanonStateSubscriptions, ChainSpecProvider, ChainStateBlockReader, ChangeSetReader,
+    DatabaseProviderFactory, EvmEnvProvider, FullExecutionDataProvider, HeaderProvider,
+    ParliaSnapshotReader, ProviderError, PruneCheckpointReader, ReceiptProvider,
     ReceiptProviderIdExt, RequestsProvider, StageCheckpointReader, StateProviderBox,
     StateProviderFactory, StaticFileProviderFactory, TransactionVariant, TransactionsProvider,
     TreeViewer, WithdrawalsProvider,
@@ -16,7 +16,7 @@ use reth_blockchain_tree_api::{
     InsertPayloadOk,
 };
 use reth_chain_state::{ChainInfoTracker, ForkChoiceNotifications, ForkChoiceSubscriptions};
-use reth_chainspec::ChainInfo;
+use reth_chainspec::{ChainInfo, EthereumHardforks};
 use reth_db_api::models::{AccountBeforeTx, StoredBlockBodyIndices};
 use reth_evm::ConfigureEvmEnv;
 use reth_node_types::NodeTypesWithDB;
@@ -64,9 +64,9 @@ mod blockchain_provider;
 pub use blockchain_provider::BlockchainProvider2;
 
 /// Helper trait keeping common requirements of providers for [`NodeTypesWithDB`].
-pub trait ProviderNodeTypes: NodeTypesWithDB<ChainSpec: ChainSpecHardforks> {}
+pub trait ProviderNodeTypes: NodeTypesWithDB<ChainSpec: EthereumHardforks> {}
 
-impl<T> ProviderNodeTypes for T where T: NodeTypesWithDB<ChainSpec: ChainSpecHardforks> {}
+impl<T> ProviderNodeTypes for T where T: NodeTypesWithDB<ChainSpec: EthereumHardforks> {}
 
 /// The main type for interacting with the blockchain.
 ///
