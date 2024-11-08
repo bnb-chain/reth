@@ -309,7 +309,7 @@ pub struct MerkleConfig {
 
 impl Default for MerkleConfig {
     fn default() -> Self {
-        Self { clean_threshold: 5_000 }
+        Self { clean_threshold: 50_000 }
     }
 }
 
