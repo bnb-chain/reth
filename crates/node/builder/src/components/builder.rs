@@ -10,12 +10,10 @@ use reth_transaction_pool::TransactionPool;
 use crate::{
     components::{
         Components, ConsensusBuilder, ExecutorBuilder, NetworkBuilder, NodeComponents,
-        PayloadServiceBuilder, PoolBuilder,
+        PayloadServiceBuilder, PoolBuilder, ParliaBuilder,
     },
     BuilderContext, ConfigureEvm, FullNodeTypes,
 };
-
-use super::ParliaBuilder;
 
 /// A generic, general purpose and customizable [`NodeComponentsBuilder`] implementation.
 ///
