@@ -618,7 +618,7 @@ impl<Provider, Pool, Network, Tasks, Events, EvmConfig, BlockExecutor, Consensus
         }
     }
 
-    /// Configure the bsc_trace_helper implementation.
+    /// Configure the `bsc_trace_helper`` implementation.
     pub fn with_bsc_trace_helper(
         self,
         bsc_trace_helper: Option<BscTraceHelper>

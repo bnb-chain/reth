@@ -5,7 +5,6 @@ use reth_chain_state::CanonStateSubscriptions;
 use reth_chainspec::ChainSpecProvider;
 use reth_storage_api::BlockReaderIdExt;
 use reth_tasks::TaskSpawner;
-use std::marker::PhantomData;
 
 use crate::{
     fee_history::fee_history_cache_new_blocks_task, EthConfig, EthStateCache, FeeHistoryCache,

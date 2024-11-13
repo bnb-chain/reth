@@ -11,6 +11,7 @@ use alloy_rpc_types::{engine::ForkchoiceState, BlockId, RpcBlockHash};
 use reth_beacon_consensus::{
     BeaconEngineMessage, EngineNodeTypes, ForkchoiceStatus, MIN_BLOCKS_FOR_PIPELINE_RUN,
 };
+use reth_engine_primitives::EngineApiMessageVersion;
 use reth_bsc_consensus::Parlia;
 use reth_bsc_evm::SnapshotReader;
 use reth_chainspec::EthChainSpec;
@@ -490,6 +491,7 @@ impl<
                                     state,
                                     payload_attrs: None,
                                     tx,
+                                    version: EngineApiMessageVersion::default(),
                                 });
                                 debug!(target: "consensus::parlia", ?state, "Sent fork choice update");
 

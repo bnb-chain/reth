@@ -7,7 +7,7 @@ static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::ne
 
 use clap::{Args, Parser};
 use reth_bsc_cli::{BscChainSpecParser, Cli};
-use reth_bsc_node::{node::BSCAddOns, BscNode};
+use reth_bsc_node::{node::BscAddOns, BscNode};
 use reth_node_builder::{
     engine_tree_config::{
         TreeConfig, DEFAULT_MEMORY_BLOCK_BUFFER_TARGET, DEFAULT_PERSISTENCE_THRESHOLD,
@@ -76,7 +76,7 @@ fn main() {
                     let handle = builder
                         .with_types_and_provider::<BscNode, BlockchainProvider2<_>>()
                         .with_components(BscNode::components())
-                        .with_add_ons(BSCAddOns)
+                        .with_add_ons(BscAddOns::default())
                         .launch_with_fn(|builder| {
                             let launcher = EngineNodeLauncher::new(
                                 builder.task_executor().clone(),

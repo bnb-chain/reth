@@ -24,10 +24,8 @@ use reth_primitives::{BlockWithSenders, Receipt};
 use reth_revm::db::State;
 use revm_primitives::{
     db::{Database, DatabaseCommit},
-    BlockEnv, CfgEnvWithHandlerCfg, EnvWithHandlerCfg, EvmState, ResultAndState, U256,
+    BlockEnv, CfgEnvWithHandlerCfg, EnvWithHandlerCfg, ResultAndState, U256,
 };
-use tokio::sync::mpsc::UnboundedSender;
-use tracing::debug;
 
 /// Factory for [`EthExecutionStrategy`].
 #[derive(Debug, Clone)]

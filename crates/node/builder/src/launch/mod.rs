@@ -20,6 +20,8 @@ use reth_blockchain_tree::{noop::NoopBlockchainTree, BlockchainTreeConfig};
 use reth_bsc_consensus::BscTraceHelper;
 #[cfg(feature = "bsc")]
 use reth_bsc_engine::ParliaEngineBuilder;
+#[cfg(feature = "bsc")]
+use reth_network_api::EngineRxProvider;
 use reth_chainspec::{EthChainSpec, EthereumHardforks};
 use reth_consensus_debug_client::{DebugConsensusClient, EtherscanBlockProvider, RpcBlockProvider};
 use reth_engine_util::EngineMessageStreamExt;
@@ -274,7 +276,7 @@ where
             )?;
             #[cfg(feature = "bsc")]
             {
-                let engine_rx = ctx.node_adapter().components.network().get_to_engine_rx();
+                let engine_rx = ctx.components().network().get_to_engine_rx();
                 let client = ParliaEngineBuilder::new(
                     ctx.chain_spec(),
                     ctx.blockchain_db().clone(),

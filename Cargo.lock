@@ -7504,6 +7504,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "alloy-rpc-types",
+ "alloy-rpc-types-engine",
  "bitset",
  "blst",
  "bytes 1.7.2",
@@ -7615,6 +7616,7 @@ dependencies = [
  "reth-rpc",
  "reth-tracing",
  "reth-transaction-pool",
+ "reth-trie-db",
  "serde_json",
  "tokio",
 ]

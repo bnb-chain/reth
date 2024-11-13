@@ -448,7 +448,7 @@ where
             .with_evm_config(node.evm_config().clone())
             .with_block_executor(node.block_executor().clone())
             .with_consensus(node.consensus().clone())
-            .with_bsc_trace_helper(node.bsc_trace_helper().clone())
+            .with_bsc_trace_helper(bsc_trace_helper)
             .build_with_auth_server(module_config, engine_api, eth_api_builder);
 
         // in dev mode we generate 20 random dev-signer accounts

@@ -9,17 +9,22 @@ use reth_bsc_engine::{BscEngineTypes, BscEngineValidator};
 use reth_bsc_evm::{BscEvmConfig, BscExecutorProvider};
 use reth_bsc_payload_builder::{BscBuiltPayload, BscPayloadBuilderAttributes};
 use reth_network::NetworkHandle;
-use reth_node_api::{ConfigureEvm, EngineValidator, FullNodeComponents, NodeAddOns};
+use reth_primitives::{Block, Header};
+use reth_node_api::{
+    AddOnsContext, ConfigureEvm, EngineValidator, FullNodeComponents, NodePrimitives,
+    NodeTypesWithDB,
+};
 use reth_node_builder::{
     components::{
-        ComponentsBuilder, ConsensusBuilder, EngineValidatorBuilder, ExecutorBuilder,
-        NetworkBuilder, ParliaBuilder, PayloadServiceBuilder, PoolBuilder,
+        ComponentsBuilder, ConsensusBuilder, ExecutorBuilder, NetworkBuilder,
+        PayloadServiceBuilder, PoolBuilder, ParliaBuilder,
     },
+    rpc::{EngineValidatorBuilder, RpcAddOns},
+    BuilderContext, Node, NodeAdapter, NodeComponentsBuilder, PayloadBuilderConfig, PayloadTypes,
     node::{FullNodeTypes, NodeTypes, NodeTypesWithEngine},
-    BuilderContext, Node, PayloadBuilderConfig, PayloadTypes,
 };
+use reth_ethereum_engine_primitives::EthPayloadAttributes;
 use reth_payload_builder::{PayloadBuilderHandle, PayloadBuilderService};
-use reth_primitives::Header;
 use reth_provider::CanonStateSubscriptions;
 use reth_rpc::EthApi;
 use reth_tracing::tracing::{debug, info};
@@ -27,6 +32,15 @@ use reth_transaction_pool::{
     blobstore::DiskFileBlobStore, EthTransactionPool, TransactionPool,
     TransactionValidationTaskExecutor,
 };
+use reth_trie_db::MerklePatriciaTrie;
+
+/// Ethereum primitive types.
+#[derive(Debug)]
+pub struct BscPrimitives;
+
+impl NodePrimitives for BscPrimitives {
+    type Block = Block;
+}
 
 /// Type configuration for a regular BSC node.
 #[derive(Debug, Default, Clone, Copy)]
@@ -42,12 +56,14 @@ impl BscNode {
         BscNetworkBuilder,
         BscExecutorBuilder,
         BscConsensusBuilder,
-        BscEngineValidatorBuilder,
         BscParliaBuilder,
     >
     where
-        Node: FullNodeTypes<
-            Types: NodeTypesWithEngine<Engine = BscEngineTypes, ChainSpec = BscChainSpec>,
+        Node: FullNodeTypes<Types: NodeTypes<ChainSpec = BscChainSpec>>,
+        <Node::Types as NodeTypesWithEngine>::Engine: PayloadTypes<
+            BuiltPayload = BscBuiltPayload,
+            PayloadAttributes = EthPayloadAttributes,
+            PayloadBuilderAttributes = BscPayloadBuilderAttributes,
         >,
     {
         ComponentsBuilder::default()
@@ -57,14 +73,14 @@ impl BscNode {
             .network(BscNetworkBuilder::default())
             .executor(BscExecutorBuilder::default())
             .consensus(BscConsensusBuilder::default())
-            .engine_validator(BscEngineValidatorBuilder::default())
             .parlia(BscParliaBuilder::default())
     }
 }
 
 impl NodeTypes for BscNode {
-    type Primitives = ();
+    type Primitives = BscPrimitives;
     type ChainSpec = BscChainSpec;
+    type StateCommitment = MerklePatriciaTrie;
 }
 
 impl NodeTypesWithEngine for BscNode {
@@ -72,16 +88,21 @@ impl NodeTypesWithEngine for BscNode {
 }
 
 /// Add-ons w.r.t. l1 bsc.
-#[derive(Debug, Clone, Default)]
-pub struct BSCAddOns;
+pub type BscAddOns<N> = RpcAddOns<
+    N,
+    EthApi<
+        <N as FullNodeTypes>::Provider,
+        <N as FullNodeComponents>::Pool,
+        NetworkHandle,
+        <N as FullNodeComponents>::Evm,
+    >,
+    BscEngineValidatorBuilder,
+>;
 
-impl<N: FullNodeComponents> NodeAddOns<N> for BSCAddOns {
-    type EthApi = EthApi<N::Provider, N::Pool, NetworkHandle, N::Evm>;
-}
 
 impl<Types, N> Node<N> for BscNode
 where
-    Types: NodeTypesWithEngine<Engine = BscEngineTypes, ChainSpec = BscChainSpec>,
+    Types: NodeTypesWithDB + NodeTypesWithEngine<Engine = BscEngineTypes, ChainSpec = BscChainSpec>,
     N: FullNodeTypes<Types = Types>,
 {
     type ComponentsBuilder = ComponentsBuilder<
@@ -91,18 +112,19 @@ where
         BscNetworkBuilder,
         BscExecutorBuilder,
         BscConsensusBuilder,
-        BscEngineValidatorBuilder,
         BscParliaBuilder,
     >;
 
-    type AddOns = BSCAddOns;
+    type AddOns = BscAddOns<
+        NodeAdapter<N, <Self::ComponentsBuilder as NodeComponentsBuilder<N>>::Components>,
+    >;
 
     fn components_builder(&self) -> Self::ComponentsBuilder {
         Self::components()
     }
 
     fn add_ons(&self) -> Self::AddOns {
-        BSCAddOns
+        BscAddOns::default()
     }
 }
 
@@ -321,16 +343,15 @@ where
 #[non_exhaustive]
 pub struct BscEngineValidatorBuilder;
 
-impl<Node> EngineValidatorBuilder<Node> for BscEngineValidatorBuilder
+impl<Node, Types> EngineValidatorBuilder<Node> for BscEngineValidatorBuilder
 where
-    Node: FullNodeTypes<
-        Types: NodeTypesWithEngine<Engine = BscEngineTypes, ChainSpec = BscChainSpec>,
-    >,
-    BscEngineValidator: EngineValidator<<Node::Types as NodeTypesWithEngine>::Engine>,
+    Types: NodeTypesWithEngine<ChainSpec = BscChainSpec>,
+    Node: FullNodeComponents<Types = Types>,
+    BscEngineValidator: EngineValidator<Types::Engine>,
 {
     type Validator = BscEngineValidator;
 
-    async fn build_validator(self, _ctx: &BuilderContext<Node>) -> eyre::Result<Self::Validator> {
+    async fn build(self, _ctx: &AddOnsContext<'_, Node>) -> eyre::Result<Self::Validator> {
         Ok(BscEngineValidator {})
     }
 }

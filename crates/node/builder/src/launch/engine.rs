@@ -266,7 +266,7 @@ where
             }
             #[cfg(feature = "bsc")]
             {
-                let engine_rx = ctx.node_adapter().components.network().get_to_engine_rx();
+                let engine_rx = ctx.components().network().get_to_engine_rx();
                 let client = ParliaEngineBuilder::new(
                     ctx.chain_spec(),
                     ctx.blockchain_db().clone(),
