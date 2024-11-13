@@ -1,4 +1,4 @@
-FROM lukemathwalker/cargo-chef:latest-rust-1.81 AS chef
+FROM lukemathwalker/cargo-chef:latest-rust-1.82 AS chef
 WORKDIR /app
 
 LABEL org.opencontainers.image.source=https://github.com/bnb-chain/reth
