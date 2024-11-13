@@ -171,7 +171,8 @@ where
         self.validate_gas_limit(registered_gas_limit, &latest_header, &block.header)?;
 
         let state_provider = self.provider.state_by_block_hash(latest_header.hash())?;
-        let executor = self.executor_provider.executor(StateProviderDatabase::new(&state_provider), None);
+        let executor =
+            self.executor_provider.executor(StateProviderDatabase::new(&state_provider), None);
 
         let block = block.unseal();
         let mut accessed_blacklisted = None;

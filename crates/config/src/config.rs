@@ -393,7 +393,11 @@ pub struct PruneConfig {
 
 impl Default for PruneConfig {
     fn default() -> Self {
-        Self { block_interval: DEFAULT_BLOCK_INTERVAL, recent_sidecars_kept_blocks: 0, segments: PruneModes::none() }
+        Self {
+            block_interval: DEFAULT_BLOCK_INTERVAL,
+            recent_sidecars_kept_blocks: 0,
+            segments: PruneModes::none(),
+        }
     }
 }
 
@@ -411,14 +415,14 @@ impl PruneConfig {
             block_interval,
             recent_sidecars_kept_blocks,
             segments:
-            PruneModes {
-                sender_recovery,
-                transaction_lookup,
-                receipts,
-                account_history,
-                storage_history,
-                receipts_log_filter,
-            },
+                PruneModes {
+                    sender_recovery,
+                    transaction_lookup,
+                    receipts,
+                    account_history,
+                    storage_history,
+                    receipts_log_filter,
+                },
         } = other;
 
         // Merge block_interval, only update if it's the default interval
@@ -564,7 +568,7 @@ mod tests {
                 config_path,
                 toml::to_string(&config).expect("Failed to serialize config"),
             )
-                .expect("Failed to write config file");
+            .expect("Failed to write config file");
         })
     }
 
@@ -586,7 +590,7 @@ mod tests {
                 config_path,
                 toml::to_string(&config).expect("Failed to serialize config"),
             )
-                .expect("Failed to write config file");
+            .expect("Failed to write config file");
 
             // Load the config from the file
             let loaded_config = Config::from_path(config_path).unwrap();
@@ -607,7 +611,7 @@ mod tests {
                 config_path,
                 toml::to_string(&config).expect("Failed to serialize config"),
             )
-                .expect("Failed to write config file");
+            .expect("Failed to write config file");
 
             // Load the config from the file
             let loaded_config = Config::from_path(config_path).unwrap();

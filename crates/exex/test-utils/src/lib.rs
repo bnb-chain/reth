@@ -41,7 +41,7 @@ use reth_node_builder::{
 };
 use reth_node_core::node_config::NodeConfig;
 use reth_node_ethereum::{
-    node::{EthereumAddOns, EthereumNetworkBuilder, EthereumPayloadBuilder, EthereumParliaBuilder},
+    node::{EthereumAddOns, EthereumNetworkBuilder, EthereumParliaBuilder, EthereumPayloadBuilder},
     EthEngineTypes, EthEvmConfig,
 };
 use reth_payload_builder::noop::NoopPayloadBuilderService;

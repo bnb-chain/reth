@@ -127,7 +127,7 @@ mod tests {
             "--rollup.sequencer-http",
             "http://host:port",
         ])
-            .args;
+        .args;
         assert_eq!(args, expected_args);
     }
 
@@ -157,7 +157,7 @@ mod tests {
             "--rollup.sequencer-http",
             "http://host:port",
         ])
-            .args;
+        .args;
         assert_eq!(args, expected_args);
     }
 }

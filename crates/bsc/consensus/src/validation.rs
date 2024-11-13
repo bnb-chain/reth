@@ -1,7 +1,7 @@
+use alloy_eips::eip4844::{DATA_GAS_PER_BLOB, MAX_DATA_GAS_PER_BLOCK};
 use alloy_primitives::{Bloom, B256};
 use reth_chainspec::{EthChainSpec, EthereumHardfork, EthereumHardforks};
 use reth_consensus::ConsensusError;
-use alloy_eips::eip4844::{DATA_GAS_PER_BLOB, MAX_DATA_GAS_PER_BLOCK};
 use reth_primitives::{
     gas_spent_by_transactions, BlockWithSenders, GotExpected, Header, Receipt, SealedHeader,
 };

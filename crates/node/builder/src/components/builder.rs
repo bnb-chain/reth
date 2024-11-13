@@ -10,7 +10,7 @@ use reth_transaction_pool::TransactionPool;
 use crate::{
     components::{
         Components, ConsensusBuilder, ExecutorBuilder, NetworkBuilder, NodeComponents,
-        PayloadServiceBuilder, PoolBuilder, ParliaBuilder,
+        ParliaBuilder, PayloadServiceBuilder, PoolBuilder,
     },
     BuilderContext, ConfigureEvm, FullNodeTypes,
 };
@@ -322,8 +322,9 @@ where
     }
 
     /// Configures the parlia builder.
-    /// 
-    /// This accepts a [`ParliaBuilder`] instance that will be used to create the node's components for parlia.
+    ///
+    /// This accepts a [`ParliaBuilder`] instance that will be used to create the node's components
+    /// for parlia.
     pub fn parlia<PB>(
         self,
         parlia_builder: PB,

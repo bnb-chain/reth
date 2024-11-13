@@ -12,9 +12,8 @@ use reth_node_api::{
 };
 use reth_node_builder::{
     components::{
-        ComponentsBuilder, ConsensusBuilder,  ExecutorBuilder,
-        NetworkBuilder, ParliaBuilder, PayloadServiceBuilder, PoolBuilder,
-        PoolBuilderConfigOverrides,
+        ComponentsBuilder, ConsensusBuilder, ExecutorBuilder, NetworkBuilder, ParliaBuilder,
+        PayloadServiceBuilder, PoolBuilder, PoolBuilderConfigOverrides,
     },
     node::{FullNodeTypes, NodeTypes, NodeTypesWithEngine},
     rpc::{EngineValidatorBuilder, RethRpcAddOns, RpcAddOns, RpcHandle},
@@ -228,20 +227,20 @@ where
         let validator = TransactionValidationTaskExecutor::eth_builder(Arc::new(
             ctx.chain_spec().inner.clone(),
         ))
-            .with_head_timestamp(ctx.head().timestamp)
-            .kzg_settings(ctx.kzg_settings()?)
-            .with_additional_tasks(
-                pool_config_overrides
-                    .additional_validation_tasks
-                    .unwrap_or_else(|| ctx.config().txpool.additional_validation_tasks),
-            )
-            .build_with_tasks(ctx.provider().clone(), ctx.task_executor().clone(), blob_store.clone())
-            .map(|validator| {
-                OpTransactionValidator::new(validator)
-                    // In --dev mode we can't require gas fees because we're unable to decode
-                    // the L1 block info
-                    .require_l1_data_gas_fee(!ctx.config().dev.dev)
-            });
+        .with_head_timestamp(ctx.head().timestamp)
+        .kzg_settings(ctx.kzg_settings()?)
+        .with_additional_tasks(
+            pool_config_overrides
+                .additional_validation_tasks
+                .unwrap_or_else(|| ctx.config().txpool.additional_validation_tasks),
+        )
+        .build_with_tasks(ctx.provider().clone(), ctx.task_executor().clone(), blob_store.clone())
+        .map(|validator| {
+            OpTransactionValidator::new(validator)
+                // In --dev mode we can't require gas fees because we're unable to decode
+                // the L1 block info
+                .require_l1_data_gas_fee(!ctx.config().dev.dev)
+        });
 
         let transaction_pool = reth_transaction_pool::Pool::new(
             validator,
@@ -353,7 +352,7 @@ impl OpPayloadBuilder {
 impl<Node, Pool> PayloadServiceBuilder<Node, Pool> for OpPayloadBuilder
 where
     Node:
-    FullNodeTypes<Types: NodeTypesWithEngine<Engine = OpEngineTypes, ChainSpec = OpChainSpec>>,
+        FullNodeTypes<Types: NodeTypesWithEngine<Engine = OpEngineTypes, ChainSpec = OpChainSpec>>,
     Pool: TransactionPool + Unpin + 'static,
 {
     async fn spawn_payload_service(

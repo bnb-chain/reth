@@ -413,7 +413,8 @@ where
         let Self { eth_api_builder, engine_validator_builder, hooks, _pd: _ } = self;
 
         let engine_validator = engine_validator_builder.build(&ctx).await?;
-        let AddOnsContext { node, config, beacon_engine_handle, jwt_secret, bsc_trace_helper } = ctx;
+        let AddOnsContext { node, config, beacon_engine_handle, jwt_secret, bsc_trace_helper } =
+            ctx;
 
         let client = ClientVersionV1 {
             code: CLIENT_CODE,

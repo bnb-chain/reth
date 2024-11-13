@@ -1,6 +1,6 @@
 use crate::{
-    BlockNumReader, HeaderProvider, ReceiptProvider, ReceiptProviderIdExt,
-    SidecarsProvider, TransactionVariant, TransactionsProvider, WithdrawalsProvider,
+    BlockNumReader, HeaderProvider, ReceiptProvider, ReceiptProviderIdExt, SidecarsProvider,
+    TransactionVariant, TransactionsProvider, WithdrawalsProvider,
 };
 use alloy_eips::{BlockHashOrNumber, BlockId, BlockNumberOrTag};
 use alloy_primitives::{BlockNumber, Sealable, B256};

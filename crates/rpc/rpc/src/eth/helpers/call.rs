@@ -71,9 +71,7 @@ where
         for (sender, tx) in transactions {
             // check if the transaction is a system transaction
             // this should be done before return
-            if is_bsc &&
-                before_system_tx &&
-                is_system_transaction(&tx, *sender, block_env.coinbase)
+            if is_bsc && before_system_tx && is_system_transaction(&tx, *sender, block_env.coinbase)
             {
                 if let Some(trace_helper) = self.bsc_trace_helper.as_ref() {
                     // move block reward from the system address to the coinbase

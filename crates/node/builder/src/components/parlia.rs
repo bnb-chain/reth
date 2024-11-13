@@ -1,7 +1,7 @@
 //! Parlia component for the node builder.
 use crate::{BuilderContext, FullNodeTypes};
-use std::future::Future;
 use reth_bsc_consensus::Parlia;
+use std::future::Future;
 
 /// Needed for bsc parlia consensus.
 pub trait ParliaBuilder<Node: FullNodeTypes>: Send {

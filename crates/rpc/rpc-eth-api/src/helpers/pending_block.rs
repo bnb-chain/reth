@@ -445,12 +445,7 @@ pub trait LoadPendingBlock:
         // seal the block
         let block = Block {
             header,
-            body: BlockBody {
-                transactions: executed_txs,
-                ommers: vec![],
-                withdrawals,
-                sidecars,
-            },
+            body: BlockBody { transactions: executed_txs, ommers: vec![], withdrawals, sidecars },
         };
         Ok((SealedBlockWithSenders { block: block.seal_slow(), senders }, receipts))
     }

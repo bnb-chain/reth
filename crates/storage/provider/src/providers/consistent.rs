@@ -16,10 +16,16 @@ use reth_db::models::BlockNumberAddress;
 use reth_db_api::models::{AccountBeforeTx, StoredBlockBodyIndices};
 use reth_evm::ConfigureEvmEnv;
 use reth_execution_types::{BundleStateInit, ExecutionOutcome, RevertsInit};
-use reth_primitives::{Account, BlobSidecars, Block, BlockWithSenders, Header, Receipt, SealedBlock, SealedBlockWithSenders, SealedHeader, StorageEntry, TransactionMeta, TransactionSigned, TransactionSignedNoHash, Withdrawals};
+use reth_primitives::{
+    Account, BlobSidecars, Block, BlockWithSenders, Header, Receipt, SealedBlock,
+    SealedBlockWithSenders, SealedHeader, StorageEntry, TransactionMeta, TransactionSigned,
+    TransactionSignedNoHash, Withdrawals,
+};
 use reth_prune_types::{PruneCheckpoint, PruneSegment};
 use reth_stages_types::{StageCheckpoint, StageId};
-use reth_storage_api::{DatabaseProviderFactory, SidecarsProvider, StateProvider, StorageChangeSetReader};
+use reth_storage_api::{
+    DatabaseProviderFactory, SidecarsProvider, StateProvider, StorageChangeSetReader,
+};
 use reth_storage_errors::provider::ProviderResult;
 use revm::{
     db::states::PlainStorageRevert,

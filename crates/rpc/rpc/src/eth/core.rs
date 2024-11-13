@@ -4,11 +4,11 @@
 use std::sync::Arc;
 
 use crate::eth::EthTxBuilder;
+use alloy_eips::BlockNumberOrTag;
 use alloy_network::Ethereum;
 use alloy_primitives::U256;
 use derive_more::Deref;
 use reth_bsc_consensus::BscTraceHelper;
-use alloy_eips::BlockNumberOrTag;
 use reth_provider::{BlockReaderIdExt, CanonStateSubscriptions, ChainSpecProvider};
 use reth_rpc_eth_api::{
     helpers::{EthSigner, SpawnBlocking},
@@ -46,7 +46,11 @@ pub struct EthApi<Provider, Pool, Network, EvmConfig> {
 
 impl<Provider, Pool, Network, EvmConfig> Clone for EthApi<Provider, Pool, Network, EvmConfig> {
     fn clone(&self) -> Self {
-        Self { inner: self.inner.clone(), bsc_trace_helper: self.bsc_trace_helper.clone(), tx_resp_builder: EthTxBuilder }
+        Self {
+            inner: self.inner.clone(),
+            bsc_trace_helper: self.bsc_trace_helper.clone(),
+            tx_resp_builder: EthTxBuilder,
+        }
     }
 }
 
@@ -125,7 +129,11 @@ where
             ctx.config.proof_permits,
         );
 
-        Self { inner: Arc::new(inner), bsc_trace_helper: ctx.bsc_trace_helper.clone(), tx_resp_builder: EthTxBuilder }
+        Self {
+            inner: Arc::new(inner),
+            bsc_trace_helper: ctx.bsc_trace_helper.clone(),
+            tx_resp_builder: EthTxBuilder,
+        }
     }
 }
 

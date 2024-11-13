@@ -261,7 +261,7 @@ where
                     ctx.node_config().enable_prefetch,
                     ctx.node_config().enable_execution_cache,
                 );
-    
+
                 Either::Right(eth_service)
             }
             #[cfg(feature = "bsc")]
@@ -342,7 +342,6 @@ where
         #[cfg(feature = "bsc")]
         let bsc_trace_helper =
             Some(BscTraceHelper::new(Arc::new(ctx.components().parlia().clone())));
-
 
         let add_ons_ctx = AddOnsContext {
             node: ctx.node_adapter().clone(),

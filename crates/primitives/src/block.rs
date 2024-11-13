@@ -122,10 +122,8 @@ mod block_rlp {
 
     impl<'a> From<&'a Block> for HelperRef<'a, Header> {
         fn from(block: &'a Block) -> Self {
-            let Block {
-                header,
-                body: BlockBody { transactions, ommers, withdrawals, sidecars },
-            } = block;
+            let Block { header, body: BlockBody { transactions, ommers, withdrawals, sidecars } } =
+                block;
             Self {
                 header,
                 transactions,
@@ -154,23 +152,15 @@ mod block_rlp {
 
     impl Decodable for Block {
         fn decode(b: &mut &[u8]) -> alloy_rlp::Result<Self> {
-            let Helper { header, transactions, ommers, withdrawals, sidecars } =
-                Helper::decode(b)?;
-            Ok(Self {
-                header,
-                body: BlockBody { transactions, ommers, withdrawals, sidecars },
-            })
+            let Helper { header, transactions, ommers, withdrawals, sidecars } = Helper::decode(b)?;
+            Ok(Self { header, body: BlockBody { transactions, ommers, withdrawals, sidecars } })
         }
     }
 
     impl Decodable for SealedBlock {
         fn decode(b: &mut &[u8]) -> alloy_rlp::Result<Self> {
-            let Helper { header, transactions, ommers, withdrawals, sidecars } =
-                Helper::decode(b)?;
-            Ok(Self {
-                header,
-                body: BlockBody { transactions, ommers, withdrawals, sidecars },
-            })
+            let Helper { header, transactions, ommers, withdrawals, sidecars } = Helper::decode(b)?;
+            Ok(Self { header, body: BlockBody { transactions, ommers, withdrawals, sidecars } })
         }
     }
 
@@ -212,12 +202,7 @@ impl<'a> arbitrary::Arbitrary<'a> for Block {
 
         Ok(Self {
             header: u.arbitrary()?,
-            body: BlockBody {
-                transactions,
-                ommers,
-                withdrawals: u.arbitrary()?,
-                sidecars: None,
-            },
+            body: BlockBody { transactions, ommers, withdrawals: u.arbitrary()?, sidecars: None },
         })
     }
 }
@@ -686,12 +671,7 @@ impl<'a> arbitrary::Arbitrary<'a> for BlockBody {
             })
             .collect::<arbitrary::Result<Vec<_>>>()?;
 
-        Ok(Self {
-            transactions,
-            ommers,
-            sidecars: None,
-            withdrawals: u.arbitrary()?,
-        })
+        Ok(Self { transactions, ommers, sidecars: None, withdrawals: u.arbitrary()? })
     }
 }
 
@@ -701,9 +681,7 @@ pub(super) mod serde_bincode_compat {
     use alloc::{borrow::Cow, vec::Vec};
     use alloy_consensus::serde_bincode_compat::Header;
     use alloy_primitives::Address;
-    use reth_primitives_traits::{
-        serde_bincode_compat::SealedHeader, BlobSidecars, Withdrawals,
-    };
+    use reth_primitives_traits::{serde_bincode_compat::SealedHeader, BlobSidecars, Withdrawals};
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use serde_with::{DeserializeAs, SerializeAs};
 

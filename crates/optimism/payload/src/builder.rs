@@ -224,10 +224,10 @@ where
         attributes.payload_attributes.timestamp,
         &mut db,
     )
-        .map_err(|err| {
-            warn!(target: "payload_builder", %err, "missing create2 deployer, skipping block.");
-            PayloadBuilderError::other(OptimismPayloadBuilderError::ForceCreate2DeployerFail)
-        })?;
+    .map_err(|err| {
+        warn!(target: "payload_builder", %err, "missing create2 deployer, skipping block.");
+        PayloadBuilderError::other(OptimismPayloadBuilderError::ForceCreate2DeployerFail)
+    })?;
 
     let mut receipts = Vec::with_capacity(attributes.transactions.len());
     for sequencer_tx in &attributes.transactions {

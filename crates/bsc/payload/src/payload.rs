@@ -214,5 +214,3 @@ impl From<BscBuiltPayload> for ExecutionPayloadEnvelopeV4 {
         }
     }
 }
-
-

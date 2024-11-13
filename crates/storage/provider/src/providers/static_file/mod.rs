@@ -56,8 +56,8 @@ impl Deref for LoadedJar {
 mod tests {
     use super::*;
     use crate::{test_utils::create_test_provider_factory, HeaderProvider};
-    use alloy_eips::eip4844::BlobTransactionSidecar;
     use alloy_consensus::Transaction;
+    use alloy_eips::eip4844::BlobTransactionSidecar;
     use alloy_primitives::{BlockHash, TxNumber, B256, U256};
     use rand::seq::SliceRandom;
     use reth_db::{

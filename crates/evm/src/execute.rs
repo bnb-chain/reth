@@ -1,23 +1,25 @@
 //! Traits for execution.
 
 // Re-export execution types
-pub use reth_execution_errors::{
-    BlockExecutionError, BlockValidationError, InternalBlockExecutionError,
-};
-pub use reth_execution_types::{BlockExecutionInput, BlockExecutionOutput, ExecutionOutcome};
-pub use reth_storage_errors::provider::ProviderError;
-use revm::db::states::bundle_state::BundleRetention;
 use crate::system_calls::OnStateHook;
 use alloc::{boxed::Box, vec::Vec};
 use alloy_eips::eip7685::Requests;
 use alloy_primitives::BlockNumber;
 use core::{fmt::Display, marker::PhantomData};
 use reth_consensus::ConsensusError;
+pub use reth_execution_errors::{
+    BlockExecutionError, BlockValidationError, InternalBlockExecutionError,
+};
+pub use reth_execution_types::{BlockExecutionInput, BlockExecutionOutput, ExecutionOutcome};
 use reth_primitives::{BlockWithSenders, Header, Receipt};
 use reth_prune_types::PruneModes;
 use reth_revm::batch::BlockBatchRecord;
-use revm::{db::BundleState, State};
-use revm_primitives::{db::Database, U256, EvmState};
+pub use reth_storage_errors::provider::ProviderError;
+use revm::{
+    db::{states::bundle_state::BundleRetention, BundleState},
+    State,
+};
+use revm_primitives::{db::Database, EvmState, U256};
 use tokio::sync::mpsc::UnboundedSender;
 
 /// A general purpose executor trait that executes an input (e.g. block) and produces an output
@@ -282,7 +284,11 @@ where
     type BatchExecutor<DB: Database<Error: Into<ProviderError> + Display>> =
         BasicBatchExecutor<F::Strategy<DB>, DB>;
 
-    fn executor<DB>(&self, db: DB, _prefetch_rx: Option<UnboundedSender<EvmState>>) -> Self::Executor<DB>
+    fn executor<DB>(
+        &self,
+        db: DB,
+        _prefetch_rx: Option<UnboundedSender<EvmState>>,
+    ) -> Self::Executor<DB>
     where
         DB: Database<Error: Into<ProviderError> + Display>,
     {
@@ -703,7 +709,8 @@ mod tests {
         let provider = BasicBlockExecutorProvider::new(strategy_factory);
         let db = CacheDB::<EmptyDBTyped<ProviderError>>::default();
         let executor = provider.executor(db, None);
-        let result = executor.execute(BlockExecutionInput::new(&Default::default(), U256::ZERO, None));
+        let result =
+            executor.execute(BlockExecutionInput::new(&Default::default(), U256::ZERO, None));
 
         assert!(result.is_ok());
         let block_execution_output = result.unwrap();

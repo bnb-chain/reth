@@ -21,10 +21,7 @@ use reth_optimism_chainspec::OpChainSpec;
 use reth_optimism_consensus::validate_block_post_execution;
 use reth_optimism_forks::OptimismHardfork;
 use reth_primitives::{BlockWithSenders, Header, Receipt, TxType};
-use reth_revm::{
-    db::states::{ StorageSlot},
-    Database, State,
-};
+use reth_revm::{db::states::StorageSlot, Database, State};
 use revm_primitives::{
     db::DatabaseCommit, BlockEnv, CfgEnvWithHandlerCfg, EnvWithHandlerCfg, ResultAndState, U256,
 };
@@ -57,10 +54,10 @@ impl<EvmConfig> OpExecutionStrategyFactory<EvmConfig> {
 impl<EvmConfig> BlockExecutionStrategyFactory for OpExecutionStrategyFactory<EvmConfig>
 where
     EvmConfig:
-    Clone + Unpin + Sync + Send + 'static + ConfigureEvm<Header = alloy_consensus::Header>,
+        Clone + Unpin + Sync + Send + 'static + ConfigureEvm<Header = alloy_consensus::Header>,
 {
     type Strategy<DB: Database<Error: Into<ProviderError> + Display>> =
-    OpExecutionStrategy<DB, EvmConfig>;
+        OpExecutionStrategy<DB, EvmConfig>;
 
     fn create_strategy<DB>(&self, db: DB) -> Self::Strategy<DB>
     where
@@ -177,7 +174,7 @@ where
                     transaction_gas_limit: transaction.gas_limit(),
                     block_available_gas,
                 }
-                    .into())
+                .into())
             }
 
             // An optimism block should never contain blob transactions.
@@ -238,7 +235,7 @@ where
                 deposit_receipt_version: (transaction.is_deposit() &&
                     self.chain_spec
                         .is_fork_active_at_timestamp(OptimismHardfork::Canyon, block.timestamp))
-                    .then_some(1),
+                .then_some(1),
             });
         }
 
@@ -376,7 +373,7 @@ mod tests {
             StorageValue::from_str(
                 "0x0000000000000000000000000000000000001db0000d27300000000000000005",
             )
-                .unwrap(),
+            .unwrap(),
         );
 
         db.insert_account(L1_BLOCK_CONTRACT, l1_block_contract_account, None, l1_block_storage);

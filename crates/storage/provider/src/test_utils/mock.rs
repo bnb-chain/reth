@@ -21,8 +21,8 @@ use reth_evm::ConfigureEvmEnv;
 use reth_execution_types::ExecutionOutcome;
 use reth_node_types::NodeTypes;
 use reth_primitives::{
-    Account, BlobSidecars, Block, BlockWithSenders, Bytecode, GotExpected, Header, Receipt, SealedBlock,
-    SealedBlockWithSenders, SealedHeader, TransactionMeta, TransactionSigned,
+    Account, BlobSidecars, Block, BlockWithSenders, Bytecode, GotExpected, Header, Receipt,
+    SealedBlock, SealedBlockWithSenders, SealedHeader, TransactionMeta, TransactionSigned,
     TransactionSignedNoHash, Withdrawals,
 };
 use reth_stages_types::{StageCheckpoint, StageId};

@@ -335,7 +335,17 @@ impl<Provider, Pool, Network, Tasks, Events, EvmConfig, BlockExecutor, Consensus
         block_executor: BlockExecutor,
         consensus: Consensus,
     ) -> Self {
-        Self { provider, pool, network, executor, events, evm_config, block_executor, consensus, bsc_trace_helper: None }
+        Self {
+            provider,
+            pool,
+            network,
+            executor,
+            events,
+            evm_config,
+            block_executor,
+            consensus,
+            bsc_trace_helper: None,
+        }
     }
 
     /// Configure the provider instance.
@@ -346,8 +356,17 @@ impl<Provider, Pool, Network, Tasks, Events, EvmConfig, BlockExecutor, Consensus
     where
         P: BlockReader + StateProviderFactory + EvmEnvProvider + 'static,
     {
-        let Self { pool, network, executor, events, evm_config, block_executor, consensus, bsc_trace_helper, .. } =
-            self;
+        let Self {
+            pool,
+            network,
+            executor,
+            events,
+            evm_config,
+            block_executor,
+            consensus,
+            bsc_trace_helper,
+            ..
+        } = self;
         RpcModuleBuilder {
             provider,
             network,
@@ -370,7 +389,15 @@ impl<Provider, Pool, Network, Tasks, Events, EvmConfig, BlockExecutor, Consensus
         P: TransactionPool + 'static,
     {
         let Self {
-            provider, network, executor, events, evm_config, block_executor, consensus, bsc_trace_helper, ..
+            provider,
+            network,
+            executor,
+            events,
+            evm_config,
+            block_executor,
+            consensus,
+            bsc_trace_helper,
+            ..
         } = self;
         RpcModuleBuilder {
             provider,
@@ -403,7 +430,15 @@ impl<Provider, Pool, Network, Tasks, Events, EvmConfig, BlockExecutor, Consensus
         Consensus,
     > {
         let Self {
-            provider, executor, events, network, evm_config, block_executor, consensus, bsc_trace_helper, ..
+            provider,
+            executor,
+            events,
+            network,
+            evm_config,
+            block_executor,
+            consensus,
+            bsc_trace_helper,
+            ..
         } = self;
         RpcModuleBuilder {
             provider,
@@ -427,7 +462,15 @@ impl<Provider, Pool, Network, Tasks, Events, EvmConfig, BlockExecutor, Consensus
         N: NetworkInfo + Peers + 'static,
     {
         let Self {
-            provider, pool, executor, events, evm_config, block_executor, consensus, bsc_trace_helper, ..
+            provider,
+            pool,
+            executor,
+            events,
+            evm_config,
+            block_executor,
+            consensus,
+            bsc_trace_helper,
+            ..
         } = self;
         RpcModuleBuilder {
             provider,
@@ -460,7 +503,15 @@ impl<Provider, Pool, Network, Tasks, Events, EvmConfig, BlockExecutor, Consensus
         Consensus,
     > {
         let Self {
-            provider, pool, executor, events, evm_config, block_executor, consensus, bsc_trace_helper, ..
+            provider,
+            pool,
+            executor,
+            events,
+            evm_config,
+            block_executor,
+            consensus,
+            bsc_trace_helper,
+            ..
         } = self;
         RpcModuleBuilder {
             provider,
@@ -483,8 +534,17 @@ impl<Provider, Pool, Network, Tasks, Events, EvmConfig, BlockExecutor, Consensus
     where
         T: TaskSpawner + 'static,
     {
-        let Self { pool, network, provider, events, evm_config, block_executor, consensus, bsc_trace_helper, .. } =
-            self;
+        let Self {
+            pool,
+            network,
+            provider,
+            events,
+            evm_config,
+            block_executor,
+            consensus,
+            bsc_trace_helper,
+            ..
+        } = self;
         RpcModuleBuilder {
             provider,
             network,
@@ -514,8 +574,17 @@ impl<Provider, Pool, Network, Tasks, Events, EvmConfig, BlockExecutor, Consensus
         BlockExecutor,
         Consensus,
     > {
-        let Self { pool, network, provider, events, evm_config, block_executor, consensus, bsc_trace_helper, .. } =
-            self;
+        let Self {
+            pool,
+            network,
+            provider,
+            events,
+            evm_config,
+            block_executor,
+            consensus,
+            bsc_trace_helper,
+            ..
+        } = self;
         RpcModuleBuilder {
             provider,
             network,
@@ -538,7 +607,15 @@ impl<Provider, Pool, Network, Tasks, Events, EvmConfig, BlockExecutor, Consensus
         E: CanonStateSubscriptions + 'static,
     {
         let Self {
-            provider, pool, executor, network, evm_config, block_executor, consensus, bsc_trace_helper, ..
+            provider,
+            pool,
+            executor,
+            network,
+            evm_config,
+            block_executor,
+            consensus,
+            bsc_trace_helper,
+            ..
         } = self;
         RpcModuleBuilder {
             provider,
@@ -561,8 +638,17 @@ impl<Provider, Pool, Network, Tasks, Events, EvmConfig, BlockExecutor, Consensus
     where
         E: ConfigureEvm + 'static,
     {
-        let Self { provider, pool, executor, network, events, block_executor, consensus, bsc_trace_helper, .. } =
-            self;
+        let Self {
+            provider,
+            pool,
+            executor,
+            network,
+            events,
+            block_executor,
+            consensus,
+            bsc_trace_helper,
+            ..
+        } = self;
         RpcModuleBuilder {
             provider,
             network,
@@ -584,7 +670,17 @@ impl<Provider, Pool, Network, Tasks, Events, EvmConfig, BlockExecutor, Consensus
     where
         BE: BlockExecutorProvider,
     {
-        let Self { provider, network, pool, executor, events, evm_config, consensus, bsc_trace_helper, .. } = self;
+        let Self {
+            provider,
+            network,
+            pool,
+            executor,
+            events,
+            evm_config,
+            consensus,
+            bsc_trace_helper,
+            ..
+        } = self;
         RpcModuleBuilder {
             provider,
             network,
@@ -603,8 +699,17 @@ impl<Provider, Pool, Network, Tasks, Events, EvmConfig, BlockExecutor, Consensus
         self,
         consensus: C,
     ) -> RpcModuleBuilder<Provider, Pool, Network, Tasks, Events, EvmConfig, BlockExecutor, C> {
-        let Self { provider, network, pool, executor, events, evm_config, block_executor, bsc_trace_helper, .. } =
-            self;
+        let Self {
+            provider,
+            network,
+            pool,
+            executor,
+            events,
+            evm_config,
+            block_executor,
+            bsc_trace_helper,
+            ..
+        } = self;
         RpcModuleBuilder {
             provider,
             network,
@@ -614,17 +719,27 @@ impl<Provider, Pool, Network, Tasks, Events, EvmConfig, BlockExecutor, Consensus
             evm_config,
             block_executor,
             consensus,
-            bsc_trace_helper
+            bsc_trace_helper,
         }
     }
 
     /// Configure the `bsc_trace_helper`` implementation.
     pub fn with_bsc_trace_helper(
         self,
-        bsc_trace_helper: Option<BscTraceHelper>
-    ) -> RpcModuleBuilder<Provider, Pool, Network, Tasks, Events, EvmConfig, BlockExecutor, Consensus> {
-        let Self { provider, network, pool, executor, events, evm_config, block_executor, consensus, .. } =
-            self;
+        bsc_trace_helper: Option<BscTraceHelper>,
+    ) -> RpcModuleBuilder<Provider, Pool, Network, Tasks, Events, EvmConfig, BlockExecutor, Consensus>
+    {
+        let Self {
+            provider,
+            network,
+            pool,
+            executor,
+            events,
+            evm_config,
+            block_executor,
+            consensus,
+            ..
+        } = self;
         RpcModuleBuilder {
             provider,
             network,
@@ -634,7 +749,7 @@ impl<Provider, Pool, Network, Tasks, Events, EvmConfig, BlockExecutor, Consensus
             evm_config,
             block_executor,
             consensus,
-            bsc_trace_helper
+            bsc_trace_helper,
         }
     }
 }

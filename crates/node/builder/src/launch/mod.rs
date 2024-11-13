@@ -20,13 +20,13 @@ use reth_blockchain_tree::{noop::NoopBlockchainTree, BlockchainTreeConfig};
 use reth_bsc_consensus::BscTraceHelper;
 #[cfg(feature = "bsc")]
 use reth_bsc_engine::ParliaEngineBuilder;
-#[cfg(feature = "bsc")]
-use reth_network_api::EngineRxProvider;
 use reth_chainspec::{EthChainSpec, EthereumHardforks};
 use reth_consensus_debug_client::{DebugConsensusClient, EtherscanBlockProvider, RpcBlockProvider};
 use reth_engine_util::EngineMessageStreamExt;
 use reth_exex::ExExManagerHandle;
 use reth_network::{BlockDownloaderProvider, NetworkEventListenerProvider};
+#[cfg(feature = "bsc")]
+use reth_network_api::EngineRxProvider;
 use reth_node_api::{AddOnsContext, FullNodeTypes, NodeTypesWithDB, NodeTypesWithEngine};
 use reth_node_core::{
     dirs::{ChainPath, DataDirPath},

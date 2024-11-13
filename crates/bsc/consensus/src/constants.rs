@@ -1,5 +1,5 @@
-use alloy_primitives::U256;
 use alloy_consensus::constants::ETH_TO_WEI;
+use alloy_primitives::U256;
 
 /// Fixed number of extra-data prefix bytes reserved for signer vanity
 pub const EXTRA_VANITY_LEN: usize = 32;

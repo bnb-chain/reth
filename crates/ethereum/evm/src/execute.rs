@@ -187,8 +187,8 @@ where
             // TODO: add prefetch tx
             // if let Some(tx) = tx.as_ref() {
             //     tx.send(state.clone()).unwrap_or_else(|err| {
-            //         debug!(target: "evm_executor", ?err, "Failed to send post state to prefetch channel")
-            //     });
+            //         debug!(target: "evm_executor", ?err, "Failed to send post state to prefetch
+            // channel")     });
             // }
 
             evm.db_mut().commit(state);

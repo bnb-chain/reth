@@ -60,7 +60,7 @@ use reth_node_core::{args::RpcServerArgs, node_config::NodeConfig};
 use reth_node_ethereum::{
     node::{
         EthereumConsensusBuilder, EthereumExecutorBuilder, EthereumNetworkBuilder,
-        EthereumPoolBuilder, EthereumParliaBuilder
+        EthereumParliaBuilder, EthereumPoolBuilder,
     },
     EthEvmConfig,
 };

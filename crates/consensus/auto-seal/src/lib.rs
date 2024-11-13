@@ -391,12 +391,8 @@ impl StorageInner {
         // root here
 
         let Block { mut header, body, .. } = block.block;
-        let body = BlockBody {
-            transactions: body.transactions,
-            ommers,
-            withdrawals,
-            sidecars: None,
-        };
+        let body =
+            BlockBody { transactions: body.transactions, ommers, withdrawals, sidecars: None };
         trace!(target: "consensus::auto", ?execution_outcome, ?header, ?body, "executed block, calculating state root and completing header");
 
         // now we need to update certain header fields with the results of the execution

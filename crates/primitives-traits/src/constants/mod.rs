@@ -17,7 +17,6 @@ pub const MAXIMUM_EXTRA_DATA_SIZE: usize = 32;
 #[cfg(feature = "bsc")]
 pub const MAXIMUM_EXTRA_DATA_SIZE: usize = 1024 * 1024;
 
-
 /// Initial base fee as defined in [EIP-1559](https://eips.ethereum.org/EIPS/eip-1559)
 #[cfg(not(feature = "bsc"))]
 pub const EIP1559_INITIAL_BASE_FEE: u64 = 1_000_000_000;

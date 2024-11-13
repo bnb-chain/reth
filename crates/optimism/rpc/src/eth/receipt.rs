@@ -48,7 +48,7 @@ where
             &receipts,
             l1_block_info,
         )?
-            .build())
+        .build())
     }
 }
 
@@ -285,7 +285,7 @@ mod test {
         let tx_0 = TransactionSigned::decode_2718(
             &mut TX_SET_L1_BLOCK_OP_MAINNET_BLOCK_124665056.as_slice(),
         )
-            .unwrap();
+        .unwrap();
 
         let tx_1 = TransactionSigned::decode_2718(&mut TX_1_OP_MAINNET_BLOCK_124665056.as_slice())
             .unwrap();

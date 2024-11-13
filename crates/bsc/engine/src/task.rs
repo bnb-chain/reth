@@ -11,10 +11,10 @@ use alloy_rpc_types::{engine::ForkchoiceState, BlockId, RpcBlockHash};
 use reth_beacon_consensus::{
     BeaconEngineMessage, EngineNodeTypes, ForkchoiceStatus, MIN_BLOCKS_FOR_PIPELINE_RUN,
 };
-use reth_engine_primitives::EngineApiMessageVersion;
 use reth_bsc_consensus::Parlia;
 use reth_bsc_evm::SnapshotReader;
 use reth_chainspec::EthChainSpec;
+use reth_engine_primitives::EngineApiMessageVersion;
 use reth_network_api::events::EngineMessage;
 use reth_network_p2p::{
     headers::client::{HeadersClient, HeadersDirection, HeadersRequest},

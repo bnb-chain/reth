@@ -30,7 +30,9 @@ use reth_db_api::{
     },
     table::{Decode, DupSort, Encode, Table},
 };
-use reth_primitives::{parlia::Snapshot, Account, Bytecode, Header, Receipt, StorageEntry, TransactionSignedNoHash};
+use reth_primitives::{
+    parlia::Snapshot, Account, Bytecode, Header, Receipt, StorageEntry, TransactionSignedNoHash,
+};
 use reth_primitives_traits::{BlobSidecars, IntegerList};
 use reth_prune_types::{PruneCheckpoint, PruneSegment};
 use reth_stages_types::StageCheckpoint;

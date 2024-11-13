@@ -8,23 +8,23 @@ use reth_bsc_consensus::Parlia;
 use reth_bsc_engine::{BscEngineTypes, BscEngineValidator};
 use reth_bsc_evm::{BscEvmConfig, BscExecutorProvider};
 use reth_bsc_payload_builder::{BscBuiltPayload, BscPayloadBuilderAttributes};
+use reth_ethereum_engine_primitives::EthPayloadAttributes;
 use reth_network::NetworkHandle;
-use reth_primitives::{Block, Header};
 use reth_node_api::{
     AddOnsContext, ConfigureEvm, EngineValidator, FullNodeComponents, NodePrimitives,
     NodeTypesWithDB,
 };
 use reth_node_builder::{
     components::{
-        ComponentsBuilder, ConsensusBuilder, ExecutorBuilder, NetworkBuilder,
-        PayloadServiceBuilder, PoolBuilder, ParliaBuilder,
+        ComponentsBuilder, ConsensusBuilder, ExecutorBuilder, NetworkBuilder, ParliaBuilder,
+        PayloadServiceBuilder, PoolBuilder,
     },
+    node::{FullNodeTypes, NodeTypes, NodeTypesWithEngine},
     rpc::{EngineValidatorBuilder, RpcAddOns},
     BuilderContext, Node, NodeAdapter, NodeComponentsBuilder, PayloadBuilderConfig, PayloadTypes,
-    node::{FullNodeTypes, NodeTypes, NodeTypesWithEngine},
 };
-use reth_ethereum_engine_primitives::EthPayloadAttributes;
 use reth_payload_builder::{PayloadBuilderHandle, PayloadBuilderService};
+use reth_primitives::{Block, Header};
 use reth_provider::CanonStateSubscriptions;
 use reth_rpc::EthApi;
 use reth_tracing::tracing::{debug, info};
@@ -98,7 +98,6 @@ pub type BscAddOns<N> = RpcAddOns<
     >,
     BscEngineValidatorBuilder,
 >;
-
 
 impl<Types, N> Node<N> for BscNode
 where

@@ -6,11 +6,11 @@ use alloc::sync::Arc;
 use std::sync::Arc;
 
 use alloy_chains::Chain;
+use alloy_consensus::constants::DEV_GENESIS_HASH;
 use alloy_primitives::U256;
 use once_cell::sync::Lazy;
 use reth_bsc_forks::DEV_HARDFORKS;
 use reth_chainspec::{once_cell_set, BaseFeeParams, BaseFeeParamsKind, ChainSpec};
-use alloy_consensus::constants::DEV_GENESIS_HASH;
 
 use crate::BscChainSpec;
 

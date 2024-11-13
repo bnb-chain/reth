@@ -1,7 +1,9 @@
 use crate::BlockExecutionOutput;
 use alloy_eips::eip7685::Requests;
 use alloy_primitives::{Address, BlockNumber, Bloom, Log, B256, U256};
-use reth_primitives::{logs_bloom, parlia::Snapshot, Account, Bytecode, Receipt, Receipts, StorageEntry};
+use reth_primitives::{
+    logs_bloom, parlia::Snapshot, Account, Bytecode, Receipt, Receipts, StorageEntry,
+};
 use reth_trie::HashedPostState;
 use revm::{
     db::{states::BundleState, BundleAccount},

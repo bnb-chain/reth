@@ -85,7 +85,7 @@ where
             if chain_spec.is_optimism() { EngineApiKind::OpStack } else { EngineApiKind::Ethereum };
 
         let persistence_handle =
-        PersistenceHandle::spawn_service(provider, pruner, sync_metrics_tx, false);
+            PersistenceHandle::spawn_service(provider, pruner, sync_metrics_tx, false);
         let payload_validator = ExecutionPayloadValidator::new(chain_spec);
 
         let canonical_in_memory_state = blockchain_db.canonical_in_memory_state();
