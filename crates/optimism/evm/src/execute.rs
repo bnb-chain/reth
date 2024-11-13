@@ -27,6 +27,8 @@ use revm_primitives::{
 };
 use std::{collections::HashMap, fmt::Display, str::FromStr};
 use tracing::trace;
+use tokio::sync::mpsc::UnboundedSender;
+use revm_primitives::EvmState;
 
 /// Factory for [`OpExecutionStrategy`].
 #[derive(Debug, Clone)]
@@ -154,6 +156,7 @@ where
         &mut self,
         block: &BlockWithSenders,
         total_difficulty: U256,
+        _prefetch_rx: Option<UnboundedSender<EvmState>>,
     ) -> Result<ExecuteOutput, Self::Error> {
         let env = self.evm_env_for_block(&block.header, total_difficulty);
         let mut evm = self.evm_config.evm_with_env(&mut self.state, env);

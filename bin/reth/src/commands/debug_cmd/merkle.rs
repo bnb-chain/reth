@@ -157,7 +157,7 @@ impl<C: ChainSpecParser<ChainSpec = ChainSpec>> Command<C> {
                     provider_rw.tx_ref(),
                     provider_rw.static_file_provider().clone(),
                 ),
-            ));
+            ), None);
             executor.execute_and_verify_one((&sealed_block.clone().unseal(), td, None).into())?;
             let execution_outcome = executor.finalize();
 

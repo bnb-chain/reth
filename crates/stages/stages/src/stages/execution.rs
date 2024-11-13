@@ -223,7 +223,7 @@ where
             provider.tx_ref(),
             provider.static_file_provider(),
         ));
-        let mut executor = self.executor_provider.batch_executor(db);
+        let mut executor = self.executor_provider.batch_executor(db, None);
         executor.set_tip(max_block);
         executor.set_prune_modes(prune_modes);
 

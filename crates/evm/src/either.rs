@@ -44,13 +44,13 @@ where
         }
     }
 
-    fn batch_executor<DB>(&self, db: DB) -> Self::BatchExecutor<DB>
+    fn batch_executor<DB>(&self, db: DB, prefetch_tx: Option<UnboundedSender<EvmState>>) -> Self::BatchExecutor<DB>
     where
         DB: Database<Error: Into<ProviderError> + Display>,
     {
         match self {
-            Self::Left(a) => Either::Left(a.batch_executor(db)),
-            Self::Right(b) => Either::Right(b.batch_executor(db)),
+            Self::Left(a) => Either::Left(a.batch_executor(db, prefetch_tx)),
+            Self::Right(b) => Either::Right(b.batch_executor(db, prefetch_tx)),
         }
     }
 }

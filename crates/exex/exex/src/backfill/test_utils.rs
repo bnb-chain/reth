@@ -204,7 +204,7 @@ where
     let executor =
         EthExecutorProvider::ethereum(chain_spec).batch_executor(StateProviderDatabase::new(
             LatestStateProviderRef::new(provider.tx_ref(), provider.static_file_provider()),
-        ));
+        ), None);
 
     let mut execution_outcome = executor.execute_and_verify_batch(vec![
         (&block1, U256::ZERO, None).into(),

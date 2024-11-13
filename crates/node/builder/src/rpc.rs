@@ -9,7 +9,6 @@ use std::{
 
 use alloy_rpc_types::engine::ClientVersionV1;
 use futures::TryFutureExt;
-// TODO: use reth_bsc_consensus::BscTraceHelper;
 use reth_node_api::{
     AddOnsContext, EngineValidator, FullNodeComponents, NodeAddOns, NodeTypes, NodeTypesWithEngine,
 };

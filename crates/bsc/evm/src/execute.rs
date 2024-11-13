@@ -142,11 +142,11 @@ where
         self.bsc_executor(db, prefetch_tx)
     }
 
-    fn batch_executor<DB>(&self, db: DB) -> Self::BatchExecutor<DB>
+    fn batch_executor<DB>(&self, db: DB, prefetch_tx: Option<UnboundedSender<EvmState>>) -> Self::BatchExecutor<DB>
     where
         DB: Database<Error: Into<ProviderError> + Display>,
     {
-        let executor = self.bsc_executor(db, None);
+        let executor = self.bsc_executor(db, prefetch_tx);
         BscBatchExecutor {
             executor,
             batch_record: BlockBatchRecord::default(),
@@ -245,7 +245,6 @@ where
             })?;
 
             if let Some(tx) = tx.as_ref() {
-                // let post_state = HashedPostState::from_state(state.clone());
                 tx.send(state.clone()).unwrap_or_else(|err| {
                     debug!(target: "evm_executor", ?err, "Failed to send post state to prefetch channel")
                 });

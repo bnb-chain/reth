@@ -166,6 +166,7 @@ where
         &mut self,
         _block: &BlockWithSenders,
         _total_difficulty: U256,
+        _tx: Option<UnboundedSender<EvmState>>,
     ) -> Result<ExecuteOutput, Self::Error> {
         Ok(ExecuteOutput { receipts: vec![], gas_used: 0 })
     }
