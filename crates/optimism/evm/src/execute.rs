@@ -23,12 +23,12 @@ use reth_optimism_forks::OptimismHardfork;
 use reth_primitives::{BlockWithSenders, Header, Receipt, TxType};
 use reth_revm::{db::states::StorageSlot, Database, State};
 use revm_primitives::{
-    db::DatabaseCommit, BlockEnv, CfgEnvWithHandlerCfg, EnvWithHandlerCfg, ResultAndState, U256,
+    db::DatabaseCommit, BlockEnv, CfgEnvWithHandlerCfg, EnvWithHandlerCfg, EvmState,
+    ResultAndState, U256,
 };
 use std::{collections::HashMap, fmt::Display, str::FromStr};
-use tracing::trace;
 use tokio::sync::mpsc::UnboundedSender;
-use revm_primitives::EvmState;
+use tracing::trace;
 
 /// Factory for [`OpExecutionStrategy`].
 #[derive(Debug, Clone)]

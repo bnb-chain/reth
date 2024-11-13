@@ -152,12 +152,13 @@ impl<C: ChainSpecParser<ChainSpec = ChainSpec>> Command<C> {
             provider_rw.insert_block(sealed_block.clone())?;
 
             td += sealed_block.difficulty;
-            let mut executor = executor_provider.batch_executor(StateProviderDatabase::new(
-                LatestStateProviderRef::new(
+            let mut executor = executor_provider.batch_executor(
+                StateProviderDatabase::new(LatestStateProviderRef::new(
                     provider_rw.tx_ref(),
                     provider_rw.static_file_provider().clone(),
-                ),
-            ), None);
+                )),
+                None,
+            );
             executor.execute_and_verify_one((&sealed_block.clone().unseal(), td, None).into())?;
             let execution_outcome = executor.finalize();
 

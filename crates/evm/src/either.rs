@@ -44,7 +44,11 @@ where
         }
     }
 
-    fn batch_executor<DB>(&self, db: DB, prefetch_tx: Option<UnboundedSender<EvmState>>) -> Self::BatchExecutor<DB>
+    fn batch_executor<DB>(
+        &self,
+        db: DB,
+        prefetch_tx: Option<UnboundedSender<EvmState>>,
+    ) -> Self::BatchExecutor<DB>
     where
         DB: Database<Error: Into<ProviderError> + Display>,
     {

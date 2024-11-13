@@ -45,7 +45,11 @@ impl BlockExecutorProvider for MockExecutorProvider {
         self.clone()
     }
 
-    fn batch_executor<DB>(&self, _: DB, _: Option<UnboundedSender<EvmState>>) -> Self::BatchExecutor<DB>
+    fn batch_executor<DB>(
+        &self,
+        _: DB,
+        _: Option<UnboundedSender<EvmState>>,
+    ) -> Self::BatchExecutor<DB>
     where
         DB: Database<Error: Into<ProviderError> + Display>,
     {

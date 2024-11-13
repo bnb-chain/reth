@@ -72,9 +72,12 @@ where
             "Executing block range"
         );
 
-        let mut executor = self.executor.batch_executor(StateProviderDatabase::new(
-            self.provider.history_by_block_number(self.range.start().saturating_sub(1))?,
-        ), None);
+        let mut executor = self.executor.batch_executor(
+            StateProviderDatabase::new(
+                self.provider.history_by_block_number(self.range.start().saturating_sub(1))?,
+            ),
+            None,
+        );
         executor.set_prune_modes(self.prune_modes.clone());
 
         let mut fetch_block_duration = Duration::default();
