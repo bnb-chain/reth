@@ -24,7 +24,7 @@ jobs:
       matrix:
         bin:
           - cargo run --bin reth --features "dev"
-          - cargo run --bin op-reth --features "optimism opbnb dev" --manifest-path crates/optimism/bin/Cargo.toml
+          - cargo run --bin op-reth --features "optimism opbnb" --manifest-path crates/optimism/bin/Cargo.toml
           - cargo run --bin bsc-reth --features "bsc" --manifest-path crates/bsc/bin/Cargo.toml
     steps:
       - uses: dtolnay/rust-toolchain@stable
