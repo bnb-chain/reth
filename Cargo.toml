@@ -553,7 +553,7 @@ zstd = "0.13"
 metrics = "0.24.0"
 metrics-derive = "0.1"
 metrics-exporter-prometheus = { version = "0.16.0", default-features = false }
-metrics-process = "2.1.0"
+metrics-process = { version = "2.3.1"} 
 metrics-util = { default-features = false, version = "0.18.0" }
 
 # proc-macros
