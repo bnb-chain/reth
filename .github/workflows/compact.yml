@@ -14,19 +14,22 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  TOOL_CHAIN: "1.82"
 
 name: compact-codec
 jobs:
   compact-codec:
-    runs-on:
-      group: Reth
+    runs-on: [ bnb-chain-ap-qa-cicd-runners ]
     strategy:
       matrix:
         bin:
           - cargo run --bin reth --features "dev"
           - cargo run --bin op-reth --features "optimism dev" --manifest-path crates/optimism/bin/Cargo.toml
+          - cargo run --bin bsc-reth --features "bsc dev" --manifest-path crates/bsc/bin/Cargo.toml
     steps:
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.TOOL_CHAIN }}
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
