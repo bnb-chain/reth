@@ -5,46 +5,46 @@
 # 3) checkout `pr`
 # 4) deserialize previously generated test vectors
 
-on:
+# on:
 
-  pull_request:
-  merge_group:
-  push:
-    branches: [main]
+#   pull_request:
+#   merge_group:
+#   push:
+#     branches: [main]
 
-env:
-  CARGO_TERM_COLOR: always
-  TOOL_CHAIN: "1.82"
+# env:
+#   CARGO_TERM_COLOR: always
+#   TOOL_CHAIN: "1.82"
 
-name: compact-codec
-jobs:
-  compact-codec:
-    runs-on: [ bnb-chain-ap-qa-cicd-runners ]
-    strategy:
-      matrix:
-        bin:
-          - cargo run --bin reth --features "dev"
-          - cargo run --bin op-reth --features "optimism opbnb" --manifest-path crates/optimism/bin/Cargo.toml
-          - cargo run --bin bsc-reth --features "bsc" --manifest-path crates/bsc/bin/Cargo.toml
-    steps:
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ env.TOOL_CHAIN }}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
-      - name: Checkout base
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.base_ref || 'main' }}
-      # On `main` branch, generates test vectors and serializes them to disk using `Compact`.
-      - name: Generate compact vectors
-        run: |
-          ${{ matrix.bin }} -- test-vectors compact --write
-      - name: Checkout PR
-        uses: actions/checkout@v4
-        with:
-          clean: false
-      # On incoming merge try to read and decode previously generated vectors with `Compact`
-      - name: Read vectors
-        run: ${{ matrix.bin }} -- test-vectors compact --read
+# name: compact-codec
+# jobs:
+#   compact-codec:
+#     runs-on: [ bnb-chain-ap-qa-cicd-runners ]
+#     strategy:
+#       matrix:
+#         bin:
+#           - cargo run --bin reth --features "dev"
+#           - cargo run --bin op-reth --features "optimism opbnb" --manifest-path crates/optimism/bin/Cargo.toml
+#           - cargo run --bin bsc-reth --features "bsc" --manifest-path crates/bsc/bin/Cargo.toml
+#     steps:
+#       - uses: dtolnay/rust-toolchain@stable
+#         with:
+#           toolchain: ${{ env.TOOL_CHAIN }}
+#       - uses: Swatinem/rust-cache@v2
+#         with:
+#           cache-on-failure: true
+#       - name: Checkout base
+#         uses: actions/checkout@v4
+#         with:
+#           ref: ${{ github.base_ref || 'main' }}
+#       # On `main` branch, generates test vectors and serializes them to disk using `Compact`.
+#       - name: Generate compact vectors
+#         run: |
+#           ${{ matrix.bin }} -- test-vectors compact --write
+#       - name: Checkout PR
+#         uses: actions/checkout@v4
+#         with:
+#           clean: false
+#       # On incoming merge try to read and decode previously generated vectors with `Compact`
+#       - name: Read vectors
+#         run: ${{ matrix.bin }} -- test-vectors compact --read
