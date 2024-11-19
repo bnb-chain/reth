@@ -144,7 +144,7 @@ where
             target: hash,
         });
 
-        trace!(
+        info!(
             target: "consensus::engine::sync",
             ?hash,
             "Start downloading full block"
@@ -202,6 +202,8 @@ where
         // advance all full block requests
         for idx in (0..self.inflight_full_block_requests.len()).rev() {
             let mut request = self.inflight_full_block_requests.swap_remove(idx);
+            info!(target: "poll", "poll block request {:?}", request.hash());
+
             if let Poll::Ready(block) = request.poll_unpin(cx) {
                 trace!(target: "consensus::engine", block=?block.num_hash(), "Received single full block, buffering");
                 self.set_buffered_blocks.push(Reverse(block.into()));
