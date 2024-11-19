@@ -18,6 +18,7 @@ use std::{
     task::{ready, Context, Poll},
 };
 use tokio::sync::mpsc::UnboundedReceiver;
+use tracing::info;
 
 /// A [`ChainHandler`] that advances the chain based on incoming requests (CL engine API).
 ///
@@ -115,6 +116,9 @@ where
             // advance the downloader
             if let Poll::Ready(DownloadOutcome::Blocks(blocks)) = self.downloader.poll(cx) {
                 // delegate the downloaded blocks to the handler
+                for block in blocks.iter() {   
+                    info!(target: "poll", "Downloaded block: {:?}", block.block.hash());
+                }
                 self.handler.on_event(FromEngine::DownloadedBlocks(blocks));
                 continue
             }

@@ -15,7 +15,7 @@ use std::{
     sync::Arc,
     task::{Context, Poll},
 };
-use tracing::trace;
+use tracing::{info, trace};
 
 /// A trait that can download blocks on demand.
 pub trait BlockDownloader: Send + Sync {
@@ -105,6 +105,7 @@ where
     /// Processes a block set download request.
     fn download_block_set(&mut self, hashes: HashSet<B256>) {
         for hash in hashes {
+            info!(target: "downloader", "download_block_set, Downloading block: {:?}", hash);
             self.download_full_block(hash);
         }
     }
@@ -114,7 +115,7 @@ where
         if count == 1 {
             self.download_full_block(hash);
         } else {
-            trace!(
+            info!(
                 target: "consensus::engine",
                 ?hash,
                 ?count,
