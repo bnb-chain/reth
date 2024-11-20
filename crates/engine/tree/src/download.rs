@@ -15,7 +15,7 @@ use std::{
     sync::Arc,
     task::{Context, Poll},
 };
-use tracing::trace;
+use tracing::{info, trace};
 
 /// A trait that can download blocks on demand.
 pub trait BlockDownloader: Send + Sync {
@@ -105,6 +105,7 @@ where
     /// Processes a block set download request.
     fn download_block_set(&mut self, hashes: HashSet<B256>) {
         for hash in hashes {
+            info!(target: "downloader", "BasicBlockDownloader: Send download block request: {:?}", hash);
             self.download_full_block(hash);
         }
     }
@@ -114,7 +115,7 @@ where
         if count == 1 {
             self.download_full_block(hash);
         } else {
-            trace!(
+            info!(
                 target: "consensus::engine",
                 ?hash,
                 ?count,
@@ -143,7 +144,7 @@ where
             target: hash,
         });
 
-        trace!(
+        info!(
             target: "consensus::engine::sync",
             ?hash,
             "Start downloading full block"
@@ -201,11 +202,13 @@ where
         // advance all full block requests
         for idx in (0..self.inflight_full_block_requests.len()).rev() {
             let mut request = self.inflight_full_block_requests.swap_remove(idx);
+
             if let Poll::Ready(block) = request.poll_unpin(cx) {
-                trace!(target: "consensus::engine", block=?block.num_hash(), "Received single full block, buffering");
+                info!(target: "consensus::engine", block=?block.num_hash(), "Received single full block, buffering");
                 self.set_buffered_blocks.push(Reverse(block.into()));
             } else {
                 // still pending
+                info!(target: "consensus::engine", block=?request.hash(), "Not received single full block");
                 self.inflight_full_block_requests.push(request);
             }
         }

@@ -409,13 +409,13 @@ where
                 tokio::select! {
                     payload = built_payloads.select_next_some() => {
                         if let Some(executed_block) = payload.executed_block() {
-                            debug!(target: "reth::cli", block=?executed_block.block().num_hash(),  "inserting built payload");
+                            info!(target: "reth::cli", block=?executed_block.block().num_hash(),  "inserting built payload");
                             eth_service.orchestrator_mut().handler_mut().handler_mut().on_event(EngineApiRequest::InsertExecutedBlock(executed_block).into());
                         }
                     }
                     event =  eth_service.next() => {
                         let Some(event) = event else { break };
-                        debug!(target: "reth::cli", "Event: {event}");
+                        info!(target: "reth::cli", "Event: {event}");
                         match event {
                             ChainEvent::BackfillSyncFinished => {
                                 network_handle.update_sync_state(SyncState::Idle);

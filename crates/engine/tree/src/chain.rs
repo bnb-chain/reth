@@ -75,6 +75,7 @@ where
     fn poll_next_event(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<ChainEvent<T::Event>> {
         let this = self.get_mut();
 
+        info!(target: "ChainOrchestrator", "ChainOrchestrator: enter poll next event");
         // This loop polls the components
         //
         // 1. Polls the backfill sync to completion, if active.
@@ -110,6 +111,7 @@ where
                 Poll::Pending => {}
             }
 
+            info!(target: "ChainOrchestrator", "ChainOrchestrator: enter poll next event and poll the handler");
             // poll the handler for the next event
             match this.handler.poll(cx) {
                 Poll::Ready(handler_event) => {

@@ -18,6 +18,7 @@ use std::{
     task::{ready, Context, Poll},
 };
 use tokio::sync::mpsc::UnboundedReceiver;
+use tracing::info;
 
 /// A [`ChainHandler`] that advances the chain based on incoming requests (CL engine API).
 ///
@@ -79,7 +80,9 @@ where
     }
 
     fn poll(&mut self, cx: &mut Context<'_>) -> Poll<HandlerEvent<Self::Event>> {
+        info!(target: "ChainHandler", "ChainHandler: enter poll");
         loop {
+            info!(target: "ChainHandler", "ChainHandler: start the poll loop");
             // drain the handler first
             while let Poll::Ready(ev) = self.handler.poll(cx) {
                 match ev {
@@ -112,13 +115,19 @@ where
                 continue
             }
 
+            info!(target: "ChainHandler", "ChainHandler: enter the poll loop and before the downloader poll");
             // advance the downloader
             if let Poll::Ready(DownloadOutcome::Blocks(blocks)) = self.downloader.poll(cx) {
                 // delegate the downloaded blocks to the handler
+                info!(target: "ChainHandler", "ChainHandler: enter the downloader poll and downloader poll is ready");
+                for block in blocks.iter() {   
+                    info!(target: "ChainHandler", "ChainHandler: Downloaded block: {:?}", block.block.hash());
+                }
                 self.handler.on_event(FromEngine::DownloadedBlocks(blocks));
                 continue
             }
 
+            info!(target: "ChainHandler", "ChainHandler: poll return pending");
             return Poll::Pending
         }
     }
