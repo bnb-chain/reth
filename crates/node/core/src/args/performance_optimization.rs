@@ -19,4 +19,13 @@ pub struct PerformanceOptimizationArgs {
     /// This flag is intended for performance optimization when importing blocks of live-sync.
     #[arg(long = "optimize.enable-execution-cache", default_value_t = false)]
     pub enable_execution_cache: bool,
+
+    /// Enables state root computation in the background with a persistent database.
+    ///
+    /// This option is intended for performance optimization when importing blocks
+    /// during live sync. It allows state root calculations to be performed
+    /// concurrently with other operations, potentially reducing overall
+    /// processing time.
+    #[arg(long = "optimize.compute-state-root-in-background", default_value_t = false)]
+    pub compute_state_root_in_background: bool,
 }

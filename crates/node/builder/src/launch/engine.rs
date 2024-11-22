@@ -237,6 +237,7 @@ where
                 mining_mode,
                 LocalPayloadAttributesBuilder::new(ctx.chain_spec()),
                 ctx.node_config().skip_state_root_validation,
+                ctx.node_config().compute_state_root_in_background,
                 ctx.node_config().enable_prefetch,
                 ctx.node_config().enable_execution_cache,
             );
@@ -261,6 +262,7 @@ where
                     ctx.invalid_block_hook()?,
                     ctx.sync_metrics_tx(),
                     ctx.node_config().skip_state_root_validation,
+                    ctx.node_config().compute_state_root_in_background,
                     ctx.node_config().enable_prefetch,
                     ctx.node_config().enable_execution_cache,
                 );
@@ -298,6 +300,7 @@ where
                     ctx.invalid_block_hook()?,
                     ctx.sync_metrics_tx(),
                     ctx.node_config().skip_state_root_validation,
+                    ctx.node_config().compute_state_root_in_background,
                     ctx.node_config().enable_prefetch,
                     ctx.node_config().enable_execution_cache,
                 );

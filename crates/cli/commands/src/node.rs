@@ -188,6 +188,8 @@ impl<
             pruning,
             enable_prefetch,
             skip_state_root_validation: performance_optimization.skip_state_root_validation,
+            compute_state_root_in_background: performance_optimization
+                .compute_state_root_in_background,
             enable_execution_cache: performance_optimization.enable_execution_cache,
         };
 
