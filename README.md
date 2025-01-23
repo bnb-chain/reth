@@ -1,3 +1,22 @@
+# ‼️ IMPORTANT NOTE ‼️
+
+**BNB Reth Client: Temporary Suspension of Development**
+
+We are announcing that the BNB Reth client will suspend development and maintenance. Our team has released the final maintenance version [v1.1.1](https://github.com/bnb-chain/reth/releases/tag/v1.1.1) as the last supported release.
+
+Key Points:
+  - The final maintenance release includes stability improvements and minor bug fixes.
+  - Existing users can continue running BSC-reth and op-reth until the BSC/opBNB Pectra upgrade.
+  - The BSC Pectra upgrade is scheduled for testnet on February 21st, 2025, with mainnet upgrade expected in mid-March 2025
+
+While the Reth client will remain functional until the Pectra upgrade, we recommend users to gradually transition to other supported BSC clients, like [Geth](https://github.com/bnb-chain/bsc) and [Erigon](https://github.com/node-real/bsc-erigon). Please ensure you have the latest version installed for optimal performance during the remaining operational period.
+
+**We sincerely thank our community for their continued support throughout BNB Reth's development journey.**
+
+*January 22nd, 2025*
+
+-------
+
 # BNB Chain Reth
 
 [![CI status](https://github.com/paradigmxyz/reth/workflows/unit/badge.svg)][gh-ci]
