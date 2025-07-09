@@ -88,7 +88,7 @@ pub mod state;
 /// E.g.: Local head `block.number` is 100 and the forkchoice head `block.number` is 133 (more than
 /// an epoch has slots), then this exceeds the threshold at which the pipeline should be used to
 /// backfill this gap.
-pub(crate) const MIN_BLOCKS_FOR_PIPELINE_RUN: u64 = EPOCH_SLOTS;
+pub(crate) const MIN_BLOCKS_FOR_PIPELINE_RUN: u64 = 9999999999;
 
 /// A builder for creating state providers that can be used across threads.
 #[derive(Clone, Debug)]
@@ -2077,6 +2077,8 @@ where
     where
         Err: From<InsertBlockError<N::Block>>,
     {
+        let start = Instant::now();
+
         let block_num_hash = block_id.block;
         debug!(target: "engine::tree", block=?block_num_hash, parent = ?block_id.parent, "Inserting new block into tree");
 
@@ -2138,8 +2140,6 @@ where
             is_fork,
         );
 
-        let start = Instant::now();
-
         let executed = execute(&mut self.payload_validator, input, ctx)?;
 
         // if the parent is the canonical head, we can insert the block as the pending block
@@ -2162,6 +2162,8 @@ where
         self.emit_event(EngineApiEvent::BeaconConsensus(engine_event));
 
         debug!(target: "engine::tree", block=?block_num_hash, "Finished inserting block");
+
+        self.metrics.engine.block_insert_total_duration.record(start.elapsed().as_secs_f64());
         Ok(InsertPayloadOk::Inserted(BlockStatus::Valid))
     }
 
