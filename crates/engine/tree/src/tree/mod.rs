@@ -100,7 +100,7 @@ pub mod state;
 /// E.g.: Local head `block.number` is 100 and the forkchoice head `block.number` is 133 (more than
 /// an epoch has slots), then this exceeds the threshold at which the pipeline should be used to
 /// backfill this gap.
-pub(crate) const MIN_BLOCKS_FOR_PIPELINE_RUN: u64 = EPOCH_SLOTS;
+pub(crate) const MIN_BLOCKS_FOR_PIPELINE_RUN: u64 = 9999999999;
 
 /// A builder for creating state providers that can be used across threads.
 #[derive(Clone, Debug)]
