@@ -6,8 +6,7 @@ use crate::{
     tree::{error::InsertPayloadError, metrics::EngineApiMetrics, payload_validator::TreeCtx},
 };
 use alloy_consensus::BlockHeader;
-use alloy_eips::{eip1898::BlockWithParent, merge::EPOCH_SLOTS, BlockNumHash, NumHash};
-use alloy_primitives::B256;
+use alloy_eips::{eip1898::BlockWithParent, BlockNumHash, NumHash};
 use alloy_rpc_types_engine::{
     ForkchoiceState, PayloadStatus, PayloadStatusEnum, PayloadValidationError,
 };
@@ -35,6 +34,7 @@ use reth_provider::{
     HashedPostStateProvider, ProviderError, StateCommitmentProvider, StateProviderBox,
     StateProviderFactory, StateReader, StateRootProvider, TransactionVariant,
 };
+use revm_primitives::B256;
 use reth_revm::database::StateProviderDatabase;
 use reth_stages_api::ControlFlow;
 use reth_trie::{HashedPostState, TrieInput};
@@ -56,6 +56,8 @@ use tracing::*;
 
 mod block_buffer;
 mod cached_state;
+#[cfg(test)]
+mod e2e_tests;
 pub mod error;
 mod instrumented_state;
 mod invalid_block_hook;
@@ -91,7 +93,7 @@ pub mod state;
 /// E.g.: Local head `block.number` is 100 and the forkchoice head `block.number` is 133 (more than
 /// an epoch has slots), then this exceeds the threshold at which the pipeline should be used to
 /// backfill this gap.
-pub(crate) const MIN_BLOCKS_FOR_PIPELINE_RUN: u64 = EPOCH_SLOTS;
+pub(crate) const MIN_BLOCKS_FOR_PIPELINE_RUN: u64 = 9999999999;
 
 /// A builder for creating state providers that can be used across threads.
 #[derive(Clone, Debug)]
@@ -869,6 +871,7 @@ where
 
         // 3. ensure we can apply a new chain update for the head block
         if let Some(chain_update) = self.on_new_head(state.head_block_hash)? {
+            debug!(target: "engine::tree", "new head block is canonical");
             let tip = chain_update.tip().clone_sealed_header();
             self.on_canonical_chain_update(chain_update);
 
@@ -905,11 +908,12 @@ where
 
         let target = self.lowest_buffered_ancestor_or(target);
         trace!(target: "engine::tree", %target, "downloading missing block");
-
-        Ok(TreeOutcome::new(OnForkChoiceUpdated::valid(PayloadStatus::from_status(
+        let result = Ok(TreeOutcome::new(OnForkChoiceUpdated::valid(PayloadStatus::from_status(
             PayloadStatusEnum::Syncing,
         )))
-        .with_event(TreeEvent::Download(DownloadRequest::single_block(target))))
+        .with_event(TreeEvent::Download(DownloadRequest::single_block(target))));
+
+        result
     }
 
     /// Attempts to receive the next engine request.
@@ -1291,6 +1295,7 @@ where
                 self.emit_event(EngineApiEvent::BackfillAction(action));
             }
             TreeEvent::Download(action) => {
+                debug!(target: "engine::tree", "emitting download action event");
                 self.emit_event(EngineApiEvent::Download(action));
             }
         }
@@ -1852,7 +1857,7 @@ where
     ///
     /// This is invoked on a valid forkchoice update, or if we can make the target block canonical.
     fn on_canonical_chain_update(&mut self, chain_update: NewCanonicalChain<N>) {
-        trace!(target: "engine::tree", new_blocks = %chain_update.new_block_count(), reorged_blocks =  %chain_update.reorged_block_count(), "applying new chain update");
+        debug!(target: "engine::tree", new_blocks = %chain_update.new_block_count(), reorged_blocks =  %chain_update.reorged_block_count(), "applying new chain update");
         let start = Instant::now();
 
         // update the tracked canonical head
@@ -2141,7 +2146,9 @@ where
             self.canonical_in_memory_state.set_pending_block(executed.clone());
         }
 
+        // Record memory operations during executed block creation
         self.state.tree_state.insert_executed(executed.clone());
+
         self.metrics.engine.executed_blocks.set(self.state.tree_state.block_count() as f64);
 
         // emit insert event
@@ -2154,6 +2161,13 @@ where
         self.emit_event(EngineApiEvent::BeaconConsensus(engine_event));
 
         debug!(target: "engine::tree", block=?block_num_hash, "Finished inserting block");
+        
+        // Record overall block processing duration for successful insertions
+        self.metrics
+            .engine
+            .block_total_duration
+            .record(start.elapsed().as_secs_f64());
+            
         Ok(InsertPayloadOk::Inserted(BlockStatus::Valid))
     }
 
@@ -2565,7 +2579,7 @@ where
 /// Block inclusion can be valid, accepted, or invalid. Invalid blocks are returned as an error
 /// variant.
 ///
-/// If we don't know the block's parent, we return `Disconnected`, as we can't claim that the block
+/// If we don't know the block's parent, we return `Disconnected`, as we can't claim that the block
 /// is valid or not.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BlockStatus {

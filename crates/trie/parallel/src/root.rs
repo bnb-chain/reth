@@ -19,7 +19,7 @@ use reth_trie::{
     HashBuilder, Nibbles, StorageRoot, TrieInput, TRIE_ACCOUNT_RLP_MAX_SIZE,
 };
 use reth_trie_db::{DatabaseHashedCursorFactory, DatabaseTrieCursorFactory};
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Instant};
 use thiserror::Error;
 use tracing::*;
 
@@ -95,6 +95,7 @@ where
         tracker.set_precomputed_storage_roots(storage_root_targets.len() as u64);
         debug!(target: "trie::parallel_state_root", len = storage_root_targets.len(), "pre-calculating storage roots");
         let mut storage_roots = HashMap::with_capacity(storage_root_targets.len());
+        let start_time = Instant::now();
         for (hashed_address, prefix_set) in
             storage_root_targets.into_iter().sorted_unstable_by_key(|(address, _)| *address)
         {
@@ -131,6 +132,10 @@ where
             });
             storage_roots.insert(hashed_address, rx);
         }
+        #[cfg(feature = "metrics")]
+        self.metrics.parallel.parallel_storage_duration.record(start_time.elapsed().as_secs_f64());
+        #[cfg(feature = "metrics")]
+        self.metrics.parallel.parallel_storage_count.increment(storage_roots.len() as u64);
 
         trace!(target: "trie::parallel_state_root", "calculating state root");
         let mut trie_updates = TrieUpdates::default();
@@ -157,10 +162,15 @@ where
 
         let mut hash_builder = HashBuilder::default().with_updates(retain_updates);
         let mut account_rlp = Vec::with_capacity(TRIE_ACCOUNT_RLP_MAX_SIZE);
+        let start_account_time = Instant::now();
         while let Some(node) = account_node_iter.try_next().map_err(ProviderError::Database)? {
             match node {
                 TrieElement::Branch(node) => {
+                    #[cfg(feature = "metrics")]
+                    let start_time = Instant::now();
                     hash_builder.add_branch(node.key, node.value, node.children_are_in_trie);
+                    #[cfg(feature = "metrics")]
+                    self.metrics.state_trie.record_hash_builder_state_add_branch_duration(start_time.elapsed().as_secs_f64());
                 }
                 TrieElement::Leaf(hashed_address, account) => {
                     let (storage_root, _, updates) = match storage_roots.remove(&hashed_address) {
@@ -174,8 +184,17 @@ where
                         // Since we do not store all intermediate nodes in the database, there might
                         // be a possibility of re-adding a non-modified leaf to the hash builder.
                         None => {
+                            #[cfg(feature = "metrics")]
+                            let start_time = Instant::now();
+
                             tracker.inc_missed_leaves();
-                            StorageRoot::new_hashed(
+
+                            #[cfg(feature = "metrics")]
+                            self.metrics.parallel.missed_leaves.record(1);
+                            #[cfg(feature = "metrics")]
+                            self.metrics.parallel.storage_recalc.increment(1);
+
+                            let result = StorageRoot::new_hashed(
                                 trie_cursor_factory.clone(),
                                 hashed_cursor_factory.clone(),
                                 hashed_address,
@@ -183,23 +202,40 @@ where
                                 #[cfg(feature = "metrics")]
                                 self.metrics.storage_trie.clone(),
                             )
-                            .calculate(retain_updates)?
+                            .calculate(retain_updates)?;
+
+                            #[cfg(feature = "metrics")]
+                            self.metrics.parallel.storage_recalc_duration.record(start_time.elapsed().as_secs_f64());
+
+                            result
                         }
                     };
 
+                    #[cfg(feature = "metrics")]
+                    let start_rlp_time = Instant::now();
                     if retain_updates {
                         trie_updates.insert_storage_updates(hashed_address, updates);
                     }
-
                     account_rlp.clear();
                     let account = account.into_trie_account(storage_root);
                     account.encode(&mut account_rlp as &mut dyn BufMut);
+                    #[cfg(feature = "metrics")]
+                    self.metrics.parallel.account_rlp_duration.record(account_rlp.len() as f64);
+
+                    #[cfg(feature = "metrics")]
+                    self.metrics.parallel.account_rlp_duration.record(start_rlp_time.elapsed().as_secs_f64());
+                    #[cfg(feature = "metrics")]
+                    let start_time = Instant::now();
                     hash_builder.add_leaf(Nibbles::unpack(hashed_address), &account_rlp);
+                    #[cfg(feature = "metrics")]
+                    self.metrics.state_trie.record_hash_builder_state_add_leaf_duration(start_time.elapsed().as_secs_f64());
                 }
             }
         }
 
         let root = hash_builder.root();
+
+        self.metrics.parallel.sync_account_duration.record(start_account_time.elapsed().as_secs_f64());
 
         let removed_keys = account_node_iter.walker.take_removed_keys();
         trie_updates.finalize(hash_builder, removed_keys, prefix_sets.destroyed_accounts);
