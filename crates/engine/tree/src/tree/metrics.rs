@@ -71,6 +71,15 @@ pub(crate) struct BlockValidationMetrics {
     pub(crate) state_root_duration: Gauge,
     /// Trie input computation duration
     pub(crate) trie_input_duration: Histogram,
+
+    /// Total number of background parallel state root tasks (historical cumulative)
+    pub background_parallel_state_root_tasks: Counter,
+    /// Total number of foreground parallel state root tasks (historical cumulative)
+    pub foreground_parallel_state_root_tasks: Counter,
+    /// Total number of background cache tasks (historical cumulative)
+    pub background_cache_tasks: Counter,
+    /// Total number of foreground sync state root computations (historical cumulative)
+    pub faillback_sync_state_root_tasks: Counter,
 }
 
 impl BlockValidationMetrics {

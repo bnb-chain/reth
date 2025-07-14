@@ -1,5 +1,5 @@
 use crate::stats::ParallelTrieStats;
-use metrics::Histogram;
+use metrics::{Counter, Histogram};
 use reth_metrics::Metrics;
 use reth_trie::{metrics::TrieRootMetrics, TrieType};
 
@@ -40,6 +40,15 @@ pub struct ParallelTrieMetrics {
     pub precomputed_storage_roots: Histogram,
     /// The number of leaves for which we did not pre-compute the storage roots.
     pub missed_leaves: Histogram,
+
+    /// The number of parallel storage roots computed.
+    pub parallel_storage_count: Counter,
+    /// The time it takes to parallel storage root calculation.
+    pub parallel_storage_duration: Histogram,
+    /// The time it takes to sync account root calculation.
+    pub sync_account_duration: Histogram,
+    /// The number of storage roots recalculated.
+    pub storage_recalc: Counter,
 }
 
 impl ParallelTrieMetrics {

@@ -8,7 +8,7 @@ use crate::{
     },
 };
 use alloy_consensus::BlockHeader;
-use alloy_eips::{merge::EPOCH_SLOTS, BlockNumHash, NumHash};
+use alloy_eips::{BlockNumHash, NumHash};
 use alloy_evm::block::BlockExecutor;
 use alloy_primitives::{Address, B256};
 use alloy_rpc_types_engine::{
@@ -2231,6 +2231,7 @@ where
             // expensive because it requires walking over the paths in the prefix set in every
             // proof.
             if trie_input.prefix_sets.is_empty() {
+                self.metrics.block_validation.background_parallel_state_root_tasks.increment(1);
                 self.payload_processor.spawn(
                     header,
                     txs,
@@ -2242,9 +2243,11 @@ where
             } else {
                 debug!(target: "engine::tree", block=?block_num_hash, "Disabling state root task due to non-empty prefix sets");
                 use_state_root_task = false;
+                self.metrics.block_validation.background_cache_tasks.increment(1);
                 self.payload_processor.spawn_cache_exclusive(header, txs, provider_builder)
             }
         } else {
+            self.metrics.block_validation.background_cache_tasks.increment(1);
             self.payload_processor.spawn_cache_exclusive(header, txs, provider_builder)
         };
 
@@ -2324,6 +2327,8 @@ where
                 }
             } else {
                 debug!(target: "engine::tree", block=?block_num_hash, "Using parallel state root algorithm");
+                self.metrics.block_validation.foreground_parallel_state_root_tasks.increment(1);
+
                 match self.compute_state_root_parallel(
                     persisting_kind,
                     block.header().parent_hash(),
@@ -2352,6 +2357,7 @@ where
             maybe_state_root
         } else {
             // fallback is to compute the state root regularly in sync
+            self.metrics.block_validation.faillback_sync_state_root_tasks.increment(1);
             if self.config.state_root_fallback() {
                 debug!(target: "engine::tree", block=?block_num_hash, "Using state root fallback for testing");
             } else {

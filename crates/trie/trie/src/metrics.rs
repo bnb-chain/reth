@@ -30,6 +30,15 @@ pub struct TrieRootMetrics {
     branches_added: Histogram,
     /// The number of leaves added during trie root calculation.
     leaves_added: Histogram,
+
+    /// The number of seconds the hash builder took to add a branch.
+    hash_builder_storage_add_branch_duration: Histogram,
+    /// The number of seconds the hash builder took to add a leaf.
+    hash_builder_storage_add_leaf_duration: Histogram,
+    /// The number of seconds the hash builder took to add a branch.
+    hash_builder_state_add_branch_duration: Histogram,
+    /// The number of seconds the hash builder took to add a leaf.
+    hash_builder_state_add_leaf_duration: Histogram,
 }
 
 impl TrieRootMetrics {
@@ -43,6 +52,26 @@ impl TrieRootMetrics {
         self.duration_seconds.record(stats.duration().as_secs_f64());
         self.branches_added.record(stats.branches_added() as f64);
         self.leaves_added.record(stats.leaves_added() as f64);
+    }
+
+    /// Record hash builder storage add branch duration.
+    pub fn record_hash_builder_storage_add_branch_duration(&self, duration_seconds: f64) {
+        self.hash_builder_storage_add_branch_duration.record(duration_seconds);
+    }
+
+    /// Record hash builder storage add leaf duration.
+    pub fn record_hash_builder_storage_add_leaf_duration(&self, duration_seconds: f64) {
+        self.hash_builder_storage_add_leaf_duration.record(duration_seconds);
+    }
+
+    /// Record hash builder state add branch duration.
+    pub fn record_hash_builder_state_add_branch_duration(&self, duration_seconds: f64) {
+        self.hash_builder_state_add_branch_duration.record(duration_seconds);
+    }
+
+    /// Record hash builder state add leaf duration.
+    pub fn record_hash_builder_state_add_leaf_duration(&self, duration_seconds: f64) {
+        self.hash_builder_state_add_leaf_duration.record(duration_seconds);
     }
 }
 
@@ -89,6 +118,8 @@ pub struct TrieNodeIterMetrics {
     leaf_nodes_advanced_total: Counter,
     /// The number of leaf nodes returned by the iterator.
     leaf_nodes_returned_total: Counter,
+    /// The number of seconds the iterator took to iterate.
+    iter_duration: Histogram,
 }
 
 impl TrieNodeIterMetrics {
@@ -120,5 +151,10 @@ impl TrieNodeIterMetrics {
     /// Increment `leaf_nodes_returned_total`.
     pub fn inc_leaf_nodes_returned(&self) {
         self.leaf_nodes_returned_total.increment(1);
+    }
+
+    /// Record the duration of iteration.
+    pub fn record_iter_duration(&self, duration_seconds: f64) {
+        self.iter_duration.record(duration_seconds);
     }
 }

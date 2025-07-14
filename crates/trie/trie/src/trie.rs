@@ -13,6 +13,7 @@ use alloy_consensus::EMPTY_ROOT_HASH;
 use alloy_primitives::{keccak256, Address, B256};
 use alloy_rlp::{BufMut, Encodable};
 use reth_execution_errors::{StateRootError, StorageRootError};
+use std::time::Instant;
 use tracing::{trace, trace_span};
 
 #[cfg(feature = "metrics")]
@@ -421,14 +422,22 @@ where
             match node {
                 TrieElement::Branch(node) => {
                     tracker.inc_branch();
+                    #[cfg(feature = "metrics")]
+                    let start_time = Instant::now();
                     hash_builder.add_branch(node.key, node.value, node.children_are_in_trie);
+                    #[cfg(feature = "metrics")]
+                    self.metrics.record_hash_builder_storage_add_branch_duration(start_time.elapsed().as_secs_f64());
                 }
                 TrieElement::Leaf(hashed_slot, value) => {
                     tracker.inc_leaf();
+                    #[cfg(feature = "metrics")]
+                    let start_time = Instant::now();
                     hash_builder.add_leaf(
                         Nibbles::unpack(hashed_slot),
                         alloy_rlp::encode_fixed_size(&value).as_ref(),
                     );
+                    #[cfg(feature = "metrics")]
+                    self.metrics.record_hash_builder_storage_add_leaf_duration(start_time.elapsed().as_secs_f64());
                 }
             }
         }

@@ -39,6 +39,7 @@ reth-stages-api.workspace = true
 reth-static-file-types.workspace = true
 reth-trie = { workspace = true, features = ["metrics"] }
 reth-trie-db = { workspace = true, features = ["metrics"] }
+reth-metrics.workspace = true
 
 reth-testing-utils = { workspace = true, optional = true }
 
@@ -64,6 +65,7 @@ blake3.workspace = true
 reqwest = { workspace = true, default-features = false, features = ["rustls-tls-native-roots", "blocking"] }
 serde = { workspace = true, features = ["derive"] }
 eyre.workspace = true
+metrics.workspace = true
 
 [dev-dependencies]
 # reth

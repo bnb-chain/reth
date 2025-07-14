@@ -19,6 +19,12 @@ use reth_trie::{IntermediateStateRootState, StateRoot, StateRootProgress, Stored
 use reth_trie_db::DatabaseStateRoot;
 use std::fmt::Debug;
 use tracing::*;
+use std::time::Instant;
+use reth_metrics::{
+    metrics::{Histogram, Counter, Gauge},
+    Metrics,
+};
+use std::sync::OnceLock;
 
 // TODO: automate the process outlined below so the user can just send in a debugging package
 /// The error message that we include in invalid state root errors to tell users what information
@@ -47,6 +53,42 @@ pub const MERKLE_STAGE_DEFAULT_REBUILD_THRESHOLD: u64 = 100_000;
 /// new state root for this many blocks, in batches, repeating until we reach the desired block
 /// number.
 pub const MERKLE_STAGE_DEFAULT_INCREMENTAL_THRESHOLD: u64 = 7_000;
+
+/// Metrics for the merkle stage
+#[derive(Metrics, Clone)]
+#[metrics(scope = "sync.stages.merkle")]
+pub struct MerkleStageMetrics {
+    /// The time it takes to execute the merkle stage
+    pub execution_duration: Histogram,
+    /// The time it takes to calculate state root
+    pub state_root_duration: Histogram,
+    /// The time it takes to calculate incremental state root
+    pub incremental_state_root_duration: Histogram,
+    /// Total number of full state root rebuilds (historical cumulative)
+    pub full_rebuild_count: Counter,
+    /// Total number of incremental state root updates (historical cumulative)
+    pub incremental_update_count: Counter,
+    /// Number of blocks processed in the current/last incremental updates
+    pub incremental_rebuild_block_count: Gauge,
+    /// Number of blocks processed in the current/last full rebuild
+    pub full_rebuild_block_count: Gauge,
+    /// Total number of trie nodes updated during incremental updates (historical cumulative)
+    pub incremental_trie_nodes_updated: Counter,
+    /// Total number of trie nodes updated during full rebuilds (historical cumulative)
+    pub full_rebuild_trie_nodes_updated: Counter,
+    /// Total number of leaves processed during incremental updates (historical cumulative)
+    pub incremental_rebuild_leaves_processed: Counter,
+    /// Total number of accounts processed during full rebuilds (historical cumulative)
+    pub full_rebuild_accounts_processed: Counter,
+}
+
+/// Global metrics instance for the merkle stage
+static MERKLE_METRICS: OnceLock<MerkleStageMetrics> = OnceLock::new();
+
+/// Get the global merkle stage metrics instance
+fn get_merkle_metrics() -> &'static MerkleStageMetrics {
+    MERKLE_METRICS.get_or_init(MerkleStageMetrics::default)
+}
 
 /// The merkle hashing stage uses input from
 /// [`AccountHashingStage`][crate::stages::AccountHashingStage] and
@@ -173,6 +215,9 @@ where
 
     /// Execute the stage.
     fn execute(&mut self, provider: &Provider, input: ExecInput) -> Result<ExecOutput, StageError> {
+        let start_time = Instant::now();
+        let metrics = get_merkle_metrics();
+
         let (threshold, incremental_threshold) = match self {
             Self::Unwind => {
                 info!(target: "sync::stages::merkle::unwind", "Stage is always skipped");
@@ -201,6 +246,13 @@ where
             (target_block_root, input.checkpoint().entities_stage_checkpoint().unwrap_or_default())
         } else if to_block - from_block > threshold || from_block == 1 {
             // if there are more blocks than threshold it is faster to rebuild the trie
+
+            // Set the number of blocks being processed in this full rebuild
+            let block_count = to_block - from_block + 1;
+            metrics.full_rebuild_block_count.set(block_count as f64);
+            metrics.full_rebuild_count.increment(1);
+            let state_root_start = Instant::now();
+
             let mut entities_checkpoint = if let Some(checkpoint) =
                 checkpoint.as_ref().filter(|c| c.target_block == to_block)
             {
@@ -244,9 +296,15 @@ where
                     error!(target: "sync::stages::merkle", %e, ?current_block_number, ?to_block, "State root with progress failed! {INVALID_STATE_ROOT_ERROR_MESSAGE}");
                     StageError::Fatal(Box::new(e))
                 })?;
+
+            metrics.state_root_duration.record(state_root_start.elapsed().as_secs_f64());
+
             match progress {
                 StateRootProgress::Progress(state, hashed_entries_walked, updates) => {
-                    provider.write_trie_updates(&updates)?;
+
+                    let updated_nodes = provider.write_trie_updates(&updates)?;
+                    metrics.full_rebuild_trie_nodes_updated.increment(updated_nodes as u64);
+                    metrics.full_rebuild_accounts_processed.increment(hashed_entries_walked as u64);
 
                     let checkpoint = MerkleCheckpoint::new(
                         to_block,
@@ -266,7 +324,10 @@ where
                     })
                 }
                 StateRootProgress::Complete(root, hashed_entries_walked, updates) => {
-                    provider.write_trie_updates(&updates)?;
+
+                    let updated_nodes = provider.write_trie_updates(&updates)?;
+                    metrics.full_rebuild_trie_nodes_updated.increment(updated_nodes as u64);
+                    metrics.full_rebuild_accounts_processed.increment(hashed_entries_walked as u64);
 
                     entities_checkpoint.processed += hashed_entries_walked as u64;
 
@@ -275,6 +336,12 @@ where
             }
         } else {
             debug!(target: "sync::stages::merkle::exec", current = ?current_block_number, target = ?to_block, "Updating trie in chunks");
+
+            metrics.incremental_update_count.increment(1);
+            metrics.incremental_rebuild_block_count.set((to_block - from_block + 1) as f64);
+            let incremental_start = Instant::now();
+            let mut updated_nodes = 0;
+
             let mut final_root = None;
             for start_block in range.step_by(incremental_threshold as usize) {
                 let chunk_to = std::cmp::min(start_block + incremental_threshold, to_block);
@@ -293,9 +360,12 @@ where
                         error!(target: "sync::stages::merkle", %e, ?current_block_number, ?to_block, "Incremental state root failed! {INVALID_STATE_ROOT_ERROR_MESSAGE}");
                         StageError::Fatal(Box::new(e))
                     })?;
-                provider.write_trie_updates(&updates)?;
+                updated_nodes += provider.write_trie_updates(&updates)?;
                 final_root = Some(root);
             }
+
+            metrics.incremental_state_root_duration.record(incremental_start.elapsed().as_secs_f64());
+            metrics.incremental_trie_nodes_updated.increment(updated_nodes as u64);
 
             // if we had no final root, we must have not looped above, which should not be possible
             let final_root = final_root.ok_or(StageError::Fatal(
@@ -305,6 +375,8 @@ where
             let total_hashed_entries = (provider.count_entries::<tables::HashedAccounts>()? +
                 provider.count_entries::<tables::HashedStorages>()?)
                 as u64;
+
+            metrics.incremental_rebuild_leaves_processed.increment(total_hashed_entries as u64);
 
             let entities_checkpoint = EntitiesCheckpoint {
                 // This is fine because `range` doesn't have an upper bound, so in this `else`
@@ -321,6 +393,9 @@ where
         self.save_execution_checkpoint(provider, None)?;
 
         validate_state_root(trie_root, SealedHeader::seal_slow(target_block), to_block)?;
+
+        let execution_time = start_time.elapsed();
+        metrics.execution_duration.record(execution_time.as_secs_f64());
 
         Ok(ExecOutput {
             checkpoint: StageCheckpoint::new(to_block)
