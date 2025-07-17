@@ -252,6 +252,7 @@ where
     }
 
     /// Sets the sparse trie to be kept around for the state root computation.
+    #[allow(dead_code)]
     pub(super) fn set_sparse_trie(&mut self, sparse_trie: SparseTrie) {
         self.sparse_trie = Some(sparse_trie);
     }
