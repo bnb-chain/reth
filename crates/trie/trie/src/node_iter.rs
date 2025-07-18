@@ -194,9 +194,12 @@ where
     pub fn try_next(
         &mut self,
     ) -> Result<Option<TrieElement<<H as HashedCursor>::Value>>, DatabaseError> {
+        #[cfg(feature = "metrics")]
         let start_time = std::time::Instant::now();
 
         loop {
+            #[cfg(feature = "metrics")]
+            let start_walker_time = std::time::Instant::now();
             // If the walker has a key...
             if let Some(key) = self.walker.key() {
                 // Ensure that the current walker key shouldn't be checked and there's no previous
@@ -209,7 +212,10 @@ where
                     if self.walker.can_skip_current_node {
                         #[cfg(feature = "metrics")]
                         self.metrics.inc_branch_nodes_returned();
+                        #[cfg(feature = "metrics")]
                         self.metrics.record_iter_duration(start_time.elapsed().as_secs_f64());
+                        #[cfg(feature = "metrics")]
+                        self.metrics.record_iter_walker_duration(start_walker_time.elapsed().as_secs_f64());
                         return Ok(Some(TrieElement::Branch(TrieBranchNode::new(
                             *key,
                             self.walker.hash().unwrap(),
@@ -218,7 +224,11 @@ where
                     }
                 }
             }
+            #[cfg(feature = "metrics")]
+            self.metrics.record_iter_walker_duration(start_walker_time.elapsed().as_secs_f64());
 
+            #[cfg(feature = "metrics")]
+            let start_hash_entry_time = std::time::Instant::now();
             // If there's a hashed entry...
             if let Some((hashed_key, value)) = self.current_hashed_entry.take() {
                 // Check if the walker's key is less than the key of the current hashed entry
@@ -233,10 +243,17 @@ where
 
                 #[cfg(feature = "metrics")]
                 self.metrics.inc_leaf_nodes_returned();
+                #[cfg(feature = "metrics")]
+                self.metrics.record_iter_hash_entry_duration(start_hash_entry_time.elapsed().as_secs_f64());
+                #[cfg(feature = "metrics")]
                 self.metrics.record_iter_duration(start_time.elapsed().as_secs_f64());
                 return Ok(Some(TrieElement::Leaf(hashed_key, value)))
             }
+            #[cfg(feature = "metrics")]
+            self.metrics.record_iter_hash_entry_duration(start_hash_entry_time.elapsed().as_secs_f64());
 
+            #[cfg(feature = "metrics")]
+            let start_seek_time = std::time::Instant::now();
             // Handle seeking and advancing based on the previous hashed key
             match self.previous_hashed_key.take() {
                 Some(hashed_key) => {
@@ -296,7 +313,10 @@ where
                     self.current_hashed_entry = self.seek_hashed_entry(seek_key)?;
                 }
             }
+            #[cfg(feature = "metrics")]
+            self.metrics.record_iter_seek_duration(start_seek_time.elapsed().as_secs_f64());
         }
+        #[cfg(feature = "metrics")]
         self.metrics.record_iter_duration(start_time.elapsed().as_secs_f64());
         Ok(None)
     }

@@ -120,6 +120,12 @@ pub struct TrieNodeIterMetrics {
     leaf_nodes_returned_total: Counter,
     /// The number of seconds the iterator took to iterate.
     iter_duration: Histogram,
+    /// The number of seconds the walker took to iterate.
+    iter_walker_duration: Histogram,
+    /// The number of seconds the hash entry took to iterate.
+    iter_hash_entry_duration: Histogram,
+    /// The number of seconds the seek took to iterate.
+    iter_seek_duration: Histogram,
 }
 
 impl TrieNodeIterMetrics {
@@ -156,5 +162,20 @@ impl TrieNodeIterMetrics {
     /// Record the duration of iteration.
     pub fn record_iter_duration(&self, duration_seconds: f64) {
         self.iter_duration.record(duration_seconds);
+    }
+
+    /// Record the duration of walker iteration.
+    pub fn record_iter_walker_duration(&self, duration_seconds: f64) {
+        self.iter_walker_duration.record(duration_seconds);
+    }
+
+    /// Record the duration of hash entry iteration.
+    pub fn record_iter_hash_entry_duration(&self, duration_seconds: f64) {
+        self.iter_hash_entry_duration.record(duration_seconds);
+    }
+
+    /// Record the duration of seek iteration.
+    pub fn record_iter_seek_duration(&self, duration_seconds: f64) {
+        self.iter_seek_duration.record(duration_seconds);
     }
 }
