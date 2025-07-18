@@ -184,10 +184,17 @@ where
                         // Since we do not store all intermediate nodes in the database, there might
                         // be a possibility of re-adding a non-modified leaf to the hash builder.
                         None => {
+                            #[cfg(feature = "metrics")]
+                            let start_time = Instant::now();
+
                             tracker.inc_missed_leaves();
+
+                            #[cfg(feature = "metrics")]
+                            self.metrics.parallel.missed_leaves.record(1);
                             #[cfg(feature = "metrics")]
                             self.metrics.parallel.storage_recalc.increment(1);
-                            StorageRoot::new_hashed(
+
+                            let result = StorageRoot::new_hashed(
                                 trie_cursor_factory.clone(),
                                 hashed_cursor_factory.clone(),
                                 hashed_address,
@@ -195,18 +202,28 @@ where
                                 #[cfg(feature = "metrics")]
                                 self.metrics.storage_trie.clone(),
                             )
-                            .calculate(retain_updates)?
+                            .calculate(retain_updates)?;
 
+                            #[cfg(feature = "metrics")]
+                            self.metrics.parallel.storage_recalc_duration.record(start_time.elapsed().as_secs_f64());
+
+                            result
                         }
                     };
 
+                    #[cfg(feature = "metrics")]
+                    let start_rlp_time = Instant::now();
                     if retain_updates {
                         trie_updates.insert_storage_updates(hashed_address, updates);
                     }
-
                     account_rlp.clear();
                     let account = account.into_trie_account(storage_root);
                     account.encode(&mut account_rlp as &mut dyn BufMut);
+                    #[cfg(feature = "metrics")]
+                    self.metrics.parallel.account_rlp_duration.record(account_rlp.len() as f64);
+
+                    #[cfg(feature = "metrics")]
+                    self.metrics.parallel.account_rlp_duration.record(start_rlp_time.elapsed().as_secs_f64());
                     #[cfg(feature = "metrics")]
                     let start_time = Instant::now();
                     hash_builder.add_leaf(Nibbles::unpack(hashed_address), &account_rlp);

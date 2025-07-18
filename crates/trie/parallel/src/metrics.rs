@@ -49,6 +49,10 @@ pub struct ParallelTrieMetrics {
     pub sync_account_duration: Histogram,
     /// The number of storage roots recalculated.
     pub storage_recalc: Counter,
+    /// The number of storage roots recalculated.
+    pub storage_recalc_duration: Histogram,
+    /// The time it takes to sync account root calculation.
+    pub account_rlp_duration: Histogram,
 }
 
 impl ParallelTrieMetrics {
