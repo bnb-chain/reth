@@ -2246,7 +2246,29 @@ where
                 self.payload_processor.spawn_cache_exclusive(header, txs, provider_builder)
             }
         } else {
-            self.payload_processor.spawn_cache_exclusive(header, txs, provider_builder)
+            // self.payload_processor.spawn_cache_exclusive(header, txs, provider_builder)
+            debug!(target: "engine::tree", block=?block_num_hash, "Using legacy state root task");
+            let consistent_view =
+                ensure_ok!(ConsistentDbView::new_with_latest_tip(self.provider.clone()));
+            let trie_input_start = Instant::now();
+            let res = self.compute_trie_input(
+                persisting_kind,
+                ensure_ok!(consistent_view.provider_ro()),
+                block.header().parent_hash(),
+            );
+            let trie_input = match res {
+                Ok(val) => val,
+                Err(e) => return Err((InsertBlockErrorKind::Other(Box::new(e)), block)),
+            };
+            let handle = self.payload_processor.spawn(
+                header,
+                txs,
+                provider_builder,
+                consistent_view,
+                trie_input,
+                &self.config,
+            );
+            handle
         };
 
         // Use cached state provider before executing, used in execution after prewarming threads
