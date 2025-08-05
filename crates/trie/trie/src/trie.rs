@@ -13,6 +13,7 @@ use alloy_consensus::EMPTY_ROOT_HASH;
 use alloy_primitives::{keccak256, Address, B256};
 use alloy_rlp::{BufMut, Encodable};
 use reth_execution_errors::{StateRootError, StorageRootError};
+#[cfg(feature = "metrics")]
 use std::time::Instant;
 use tracing::{trace, trace_span};
 
