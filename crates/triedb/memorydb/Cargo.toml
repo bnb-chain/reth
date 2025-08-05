@@ -1,0 +1,33 @@
+[package]
+name = "reth-triedb-memorydb"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "In-memory database implementation for reth trie"
+
+[lints]
+workspace = true
+
+[dependencies]
+# reth
+reth-primitives-traits.workspace = true
+reth-storage-errors.workspace = true
+reth-triedb-common.workspace = true
+
+# alloy
+alloy-primitives.workspace = true
+
+# misc
+auto_impl.workspace = true
+thiserror.workspace = true
+parking_lot.workspace = true
+
+[dev-dependencies]
+# reth
+reth-primitives-traits = { workspace = true, features = ["test-utils"] }
+
+# misc
+pretty_assertions.workspace = true

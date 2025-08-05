@@ -1,0 +1,38 @@
+[package]
+name = "reth-triedb-state-trie"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Secure state trie implementation for reth"
+
+[lints]
+workspace = true
+
+[dependencies]
+# reth
+reth-primitives-traits.workspace = true
+reth-triedb-memorydb.workspace = true
+reth-triedb-pathdb.workspace = true
+reth-triedb-common.workspace = true
+
+# alloy
+alloy-primitives.workspace = true
+alloy-rlp.workspace = true
+alloy-consensus.workspace = true
+
+# misc
+auto_impl.workspace = true
+thiserror.workspace = true
+rayon = "1.8"
+
+[dev-dependencies]
+# reth
+reth-primitives-traits = { workspace = true, features = ["test-utils"] }
+reth-trie = { workspace = true, features = ["test-utils"] }
+
+# misc
+pretty_assertions.workspace = true
+tempfile = "3.8"
