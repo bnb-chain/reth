@@ -13,5 +13,5 @@ pub mod traits;
 #[cfg(test)]
 pub mod tests;
 
-pub use pathdb::*;
+pub use pathdb::PathDB;
 pub use traits::*;

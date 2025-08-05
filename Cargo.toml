@@ -138,6 +138,10 @@ members = [
     "crates/trie/sparse",
     "crates/trie/sparse-parallel/",
     "crates/trie/trie",
+    "crates/triedb/common",
+    "crates/triedb/memorydb",
+    "crates/triedb/pathdb",
+    "crates/triedb/state-trie",
     "examples/beacon-api-sidecar-fetcher/",
     "examples/beacon-api-sse/",
     "examples/bsc-p2p",
@@ -449,6 +453,10 @@ reth-trie-db = { path = "crates/trie/db" }
 reth-trie-parallel = { path = "crates/trie/parallel" }
 reth-trie-sparse = { path = "crates/trie/sparse", default-features = false }
 reth-trie-sparse-parallel = { path = "crates/trie/sparse-parallel" }
+reth-triedb-common = { path = "crates/triedb/common" }
+reth-triedb-memorydb = { path = "crates/triedb/memorydb" }
+reth-triedb-pathdb = { path = "crates/triedb/pathdb" }
+reth-triedb-state-trie = { path = "crates/triedb/state-trie" }
 reth-zstd-compressors = { path = "crates/storage/zstd-compressors", default-features = false }
 reth-ress-protocol = { path = "crates/ress/protocol" }
 reth-ress-provider = { path = "crates/ress/provider" }

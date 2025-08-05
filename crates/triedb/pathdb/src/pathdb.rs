@@ -10,6 +10,8 @@ use schnellru::{ByLength, LruMap};
 use tracing::{error, trace};
 
 use crate::traits::*;
+use reth_triedb_common::TrieDatabase;
+use alloy_primitives::B256;
 
 /// PathDB implementation using RocksDB.
 pub struct PathDB {
@@ -30,6 +32,23 @@ impl Debug for PathDB {
         f.debug_struct("PathDB")
             .field("config", &self.config)
             .finish()
+    }
+}
+
+impl Clone for PathDB {
+    fn clone(&self) -> Self {
+        let mut write_options = WriteOptions::default();
+        write_options.set_sync(self.config.use_fsync);
+
+        let read_options = ReadOptions::default();
+
+        Self {
+            db: self.db.clone(),
+            config: self.config.clone(),
+            write_options,
+            read_options,
+            cache: Mutex::new(LruMap::new(ByLength::new(self.config.cache_size))),
+        }
     }
 }
 
@@ -247,7 +266,7 @@ impl PathProvider for PathDB {
         let mut result = HashMap::new();
 
         for key in keys {
-            if let Some(value) = self.get(key)? {
+            if let Some(value) = PathProvider::get(self, key)? {
                 result.insert(key.clone(), value);
             }
         }
@@ -623,6 +642,32 @@ impl PathDBFactory {
     pub fn with_config(path: &str, config: PathProviderConfig) -> PathProviderResult<Arc<dyn PathProvider>> {
         let db = PathDB::new(path, config)?;
         Ok(Arc::new(db))
+    }
+}
+
+impl TrieDatabase for PathDB {
+    type Error = PathProviderError;
+
+    fn get(&self, hash: &B256) -> Result<Option<Vec<u8>>, Self::Error> {
+        let key = hash.as_slice();
+        PathProvider::get(self, key)
+    }
+
+    fn insert(&self, hash: B256, data: Vec<u8>) -> Result<(), Self::Error> {
+        let key = hash.as_slice();
+        PathProvider::put(self, key, &data)
+    }
+
+    fn contains(&self, hash: &B256) -> Result<bool, Self::Error> {
+        let key = hash.as_slice();
+        PathProvider::exists(self, key)
+    }
+
+    fn remove(&self, hash: &B256) -> Result<Option<Vec<u8>>, Self::Error> {
+        let key = hash.as_slice();
+        let value = PathProvider::get(self, key)?;
+        PathProvider::delete(self, key)?;
+        Ok(value)
     }
 }
 
