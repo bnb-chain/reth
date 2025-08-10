@@ -10830,17 +10830,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "reth-triedb-smoke-test"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-rlp",
+ "hex",
+ "rand 0.8.5",
+ "reth-db",
+ "reth-db-api",
+ "reth-primitives-traits",
+ "reth-storage-errors",
+ "reth-trie",
+ "reth-trie-common",
+ "reth-trie-db",
+ "reth-triedb-common",
+ "reth-triedb-pathdb",
+ "reth-triedb-state-trie",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tracing",
+ "tracing-subscriber 0.3.19",
+]
+
+[[package]]
 name = "reth-triedb-state-trie"
 version = "1.6.0"
 dependencies = [
- "alloy-consensus",
  "alloy-primitives",
  "alloy-rlp",
+ "alloy-trie",
+ "arbitrary",
  "auto_impl",
  "pretty_assertions",
+ "rand 0.8.5",
  "rayon",
- "reth-primitives-traits",
- "reth-trie",
  "reth-triedb-common",
  "reth-triedb-memorydb",
  "reth-triedb-pathdb",

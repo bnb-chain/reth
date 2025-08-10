@@ -1,32 +1,11 @@
 //! Secure trie identifier and builder implementation.
 
-use alloy_primitives::{Address, B256};
+use alloy_primitives::B256;
 use reth_triedb_common::TrieDatabase;
 use thiserror::Error;
+use alloy_trie::EMPTY_ROOT_HASH;
 
-use super::state_trie::StateTrie;
-
-/// Secure trie identifier
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SecureTrieId {
-    /// State root hash
-    pub state_root: B256,
-    /// Owner address
-    pub owner: Address,
-    /// Trie root hash
-    pub root: B256,
-}
-
-impl SecureTrieId {
-    /// Creates a new secure trie identifier
-    pub fn new(state_root: B256, owner: Address, root: B256) -> Self {
-        Self {
-            state_root,
-            owner,
-            root,
-        }
-    }
-}
+// use super::state_trie::StateTrie;
 
 /// Secure trie error types
 #[derive(Debug, Error)]
@@ -54,9 +33,54 @@ pub enum SecureTrieError {
     InvalidStorage,
 }
 
+/// Secure trie identifier
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecureTrieId {
+    /// State root hash
+    pub state_root: B256,
+    /// Owner address
+    pub owner: B256,
+    /// Trie root hash
+    pub storage_root: B256,
+}
+
+impl Default for SecureTrieId {
+    fn default() -> Self {
+        Self {
+            state_root: EMPTY_ROOT_HASH,
+            owner: B256::ZERO,
+            storage_root: EMPTY_ROOT_HASH,
+        }
+    }
+}
+
+impl SecureTrieId {
+    /// Creates a new SecureTrieId with the given state root
+    pub fn new(state_root: B256) -> Self {
+        Self {
+            state_root: state_root,
+            owner: B256::ZERO,
+            storage_root: EMPTY_ROOT_HASH,
+        }
+    }
+
+    /// Sets the owner address for this trie identifier
+    pub fn with_owner(mut self, owner: B256) -> Self {
+        self.owner = owner;
+        self
+    }
+
+    /// Sets the storage root for this trie identifier
+    pub fn with_storage_root(mut self, storage_root: B256) -> Self {
+        self.storage_root = storage_root;
+        self
+    }
+}
+
 /// Secure trie builder for constructing secure tries
 #[derive(Debug)]
 pub struct SecureTrieBuilder<DB> {
+    #[allow(dead_code)]
     database: DB,
     id: Option<SecureTrieId>,
 }
@@ -81,8 +105,8 @@ where
     }
 
     /// Builds the secure trie
-    pub fn build(self) -> Result<StateTrie<DB>, SecureTrieError> {
-        let id = self.id.unwrap_or_else(|| SecureTrieId::new(B256::ZERO, Address::ZERO, B256::ZERO));
-        StateTrie::new(id, self.database)
+    pub fn build(self) -> Result<crate::trie::Trie<DB>, SecureTrieError> {
+        let id = self.id.unwrap_or_else(|| SecureTrieId::default());
+        crate::trie::Trie::new(&id, self.database, None)
     }
 }

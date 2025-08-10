@@ -2,7 +2,7 @@
 
 use alloy_primitives::{Address, B256};
 use super::account::StateAccount;
-use super::node_set::NodeSet;
+use super::node::NodeSet;
 
 /// Error type for secure trie operations
 pub type SecureTrieError = super::secure_trie::SecureTrieError;
@@ -14,15 +14,6 @@ pub trait SecureTrieTrait {
 
     /// Returns the trie identifier
     fn id(&self) -> &super::secure_trie::SecureTrieId;
-
-    /// Gets a value from the trie by key
-    fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error>;
-
-    /// Updates a value in the trie by key
-    fn update(&mut self, key: &[u8], value: &[u8]) -> Result<(), Self::Error>;
-
-    /// Deletes a value from the trie by key
-    fn delete(&mut self, key: &[u8]) -> Result<(), Self::Error>;
 
     /// Gets an account from the trie by address
     fn get_account(&mut self, address: Address) -> Result<Option<StateAccount>, Self::Error>;
