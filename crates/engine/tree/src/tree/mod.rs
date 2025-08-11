@@ -2074,6 +2074,8 @@ where
     where
         Err: From<InsertBlockError<N::Block>>,
     {
+        let start = Instant::now();
+
         let block_num_hash = block_id.block;
         debug!(target: "engine::tree", block=?block_num_hash, parent = ?block_id.parent, "Inserting new block into tree");
 
@@ -2135,7 +2137,6 @@ where
             is_fork,
         );
 
-        let start = Instant::now();
 
         let executed = execute(&mut self.payload_validator, input, ctx)?;
 
@@ -2161,13 +2162,13 @@ where
         self.emit_event(EngineApiEvent::BeaconConsensus(engine_event));
 
         debug!(target: "engine::tree", block=?block_num_hash, "Finished inserting block");
-        
+
         // Record overall block processing duration for successful insertions
         self.metrics
             .engine
             .block_total_duration
             .record(start.elapsed().as_secs_f64());
-            
+
         Ok(InsertPayloadOk::Inserted(BlockStatus::Valid))
     }
 
