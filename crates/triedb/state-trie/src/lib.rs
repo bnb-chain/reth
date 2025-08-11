@@ -19,6 +19,8 @@ pub mod account;
 pub mod secure_trie;
 /// State trie implementation
 pub mod state_trie;
+/// Trie hasher
+pub mod trie_hasher;
 
 #[cfg(test)]
 mod trie_test;

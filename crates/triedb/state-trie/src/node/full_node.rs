@@ -4,12 +4,11 @@
 //! when a trie path has multiple branches.
 
 use std::sync::Arc;
-use alloy_rlp::{Decodable, Encodable, Error as RlpError, Header};
+
+use alloy_rlp::{Decodable, Encodable, Header, PayloadView, Error as RlpError};
 use alloy_primitives::{keccak256, B256};
 
-use crate::node::HashNode;
-
-use super::{Node, NodeFlag};
+use crate::node::{HashNode, Node, NodeFlag, decode_node::decode_node};
 
 /// Full node with 17 children (16 hex digits + value)
 #[derive(Clone, Debug, PartialEq)]
@@ -76,7 +75,8 @@ impl FullNode {
 
     /// Decode the node from RLP bytes
     pub fn from_rlp(buf: &[u8], hash: Option<B256>) -> Result<Self, RlpError> {
-        let mut node: Self = alloy_rlp::decode_exact(buf)?;
+        let mut temp_buf = buf;
+        let mut node: Self = FullNode::decode(&mut temp_buf)?;
         node.flags.hash = hash;
         node.flags.dirty = false;
         Ok(node)
@@ -94,43 +94,24 @@ impl Encodable for FullNode {
         // First, encode all children into a temporary buffer to calculate total payload length
         let mut temp_buf = Vec::new();
 
-        // Encode children 0-15 (hash nodes or empty)
-        for i in 0..16 {
-            match self.children[i].as_ref() {
+        // Encode all children nodes (0-16)
+        for child in &self.children {
+            match child.as_ref() {
+                Node::EmptyRoot => {
+                    alloy_rlp::EMPTY_STRING_CODE.encode(&mut temp_buf);
+                }
+                Node::Full(full_node) => {
+                    full_node.encode(&mut temp_buf);
+                }
+                Node::Short(short_node) => {
+                    short_node.encode(&mut temp_buf);
+                }
                 Node::Hash(hash_node) => {
-                    // Hash nodes: w.WriteBytes(node) - encode as RLP string
                     hash_node.as_slice().encode(&mut temp_buf);
                 }
-                Node::EmptyRoot => {
-                    // EmptyRoot: w.Write(rlp.EmptyString) - encode as RLP empty string
-                    // Directly write 0x80 (RLP empty string) instead of calling encode()
-                    temp_buf.push(0x80);
+                Node::Value(value_node) => {
+                    value_node.as_slice().encode(&mut temp_buf);
                 }
-                Node::Value(_) => {
-                    panic!("FullNode children[{}] cannot be ValueNode - only Hash or EmptyRoot allowed", i);
-                }
-                Node::Full(_) | Node::Short(_) => {
-                    panic!("FullNode children[{}] cannot be Full or Short node - only Hash or EmptyRoot allowed", i);
-                }
-            }
-        }
-
-        // Encode child 16 (value position)
-        match self.children[16].as_ref() {
-            Node::Value(value_node) => {
-                // Value nodes: w.WriteBytes(node) - encode as RLP string
-                value_node.as_slice().encode(&mut temp_buf);
-            }
-            Node::EmptyRoot => {
-                // EmptyRoot: w.Write(rlp.EmptyString) - encode as RLP empty string
-                // Directly write 0x80 (RLP empty string) instead of calling encode()
-                temp_buf.push(0x80);
-            }
-            Node::Hash(_) => {
-                panic!("FullNode children[16] cannot be HashNode - only Value or EmptyRoot allowed");
-            }
-            Node::Full(_) | Node::Short(_) => {
-                panic!("FullNode children[16] cannot be Full or Short node - only Value or EmptyRoot allowed");
             }
         }
 
@@ -145,45 +126,26 @@ impl Encodable for FullNode {
 
     fn length(&self) -> usize {
         // Calculate the same length as in encode()
-        let mut payload_len = 0;
-
-        // Calculate children 0-15 length
-        for i in 0..16 {
-            match self.children[i].as_ref() {
+        let payload_len = self.children.iter().map(|child| {
+            match child.as_ref() {
+                Node::EmptyRoot => {
+                    alloy_rlp::EMPTY_STRING_CODE.length()
+                }
+                Node::Full(full_node) => {
+                    full_node.to_rlp().len()
+                }
+                Node::Short(short_node) => {
+                    short_node.to_rlp().len()
+                }
                 Node::Hash(hash_node) => {
                     // Hash nodes: encode as RLP string
-                    payload_len += hash_node.as_slice().length();
+                    hash_node.as_slice().length()
                 }
-                Node::EmptyRoot => {
-                    // EmptyRoot: RLP empty string (1 byte)
-                    payload_len += 1; // alloy_rlp::EMPTY_STRING_CODE
-                }
-                Node::Value(_) => {
-                    panic!("FullNode children[{}] cannot be ValueNode - only Hash or EmptyRoot allowed", i);
-                }
-                Node::Full(_) | Node::Short(_) => {
-                    panic!("FullNode children[{}] cannot be Full or Short node - only Hash or EmptyRoot allowed", i);
+                Node::Value(value_node) => {
+                    value_node.as_slice().length()
                 }
             }
-        }
-
-        // Calculate child 16 (value position) length
-        match self.children[16].as_ref() {
-            Node::Value(value_node) => {
-                // Value nodes: encode as RLP string
-                payload_len += value_node.as_slice().length();
-            }
-            Node::EmptyRoot => {
-                // EmptyRoot: RLP empty string (1 byte)
-                payload_len += 1; // alloy_rlp::EMPTY_STRING_CODE
-            }
-            Node::Hash(_) => {
-                panic!("FullNode children[16] cannot be HashNode - only Value or EmptyRoot allowed");
-            }
-            Node::Full(_) | Node::Short(_) => {
-                panic!("FullNode children[16] cannot be Full or Short node - only Value or EmptyRoot allowed");
-            }
-        }
+        }).sum();
 
         // Add RLP list header length using alloy_rlp's length_of_length
         alloy_rlp::length_of_length(payload_len) + payload_len
@@ -192,286 +154,62 @@ impl Encodable for FullNode {
 
 impl Decodable for FullNode {
     fn decode(buf: &mut &[u8]) -> Result<Self, RlpError> {
-        let header = Header::decode(buf)?;
-        if !header.list {
-            return Err(RlpError::UnexpectedString);
+        let header_view = Header::decode_raw(buf)?;
+
+        let PayloadView::List(list) = header_view else {
+            return Err(RlpError::Custom("FullNode must be a list"));
+        };
+
+        if list.len() != 17 {
+            return Err(RlpError::Custom("FullNode must have 17 children"));
         }
 
-        let started_len = buf.len();
-        let mut children: [Arc<Node>; 17] = std::array::from_fn(|_| Arc::new(Node::EmptyRoot));
+        let mut full_node = FullNode::new();
 
-        // Decode children 0-15 (can be hashNode or EmptyRoot)
-        for i in 0..16 {
-            if buf.is_empty() {
-                return Err(RlpError::Custom("FullNode must have 17 elements"));
-            }
+        // Process all 17 children
+        for (i, &item_buf) in list.iter().enumerate() {
+            let mut temp_buf = item_buf;
+            let child_view = Header::decode_raw(&mut temp_buf)?;
 
-            let child_header = Header::decode(buf)?;
-
-
-            if child_header.list {
-                return Err(RlpError::Custom("FullNode children cannot be lists"));
-            }
-
-            if child_header.payload_length == 0 {
-                // Empty string -> EmptyRoot
-                children[i] = Arc::new(Node::EmptyRoot);
-            } else if child_header.payload_length == 32 {
-                // 32 bytes -> HashNode
-                let hash_bytes = buf[..32].to_vec();
-                *buf = &buf[32..];
-                let mut hash_array = [0u8; 32];
-                hash_array.copy_from_slice(&hash_bytes);
-                children[i] = Arc::new(Node::Hash(hash_array.into()));
-            } else {
-                return Err(RlpError::Custom("FullNode children must be either empty (EmptyRoot) or 32 bytes (HashNode)"));
-            }
-        }
-
-        // Decode child 16 (can be valueNode or EmptyRoot)
-        if buf.is_empty() {
-            return Err(RlpError::Custom("FullNode must have 17 elements"));
-        }
-
-        let val_header = Header::decode(buf)?;
-        if val_header.list {
-            return Err(RlpError::Custom("FullNode children[16] cannot be a list"));
-        }
-
-        if val_header.payload_length == 0 {
-            // Empty string -> EmptyRoot
-            children[16] = Arc::new(Node::EmptyRoot);
-        } else {
-            // Non-empty string -> ValueNode
-            let val_bytes = buf[..val_header.payload_length].to_vec();
-            *buf = &buf[val_header.payload_length..];
-            children[16] = Arc::new(Node::Value(val_bytes));
-        }
-
-        // Verify we consumed the expected amount
-        let consumed = started_len - buf.len();
-        if consumed != header.payload_length {
-            return Err(RlpError::Custom("FullNode RLP length mismatch"));
-        }
-
-        Ok(FullNode {
-            children,
-            flags: NodeFlag::default(),
-        })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use alloy_primitives::hex;
-    use alloy_primitives::keccak256;
-
-    // Helper function to create a hash node with specific pattern
-    fn create_hash_node(index: usize, seed: usize) -> Arc<Node> {
-        let mut hash = [0u8; 32];
-        for j in 0..32 {
-            hash[j] = ((index * 16 + j + seed) % 256) as u8;
-        }
-        Arc::new(Node::Hash(hash.into()))
-    }
-
-    // Helper function to create a value node with specific pattern
-    fn create_value_node(length: usize, seed: usize) -> Arc<Node> {
-        let mut value = vec![0u8; length];
-        for i in 0..length {
-            value[i] = ((i + length + seed) % 256) as u8;
-        }
-        Arc::new(Node::Value(value))
-    }
-
-    #[test]
-    fn test_scenario1_all_children_with_value() {
-        println!("=== Rust FullNode Scenario 1: All 16 Children + ValueNode ===");
-
-        let value_lengths = [1, 16, 128, 256, 512, 1024, 10 * 1024, 100 * 1024];
-
-        for &value_len in &value_lengths {
-            println!("\n--- Value length: {} bytes ---", value_len);
-
-            let mut full_node = FullNode::new();
-
-            // Set all 16 children (indices 0-15) as HashNodes
-            for i in 0..16 {
-                full_node.children[i] = create_hash_node(i, value_len);
-            }
-
-            // Set child 16 as ValueNode
-            full_node.children[16] = create_value_node(value_len, value_len);
-
-            // Encode using RLP
-            let encoded = alloy_rlp::encode(&full_node);
-            let hash = keccak256(&encoded);
-
-            println!("Encoded size: {} bytes", encoded.len());
-            println!("Hash: {}", hex::encode(hash));
-            if encoded.len() <= 100 {
-                println!("Encoded: {}", hex::encode(&encoded));
-            } else {
-                println!("Encoded (first 32 bytes): {}...", hex::encode(&encoded[..32]));
-            }
-
-            // Decode and verify
-            let decoded: FullNode = alloy_rlp::Decodable::decode(&mut encoded.as_slice()).expect("Failed to decode FullNode");
-
-            // Verify all 16 children are HashNodes
-            for i in 0..16 {
-                match (full_node.get_child(i).as_ref(), decoded.get_child(i).as_ref()) {
-                    (Node::Hash(orig), Node::Hash(dec)) => {
-                        assert_eq!(orig, dec, "HashNode at index {} mismatch", i);
-                    }
-                    _ => panic!("Expected HashNode at index {}", i),
-                }
-            }
-
-            // Verify child 16 is ValueNode
-            match (full_node.get_child(16).as_ref(), decoded.get_child(16).as_ref()) {
-                (Node::Value(orig), Node::Value(dec)) => {
-                    assert_eq!(orig, dec, "ValueNode at index 16 mismatch");
-                }
-                _ => panic!("Expected ValueNode at index 16"),
-            }
-
-            println!("✅ Decode verification: All children match exactly");
-            println!("✅ Value length {} bytes: Encoding/decoding successful", value_len);
-        }
-    }
-
-    #[test]
-    fn test_scenario2_specific_children_with_value() {
-        println!("=== Rust FullNode Scenario 2: Children 1,3,5,7 + ValueNode ===");
-
-        let value_lengths = [1, 16, 128, 256, 512, 1024, 10 * 1024, 100 * 1024];
-
-        for &value_len in &value_lengths {
-            println!("\n--- Value length: {} bytes ---", value_len);
-
-            let mut full_node = FullNode::new();
-
-            // Set children at indices 1, 3, 5, 7 as HashNodes
-            let child_indices = [1, 3, 5, 7];
-            for &i in &child_indices {
-                full_node.children[i] = create_hash_node(i, value_len);
-            }
-
-            // Set child 16 as ValueNode
-            full_node.children[16] = create_value_node(value_len, value_len + 100);
-
-            // Encode using RLP
-            let encoded = alloy_rlp::encode(&full_node);
-            let hash = keccak256(&encoded);
-
-            println!("Encoded size: {} bytes", encoded.len());
-            println!("Hash: {}", hex::encode(hash));
-            if encoded.len() <= 100 {
-                println!("Encoded: {}", hex::encode(&encoded));
-            } else {
-                println!("Encoded (first 32 bytes): {}...", hex::encode(&encoded[..32]));
-            }
-
-            // Decode and verify
-            let decoded: FullNode = alloy_rlp::Decodable::decode(&mut encoded.as_slice()).expect("Failed to decode FullNode");
-
-            // Verify specified children are HashNodes, others are EmptyRoot
-            for i in 0..16 {
-                if child_indices.contains(&i) {
-                    match (full_node.get_child(i).as_ref(), decoded.get_child(i).as_ref()) {
-                        (Node::Hash(orig), Node::Hash(dec)) => {
-                            assert_eq!(orig, dec, "HashNode at index {} mismatch", i);
+            if i < 16 {
+                // Process children 0-15 (hex digits)
+                match child_view {
+                    PayloadView::String(val) => {
+                        if val == &[alloy_rlp::EMPTY_STRING_CODE] {
+                            full_node.set_child(i, &Node::EmptyRoot);
+                        } else if val.len() == 32 {
+                            full_node.set_child(i, &Node::Hash(B256::from_slice(val)));
+                        } else {
+                            println!("FullNode child contains less than 32 bytes hash node - this is unexpected and should be investigated");
+                            full_node.set_child(i, &Node::Hash(B256::from_slice(val)));
                         }
-                        _ => panic!("Expected HashNode at index {}", i),
                     }
-                } else {
-                    match (full_node.get_child(i).as_ref(), decoded.get_child(i).as_ref()) {
-                        (Node::EmptyRoot, Node::EmptyRoot) => {
-                            // Expected
-                        }
-                        _ => panic!("Expected EmptyRoot at index {}", i),
+                    PayloadView::List(_) => {
+                        let mut temp_item = item_buf;
+                        let child_node = decode_node(None, &mut temp_item)?;
+                        full_node.set_child(i, child_node.as_ref());
                     }
                 }
-            }
-
-            // Verify child 16 is ValueNode
-            match (full_node.get_child(16).as_ref(), decoded.get_child(16).as_ref()) {
-                (Node::Value(orig), Node::Value(dec)) => {
-                    assert_eq!(orig, dec, "ValueNode at index 16 mismatch");
-                }
-                _ => panic!("Expected ValueNode at index 16"),
-            }
-
-            println!("✅ Decode verification: All children match exactly");
-            println!("✅ Value length {} bytes: Encoding/decoding successful", value_len);
-        }
-    }
-
-    #[test]
-    fn test_scenario3_specific_children_no_value() {
-        println!("=== Rust FullNode Scenario 3: Children 2,4,6,8 + No ValueNode ===");
-
-        let value_lengths = [1, 16, 128, 256, 512, 1024, 10 * 1024, 100 * 1024];
-
-        for &value_len in &value_lengths {
-            println!("\n--- Reference value length: {} bytes ---", value_len);
-
-            let mut full_node = FullNode::new();
-
-            // Set children at indices 2, 4, 6, 8 as HashNodes
-            let child_indices = [2, 4, 6, 8];
-            for &i in &child_indices {
-                full_node.children[i] = create_hash_node(i, value_len);
-            }
-
-            // Child 16 remains EmptyRoot (no value)
-
-            // Encode using RLP
-            let encoded = alloy_rlp::encode(&full_node);
-            let hash = keccak256(&encoded);
-
-            println!("Encoded size: {} bytes", encoded.len());
-            println!("Hash: {}", hex::encode(hash));
-            if encoded.len() <= 100 {
-                println!("Encoded: {}", hex::encode(&encoded));
             } else {
-                println!("Encoded (first 32 bytes): {}...", hex::encode(&encoded[..32]));
-            }
-
-            // Decode and verify
-            let decoded: FullNode = alloy_rlp::Decodable::decode(&mut encoded.as_slice()).expect("Failed to decode FullNode");
-
-            // Verify specified children are HashNodes, others are EmptyRoot
-            for i in 0..16 {
-                if child_indices.contains(&i) {
-                    match (full_node.get_child(i).as_ref(), decoded.get_child(i).as_ref()) {
-                        (Node::Hash(orig), Node::Hash(dec)) => {
-                            assert_eq!(orig, dec, "HashNode at index {} mismatch", i);
+                // Process child 16 (value)
+                match child_view {
+                    PayloadView::String(val) => {
+                        if val == &[alloy_rlp::EMPTY_STRING_CODE] {
+                            full_node.set_child(i, &Node::EmptyRoot);
+                        } else {
+                            full_node.set_child(i, &Node::Value(val.to_vec()));
                         }
-                        _ => panic!("Expected HashNode at index {}", i),
                     }
-                } else {
-                    match (full_node.get_child(i).as_ref(), decoded.get_child(i).as_ref()) {
-                        (Node::EmptyRoot, Node::EmptyRoot) => {
-                            // Expected
-                        }
-                        _ => panic!("Expected EmptyRoot at index {}", i),
+                    PayloadView::List(_) => {
+                        println!("FullNode 17th child is a list - this is unexpected and should be investigated");
+                        let mut temp_item = item_buf;
+                        let child_node = decode_node(None, &mut temp_item)?;
+                        full_node.set_child(i, child_node.as_ref());
                     }
                 }
             }
-
-            // Verify child 16 is EmptyRoot
-            match (full_node.get_child(16).as_ref(), decoded.get_child(16).as_ref()) {
-                (Node::EmptyRoot, Node::EmptyRoot) => {
-                    // Expected
-                }
-                _ => panic!("Expected EmptyRoot at index 16"),
-            }
-
-            println!("✅ Decode verification: All children match exactly");
-            println!("✅ Reference value length {} bytes: Encoding/decoding successful", value_len);
         }
+
+        Ok(full_node)
     }
 }

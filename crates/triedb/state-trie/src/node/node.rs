@@ -3,10 +3,10 @@
 //! This module contains the core Node enum and NodeFlag
 //! structure that are shared across all node implementations.
 
-use alloy_primitives::B256;
 #[allow(unused_imports)]
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
 use std::sync::Arc;
+use alloy_primitives::B256;
 
 use super::{FullNode, ShortNode};
 

@@ -16,8 +16,11 @@ pub mod node;
 pub mod node_set;
 pub mod short_node;
 
+#[cfg(test)]
+mod node_rlp_test;
+
 // Re-export main types
-pub use decode_node::{must_decode_node, decode_node, DecodeError};
+pub use decode_node::{must_decode_node, decode_node};
 pub use full_node::FullNode;
 pub use node::{HashNode, Node, NodeFlag, ValueNode};
 pub use node_set::{NodeSet, TrieNode};

@@ -1743,7 +1743,6 @@ fn test_hash_slice_explanation() {
 }
 
 
-
 #[test]
 fn test_key_to_nibbles_bsc_compatibility() {
     use reth_triedb_memorydb::MemoryDB;
