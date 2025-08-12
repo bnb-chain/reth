@@ -10835,6 +10835,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
+ "alloy-trie",
  "hex",
  "rand 0.8.5",
  "reth-db",
@@ -10862,6 +10863,7 @@ dependencies = [
  "alloy-trie",
  "arbitrary",
  "auto_impl",
+ "hex",
  "pretty_assertions",
  "rand 0.8.5",
  "rayon",

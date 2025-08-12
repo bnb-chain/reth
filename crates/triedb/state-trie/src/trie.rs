@@ -8,6 +8,7 @@ use std::sync::Arc;
 use super::encoding::{common_prefix_length, key_to_nibbles};
 use super::node::{Node, NodeFlag, FullNode, ShortNode, must_decode_node};
 use super::secure_trie::{SecureTrieId, SecureTrieError};
+use super::trie_hasher::Hasher;
 
 /// Core trie implementation
 #[derive(Clone, Debug)]
@@ -69,6 +70,11 @@ where
     /// Creates a new flag for the trie
     pub fn new_flag(&self) -> NodeFlag {
         NodeFlag::default()
+    }
+
+    /// Gets the root node of the trie
+    pub fn root(&self) -> Arc<Node> {
+        self.root.clone()
     }
 }
 
@@ -672,16 +678,14 @@ where
                 println!("{}{}EmptyRoot", prefix, connector);
             }
             Node::Value(value) => {
-                println!("{}{}Value: {:?} ({:02x?})",
+                println!("{}{}Value: {}",
                     prefix, connector,
-                    String::from_utf8_lossy(value),
-                    value);
+                    hex::encode(value));
             }
             Node::Short(short) => {
-                println!("{}{}Short: key={:?} ({:02x?})",
+                println!("{}{}Short: key={}",
                     prefix, connector,
-                    short.key,
-                    short.key.to_vec());
+                    hex::encode(&short.key));
                 let new_prefix = format!("{}    ", prefix);
                 self.debug_print_node(&short.val, &new_prefix, true);
             }

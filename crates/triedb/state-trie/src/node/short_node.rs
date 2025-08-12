@@ -7,8 +7,9 @@
 use std::sync::Arc;
 use alloy_rlp::{Decodable, Encodable, Header, PayloadView, Error as RlpError, };
 use alloy_primitives::{keccak256, B256};
-
+use crate::node::decode_node::write_bytes;
 use super::{Node, NodeFlag, HashNode, decode_node::decode_node};
+
 
 /// Short node (extension or leaf)
 #[derive(Debug, Clone, PartialEq)]
@@ -80,7 +81,9 @@ impl ShortNode {
 
     /// RLP encode the node
     pub fn to_rlp(&self) -> Vec<u8> {
-        return alloy_rlp::encode(self);
+        let mut buf = Vec::new();
+        self.encode(&mut buf);
+        return buf;
     }
 
     /// Decode the node from RLP bytes
@@ -104,8 +107,10 @@ impl Encodable for ShortNode {
         let mut temp_buf = Vec::new();
 
         // Encode compact key
-        let compact_key = crate::encoding::hex_to_compact(&self.key);
-        compact_key.encode(&mut temp_buf);
+        // let compact_key = crate::encoding::hex_to_compact(&self.key);
+        // compact_key.encode(&mut temp_buf);
+        // self.key.encode(&mut temp_buf);
+        write_bytes(&mut temp_buf, &self.key);
 
         // Encode value based on node type
         match self.val.as_ref() {
@@ -115,19 +120,23 @@ impl Encodable for ShortNode {
             }
             Node::Full(full_node) => {
                 // Full nodes encoded as a list of 17 elements
-                full_node.encode(&mut temp_buf);
+                let mut val_buf = Vec::new();
+                full_node.encode(&mut val_buf);
+                write_bytes(&mut temp_buf, &val_buf.as_slice());
             }
             Node::Short(short_node) => {
                 // Short nodes encoded as a list of 2 elements
-                short_node.encode(&mut temp_buf);
+                let mut val_buf = Vec::new();
+                short_node.encode(&mut val_buf);
+                write_bytes(&mut temp_buf, &val_buf.as_slice());
             }
             Node::Hash(hash_node) => {
                 // Hash nodes encoded as byte strings
-                hash_node.as_slice().encode(&mut temp_buf);
+                write_bytes(&mut temp_buf, &hash_node.as_slice());
             }
             Node::Value(value_node) => {
                 // Value nodes encoded as byte strings
-                value_node.as_slice().encode(&mut temp_buf);
+                write_bytes(&mut temp_buf, &value_node.as_slice());
             }
         }
 
@@ -138,24 +147,6 @@ impl Encodable for ShortNode {
 
         // Write the encoded content
         out.put_slice(&temp_buf);
-    }
-
-    fn length(&self) -> usize {
-        // Calculate key length
-        let compact_key = crate::encoding::hex_to_compact(&self.key);
-        let key_encoded_len = compact_key.length();
-
-        // Calculate value length based on node type
-        let val_encoded_len = match self.val.as_ref() {
-            Node::EmptyRoot => alloy_rlp::EMPTY_STRING_CODE.length(),
-            Node::Full(full_node) => full_node.to_rlp().len(),
-            Node::Short(short_node) => short_node.to_rlp().len(),
-            Node::Hash(hash_node) => hash_node.as_slice().length(),
-            Node::Value(value_node) => value_node.as_slice().length(),
-        };
-
-        let payload_len = key_encoded_len + val_encoded_len;
-        alloy_rlp::length_of_length(payload_len) + payload_len
     }
 }
 

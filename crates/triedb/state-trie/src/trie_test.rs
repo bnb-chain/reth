@@ -21,10 +21,12 @@ fn test_trie_update_and_get() {
     let id = SecureTrieId::new(B256::ZERO);
 
     // Create Trie instance
-    let mut trie = SecureTrieBuilder::new(db)
-        .with_id(id)
+    let mut state_trie = SecureTrieBuilder::new(db.clone())
+        .with_id(id.clone())
         .build()
         .expect("Failed to create trie");
+
+    let trie = state_trie.trie_mut();
 
     // Test data
     let key = b"test_key";
@@ -67,10 +69,12 @@ fn test_trie_multiple_updates() {
     let id = SecureTrieId::new(B256::ZERO);
 
     // Create Trie instance
-    let mut trie = SecureTrieBuilder::new(db)
-        .with_id(id)
+    let mut state_trie = SecureTrieBuilder::new(db.clone())
+        .with_id(id.clone())
         .build()
         .expect("Failed to create trie");
+
+    let trie = state_trie.trie_mut();
 
     // Test multiple key-value pairs
     let test_data = vec![
@@ -114,10 +118,12 @@ fn test_trie_update_overwrite() {
     let id = SecureTrieId::new(B256::ZERO);
 
     // Create Trie instance
-    let mut trie = SecureTrieBuilder::new(db)
-        .with_id(id)
+    let mut state_trie = SecureTrieBuilder::new(db.clone())
+        .with_id(id.clone())
         .build()
         .expect("Failed to create trie");
+
+    let trie = state_trie.trie_mut();
 
     let key = b"overwrite_key";
     let initial_value = b"initial_value";
@@ -164,10 +170,12 @@ fn test_trie_nonexistent_key() {
     let id = SecureTrieId::new(B256::ZERO);
 
     // Create Trie instance
-    let mut trie = SecureTrieBuilder::new(db)
-        .with_id(id)
+    let mut state_trie = SecureTrieBuilder::new(db.clone())
+        .with_id(id.clone())
         .build()
         .expect("Failed to create trie");
+
+    let trie = state_trie.trie_mut();
 
     let existing_key = b"existing_key";
     let existing_value = b"existing_value";
@@ -201,10 +209,12 @@ fn test_trie_binary_data() {
     let id = SecureTrieId::new(B256::ZERO);
 
     // Create Trie instance
-    let mut trie = SecureTrieBuilder::new(db)
-        .with_id(id)
+    let mut state_trie = SecureTrieBuilder::new(db.clone())
+        .with_id(id.clone())
         .build()
         .expect("Failed to create trie");
+
+    let trie = state_trie.trie_mut();
 
     let key = b"binary_key";
     let binary_value = vec![0x00, 0x01, 0x02, 0xFF, 0xFE, 0xFD];
@@ -237,10 +247,12 @@ fn test_trie_large_value() {
     let id = SecureTrieId::new(B256::ZERO);
 
     // Create Trie instance
-    let mut trie = SecureTrieBuilder::new(db)
-        .with_id(id)
-        .build()
-        .expect("Failed to create trie");
+    let mut state_trie = SecureTrieBuilder::new(db.clone())
+    .with_id(id.clone())
+    .build()
+    .expect("Failed to create trie");
+
+    let trie = state_trie.trie_mut();
 
     let key = b"large_key";
     let large_value: Vec<u8> = (0..1000).map(|i| (i % 256) as u8).collect();
@@ -278,10 +290,12 @@ fn test_trie_smoke_test_10000_random_kv_update_get() {
     let id = SecureTrieId::new(B256::ZERO);
 
     // Create Trie instance
-    let mut trie = SecureTrieBuilder::new(db)
-        .with_id(id)
+    let mut state_trie = SecureTrieBuilder::new(db.clone())
+        .with_id(id.clone())
         .build()
         .expect("Failed to create trie");
+
+    let trie = state_trie.trie_mut();
 
     // Generate 1000000 sequential key-value pairs (1-1000000)
     let mut test_data = Vec::new();
@@ -395,10 +409,12 @@ fn test_trie_delete_basic() {
     let id = SecureTrieId::new(B256::ZERO);
 
     // Create Trie instance
-    let mut trie = SecureTrieBuilder::new(db)
-        .with_id(id)
+    let mut state_trie = SecureTrieBuilder::new(db.clone())
+        .with_id(id.clone())
         .build()
         .expect("Failed to create trie");
+
+    let trie = state_trie.trie_mut();
 
     // Test data
     let key = b"delete_test_key";
@@ -441,10 +457,12 @@ fn test_trie_delete_multiple() {
     let id = SecureTrieId::new(B256::ZERO);
 
     // Create Trie instance
-    let mut trie = SecureTrieBuilder::new(db)
-        .with_id(id)
+    let mut state_trie = SecureTrieBuilder::new(db.clone())
+        .with_id(id.clone())
         .build()
         .expect("Failed to create trie");
+
+    let trie = state_trie.trie_mut();
 
     // Test multiple key-value pairs
     let test_data = vec![
@@ -529,10 +547,12 @@ fn test_trie_delete_nonexistent() {
     let id = SecureTrieId::new(B256::ZERO);
 
     // Create Trie instance
-    let mut trie = SecureTrieBuilder::new(db)
-        .with_id(id)
+    let mut state_trie = SecureTrieBuilder::new(db.clone())
+        .with_id(id.clone())
         .build()
         .expect("Failed to create trie");
+
+    let trie = state_trie.trie_mut();
 
     // Try to delete a non-existent key
     let nonexistent_key = b"nonexistent_key";
@@ -563,10 +583,12 @@ fn test_trie_delete_and_reinsert() {
     let id = SecureTrieId::new(B256::ZERO);
 
     // Create Trie instance
-    let mut trie = SecureTrieBuilder::new(db)
-        .with_id(id)
+    let mut state_trie = SecureTrieBuilder::new(db.clone())
+        .with_id(id.clone())
         .build()
         .expect("Failed to create trie");
+
+    let trie = state_trie.trie_mut();
 
     // Test data
     let key = b"reinsert_test_key";
@@ -622,10 +644,12 @@ fn test_trie_update_empty_value_equals_delete() {
     let id = SecureTrieId::new(B256::ZERO);
 
     // Create Trie instance
-    let mut trie = SecureTrieBuilder::new(db)
-        .with_id(id)
+    let mut state_trie = SecureTrieBuilder::new(db.clone())
+        .with_id(id.clone())
         .build()
         .expect("Failed to create trie");
+
+    let trie = state_trie.trie_mut();
 
     // Test key
     let key = b"test_key";
@@ -734,10 +758,12 @@ fn test_trie_simple_write_delete_get() {
     let id = SecureTrieId::new(B256::ZERO);
 
     // Create Trie instance
-    let mut trie = SecureTrieBuilder::new(db)
-        .with_id(id)
+    let mut state_trie = SecureTrieBuilder::new(db.clone())
+        .with_id(id.clone())
         .build()
         .expect("Failed to create trie");
+
+    let trie = state_trie.trie_mut();
 
     // Test data
     let key = b"simple_key";
@@ -807,10 +833,12 @@ fn test_trie_simple_delete_verification() {
     let id = SecureTrieId::new(B256::ZERO);
 
     // Create Trie instance
-    let mut trie = SecureTrieBuilder::new(db)
-        .with_id(id)
+    let mut state_trie = SecureTrieBuilder::new(db.clone())
+        .with_id(id.clone())
         .build()
         .expect("Failed to create trie");
+
+    let trie = state_trie.trie_mut();
 
     println!("=== Simple Delete Verification Test ===");
 
@@ -906,10 +934,12 @@ fn test_trie_phased_smoke_test_with_hash() {
     let id = SecureTrieId::new(B256::ZERO);
 
     // Create Trie instance
-    let mut trie = SecureTrieBuilder::new(db)
-        .with_id(id)
+    let mut state_trie = SecureTrieBuilder::new(db.clone())
+        .with_id(id.clone())
         .build()
         .expect("Failed to create trie");
+
+    let trie = state_trie.trie_mut();
 
     println!("=== Phased Smoke Test with Hash ===");
 
@@ -1133,12 +1163,14 @@ fn test_trie_boundary_conditions_comprehensive() {
     let id = SecureTrieId::new(B256::ZERO);
 
     // Create Trie instance
-    let mut trie = SecureTrieBuilder::new(db)
-        .with_id(id)
+    let mut state_trie = SecureTrieBuilder::new(db.clone())
+        .with_id(id.clone())
         .build()
         .expect("Failed to create trie");
 
-        println!("📋 Phase 1: Building 3-layer trie with boundary conditions");
+    let trie = state_trie.trie_mut();
+
+    println!("📋 Phase 1: Building 3-layer trie with boundary conditions");
 
     // Helper function to create hashed key with terminator for leaf nodes
     // We'll create a shorter key from hash prefix and add terminator nibble
@@ -1480,10 +1512,12 @@ fn test_trie_systematic_batch_deletion() {
     let id = SecureTrieId::new(B256::ZERO);
 
     // Create Trie instance
-    let mut trie = SecureTrieBuilder::new(db)
-        .with_id(id)
+    let mut state_trie = SecureTrieBuilder::new(db.clone())
+        .with_id(id.clone())
         .build()
         .expect("Failed to create trie");
+
+    let trie = state_trie.trie_mut();
 
     // Helper function to create hashed key with terminator for leaf nodes
     let hash_key = |key: &str| -> Vec<u8> {

@@ -1,69 +1,63 @@
-//! State trie implementation for secure trie operations.
+// ! State trie implementation for secure trie operations.
 
-// use alloy_primitives::{Address, B256, keccak256};
+use alloy_primitives::{Address, B256, keccak256};
 
-// #[allow(unused_imports)]
-// use alloy_rlp::{Encodable, Decodable};
-// use reth_triedb_common::TrieDatabase;
+#[allow(unused_imports)]
+use alloy_rlp::{Encodable, Decodable};
+use reth_triedb_common::TrieDatabase;
 
-// use super::account::StateAccount;
-// use super::secure_trie::{SecureTrieId, SecureTrieError};
-// use super::traits::SecureTrieTrait;
-// // use super::trie::Trie;
-// use super::node::NodeSet;
+use super::account::StateAccount;
+use super::secure_trie::{SecureTrieId, SecureTrieError};
+use super::traits::SecureTrieTrait;
+use super::trie::Trie;
+use super::node::{Node, NodeSet};
+use super::trie_hasher::Hasher;
 
-// /// State trie implementation that wraps a trie with secure key hashing
-// pub struct StateTrie<DB> {
-//     trie: Trie<DB>,
-//     id: SecureTrieId,
-// }
+/// State trie implementation that wraps a trie with secure key hashing
+pub struct StateTrie<DB> {
+    trie: Trie<DB>,
+    id: SecureTrieId,
+}
 
-// impl<DB> std::fmt::Debug for StateTrie<DB>
-// where
-//     DB: std::fmt::Debug,
-// {
-//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//         f.debug_struct("StateTrie")
-//             // .field("trie", &self.trie)
-//             .field("id", &self.id)
-//             .finish()
-//     }
-// }
+impl<DB> std::fmt::Debug for StateTrie<DB>
+where
+    DB: std::fmt::Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StateTrie")
+            // .field("trie", &self.trie)
+            .field("id", &self.id)
+            .finish()
+    }
+}
 
-// impl<DB> StateTrie<DB>
-// where
-//     DB: TrieDatabase + Clone + Send + Sync,
-//     DB::Error: std::fmt::Debug,
-// {
-    // /// Creates a new state trie with the given identifier and database
-    // pub fn new(id: SecureTrieId, database: DB) -> Result<Self, SecureTrieError> {
-    //     // let trie = Trie::new(&id, database)?;
+impl<DB> StateTrie<DB>
+where
+    DB: TrieDatabase + Clone + Send + Sync,
+    DB::Error: std::fmt::Debug,
+{
+    /// Creates a new state trie with the given identifier and database
+    pub fn new(id: SecureTrieId, database: DB) -> Result<Self, SecureTrieError> {
+        let trie = Trie::new(&id, database, None)?;
+        Ok(Self { trie, id })
+    }
 
-    //     // // If a non-zero root is provided, we need to load the existing trie
-    //     // // For now, we'll create a new trie and let the user load data as needed
-    //     // // TODO: Implement proper root loading from database
+    /// Returns the identifier of this state trie
+    pub fn id(&self) -> &SecureTrieId {
+        &self.id
+    }
 
-    //     // Ok(Self { trie, id })
+    /// Returns a reference to the underlying trie
+    pub fn trie(&self) -> &Trie<DB> {
+        &self.trie
+    }
 
-    //     // Ok(Self { trie: Trie::new(&id, database, None)?, id })
-    // }
+    /// Returns a mutable reference to the underlying trie
+    pub fn trie_mut(&mut self) -> &mut Trie<DB> {
+        &mut self.trie
+    }
 
-    // /// Returns the identifier of this state trie
-    // pub fn id(&self) -> &SecureTrieId {
-    //     &self.id
-    // }
-
-    // /// Returns a reference to the underlying trie
-    // pub fn trie(&self) -> &Trie<DB> {
-    //     &self.trie
-    // }
-
-    // /// Returns a mutable reference to the underlying trie
-    // pub fn trie_mut(&mut self) -> &mut Trie<DB> {
-    //     &mut self.trie
-    // }
-
-    // /// Returns a reference to the database
+    /// Returns a reference to the database
     // pub fn database(&self) -> &DB {
     //     self.trie.database()
     // }
@@ -73,106 +67,109 @@
     //     self.trie.database_mut()
     // }
 
-    // /// Creates a copy of this state trie
-    // pub fn copy(&self) -> Self {
-    //     Self {
-    //         trie: self.trie.clone(),
-    //         id: self.id.clone(),
-    //     }
-    // }
+    /// Creates a copy of this state trie
+    pub fn copy(&self) -> Self {
+        Self {
+            trie: self.trie.clone(),
+            id: self.id.clone(),
+        }
+    }
 
-    // /// Hashes a key using keccak256
-//     pub fn hash_key(&self, key: &[u8]) -> B256 {
-//         keccak256(key)
-//     }
-// }
+    /// Hashes a key using keccak256
+    pub fn hash_key(&self, key: &[u8]) -> B256 {
+        keccak256(key)
+    }
+}
 
-// impl<DB> SecureTrieTrait for StateTrie<DB>
-// where
-//     DB: TrieDatabase + Clone + Send + Sync,
-//     DB::Error: std::fmt::Debug,
-// {
-//     type Error = SecureTrieError;
+impl<DB> SecureTrieTrait for StateTrie<DB>
+where
+    DB: TrieDatabase + Clone + Send + Sync,
+    DB::Error: std::fmt::Debug,
+{
+    type Error = SecureTrieError;
 
-//     fn id(&self) -> &SecureTrieId {
-//         &self.id
-//     }
+    fn id(&self) -> &SecureTrieId {
+        &self.id
+    }
 
-//     fn get_account(&mut self, _address: Address) -> Result<Option<StateAccount>, Self::Error> {
-        // let hashed_address = self.hash_key(address.as_slice());
-        // if let Some(data) = self.trie.get(hashed_address.as_slice())? {
-        //     let account = StateAccount::decode(&mut &data[..])
-        //         .map_err(|_| SecureTrieError::InvalidAccount)?;
-        //     Ok(Some(account))
-        // } else {
-        //     Ok(None)
-        // }
+    fn get_account(&mut self, address: Address) -> Result<Option<StateAccount>, Self::Error> {
+        let hashed_address = self.hash_key(address.as_slice());
+        if let Some(data) = self.trie.get(hashed_address.as_slice())? {
+            let account = StateAccount::decode(&mut &data[..])
+                .map_err(|_| SecureTrieError::InvalidAccount)?;
+            Ok(Some(account))
+        } else {
+            Ok(None)
+        }
+    }
 
-    //     Ok(None)
-    // }
+    fn update_account(&mut self, address: Address, account: &StateAccount) -> Result<(), Self::Error> {
+        let hashed_address = self.hash_key(address.as_slice());
+        let mut encoded_account = Vec::new();
+        account.encode(&mut encoded_account);
+        self.trie.update(hashed_address.as_slice(), &encoded_account)?;
 
-//     fn update_account(&mut self, _address: Address, _account: &StateAccount) -> Result<(), Self::Error> {
-//         // let hashed_address = self.hash_key(address.as_slice());
-//         // let mut encoded_account = Vec::new();
-//         // account.encode(&mut encoded_account);
-//         // self.trie.update(hashed_address.as_slice(), &encoded_account)?;
+        // Cache the original address
+        // let addr_str = String::from_utf8_lossy(hashed_address.as_slice()).to_string();
+        // self.trie.get_sec_key_cache().insert(addr_str, address.to_vec());
 
-//         // Cache the original address
-//         // let addr_str = String::from_utf8_lossy(hashed_address.as_slice()).to_string();
-//         // self.trie.get_sec_key_cache().insert(addr_str, address.to_vec());
+        Ok(())
+    }
 
-//         Ok(())
-//     }
+    fn delete_account(&mut self, address: Address) -> Result<(), Self::Error> {
+        let hashed_address = self.hash_key(address.as_slice());
+        self.trie.delete(hashed_address.as_slice())?;
 
-//     fn delete_account(&mut self, _address: Address) -> Result<(), Self::Error> {
-//         // let hashed_address = self.hash_key(address.as_slice());
-//         // self.trie.delete(hashed_address.as_slice())?;
+        // // Remove from cache
+        // let addr_str = String::from_utf8_lossy(hashed_address.as_slice()).to_string();
+        // self.trie.get_sec_key_cache().remove(&addr_str);
 
-//         // // Remove from cache
-//         // let addr_str = String::from_utf8_lossy(hashed_address.as_slice()).to_string();
-//         // self.trie.get_sec_key_cache().remove(&addr_str);
+        Ok(())
+    }
 
-//         Ok(())
-//     }
+    fn get_storage(&mut self, _address: Address, _key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
+        // let hashed_key = self.hash_key(key);
+        // self.trie.get(hashed_key.as_slice())
+        Ok(None)
+    }
 
-//     fn get_storage(&mut self, _address: Address, _key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
-//         // let hashed_key = self.hash_key(key);
-//         // self.trie.get(hashed_key.as_slice())
-//         Ok(None)
-//     }
+    fn update_storage(&mut self, _address: Address, _key: &[u8], _value: &[u8]) -> Result<(), Self::Error> {
+        // let hashed_key = self.hash_key(key);
+        // self.trie.update(hashed_key.as_slice(), value)?;
 
-//     fn update_storage(&mut self, _address: Address, _key: &[u8], _value: &[u8]) -> Result<(), Self::Error> {
-//         // let hashed_key = self.hash_key(key);
-//         // self.trie.update(hashed_key.as_slice(), value)?;
+        // // Cache the original key
+        // let key_str = String::from_utf8_lossy(hashed_key.as_slice()).to_string();
+        // self.trie.get_sec_key_cache().insert(key_str, key.to_vec());
 
-//         // // Cache the original key
-//         // let key_str = String::from_utf8_lossy(hashed_key.as_slice()).to_string();
-//         // self.trie.get_sec_key_cache().insert(key_str, key.to_vec());
+        Ok(())
+    }
 
-//         Ok(())
-//     }
+    fn delete_storage(&mut self, _address: Address, _key: &[u8]) -> Result<(), Self::Error> {
+        // let hashed_key = self.hash_key(key);
+        // self.trie.delete(hashed_key.as_slice())?;
 
-//     fn delete_storage(&mut self, _address: Address, _key: &[u8]) -> Result<(), Self::Error> {
-//         // let hashed_key = self.hash_key(key);
-//         // self.trie.delete(hashed_key.as_slice())?;
+        // // Remove from cache
+        // let key_str = String::from_utf8_lossy(hashed_key.as_slice()).to_string();
+        // self.trie.get_sec_key_cache().remove(&key_str);
 
-//         // // Remove from cache
-//         // let key_str = String::from_utf8_lossy(hashed_key.as_slice()).to_string();
-//         // self.trie.get_sec_key_cache().remove(&key_str);
+        Ok(())
+    }
 
-//         Ok(())
-//     }
+    fn commit(&mut self, _collect_leaf: bool) -> Result<(B256, Option<NodeSet>), Self::Error> {
+        // self.trie.commit(collect_leaf)
+        Ok((B256::ZERO, None))
+    }
 
-//     fn commit(&mut self, _collect_leaf: bool) -> Result<(B256, Option<NodeSet>), Self::Error> {
-//         // self.trie.commit(collect_leaf)
-//         Ok((B256::ZERO, None))
-//     }
+    fn root(&self) -> B256 {
+        let hasher = Hasher::new(true);
+        let (hash_node, _) = hasher.hash(self.trie.root(), true);
+        if let Node::Hash(hash) = &*hash_node {
+            hash.clone()
+        } else {
+            panic!("Expected Hash node, got: {:?}", hash_node);
+        }
+    }
+}
 
-//     fn root(&self) -> B256 {
-//         B256::ZERO
-//         // self.trie.hash()
-//     }
-// }
-
-// /// Type alias for secure trie
-// pub type SecureTrie<DB> = StateTrie<DB>;
+/// Type alias for secure trie
+pub type SecureTrie<DB> = StateTrie<DB>;

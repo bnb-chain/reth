@@ -1,8 +1,10 @@
 use crate::bsc_wrapper::BscStateTrie;
 use alloy_primitives::{Address, B256, U256};
 use rand::Rng;
+// use reth_primitives_traits::Account;
 use reth_triedb_pathdb::{PathDB, PathProviderConfig};
-use reth_triedb_state_trie::{StateTrie, SecureTrieId, SecureTrieTrait, account::{StateAccount, empty_hash, empty_storage_root}};
+use reth_triedb_state_trie::{SecureTrieId, SecureTrieTrait, account::{StateAccount}};
+use reth_triedb_state_trie::state_trie::StateTrie;
 use std::collections::HashMap;
 use tempfile::TempDir;
 use thiserror::Error;
@@ -22,32 +24,32 @@ pub enum SmokeTestError {
     RootMismatch(B256, B256),
 }
 
-/// Test account structure
-#[derive(Debug, Clone)]
-struct TestAccount {
-    nonce: U256,
-    balance: U256,
-    storage_root: B256,
-    code_hash: B256,
-}
+// /// Test account structure
+// #[derive(Debug, Clone)]
+// struct TestAccount {
+//     nonce: u64,
+//     balance: U256,
+//     storage_root: B256,
+//     code_hash: B256,
+// }
 
-impl TestAccount {
-    /// Create a new TestAccount with default empty values for storage_root and code_hash
-    pub fn new(nonce: U256, balance: U256) -> Self {
-        Self {
-            nonce,
-            balance,
-            storage_root: empty_storage_root(),
-            code_hash: empty_hash(),
-        }
-    }
-}
+// impl TestAccount {
+//     /// Create a new TestAccount with default empty values for storage_root and code_hash
+//     pub fn new(nonce: u64, balance: U256) -> Self {
+//         Self {
+//             nonce,
+//             balance,
+//             storage_root: alloy_trie::EMPTY_ROOT_HASH,
+//             code_hash: alloy_trie::EMPTY_ROOT_HASH,
+//         }
+//     }
+// }
 
-impl From<TestAccount> for StateAccount {
-    fn from(account: TestAccount) -> Self {
-        StateAccount::new_with_hashes(account.nonce, account.balance, account.storage_root, account.code_hash)
-    }
-}
+// impl From<TestAccount> for StateAccount {
+//     fn from(account: TestAccount) -> Self {
+//         StateAccount::new_with_hashes(account.nonce, account.balance, account.storage_root, account.code_hash)
+//     }
+// }
 
 /// Smoke test result
 #[derive(Debug)]
@@ -66,7 +68,7 @@ pub struct SmokeTest {
     /// This field is kept alive to ensure the temp directory is not deleted until the struct is dropped.
     #[allow(dead_code)]
     temp_dir: TempDir,
-    accounts: HashMap<Address, TestAccount>,
+    accounts: HashMap<Address, StateAccount>,
     #[allow(dead_code)]
     storage: HashMap<Address, HashMap<B256, U256>>,
 }
@@ -86,7 +88,7 @@ impl SmokeTest {
 
         // Initialize Reth StateTrie
         let path_db = PathDB::new(db_path, PathProviderConfig::default())?;
-        let id = SecureTrieId::new(B256::ZERO, Address::ZERO, B256::ZERO);
+        let id = SecureTrieId::default();
         let reth_trie = StateTrie::new(id, path_db)?;
         info!("Reth StateTrie initialized successfully");
 
@@ -108,24 +110,14 @@ impl SmokeTest {
             errors: Vec::new(),
         };
 
-        // let mut rng = rand::thread_rng();
-        let total_operations = 100;
-        let commit_interval = 10;
+        let mut rng = rand::thread_rng();
+        let total_operations = 1000000;
+        let commit_interval = 100000;
         let delete_ratio = 0.5;
 
         println!("🚀 Starting smoke test with {} total operations", total_operations);
         for i in 0..total_operations {
-            // let address = generate_random_address(&mut rng);
-            // let account = TestAccount::new(
-            //     U256::from(rng.gen::<u64>()),
-            //     U256::from(rng.gen::<u64>()),
-            // );
-             // Create different addresses but same account content for debugging
-            let address = Address::from([i as u8; 20]); // Each account has different address
-            let account = TestAccount::new(
-                U256::from(0u64), // All accounts have nonce = 0
-                U256::from(0u64), // All accounts have balance = 0
-            );
+            let (address, account) = generate_random_address_and_account(&mut rng);
             self.accounts.insert(address, account.clone());
 
             // Update BSC trie
@@ -141,8 +133,7 @@ impl SmokeTest {
             }
 
             // Update Reth trie
-            let state_account: reth_triedb_state_trie::StateAccount = account.into();
-            if let Err(e) = self.reth_trie.update_account(address, &state_account) {
+            if let Err(e) = self.reth_trie.update_account(address, &account) {
                 result.errors.push(format!("Reth update_account failed: {}", e));
                 result.success = false;
             }
@@ -157,41 +148,35 @@ impl SmokeTest {
             }
         }
 
-        // let delete_count = (total_operations as f64 * delete_ratio) as usize;
-        // // Collect addresses and storage keys for deletion
-        // let addresses: Vec<Address> = self.accounts.keys().cloned().collect();
-        // for i in 0..delete_count {    // Delete account
-        //     let address = addresses[i];
-        //     self.accounts.remove(&address);
+        let delete_count = (total_operations as f64 * delete_ratio) as usize;
+        // Collect addresses and storage keys for deletion
+        let addresses: Vec<Address> = self.accounts.keys().cloned().collect();
+        for i in 0..delete_count {    // Delete account
+            let address = addresses[i];
+            self.accounts.remove(&address);
 
-        //     // Delete from BSC trie
-        //     if let Err(e) = self.bsc_trie.delete_account(address) {
-        //         result.errors.push(format!("BSC delete_account failed: {}", e));
-        //         result.success = false;
-        //     }
+            // Delete from BSC trie
+            if let Err(e) = self.bsc_trie.delete_account(address) {
+                result.errors.push(format!("BSC delete_account failed: {}", e));
+                result.success = false;
+            }
 
-        //     // Delete from Reth trie
-        //     if let Err(e) = self.reth_trie.delete_account(address) {
-        //         result.errors.push(format!("Reth delete_account failed: {}", e));
-        //         result.success = false;
-        //     }
+            // Delete from Reth trie
+            if let Err(e) = self.reth_trie.delete_account(address) {
+                result.errors.push(format!("Reth delete_account failed: {}", e));
+                result.success = false;
+            }
 
-        //     // Compare roots every 5 delete operations
-        //     if (i + 1) % 5 == 0 {
-        //         let progress = format!("[{}/{}]", i + 1, delete_count);
-        //         if let Err(e) = self.get_root_and_compare(&mut result, &progress, "Delete") {
-        //             result.errors.push(e);
-        //             result.success = false;
-        //         }
-        //     }
-        // }
-
-        // Final commit and comparison
-        if let Err(e) = self.commit_and_compare(&mut result) {
-            result.errors.push(e);
-            // Don't set success to false for root mismatches
-            // result.success = false;
+            // Compare roots every 5 delete operations
+            if (i + 1) % commit_interval == 0 {
+                let progress = format!("[{}/{}]", i + 1, delete_count);
+                if let Err(e) = self.get_root_and_compare(&mut result, &progress, "Delete") {
+                    result.errors.push(e);
+                    result.success = false;
+                }
+            }
         }
+
         result
     }
 
@@ -219,37 +204,21 @@ impl SmokeTest {
 
         Ok(())
     }
-
-    /// Commit and compare final roots
-    fn commit_and_compare(&mut self, result: &mut SmokeTestResult) -> Result<(), String> {
-        // Commit BSC trie
-        let bsc_root = self.bsc_trie.commit(true).map_err(|e| format!("BSC commit failed: {}", e))?;
-
-        // Commit Reth trie
-        let (reth_root, _) = self.reth_trie.commit(true).map_err(|e| format!("Reth commit failed: {}", e))?;
-
-        // Store roots in result
-        result.bsc_root = Some(bsc_root);
-        result.reth_root = Some(reth_root);
-
-        // Compare roots
-        if bsc_root == reth_root {
-            println!("✅ Commit - Root match: BSC={:?}, Reth={:?}", bsc_root, reth_root);
-        } else {
-            let error_msg = format!("Commit Root mismatch: BSC={:?}, Reth={:?}", bsc_root, reth_root);
-            println!("❌ {}", error_msg);
-            return Err(error_msg);
-        }
-
-        Ok(())
-    }
 }
 
-// Generate random address
-fn generate_random_address(rng: &mut impl Rng) -> Address {
+// Generate random address and account
+fn generate_random_address_and_account(rng: &mut impl Rng) -> (Address, StateAccount) {
     let mut bytes = [0u8; 20];
     rng.fill(&mut bytes);
-    Address::from(bytes)
-}
+    let address = Address::from(bytes);
 
+    let account = StateAccount {
+        nonce: rng.gen::<u64>(),
+        balance: U256::from(rng.gen::<u64>()),
+        storage_root: B256::from_slice(&rng.gen::<[u8; 32]>()),
+        code_hash: B256::from_slice(&rng.gen::<[u8; 32]>()),
+    };
+
+    (address, account)
+}
 

@@ -4,6 +4,7 @@ use alloy_primitives::B256;
 use reth_triedb_common::TrieDatabase;
 use thiserror::Error;
 use alloy_trie::EMPTY_ROOT_HASH;
+use super::state_trie::StateTrie;
 
 // use super::state_trie::StateTrie;
 
@@ -105,8 +106,8 @@ where
     }
 
     /// Builds the secure trie
-    pub fn build(self) -> Result<crate::trie::Trie<DB>, SecureTrieError> {
+    pub fn build(self) -> Result<StateTrie<DB>, SecureTrieError> {
         let id = self.id.unwrap_or_else(|| SecureTrieId::default());
-        crate::trie::Trie::new(&id, self.database, None)
+        StateTrie::new(id, self.database)
     }
 }

@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use alloy_rlp::{Decodable, Encodable, Header, PayloadView, Error as RlpError};
 use alloy_primitives::{keccak256, B256};
-
+use crate::node::decode_node::write_bytes;
 use crate::node::{HashNode, Node, NodeFlag, decode_node::decode_node};
 
 /// Full node with 17 children (16 hex digits + value)
@@ -70,7 +70,9 @@ impl FullNode {
 
     /// RLP encode the node
     pub fn to_rlp(&self) -> Vec<u8> {
-        return alloy_rlp::encode(self);
+        let mut buf = Vec::new();
+        self.encode(&mut buf);
+        return buf;
     }
 
     /// Decode the node from RLP bytes
@@ -95,22 +97,31 @@ impl Encodable for FullNode {
         let mut temp_buf = Vec::new();
 
         // Encode all children nodes (0-16)
-        for child in &self.children {
+        for (_, child) in self.children.iter().enumerate() {
             match child.as_ref() {
                 Node::EmptyRoot => {
-                    alloy_rlp::EMPTY_STRING_CODE.encode(&mut temp_buf);
+                    // Empty root encoded as empty string [0x80]
+                    write_bytes(&mut temp_buf, &Vec::new());
                 }
                 Node::Full(full_node) => {
-                    full_node.encode(&mut temp_buf);
+                    // Full nodes encoded as a list of 17 elements
+                    let mut val_buf = Vec::new();
+                    full_node.encode(&mut val_buf);
+                    write_bytes(&mut temp_buf, &val_buf.as_slice());
                 }
                 Node::Short(short_node) => {
-                    short_node.encode(&mut temp_buf);
+                    // Short nodes encoded as a list of 2 elements
+                    let mut val_buf = Vec::new();
+                    short_node.encode(&mut val_buf);
+                    write_bytes(&mut temp_buf, &val_buf.as_slice());
                 }
                 Node::Hash(hash_node) => {
-                    hash_node.as_slice().encode(&mut temp_buf);
+                    // Hash nodes encoded as byte strings
+                    write_bytes(&mut temp_buf, &hash_node.as_slice());
                 }
                 Node::Value(value_node) => {
-                    value_node.as_slice().encode(&mut temp_buf);
+                    // Value nodes encoded as byte strings
+                    write_bytes(&mut temp_buf, &value_node.as_slice());
                 }
             }
         }
@@ -122,33 +133,6 @@ impl Encodable for FullNode {
 
         // Write the encoded content
         out.put_slice(&temp_buf);
-    }
-
-    fn length(&self) -> usize {
-        // Calculate the same length as in encode()
-        let payload_len = self.children.iter().map(|child| {
-            match child.as_ref() {
-                Node::EmptyRoot => {
-                    alloy_rlp::EMPTY_STRING_CODE.length()
-                }
-                Node::Full(full_node) => {
-                    full_node.to_rlp().len()
-                }
-                Node::Short(short_node) => {
-                    short_node.to_rlp().len()
-                }
-                Node::Hash(hash_node) => {
-                    // Hash nodes: encode as RLP string
-                    hash_node.as_slice().length()
-                }
-                Node::Value(value_node) => {
-                    value_node.as_slice().length()
-                }
-            }
-        }).sum();
-
-        // Add RLP list header length using alloy_rlp's length_of_length
-        alloy_rlp::length_of_length(payload_len) + payload_len
     }
 }
 
