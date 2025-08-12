@@ -40,5 +40,5 @@ pub trait SecureTrieTrait {
     fn commit(&mut self, collect_leaf: bool) -> Result<(B256, Option<NodeSet>), Self::Error>;
 
     /// Returns the current root hash of the trie
-    fn root(&self) -> B256;
+    fn hash(&mut self) -> B256;
 }

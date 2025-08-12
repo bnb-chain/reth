@@ -1,9 +1,11 @@
 //! Core trie implementation for secure trie operations.
 
-use alloy_primitives::B256;
-use reth_triedb_common::TrieDatabase;
 use std::collections::HashMap;
 use std::sync::Arc;
+
+use alloy_primitives::{B256};
+use alloy_trie::EMPTY_ROOT_HASH;
+use reth_triedb_common::TrieDatabase;
 
 use super::encoding::{common_prefix_length, key_to_nibbles};
 use super::node::{Node, NodeFlag, FullNode, ShortNode, must_decode_node};
@@ -75,6 +77,21 @@ where
     /// Gets the root node of the trie
     pub fn root(&self) -> Arc<Node> {
         self.root.clone()
+    }
+
+    /// Gets the root hash of the trie
+    pub fn hash(&mut self) -> B256 {
+        if self.root == Arc::new(Node::EmptyRoot) {
+            return EMPTY_ROOT_HASH;
+        }
+        let hasher = Hasher::new(self.unhashed > 100);
+        let(hashed, cached) = hasher.hash(self.root.clone(), true);
+        self.root = cached;
+        if let Node::Hash(h) = &*hashed {
+            *h
+        } else {
+            panic!("Expected Hash node, got: {:?}", hashed);
+        }
     }
 }
 
@@ -392,6 +409,7 @@ where
                     return Ok((false, node));
                 } else {
                     let mut new_full = full.to_mutable_copy_with_cow();
+                    new_full.flags = self.new_flag();
                     new_full.set_child(nibbles_key[0] as usize, &new_child);
                     return Ok((true, Arc::new(Node::Full(Arc::new(new_full)))));
                 }
@@ -608,10 +626,10 @@ where
                     nibbles_key
                 )?;
 
-                if dirty {
-                    Ok((true, new_node))
-                } else {
+                if !dirty {
                     Ok((false, resolved_node_backup))
+                } else {
+                    Ok((true, new_node))
                 }
             }
         }

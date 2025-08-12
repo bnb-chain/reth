@@ -9,15 +9,16 @@
 //! - `NodeFlag`: Flags for caching and dirty state
 //! - `NodeSet`: Collection of modified nodes during commit operations
 
-/// Node decoding utilities
-pub mod decode_node;
+
+/// Node types
 pub mod full_node;
 pub mod node;
 pub mod node_set;
 pub mod short_node;
 
-#[cfg(test)]
-mod node_rlp_test;
+// Node decoding utilities
+pub mod decode_node;
+pub mod rlp_raw;
 
 // Re-export main types
 pub use decode_node::{must_decode_node, decode_node};

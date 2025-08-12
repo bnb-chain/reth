@@ -10,8 +10,8 @@ use super::account::StateAccount;
 use super::secure_trie::{SecureTrieId, SecureTrieError};
 use super::traits::SecureTrieTrait;
 use super::trie::Trie;
-use super::node::{Node, NodeSet};
-use super::trie_hasher::Hasher;
+use super::node::{NodeSet};
+use super::node::rlp_raw;
 
 /// State trie implementation that wraps a trie with secure key hashing
 pub struct StateTrie<DB> {
@@ -57,16 +57,6 @@ where
         &mut self.trie
     }
 
-    /// Returns a reference to the database
-    // pub fn database(&self) -> &DB {
-    //     self.trie.database()
-    // }
-
-    // /// Returns a mutable reference to the database
-    // pub fn database_mut(&mut self) -> &mut DB {
-    //     self.trie.database_mut()
-    // }
-
     /// Creates a copy of this state trie
     pub fn copy(&self) -> Self {
         Self {
@@ -108,66 +98,53 @@ where
         let mut encoded_account = Vec::new();
         account.encode(&mut encoded_account);
         self.trie.update(hashed_address.as_slice(), &encoded_account)?;
-
-        // Cache the original address
-        // let addr_str = String::from_utf8_lossy(hashed_address.as_slice()).to_string();
-        // self.trie.get_sec_key_cache().insert(addr_str, address.to_vec());
-
         Ok(())
     }
 
     fn delete_account(&mut self, address: Address) -> Result<(), Self::Error> {
         let hashed_address = self.hash_key(address.as_slice());
         self.trie.delete(hashed_address.as_slice())?;
-
-        // // Remove from cache
-        // let addr_str = String::from_utf8_lossy(hashed_address.as_slice()).to_string();
-        // self.trie.get_sec_key_cache().remove(&addr_str);
-
         Ok(())
     }
 
-    fn get_storage(&mut self, _address: Address, _key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
-        // let hashed_key = self.hash_key(key);
-        // self.trie.get(hashed_key.as_slice())
-        Ok(None)
+    fn get_storage(&mut self, _address: Address, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
+        let hashed_key = self.hash_key(key);
+        let enc = self.trie.get(hashed_key.as_slice())?;
+
+        if enc.is_none() {
+            return Ok(None);
+        }
+
+        let enc = enc.unwrap();
+        if enc.is_empty() {
+            return Ok(None);
+        }
+
+        // Extract the RLP string/content. Map any raw-RLP error to our domain error.
+        let (_, value, _) = rlp_raw::split(&enc).map_err(|_| SecureTrieError::InvalidStorage)?;
+        Ok(Some(value.to_vec()))
     }
 
-    fn update_storage(&mut self, _address: Address, _key: &[u8], _value: &[u8]) -> Result<(), Self::Error> {
-        // let hashed_key = self.hash_key(key);
-        // self.trie.update(hashed_key.as_slice(), value)?;
-
-        // // Cache the original key
-        // let key_str = String::from_utf8_lossy(hashed_key.as_slice()).to_string();
-        // self.trie.get_sec_key_cache().insert(key_str, key.to_vec());
-
+    fn update_storage(&mut self, _address: Address, key: &[u8], value: &[u8]) -> Result<(), Self::Error> {
+        let hashed_key = self.hash_key(key);
+        let encoded_value = alloy_rlp::encode(value);
+        self.trie.update(hashed_key.as_slice(), &encoded_value)?;
         Ok(())
     }
 
-    fn delete_storage(&mut self, _address: Address, _key: &[u8]) -> Result<(), Self::Error> {
-        // let hashed_key = self.hash_key(key);
-        // self.trie.delete(hashed_key.as_slice())?;
-
-        // // Remove from cache
-        // let key_str = String::from_utf8_lossy(hashed_key.as_slice()).to_string();
-        // self.trie.get_sec_key_cache().remove(&key_str);
-
+    fn delete_storage(&mut self, _address: Address, key: &[u8]) -> Result<(), Self::Error> {
+        let hashed_key = self.hash_key(key);
+        self.trie.delete(hashed_key.as_slice())?;
         Ok(())
     }
 
     fn commit(&mut self, _collect_leaf: bool) -> Result<(B256, Option<NodeSet>), Self::Error> {
-        // self.trie.commit(collect_leaf)
+        // TODO: implement commit
         Ok((B256::ZERO, None))
     }
 
-    fn root(&self) -> B256 {
-        let hasher = Hasher::new(true);
-        let (hash_node, _) = hasher.hash(self.trie.root(), true);
-        if let Node::Hash(hash) = &*hash_node {
-            hash.clone()
-        } else {
-            panic!("Expected Hash node, got: {:?}", hash_node);
-        }
+    fn hash(&mut self) -> B256 {
+        self.trie.hash()
     }
 }
 

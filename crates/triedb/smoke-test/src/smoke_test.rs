@@ -24,33 +24,6 @@ pub enum SmokeTestError {
     RootMismatch(B256, B256),
 }
 
-// /// Test account structure
-// #[derive(Debug, Clone)]
-// struct TestAccount {
-//     nonce: u64,
-//     balance: U256,
-//     storage_root: B256,
-//     code_hash: B256,
-// }
-
-// impl TestAccount {
-//     /// Create a new TestAccount with default empty values for storage_root and code_hash
-//     pub fn new(nonce: u64, balance: U256) -> Self {
-//         Self {
-//             nonce,
-//             balance,
-//             storage_root: alloy_trie::EMPTY_ROOT_HASH,
-//             code_hash: alloy_trie::EMPTY_ROOT_HASH,
-//         }
-//     }
-// }
-
-// impl From<TestAccount> for StateAccount {
-//     fn from(account: TestAccount) -> Self {
-//         StateAccount::new_with_hashes(account.nonce, account.balance, account.storage_root, account.code_hash)
-//     }
-// }
-
 /// Smoke test result
 #[derive(Debug)]
 pub struct SmokeTestResult {
@@ -180,13 +153,93 @@ impl SmokeTest {
         result
     }
 
+    pub fn run_storage_smoke_test(&mut self) -> SmokeTestResult {
+        let mut result = SmokeTestResult {
+            success: true,
+            bsc_root: None,
+            reth_root: None,
+            errors: Vec::new(),
+        };
+
+        let mut rng = rand::thread_rng();
+        let total_operations = 1000000;
+        let commit_interval = 100000;
+        let delete_ratio = 0.5;
+
+        println!("🚀 Starting storage smoke test with {} total operations", total_operations);
+        for i in 0..total_operations {
+            let (address, account) = generate_random_address_and_account(&mut rng);
+            self.accounts.insert(address, account.clone());
+
+            // Update BSC trie
+            if let Err(e) = self.bsc_trie.update_storage(
+                address,
+                address.as_slice(),
+                address.as_slice(),
+            ) {
+                result.errors.push(format!("BSC update_storage failed: {}", e));
+                result.success = false;
+            }
+
+            // Update Reth trie
+            if let Err(e) = self.reth_trie.update_storage(
+                address,
+                address.as_slice(),
+                address.as_slice(),
+            ) {
+                result.errors.push(format!("Reth update_storage failed: {}", e));
+                result.success = false;
+            }
+
+            // Commit and compare every commit_interval operations
+            if (i + 1) % commit_interval == 0 {
+                let progress = format!("[{}/{}]", i + 1, total_operations);
+                if let Err(e) = self.get_root_and_compare(&mut result, &progress, "Insert") {
+                    result.errors.push(e);
+                    result.success = false;
+                }
+            }
+        }
+
+        let delete_count = (total_operations as f64 * delete_ratio) as usize;
+        // Collect addresses and storage keys for deletion
+        let addresses: Vec<Address> = self.accounts.keys().cloned().collect();
+        for i in 0..delete_count {    // Delete account
+            let address = addresses[i];
+            self.accounts.remove(&address);
+
+            // Delete from BSC trie
+            if let Err(e) = self.bsc_trie.delete_storage(address, address.as_slice()) {
+                result.errors.push(format!("BSC delete_storage failed: {}", e));
+                result.success = false;
+            }
+
+            // Delete from Reth trie
+            if let Err(e) = self.reth_trie.delete_storage(address, address.as_slice()) {
+                result.errors.push(format!("Reth delete_storage failed: {}", e));
+                result.success = false;
+            }
+
+            // Compare roots every 5 delete operations
+            if (i + 1) % commit_interval == 0 {
+                let progress = format!("[{}/{}]", i + 1, delete_count);
+                if let Err(e) = self.get_root_and_compare(&mut result, &progress, "Delete") {
+                    result.errors.push(e);
+                    result.success = false;
+                }
+            }
+        }
+
+        result
+    }
+
     /// Get root and compare BSC and Reth roots
-    fn get_root_and_compare(&self, result: &mut SmokeTestResult, progress: &str, operation_type: &str) -> Result<(), String> {
+    fn get_root_and_compare(&mut self, result: &mut SmokeTestResult, progress: &str, operation_type: &str) -> Result<(), String> {
         // Get BSC root
         let bsc_root = self.bsc_trie.root().map_err(|e| format!("BSC root failed: {}", e))?;
 
         // Get Reth root
-        let reth_root = self.reth_trie.root();
+        let reth_root = self.reth_trie.hash();
 
         // Store roots in result
         result.bsc_root = Some(bsc_root);

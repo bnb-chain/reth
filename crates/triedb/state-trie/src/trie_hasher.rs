@@ -2,9 +2,7 @@
 //!
 //! This module provides a hasher for computing trie hashes.
 use std::sync::Arc;
-use crate::secure_trie::{SecureTrieBuilder, SecureTrieId};
-use alloy_primitives::{keccak256, B256};
-use reth_triedb_memorydb::MemoryDB;
+use alloy_primitives::{keccak256};
 use crate::node::{Node, ShortNode, FullNode};
 use crate::encoding::hex_to_compact;
 use rayon::prelude::*;
@@ -181,12 +179,12 @@ mod tests {
         let db = PathDB::new(db_path, config).expect("Failed to create PathDB");
         let id = SecureTrieId::new(B256::ZERO);
 
-        let mut trie = SecureTrieBuilder::new(db.clone())
+        let mut state_trie = SecureTrieBuilder::new(db.clone())
             .with_id(id.clone())
             .build()
-            .expect("Failed to create trie")
-            .trie_mut();
+            .expect("Failed to create trie");
 
+        let trie = state_trie.trie_mut();
         // Apply all operations
         for (key, value_opt) in operations {
             match value_opt {
@@ -201,7 +199,7 @@ mod tests {
             }
         }
 
-        trie
+        trie.clone()
     }
 
     /// Generate test data with khash computation

@@ -7,7 +7,7 @@
 use std::sync::Arc;
 use alloy_rlp::{Decodable, Encodable, Header, PayloadView, Error as RlpError, };
 use alloy_primitives::{keccak256, B256};
-use crate::node::decode_node::write_bytes;
+use crate::node::rlp_raw::write_bytes;
 use super::{Node, NodeFlag, HashNode, decode_node::decode_node};
 
 

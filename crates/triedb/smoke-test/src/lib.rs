@@ -6,5 +6,3 @@ pub use smoke_test::*;
 
 #[cfg(test)]
 mod test;
-#[cfg(test)]
-mod simple_debug;

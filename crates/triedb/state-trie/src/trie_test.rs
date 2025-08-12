@@ -3,6 +3,7 @@
 use alloy_primitives::{B256, keccak256};
 use reth_triedb_pathdb::{PathDB, PathProviderConfig};
 use crate::secure_trie::{SecureTrieBuilder, SecureTrieId};
+use crate::traits::SecureTrieTrait;
 
 use std::env;
 
@@ -1870,4 +1871,52 @@ fn test_key_to_nibbles_bsc_compatibility() {
     println!("   - ✅ Nibble conversion: byte / 16, byte % 16");
     println!("   - ✅ Terminator: always 16 at the end");
     println!("   - ✅ BSC test cases: all match exactly");
+}
+
+#[test]
+fn test_update_and_get_storage_basic() {
+    use reth_triedb_memorydb::MemoryDB;
+    use crate::state_trie::StateTrie;
+    use crate::secure_trie::SecureTrieId;
+    use alloy_primitives::{Address, B256};
+
+    // Create empty in-memory DB and StateTrie
+    let db = MemoryDB::default();
+    let id = SecureTrieId::new(B256::ZERO);
+    let mut state_trie: StateTrie<MemoryDB> = StateTrie::new(id, db).expect("create trie");
+
+    let address = Address::ZERO;
+    let key = b"storage_key";
+    let value = b"storage_value";
+
+    // Update storage
+    state_trie.update_storage(address, key, value).expect("update storage");
+
+    // Retrieve storage
+    let stored = state_trie.get_storage(address, key).expect("get storage");
+    assert_eq!(stored.as_deref(), Some(value.as_slice()), "Stored value should match");
+}
+
+#[test]
+fn test_update_and_get_storage_various_sizes() {
+    use reth_triedb_memorydb::MemoryDB;
+    use crate::state_trie::StateTrie;
+    use crate::secure_trie::SecureTrieId;
+    use alloy_primitives::{Address, B256};
+
+    let db = MemoryDB::default();
+    let id = SecureTrieId::new(B256::ZERO);
+    let mut trie: StateTrie<MemoryDB> = StateTrie::new(id, db).expect("create trie");
+
+    let addr = Address::ZERO;
+    let key = b"size_key";
+
+    let sizes = [0usize, 1, 9, 17, 25, 129, 257, 1025, 10241];
+
+    for &len in &sizes {
+        let value: Vec<u8> = vec![0xAB; len]; // deterministic byte pattern
+        trie.update_storage(addr, key, &value).expect("update storage");
+        let stored = trie.get_storage(addr, key).expect("get storage");
+        assert_eq!(stored.as_deref(), Some(value.as_slice()), "Mismatch for size {}", len);
+    }
 }
