@@ -5,10 +5,10 @@
 
 use std::sync::Arc;
 
-use alloy_rlp::{Decodable, Encodable, Header, PayloadView, Error as RlpError};
+use alloy_rlp::{Decodable, Encodable, Header, Error as RlpError};
 use alloy_primitives::{keccak256, B256};
-use crate::node::rlp_raw::write_bytes;
-use crate::node::{HashNode, Node, NodeFlag, decode_node::decode_node};
+use crate::node::rlp_raw::*;
+use crate::node::{HashNode, Node, NodeFlag, decode_node::decode_ref};
 
 /// Full node with 17 children (16 hex digits + value)
 #[derive(Clone, Debug, PartialEq)]
@@ -105,15 +105,11 @@ impl Encodable for FullNode {
                 }
                 Node::Full(full_node) => {
                     // Full nodes encoded as a list of 17 elements
-                    let mut val_buf = Vec::new();
-                    full_node.encode(&mut val_buf);
-                    write_bytes(&mut temp_buf, &val_buf.as_slice());
+                    full_node.encode(&mut temp_buf);
                 }
                 Node::Short(short_node) => {
                     // Short nodes encoded as a list of 2 elements
-                    let mut val_buf = Vec::new();
-                    short_node.encode(&mut val_buf);
-                    write_bytes(&mut temp_buf, &val_buf.as_slice());
+                    short_node.encode(&mut temp_buf);
                 }
                 Node::Hash(hash_node) => {
                     // Hash nodes encoded as byte strings
@@ -138,62 +134,17 @@ impl Encodable for FullNode {
 
 impl Decodable for FullNode {
     fn decode(buf: &mut &[u8]) -> Result<Self, RlpError> {
-        let header_view = Header::decode_raw(buf)?;
-
-        let PayloadView::List(list) = header_view else {
-            return Err(RlpError::Custom("FullNode must be a list"));
-        };
-
-        if list.len() != 17 {
-            return Err(RlpError::Custom("FullNode must have 17 children"));
-        }
-
         let mut full_node = FullNode::new();
-
-        // Process all 17 children
-        for (i, &item_buf) in list.iter().enumerate() {
-            let mut temp_buf = item_buf;
-            let child_view = Header::decode_raw(&mut temp_buf)?;
-
-            if i < 16 {
-                // Process children 0-15 (hex digits)
-                match child_view {
-                    PayloadView::String(val) => {
-                        if val == &[alloy_rlp::EMPTY_STRING_CODE] {
-                            full_node.set_child(i, &Node::EmptyRoot);
-                        } else if val.len() == 32 {
-                            full_node.set_child(i, &Node::Hash(B256::from_slice(val)));
-                        } else {
-                            println!("FullNode child contains less than 32 bytes hash node - this is unexpected and should be investigated");
-                            full_node.set_child(i, &Node::Hash(B256::from_slice(val)));
-                        }
-                    }
-                    PayloadView::List(_) => {
-                        let mut temp_item = item_buf;
-                        let child_node = decode_node(None, &mut temp_item)?;
-                        full_node.set_child(i, child_node.as_ref());
-                    }
-                }
-            } else {
-                // Process child 16 (value)
-                match child_view {
-                    PayloadView::String(val) => {
-                        if val == &[alloy_rlp::EMPTY_STRING_CODE] {
-                            full_node.set_child(i, &Node::EmptyRoot);
-                        } else {
-                            full_node.set_child(i, &Node::Value(val.to_vec()));
-                        }
-                    }
-                    PayloadView::List(_) => {
-                        println!("FullNode 17th child is a list - this is unexpected and should be investigated");
-                        let mut temp_item = item_buf;
-                        let child_node = decode_node(None, &mut temp_item)?;
-                        full_node.set_child(i, child_node.as_ref());
-                    }
-                }
-            }
+        for i in 0..16 {
+            let (child, reset) = decode_ref(buf)?;
+            full_node.children[i] = child;
+            *buf = reset;
         }
-
+        let(val, _) = split_string(buf)
+            .map_err(|_| RlpError::Custom("Split string failed"))?;
+        if !val.is_empty() {
+            full_node.children[16] = Arc::new(Node::Value(val.to_vec()));
+        }
         Ok(full_node)
     }
 }

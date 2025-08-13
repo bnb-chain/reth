@@ -175,7 +175,7 @@ impl SmokeTest {
             if let Err(e) = self.bsc_trie.update_storage(
                 address,
                 address.as_slice(),
-                address.as_slice(),
+                &address[..1],
             ) {
                 result.errors.push(format!("BSC update_storage failed: {}", e));
                 result.success = false;
@@ -185,7 +185,7 @@ impl SmokeTest {
             if let Err(e) = self.reth_trie.update_storage(
                 address,
                 address.as_slice(),
-                address.as_slice(),
+                &address[..1],
             ) {
                 result.errors.push(format!("Reth update_storage failed: {}", e));
                 result.success = false;

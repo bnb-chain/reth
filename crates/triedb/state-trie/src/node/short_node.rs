@@ -5,10 +5,11 @@
 
 
 use std::sync::Arc;
-use alloy_rlp::{Decodable, Encodable, Header, PayloadView, Error as RlpError, };
+use alloy_rlp::{Decodable, Encodable, Header, Error as RlpError, };
 use alloy_primitives::{keccak256, B256};
-use crate::node::rlp_raw::write_bytes;
-use super::{Node, NodeFlag, HashNode, decode_node::decode_node};
+use crate::encoding::*;
+use crate::node::rlp_raw::*;
+use super::{Node, NodeFlag, HashNode, decode_node::decode_ref};
 
 
 /// Short node (extension or leaf)
@@ -120,15 +121,11 @@ impl Encodable for ShortNode {
             }
             Node::Full(full_node) => {
                 // Full nodes encoded as a list of 17 elements
-                let mut val_buf = Vec::new();
-                full_node.encode(&mut val_buf);
-                write_bytes(&mut temp_buf, &val_buf.as_slice());
+                full_node.encode(&mut temp_buf);
             }
             Node::Short(short_node) => {
                 // Short nodes encoded as a list of 2 elements
-                let mut val_buf = Vec::new();
-                short_node.encode(&mut val_buf);
-                write_bytes(&mut temp_buf, &val_buf.as_slice());
+                short_node.encode(&mut temp_buf);
             }
             Node::Hash(hash_node) => {
                 // Hash nodes encoded as byte strings
@@ -152,53 +149,17 @@ impl Encodable for ShortNode {
 
 impl Decodable for ShortNode {
     fn decode(buf: &mut &[u8]) -> Result<Self, RlpError> {
-        let payload_view = Header::decode_raw(buf)?;
+        let (key_buf, value_buf) = split_string(buf)
+            .map_err(|_| RlpError::Custom("Split list failed"))?;
 
-        let PayloadView::List(mut items) = payload_view else {
-            return Err(RlpError::Custom("ShortNode must be a list"));
-        };
-
-        if items.len() != 2 {
-            return Err(RlpError::Custom("ShortNode must have 2 elements"));
+        let key = compact_to_hex(&key_buf);
+        if has_terminator(&key) {
+            let (val, _) = split_string(value_buf)
+                .map_err(|_| RlpError::Custom("Split string failed"))?;
+            return Ok(ShortNode::new(key, &Node::Value(val.to_vec())));
         }
 
-        let mut short_node = ShortNode::new(Vec::new(), &Node::EmptyRoot);
-
-        // Decode key (first element)
-        let compact_key = Vec::<u8>::decode(&mut items[0])?;
-        let key = crate::encoding::compact_to_hex(&compact_key);
-        let has_terminator = crate::encoding::has_term(&key);
-        short_node.key = key;
-
-        // Decode value (second element)
-        let mut temp_item = items[1];
-        let child_view = Header::decode_raw(&mut temp_item)?;
-
-        match child_view {
-            PayloadView::String(val) => {
-                if has_terminator {
-                    // If key has terminator, value is a value node
-                    short_node.val = Arc::new(Node::Value(val.to_vec()));
-                } else if val == &[alloy_rlp::EMPTY_STRING_CODE] {
-                    // Empty string indicates empty root
-                    println!("ShortNode val is empty string - this is unexpected and should be investigated");
-                    short_node.val = Arc::new(Node::EmptyRoot);
-                } else if val.len() == 32 {
-                    // 32-byte value indicates hash node
-                    short_node.val = Arc::new(Node::Hash(B256::from_slice(val)));
-                } else {
-                    // Unexpected hash node length
-                    println!("ShortNode val contains less than 32 bytes hash node - this is unexpected and should be investigated");
-                    short_node.val = Arc::new(Node::Hash(B256::from_slice(val)));
-                }
-            }
-            PayloadView::List(_) => {
-                // List value indicates complex node structure
-                let node = decode_node(None, &mut items[1])?;
-                short_node.val = node.clone();
-            }
-        }
-
-        Ok(short_node)
+        let (val, _) = decode_ref(value_buf)?;
+        return Ok(ShortNode::new(key, &val));
     }
 }
