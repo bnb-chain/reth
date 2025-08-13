@@ -194,7 +194,6 @@ where
     pub fn try_next(
         &mut self,
     ) -> Result<Option<TrieElement<<H as HashedCursor>::Value>>, DatabaseError> {
-        let start_time = std::time::Instant::now();
 
         loop {
             // If the walker has a key...
@@ -209,7 +208,6 @@ where
                     if self.walker.can_skip_current_node {
                         #[cfg(feature = "metrics")]
                         self.metrics.inc_branch_nodes_returned();
-                        self.metrics.record_iter_duration(start_time.elapsed().as_secs_f64());
                         return Ok(Some(TrieElement::Branch(TrieBranchNode::new(
                             *key,
                             self.walker.hash().unwrap(),
@@ -233,7 +231,6 @@ where
 
                 #[cfg(feature = "metrics")]
                 self.metrics.inc_leaf_nodes_returned();
-                self.metrics.record_iter_duration(start_time.elapsed().as_secs_f64());
                 return Ok(Some(TrieElement::Leaf(hashed_key, value)))
             }
 
@@ -297,7 +294,6 @@ where
                 }
             }
         }
-        self.metrics.record_iter_duration(start_time.elapsed().as_secs_f64());
         Ok(None)
     }
 }

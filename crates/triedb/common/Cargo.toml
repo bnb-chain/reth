@@ -1,0 +1,19 @@
+[package]
+name = "reth-triedb-common"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Common traits and types for reth trie database implementations"
+
+[lints]
+workspace = true
+
+[dependencies]
+# alloy
+alloy-primitives.workspace = true
+
+# misc
+auto_impl.workspace = true
