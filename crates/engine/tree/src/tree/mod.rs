@@ -6,7 +6,8 @@ use crate::{
     tree::{error::InsertPayloadError, metrics::EngineApiMetrics, payload_validator::TreeCtx},
 };
 use alloy_consensus::BlockHeader;
-use alloy_eips::{eip1898::BlockWithParent, merge::EPOCH_SLOTS, BlockNumHash, NumHash};
+// use alloy_eips::{eip1898::BlockWithParent, merge::EPOCH_SLOTS, BlockNumHash, NumHash};
+use alloy_eips::{eip1898::BlockWithParent, BlockNumHash, NumHash};
 use alloy_primitives::B256;
 use alloy_rpc_types_engine::{
     ForkchoiceState, PayloadStatus, PayloadStatusEnum, PayloadValidationError,

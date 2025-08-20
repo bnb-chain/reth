@@ -33,7 +33,8 @@ use reth_trie_parallel::{
 };
 use reth_trie_sparse::{
     provider::{TrieNodeProvider, TrieNodeProviderFactory},
-    ClearedSparseStateTrie, SerialSparseTrie, SparseStateTrie, SparseTrie,
+    // ClearedSparseStateTrie, SerialSparseTrie, SparseStateTrie, SparseTrie,
+    ClearedSparseStateTrie, SparseStateTrie, SparseTrie,
 };
 use reth_trie_sparse_parallel::ParallelSparseTrie;
 use std::sync::{
