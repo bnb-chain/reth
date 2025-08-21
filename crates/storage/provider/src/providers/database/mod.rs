@@ -51,6 +51,9 @@ mod metrics;
 mod chain;
 pub use chain::*;
 
+use rust_eth_triedb::TrieDB;
+use rust_eth_triedb_pathdb::{PathDB, PathProviderConfig};
+
 /// A common provider that fetches data from a database or static file.
 ///
 /// This provider implements most provider or provider factory traits.
@@ -65,6 +68,8 @@ pub struct ProviderFactory<N: NodeTypesWithDB> {
     prune_modes: PruneModes,
     /// The node storage handler.
     storage: Arc<N::Storage>,
+    /// TrieDB instance
+    triedb: Arc<TrieDB<PathDB>>,
 }
 
 impl<N: NodeTypes> ProviderFactory<NodeTypesWithDBAdapter<N, Arc<DatabaseEnv>>> {
@@ -81,12 +86,21 @@ impl<N: NodeTypesWithDB> ProviderFactory<N> {
         chain_spec: Arc<N::ChainSpec>,
         static_file_provider: StaticFileProvider<N::Primitives>,
     ) -> Self {
+        let current_dir = std::env::current_dir().unwrap();
+        let db_path = current_dir.join("data").join("rust_eth_triedb").to_string_lossy().to_string();
+
+        // Create path database and TrieDB instance
+        let config = PathProviderConfig::default();
+        let pathdb = PathDB::new(&db_path, config).expect("Failed to create PathDB");
+        let triedb = TrieDB::new(pathdb);
+
         Self {
             db,
             chain_spec,
             static_file_provider,
             prune_modes: PruneModes::none(),
             storage: Default::default(),
+            triedb: Arc::new(triedb),
         }
     }
 
@@ -112,6 +126,11 @@ impl<N: NodeTypesWithDB> ProviderFactory<N> {
     pub fn into_db(self) -> N::DB {
         self.db
     }
+
+    /// Returns a reference to the trie database.
+    pub fn get_triedb(&self) -> Arc<TrieDB<PathDB>> {
+        self.triedb.clone()
+    }
 }
 
 impl<N: NodeTypesWithDB<DB = Arc<DatabaseEnv>>> ProviderFactory<N> {
@@ -123,12 +142,21 @@ impl<N: NodeTypesWithDB<DB = Arc<DatabaseEnv>>> ProviderFactory<N> {
         args: DatabaseArguments,
         static_file_provider: StaticFileProvider<N::Primitives>,
     ) -> RethResult<Self> {
+        let current_dir = std::env::current_dir().unwrap();
+        let db_path = current_dir.join("data").join("rust_eth_triedb").to_string_lossy().to_string();
+
+        // Create path database and TrieDB instance
+        let config = PathProviderConfig::default();
+        let pathdb = PathDB::new(&db_path, config).expect("Failed to create PathDB");
+        let triedb = TrieDB::new(pathdb);
+
         Ok(Self {
             db: Arc::new(init_db(path, args).map_err(RethError::msg)?),
             chain_spec,
             static_file_provider,
             prune_modes: PruneModes::none(),
             storage: Default::default(),
+            triedb: Arc::new(triedb),
         })
     }
 }
@@ -148,6 +176,7 @@ impl<N: ProviderNodeTypes> ProviderFactory<N> {
             self.static_file_provider.clone(),
             self.prune_modes.clone(),
             self.storage.clone(),
+            self.triedb.clone(),
         ))
     }
 
@@ -163,6 +192,7 @@ impl<N: ProviderNodeTypes> ProviderFactory<N> {
             self.static_file_provider.clone(),
             self.prune_modes.clone(),
             self.storage.clone(),
+            self.triedb.clone(),
         )))
     }
 
@@ -598,13 +628,14 @@ where
     N: NodeTypesWithDB<DB: fmt::Debug, ChainSpec: fmt::Debug, Storage: fmt::Debug>,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let Self { db, chain_spec, static_file_provider, prune_modes, storage } = self;
+        let Self { db, chain_spec, static_file_provider, prune_modes, storage , triedb } = self;
         f.debug_struct("ProviderFactory")
             .field("db", &db)
             .field("chain_spec", &chain_spec)
             .field("static_file_provider", &static_file_provider)
             .field("prune_modes", &prune_modes)
             .field("storage", &storage)
+            .field("triedb", &triedb)
             .finish()
     }
 }
@@ -617,6 +648,7 @@ impl<N: NodeTypesWithDB> Clone for ProviderFactory<N> {
             static_file_provider: self.static_file_provider.clone(),
             prune_modes: self.prune_modes.clone(),
             storage: self.storage.clone(),
+            triedb: self.triedb.clone(),
         }
     }
 }

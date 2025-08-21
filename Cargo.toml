@@ -458,7 +458,7 @@ reth-ress-provider = { path = "crates/ress/provider" }
 # rust-eth-triedb dependencies
 rust-eth-triedb-common = { version = "0.1.0", path = "../rust-eth-triedb/common" }
 rust-eth-triedb-state-trie = { version = "0.1.0", path = "../rust-eth-triedb/state-trie" }
-rust-eth-triedb-triedb = { version = "0.1.0", path = "../rust-eth-triedb/triedb" }
+rust-eth-triedb = { version = "0.1.0", path = "../rust-eth-triedb/triedb" }
 rust-eth-triedb-pathdb = { version = "0.1.0", path = "../rust-eth-triedb/db/pathdb" }
 
 # revm

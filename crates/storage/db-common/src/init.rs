@@ -137,7 +137,7 @@ where
     let provider_rw = factory.database_provider_rw()?;
     insert_genesis_hashes(&provider_rw, alloc.iter())?;
     insert_genesis_history(&provider_rw, alloc.iter())?;
-
+    let _= provider_rw.get_triedb();
     // Insert header
     insert_genesis_header(&provider_rw, &chain)?;
 

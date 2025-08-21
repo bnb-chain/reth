@@ -47,6 +47,9 @@ use std::{
 };
 use tokio::sync::broadcast;
 
+use rust_eth_triedb::TrieDB;
+use rust_eth_triedb_pathdb::{PathDB};
+
 /// A mock implementation for Provider interfaces.
 #[derive(Debug)]
 pub struct MockEthProvider<T: NodePrimitives = EthPrimitives, ChainSpec = reth_chainspec::ChainSpec>
@@ -293,6 +296,10 @@ impl<T: NodePrimitives, ChainSpec: EthChainSpec + 'static> DBProvider
 
     fn prune_modes_ref(&self) -> &PruneModes {
         &self.prune_modes
+    }
+
+    fn get_triedb(&self) -> Arc<TrieDB<PathDB>> {
+        panic!("get_triedb is not implemented");
     }
 }
 

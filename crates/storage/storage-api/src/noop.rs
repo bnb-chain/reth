@@ -41,6 +41,9 @@ use reth_trie_common::{
 #[cfg(feature = "db-api")]
 use reth_trie_db::MerklePatriciaTrie;
 
+use rust_eth_triedb::TrieDB;
+use rust_eth_triedb_pathdb::{PathDB};
+
 /// Supports various api interfaces for testing purposes.
 #[derive(Debug)]
 #[non_exhaustive]
@@ -623,6 +626,10 @@ impl<ChainSpec: Send + Sync, N: NodePrimitives> DBProvider for NoopProvider<Chai
 
     fn prune_modes_ref(&self) -> &PruneModes {
         &self.prune_modes
+    }
+
+    fn get_triedb(&self) -> Arc<TrieDB<PathDB>> {
+        panic!("get_triedb is not implemented");
     }
 }
 
