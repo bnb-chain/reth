@@ -455,6 +455,12 @@ reth-zstd-compressors = { path = "crates/storage/zstd-compressors", default-feat
 reth-ress-protocol = { path = "crates/ress/protocol" }
 reth-ress-provider = { path = "crates/ress/provider" }
 
+# rust-eth-triedb dependencies
+rust-eth-triedb-common = { version = "0.1.0", path = "../rust-eth-triedb/common" }
+rust-eth-triedb-state-trie = { version = "0.1.0", path = "../rust-eth-triedb/state-trie" }
+rust-eth-triedb-triedb = { version = "0.1.0", path = "../rust-eth-triedb/triedb" }
+rust-eth-triedb-pathdb = { version = "0.1.0", path = "../rust-eth-triedb/db/pathdb" }
+
 # revm
 revm = { version = "28.0.1", default-features = false }
 revm-bytecode = { version = "6.0.1", default-features = false }
