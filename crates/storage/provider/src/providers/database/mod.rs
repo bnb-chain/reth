@@ -69,7 +69,7 @@ pub struct ProviderFactory<N: NodeTypesWithDB> {
     /// The node storage handler.
     storage: Arc<N::Storage>,
     /// TrieDB instance
-    triedb: Arc<TrieDB<PathDB>>,
+    triedb: TrieDB<PathDB>,
 }
 
 impl<N: NodeTypes> ProviderFactory<NodeTypesWithDBAdapter<N, Arc<DatabaseEnv>>> {
@@ -100,7 +100,7 @@ impl<N: NodeTypesWithDB> ProviderFactory<N> {
             static_file_provider,
             prune_modes: PruneModes::none(),
             storage: Default::default(),
-            triedb: Arc::new(triedb),
+            triedb: triedb,
         }
     }
 
@@ -128,7 +128,7 @@ impl<N: NodeTypesWithDB> ProviderFactory<N> {
     }
 
     /// Returns a reference to the trie database.
-    pub fn get_triedb(&self) -> Arc<TrieDB<PathDB>> {
+    pub fn get_triedb(&self) -> TrieDB<PathDB> {
         self.triedb.clone()
     }
 }
@@ -156,7 +156,7 @@ impl<N: NodeTypesWithDB<DB = Arc<DatabaseEnv>>> ProviderFactory<N> {
             static_file_provider,
             prune_modes: PruneModes::none(),
             storage: Default::default(),
-            triedb: Arc::new(triedb),
+            triedb: triedb,
         })
     }
 }

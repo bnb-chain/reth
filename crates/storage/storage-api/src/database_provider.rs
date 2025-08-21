@@ -11,7 +11,6 @@ use reth_db_api::{
 use reth_prune_types::PruneModes;
 use reth_storage_errors::provider::ProviderResult;
 
-use std::sync::Arc;
 use rust_eth_triedb::TrieDB;
 use rust_eth_triedb_pathdb::{PathDB};
 
@@ -30,7 +29,7 @@ pub trait DBProvider: Sized {
     fn into_tx(self) -> Self::Tx;
 
     /// Returns a reference to the trie database.
-    fn get_triedb(&self) -> Arc<TrieDB<PathDB>>;
+    fn get_triedb(&self) -> TrieDB<PathDB>;
 
     /// Disables long-lived read transaction safety guarantees for leaks prevention and
     /// observability improvements.

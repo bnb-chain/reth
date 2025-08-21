@@ -298,7 +298,7 @@ impl<T: NodePrimitives, ChainSpec: EthChainSpec + 'static> DBProvider
         &self.prune_modes
     }
 
-    fn get_triedb(&self) -> Arc<TrieDB<PathDB>> {
+    fn get_triedb(&self) -> TrieDB<PathDB> {
         panic!("get_triedb is not implemented");
     }
 }

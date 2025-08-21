@@ -151,7 +151,7 @@ pub struct DatabaseProvider<TX, N: NodeTypes> {
     /// Node storage handler.
     storage: Arc<N::Storage>,
     /// TrieDB instance
-    triedb: Arc<TrieDB<PathDB>>,
+    triedb: TrieDB<PathDB>,
 }
 
 impl<TX, N: NodeTypes> DatabaseProvider<TX, N> {
@@ -161,8 +161,8 @@ impl<TX, N: NodeTypes> DatabaseProvider<TX, N> {
     }
 
     /// Returns a reference to the trie database.
-    pub fn get_triedb(&self) -> Arc<TrieDB<PathDB>> {
-        self.triedb.clone()
+    pub fn get_triedb(&self) -> &TrieDB<PathDB> {
+        &self.triedb
     }
 }
 
@@ -252,7 +252,7 @@ impl<TX: DbTxMut, N: NodeTypes> DatabaseProvider<TX, N> {
         static_file_provider: StaticFileProvider<N::Primitives>,
         prune_modes: PruneModes,
         storage: Arc<N::Storage>,
-        triedb: Arc<TrieDB<PathDB>>,
+        triedb: TrieDB<PathDB>,
     ) -> Self {
         Self { tx, chain_spec, static_file_provider, prune_modes, storage, triedb }
     }
@@ -536,7 +536,7 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> DatabaseProvider<TX, N> {
         static_file_provider: StaticFileProvider<N::Primitives>,
         prune_modes: PruneModes,
         storage: Arc<N::Storage>,
-        triedb: Arc<TrieDB<PathDB>>,
+        triedb: TrieDB<PathDB>,
     ) -> Self {
         Self { tx, chain_spec, static_file_provider, prune_modes, storage, triedb }
     }
@@ -3205,7 +3205,7 @@ impl<TX: DbTx + 'static, N: NodeTypes + 'static> DBProvider for DatabaseProvider
         self.prune_modes_ref()
     }
 
-    fn get_triedb(&self) -> Arc<TrieDB<PathDB>> {
+    fn get_triedb(&self) -> TrieDB<PathDB> {
         self.triedb.clone()
     }
 }

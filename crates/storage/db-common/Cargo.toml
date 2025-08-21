@@ -24,10 +24,14 @@ reth-node-types.workspace = true
 reth-static-file-types.workspace = true
 reth-execution-errors.workspace = true
 
+# rust-eth-triedb
+rust-eth-triedb-state-trie.workspace = true
+
 # eth
 alloy-consensus.workspace = true
 alloy-genesis.workspace = true
 alloy-primitives.workspace = true
+alloy-trie.workspace = true
 
 # misc
 eyre.workspace = true
