@@ -3356,7 +3356,6 @@ dependencies = [
  "reth-ethereum-payload-builder",
  "reth-payload-builder",
  "reth-tracing",
- "reth-trie-db",
  "serde",
  "thiserror 2.0.15",
  "tokio",
@@ -8518,7 +8517,6 @@ dependencies = [
  "reth-provider",
  "reth-tasks",
  "reth-transaction-pool",
- "reth-trie-db",
  "tempfile",
  "thiserror 2.0.15",
  "tokio",
@@ -9008,7 +9006,6 @@ dependencies = [
  "reth-tasks",
  "reth-tracing",
  "reth-transaction-pool",
- "reth-trie-db",
  "revm",
  "serde_json",
  "tokio",
@@ -9091,7 +9088,6 @@ dependencies = [
  "reth-engine-primitives",
  "reth-payload-primitives",
  "reth-primitives-traits",
- "reth-trie-db",
 ]
 
 [[package]]
@@ -9271,6 +9267,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "reth-optimism-flashblocks"
+version = "1.6.0"
+dependencies = [
+ "alloy-eips",
+ "alloy-primitives",
+ "alloy-rpc-types-engine",
+ "alloy-serde",
+ "brotli",
+ "eyre",
+ "futures-util",
+ "reth-optimism-primitives",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "reth-optimism-forks"
 version = "1.6.0"
 dependencies = [
@@ -9333,7 +9349,6 @@ dependencies = [
  "reth-tracing",
  "reth-transaction-pool",
  "reth-trie-common",
- "reth-trie-db",
  "revm",
  "serde",
  "serde_json",
@@ -10378,7 +10393,6 @@ dependencies = [
  "reth-stages-types",
  "reth-storage-errors",
  "reth-trie-common",
- "reth-trie-db",
  "revm-database",
 ]
 
@@ -10876,9 +10890,9 @@ dependencies = [
 
 [[package]]
 name = "revm-inspectors"
-version = "0.28.0"
+version = "0.28.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a76ba086ca57a718368e46e792a81c5eb7a30366956aa6293adbcec8b1181ce"
+checksum = "9d3f54151c26870f50a3d7e8688e30a0f3578dd57bc69450caa1df11a7713906"
 dependencies = [
  "alloy-primitives",
  "alloy-rpc-types-eth",
