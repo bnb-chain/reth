@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 use std::io::BufRead;
 use tracing::{debug, error, info, trace};
 
+use std::collections::HashSet;
 use rust_eth_triedb_state_trie::account::StateAccount;
 use alloy_primitives::keccak256;
 
@@ -280,6 +281,7 @@ where
         alloy_trie::EMPTY_ROOT_HASH,
         None,
         state_accounts,
+        HashSet::new(),
         storage_states)
         .map_err(|_| ProviderError::Database(DatabaseError::Other("Failed to update and commit state".to_string())))?;
 
