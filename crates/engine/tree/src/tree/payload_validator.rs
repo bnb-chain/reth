@@ -595,7 +595,7 @@ where
 
         // ensure state root matches
         if state_root != block.header().state_root() {
-            panic!("State root mismatch");
+            panic!("State root mismatch, number: {:?}, state_root: {:?}, block_state_root: {:?}", block.header().number(), state_root, block.header().state_root());
             // call post-block hook
             // self.on_invalid_block(
             //     &parent_block,
@@ -834,7 +834,7 @@ where
         state: &EngineApiTreeState<N>,
     ) -> Option<Arc<DiffLayer>> {
         if !persisting_kind.is_descendant() {
-            panic!("Not descendant, can not compute difflayer");
+            warn!("Not descendant, can not compute difflayer");
         }
         return state.tree_state.merged_difflayer_by_hash(parent_hash);
     }
