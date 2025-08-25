@@ -477,6 +477,11 @@ where
 
         let hashed_state = self.provider.hashed_post_state(&output.state);
 
+        if parent_block.number() == 0 {
+            println!("hashed_state: {:?}", hashed_state);
+            panic!("hashed_state block 1");
+        }
+
         if let Err(err) =
             self.validator.validate_block_post_execution_with_hashed_state(&hashed_state, &block)
         {
