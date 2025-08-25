@@ -581,7 +581,7 @@ where
         let parent_difflayer = self.compute_difflayer(persisting_kind, block.parent_hash(), ctx.state());
 
         let (state_root, difflayer) = if let Ok(result) = triedb.update_and_commit_with_hashed_post_state(
-            block.parent_hash(), 
+            parent_block.state_root(), 
             parent_difflayer, 
             hashed_state_clone) {
             result
@@ -595,7 +595,7 @@ where
 
         // ensure state root matches
         if state_root != block.header().state_root() {
-            panic!("State root mismatch, number: {:?}, state_root: {:?}, block_state_root: {:?}", block.header().number(), state_root, block.header().state_root());
+            panic!("State root mismatch, number: {:?}, state_root: {:?}, block_state_root: {:?}, parent_state_root: {:?}", block.header().number(), state_root, block.header().state_root(), parent_block.state_root());
             // call post-block hook
             // self.on_invalid_block(
             //     &parent_block,
