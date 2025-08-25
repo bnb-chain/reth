@@ -21,6 +21,8 @@ use reth_trie::{updates::TrieUpdates, HashedPostState};
 use std::{collections::BTreeMap, sync::Arc, time::Instant};
 use tokio::sync::{broadcast, watch};
 
+use rust_eth_triedb_state_trie::node::DiffLayer;
+
 /// Size of the broadcast channel used to notify canonical state events.
 const CANON_STATE_NOTIFICATION_CHANNEL_SIZE: usize = 256;
 
@@ -844,6 +846,9 @@ pub struct ExecutedBlockWithTrieUpdates<N: NodePrimitives = EthPrimitives> {
     /// If [`ExecutedTrieUpdates::Missing`], the trie updates should be computed when persisting
     /// the block **on top of the canonical parent**.
     pub trie: ExecutedTrieUpdates,
+
+    /// Difflayer that result from triedb commit.
+    pub difflayer: Option<Arc<DiffLayer>>,
 }
 
 impl<N: NodePrimitives> ExecutedBlockWithTrieUpdates<N> {
@@ -854,7 +859,7 @@ impl<N: NodePrimitives> ExecutedBlockWithTrieUpdates<N> {
         hashed_state: Arc<HashedPostState>,
         trie: ExecutedTrieUpdates,
     ) -> Self {
-        Self { block: ExecutedBlock { recovered_block, execution_output, hashed_state }, trie }
+        Self { block: ExecutedBlock { recovered_block, execution_output, hashed_state }, trie, difflayer: None }
     }
 
     /// Returns a reference to the trie updates for the block, if present.

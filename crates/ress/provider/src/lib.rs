@@ -131,6 +131,8 @@ where
                                     ..Default::default()
                                 },
                                 trie: ExecutedTrieUpdates::empty(),
+                                // TODO: add difflayer
+                                difflayer: None,
                             });
                         }
                     }

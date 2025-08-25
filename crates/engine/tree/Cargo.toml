@@ -35,6 +35,9 @@ reth-trie-sparse = { workspace = true, features = ["std", "metrics"] }
 reth-trie-sparse-parallel = { workspace = true, features = ["std"] }
 reth-trie.workspace = true
 
+# rust-eth-triedb-state-trie
+rust-eth-triedb-state-trie.workspace = true
+
 # alloy
 alloy-evm.workspace = true
 alloy-consensus.workspace = true

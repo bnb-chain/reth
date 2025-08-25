@@ -6,7 +6,8 @@ use crate::{
 use alloy_consensus::BlockHeader;
 use reth_chain_state::{ExecutedBlock, ExecutedBlockWithTrieUpdates};
 use reth_db_api::transaction::{DbTx, DbTxMut};
-use reth_errors::{ProviderError, ProviderResult};
+// use reth_errors::{ProviderError, ProviderResult};
+use reth_errors::{ProviderResult};
 use reth_primitives_traits::{NodePrimitives, SignedTransaction};
 use reth_static_file_types::StaticFileSegment;
 use reth_storage_api::{DBProvider, StageCheckpointWriter, TransactionsProviderExt};
@@ -151,6 +152,7 @@ where
 
         debug!(target: "provider::storage_writer", block_count = %blocks.len(), "Writing blocks and execution data to storage");
 
+        let mut triedb = self.database().get_triedb();
         // TODO: Do performant / batched writes for each type of object
         // instead of a loop over all blocks,
         // meaning:
@@ -162,10 +164,11 @@ where
         // Insert the blocks
         for ExecutedBlockWithTrieUpdates {
             block: ExecutedBlock { recovered_block, execution_output, hashed_state },
-            trie,
+            trie:_,
+            difflayer,
         } in blocks
         {
-            let block_hash = recovered_block.hash();
+            // let block_hash = recovered_block.hash();
             self.database()
                 .insert_block(Arc::unwrap_or_clone(recovered_block), StorageLocation::Both)?;
 
@@ -180,9 +183,13 @@ where
             // insert hashes and intermediate merkle nodes
             self.database()
                 .write_hashed_state(&Arc::unwrap_or_clone(hashed_state).into_sorted())?;
-            self.database().write_trie_updates(
-                trie.as_ref().ok_or(ProviderError::MissingTrieUpdates(block_hash))?,
-            )?;
+            // self.database().write_trie_updates(
+            //     trie.as_ref().ok_or(ProviderError::MissingTrieUpdates(block_hash))?,
+            // )?;
+            let res = triedb.flush(difflayer.clone());
+            if let Err(e) = res {
+                println!("Failed to flush difflayer: {:?}", e);
+            }
         }
 
         // update history indices

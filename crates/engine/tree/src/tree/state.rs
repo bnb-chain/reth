@@ -16,6 +16,8 @@ use std::{
 };
 use tracing::debug;
 
+use rust_eth_triedb_state_trie::node::DiffLayer;
+
 /// Default number of blocks to retain persisted trie updates
 const DEFAULT_PERSISTED_TRIE_UPDATES_RETENTION: u64 = EPOCH_SLOTS * 2;
 
@@ -107,6 +109,30 @@ impl<N: NodePrimitives> TreeState<N> {
         }
 
         Some((parent_hash, blocks))
+    }
+
+    pub(crate) fn merged_difflayer_by_hash(
+        &self,
+        hash: B256,
+    ) -> Option<Arc<DiffLayer>> {
+        let mut difflayer = DiffLayer::new();
+        let mut parent_hash = hash;
+        while let Some(executed) = self.blocks_by_hash.get(&parent_hash) {
+            parent_hash = executed.recovered_block().parent_hash();
+            if let Some(executed_difflayer) = &executed.difflayer {
+                let filtered_items: Vec<_> = executed_difflayer.as_ref().iter()
+                    .filter(|(k, _)| !difflayer.contains_key(&**k))
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                difflayer.extend(filtered_items);
+            }
+        }
+
+        if difflayer.is_empty() {
+            return None;
+        }
+
+        Some(Arc::new(difflayer))
     }
 
     /// Insert executed block into the state.

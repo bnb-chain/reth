@@ -1868,34 +1868,40 @@ where
         let tip = chain_update.tip().clone_sealed_header();
         let notification = chain_update.to_chain_notification();
 
-        // reinsert any missing reorged blocks
-        if let NewCanonicalChain::Reorg { new, old } = &chain_update {
-            let new_first = new.first().map(|first| first.recovered_block().num_hash());
-            let old_first = old.first().map(|first| first.recovered_block().num_hash());
-            trace!(target: "engine::tree", ?new_first, ?old_first, "Reorg detected, new and old first blocks");
-
-            self.update_reorg_metrics(old.len());
-            self.reinsert_reorged_blocks(new.clone());
-            // Try reinserting the reorged canonical chain. This is only possible if we have
-            // `persisted_trie_updates` for those blocks.
-            let old = old
-                .iter()
-                .filter_map(|block| {
-                    let trie = self
-                        .state
-                        .tree_state
-                        .persisted_trie_updates
-                        .get(&block.recovered_block.hash())?
-                        .1
-                        .clone();
-                    Some(ExecutedBlockWithTrieUpdates {
-                        block: block.clone(),
-                        trie: ExecutedTrieUpdates::Present(trie),
-                    })
-                })
-                .collect::<Vec<_>>();
-            self.reinsert_reorged_blocks(old);
+        if let NewCanonicalChain::Reorg { .. } = &chain_update {
+            panic!("Reorg detected, can not");
         }
+        // reinsert any missing reorged blocks
+        // if let NewCanonicalChain::Reorg { new, old } = &chain_update {
+            // let new_first = new.first().map(|first| first.recovered_block().num_hash());
+            // let old_first = old.first().map(|first| first.recovered_block().num_hash());
+            // trace!(target: "engine::tree", ?new_first, ?old_first, "Reorg detected, new and old first blocks");
+
+            // self.update_reorg_metrics(old.len());
+            // self.reinsert_reorged_blocks(new.clone());
+            // // Try reinserting the reorged canonical chain. This is only possible if we have
+            // // `persisted_trie_updates` for those blocks.
+            // let old = old
+            //     .iter()
+            //     .filter_map(|block| {
+            //         let trie = self
+            //             .state
+            //             .tree_state
+            //             .persisted_trie_updates
+            //             .get(&block.recovered_block.hash())?
+            //             .1
+            //             .clone();
+
+            //         Some(ExecutedBlockWithTrieUpdates {
+            //             block: block.clone(),
+            //             trie: ExecutedTrieUpdates::Present(trie),
+            //             // TODO
+            //             difflayer: None,
+            //         })
+            //     })
+            //     .collect::<Vec<_>>();
+            // self.reinsert_reorged_blocks(old);
+        // }
 
         // update the tracked in-memory state with the new chain
         self.canonical_in_memory_state.update_chain(chain_update);
