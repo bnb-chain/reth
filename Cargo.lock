@@ -8073,6 +8073,8 @@ dependencies = [
  "revm",
  "revm-primitives",
  "revm-state",
+ "rust-eth-triedb",
+ "rust-eth-triedb-pathdb",
  "rust-eth-triedb-state-trie",
  "schnellru",
  "serde_json",

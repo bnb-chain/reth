@@ -47,6 +47,8 @@ use std::{collections::HashMap, sync::Arc, time::Instant};
 use tracing::{debug, error, info, trace, warn};
 
 use rust_eth_triedb_state_trie::node::DiffLayer;
+use rust_eth_triedb_pathdb::PathDB;
+use rust_eth_triedb::TrieDB;
 
 /// Context providing access to tree state during validation.
 ///
@@ -171,6 +173,8 @@ where
     metrics: EngineApiMetrics,
     /// Validator for the payload.
     validator: V,
+    /// TrieDB for the engine.
+    triedb: TrieDB<PathDB>,
 }
 
 impl<N, P, Evm, V> BasicEngineValidator<P, Evm, V>
@@ -203,6 +207,14 @@ where
             &config,
             precompile_cache_map.clone(),
         );
+
+        let db_provider_rw = if let Ok(provider) = provider.database_provider_rw() {
+            provider
+        } else {
+            panic!("Failed to get database provider rw");
+        };
+        let triedb = db_provider_rw.get_triedb();
+
         Self {
             provider,
             consensus,
@@ -214,7 +226,13 @@ where
             invalid_block_hook,
             metrics: EngineApiMetrics::default(),
             validator,
+            triedb,
         }
+    }
+
+    /// Returns a mutable reference to the TrieDB.
+    pub fn get_triedb(&mut self) -> &mut TrieDB<PathDB> {
+        &mut self.triedb
     }
 
     /// Converts a [`BlockOrPayload`] to a recovered block.
@@ -326,14 +344,7 @@ where
         };
 
         let state_provider = ensure_ok!(provider_builder.build());
-        
-        let db_provider_rw = if let Ok(provider) = self.provider.database_provider_rw() {
-            provider
-        } else {
-            panic!("Failed to get database provider rw");
-        };
-        let mut triedb = db_provider_rw.get_triedb();
-        
+                
         // fetch parent block
         let Some(parent_block) = ensure_ok!(self.sealed_header_by_hash(parent_hash, ctx.state()))
         else {
@@ -580,7 +591,7 @@ where
 
         let parent_difflayer = self.compute_difflayer(persisting_kind, block.parent_hash(), ctx.state());
 
-        let (state_root, difflayer) = if let Ok(result) = triedb.update_and_commit_with_hashed_post_state(
+        let (state_root, difflayer) = if let Ok(result) = self.get_triedb().update_and_commit_with_hashed_post_state(
             parent_block.state_root(), 
             parent_difflayer, 
             hashed_state_clone) {

@@ -37,6 +37,8 @@ reth-trie.workspace = true
 
 # rust-eth-triedb-state-trie
 rust-eth-triedb-state-trie.workspace = true
+rust-eth-triedb.workspace = true
+rust-eth-triedb-pathdb.workspace = true
 
 # alloy
 alloy-evm.workspace = true
