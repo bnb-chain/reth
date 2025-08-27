@@ -246,7 +246,7 @@ where
                 m.iter()
                     .map(|(key, value)| {
                         let hashed_key = keccak256(key);
-                        storage_kvs.insert(hashed_key, Some(value.0.to_vec()));
+                        storage_kvs.insert(hashed_key, Some(U256::from_be_bytes(value.0)));
 
                         let value = U256::from_be_bytes(value.0);
                         (*key, (U256::ZERO, value))
