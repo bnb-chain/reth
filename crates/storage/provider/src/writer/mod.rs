@@ -14,7 +14,7 @@ use reth_storage_api::{DBProvider, StageCheckpointWriter, TransactionsProviderEx
 use reth_storage_errors::writer::UnifiedStorageWriterError;
 use revm_database::OriginalValuesKnown;
 use std::sync::Arc;
-use tracing::debug;
+use tracing::{debug, info};
 
 /// [`UnifiedStorageWriter`] is responsible for managing the writing to storage with both database
 /// and static file providers.
@@ -168,6 +168,8 @@ where
             difflayer,
         } in blocks
         {
+            let block_number = recovered_block.number();
+            let state_root = recovered_block.state_root();
             // let block_hash = recovered_block.hash();
             self.database()
                 .insert_block(Arc::unwrap_or_clone(recovered_block), StorageLocation::Both)?;
@@ -186,7 +188,10 @@ where
             // self.database().write_trie_updates(
             //     trie.as_ref().ok_or(ProviderError::MissingTrieUpdates(block_hash))?,
             // )?;
-            let res = triedb.flush(difflayer.clone());
+            let res = triedb.flush(
+                block_number, 
+                state_root,
+                difflayer.clone());
             if let Err(e) = res {
                 println!("Failed to flush difflayer: {:?}", e);
             }
@@ -198,7 +203,7 @@ where
         // Update pipeline progress
         self.database().update_pipeline_stages(last_block_number, false)?;
 
-        debug!(target: "provider::storage_writer", range = ?first_number..=last_block_number, "Appended block data");
+        info!(target: "provider::storage_writer", range = ?first_number..=last_block_number, "Appended block data");
 
         Ok(())
     }

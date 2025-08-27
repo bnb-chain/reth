@@ -11279,6 +11279,7 @@ dependencies = [
  "rust-eth-triedb-memorydb",
  "rust-eth-triedb-pathdb",
  "thiserror 1.0.69",
+ "tracing",
 ]
 
 [[package]]

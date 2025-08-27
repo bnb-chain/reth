@@ -286,7 +286,7 @@ where
         .map_err(|_| ProviderError::Database(DatabaseError::Other("Failed to update and commit state".to_string())))?;
 
     let difflayer = nodes.as_ref().map(|d| d.to_difflayer());
-    triedb.flush(difflayer).map_err(|_| ProviderError::Database(DatabaseError::Other("Failed to flush state".to_string())))?;
+    triedb.flush(0, root,difflayer).map_err(|_| ProviderError::Database(DatabaseError::Other("Failed to flush state".to_string())))?;
     
     info!(target: "reth::cli", "Triedb genesis state root computed: {:?}", root);
 

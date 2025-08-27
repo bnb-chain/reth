@@ -589,7 +589,6 @@ where
         //     (root, updates, root_time.elapsed())
         // };
 
-        println!("block.number: {:?} ++++++++++++++++", block.header().number());
         let parent_difflayer = self.compute_difflayer(persisting_kind, block.parent_hash(), ctx.state());
         
         let (state_root, difflayer) = if let Ok(result) = self.get_triedb().commit_hashed_post_state(
@@ -606,10 +605,9 @@ where
         // self.metrics.block_validation.record_state_root(&trie_output, root_elapsed.as_secs_f64());
         debug!(target: "engine::tree", ?root_elapsed, block=?block_num_hash, "Calculated state root");
 
-        println!("block.number: {:?} ----------------", block.header().number());
         // ensure state root matches
         if state_root != block.header().state_root() {
-            println!("hashed_state: {:?} ", hashed_state_clone);
+            warn!("hashed_state: {:?} ", hashed_state_clone);
             panic!("State root mismatch, number: {:?}, state_root: {:?}, block_state_root: {:?}, parent_state_root: {:?}", block.header().number(), state_root, block.header().state_root(), parent_block.state_root());
             // call post-block hook
             // self.on_invalid_block(
