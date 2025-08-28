@@ -53,6 +53,10 @@ pub mod sparse_trie;
 
 use configured_sparse_trie::ConfiguredSparseTrie;
 
+use rust_eth_triedb::triedb::TrieDB;
+use rust_eth_triedb_pathdb::PathDB;
+use rust_eth_triedb_state_trie::DiffLayer;
+
 /// Entrypoint for executing the payload.
 #[derive(Debug)]
 pub struct PayloadProcessor<Evm>
@@ -86,6 +90,8 @@ where
     use_parallel_sparse_trie: bool,
     /// A cleared trie input, kept around to be reused so allocations can be minimized.
     trie_input: Option<TrieInput>,
+    /// PathDB for storing the state changes
+    path_db: PathDB,
 }
 
 impl<N, Evm> PayloadProcessor<Evm>
@@ -99,6 +105,7 @@ where
         evm_config: Evm,
         config: &TreeConfig,
         precompile_cache_map: PrecompileCacheMap<SpecFor<Evm>>,
+        path_db: PathDB,
     ) -> Self {
         Self {
             executor,
@@ -112,6 +119,7 @@ where
             sparse_state_trie: Arc::default(),
             trie_input: None,
             use_parallel_sparse_trie: config.enable_parallel_sparse_trie(),
+            path_db,
         }
     }
 }
@@ -268,6 +276,98 @@ where
         }
     }
 
+    pub(super) fn spawn_cache_exclusive_with_triedb<P, I: ExecutableTxIterator<Evm>>(
+        &self,
+        env: ExecutionEnv<Evm>,
+        transactions: I,
+        provider_builder: StateProviderBuilder<N, P>,
+        parent_root: B256,
+        difflayer: Option<Arc<DiffLayer>>,
+    ) -> PayloadHandle<WithTxEnv<TxEnvFor<Evm>, I::Tx>, I::Error>
+    where
+        P: BlockReader
+            + StateProviderFactory
+            + StateReader
+            + StateCommitmentProvider
+            + Clone
+            + 'static,
+    {
+        let (prewarm_rx, execution_rx) = self.spawn_tx_iterator(transactions);
+        let prewarm_handle = self.spawn_prefetcher(
+            env,
+            prewarm_rx,
+            provider_builder,
+            None,
+            parent_root,
+            difflayer,
+        );
+        PayloadHandle {
+            to_multi_proof: None,
+            prewarm_handle,
+            state_root: None,
+            transactions: execution_rx,
+        }
+    }
+
+    fn spawn_prefetcher<P>(
+        &self,
+        env: ExecutionEnv<Evm>,
+        mut transactions: mpsc::Receiver<impl ExecutableTxFor<Evm> + Send + 'static>,
+        provider_builder: StateProviderBuilder<N, P>,
+        to_multi_proof: Option<Sender<MultiProofMessage>>,
+        parent_root: B256,
+        difflayer: Option<Arc<DiffLayer>>,
+    ) -> CacheTaskHandle
+    where
+        P: BlockReader
+            + StateProviderFactory
+            + StateReader
+            + StateCommitmentProvider
+            + Clone
+            + 'static,
+    {
+        if self.disable_transaction_prewarming {
+            // if no transactions should be executed we clear them but still spawn the task for
+            // caching updates
+            transactions = mpsc::channel().1;
+        }
+
+        let (cache, cache_metrics) = self.cache_for(env.parent_hash).split();
+        // configure prewarming
+        let mut triedb = TrieDB::new(self.path_db.clone());
+        triedb.state_at(parent_root, difflayer).unwrap();
+        let prewarm_ctx = PrewarmContext {
+            env,
+            evm_config: self.evm_config.clone(),
+            cache: cache.clone(),
+            cache_metrics: cache_metrics.clone(),
+            provider: provider_builder,
+            metrics: PrewarmMetrics::default(),
+            terminate_execution: Arc::new(AtomicBool::new(false)),
+            precompile_cache_disabled: self.precompile_cache_disabled,
+            precompile_cache_map: self.precompile_cache_map.clone(),
+            executor: Some(self.executor.clone()),
+            triedb: Some(triedb),
+        };
+
+        let (prewarm_task, to_prewarm_task) = PrewarmCacheTask::new(
+            self.executor.clone(),
+            self.execution_cache.clone(),
+            prewarm_ctx,
+            to_multi_proof,
+        );
+
+        // spawn pre-warm task
+        {
+            let to_prewarm_task = to_prewarm_task.clone();
+            self.executor.spawn_blocking(move || {
+                prewarm_task.run(transactions, to_prewarm_task);
+            });
+        }
+
+        CacheTaskHandle { cache, to_prewarm_task: Some(to_prewarm_task), cache_metrics }
+    }
+
     /// Spawns a task advancing transaction env iterator and streaming updates through a channel.
     #[expect(clippy::type_complexity)]
     fn spawn_tx_iterator<I: ExecutableTxIterator<Evm>>(
@@ -327,6 +427,8 @@ where
             terminate_execution: Arc::new(AtomicBool::new(false)),
             precompile_cache_disabled: self.precompile_cache_disabled,
             precompile_cache_map: self.precompile_cache_map.clone(),
+            executor: None,
+            triedb: None,
         };
 
         let (prewarm_task, to_prewarm_task) = PrewarmCacheTask::new(

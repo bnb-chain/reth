@@ -200,20 +200,21 @@ where
         config: TreeConfig,
         invalid_block_hook: Box<dyn InvalidBlockHook<N>>,
     ) -> Self {
+        let db_provider_rw = if let Ok(provider) = provider.database_provider_rw() {
+            provider
+        } else {
+            panic!("Failed to get database provider rw");
+        };
+        let mut triedb = db_provider_rw.get_triedb();
+
         let precompile_cache_map = PrecompileCacheMap::default();
         let payload_processor = PayloadProcessor::new(
             WorkloadExecutor::default(),
             evm_config.clone(),
             &config,
             precompile_cache_map.clone(),
+            triedb.get_mut_db_ref().clone(),
         );
-
-        let db_provider_rw = if let Ok(provider) = provider.database_provider_rw() {
-            provider
-        } else {
-            panic!("Failed to get database provider rw");
-        };
-        let triedb = db_provider_rw.get_triedb();
 
         Self {
             provider,
@@ -344,7 +345,7 @@ where
         };
 
         let state_provider = ensure_ok!(provider_builder.build());
-                
+
         // fetch parent block
         let Some(parent_block) = ensure_ok!(self.sealed_header_by_hash(parent_hash, ctx.state()))
         else {
@@ -441,8 +442,18 @@ where
         // } else {
         //     self.payload_processor.spawn_cache_exclusive(env.clone(), txs, provider_builder)
         // };
+        let parent_difflayer = self.compute_difflayer(
+            persisting_kind,
+            parent_hash,
+            ctx.state());
 
-        let mut handle = self.payload_processor.spawn_cache_exclusive(env.clone(), txs, provider_builder);
+        let mut handle = self.payload_processor.spawn_cache_exclusive_with_triedb(
+            env.clone(),
+            txs,
+            provider_builder,
+            parent_block.state_root(),
+            parent_difflayer.clone(),
+        );
 
         // Use cached state provider before executing, used in execution after prewarming threads
         // complete
@@ -589,11 +600,11 @@ where
         //     (root, updates, root_time.elapsed())
         // };
 
-        let parent_difflayer = self.compute_difflayer(persisting_kind, block.parent_hash(), ctx.state());
-        
+
+
         let (state_root, difflayer) = if let Ok(result) = self.get_triedb().commit_hashed_post_state(
-            parent_block.state_root(), 
-            parent_difflayer, 
+            parent_block.state_root(),
+            parent_difflayer,
             &hashed_state_clone) {
             result
         } else {
@@ -842,13 +853,13 @@ where
 
     fn compute_difflayer(
         &self,
-        persisting_kind: PersistingKind,
+        _persisting_kind: PersistingKind,
         parent_hash: B256,
         state: &EngineApiTreeState<N>,
     ) -> Option<Arc<DiffLayer>> {
-        if !persisting_kind.is_descendant() {
-            warn!("Not descendant, can not compute difflayer");
-        }
+        // if !persisting_kind.is_descendant() {
+        //     warn!("Not descendant, can not compute difflayer");
+        // }
         return state.tree_state.merged_difflayer_by_hash(parent_hash);
     }
     /// Computes the trie input at the provided parent hash.

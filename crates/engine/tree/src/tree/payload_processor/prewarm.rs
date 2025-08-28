@@ -25,7 +25,10 @@ use std::{
     },
     time::Instant,
 };
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn, info};
+
+use rust_eth_triedb::triedb::TrieDB;
+use rust_eth_triedb_pathdb::PathDB;
 
 /// A task that is responsible for caching and prewarming the cache by executing transactions
 /// individually in parallel.
@@ -221,6 +224,8 @@ where
     pub(super) terminate_execution: Arc<AtomicBool>,
     pub(super) precompile_cache_disabled: bool,
     pub(super) precompile_cache_map: PrecompileCacheMap<SpecFor<Evm>>,
+    pub(super) executor: Option<WorkloadExecutor>,
+    pub(super) triedb: Option<TrieDB<PathDB>>,
 }
 
 impl<N, P, Evm> PrewarmContext<N, P, Evm>
@@ -242,6 +247,8 @@ where
             terminate_execution,
             precompile_cache_disabled,
             mut precompile_cache_map,
+            executor: _executor,
+            triedb: _triedb,
         } = self;
 
         let state_provider = match provider.build() {
@@ -301,6 +308,8 @@ where
         sender: Sender<PrewarmTaskEvent>,
         done_tx: Sender<()>,
     ) {
+        let triedb_clone = self.triedb.clone();
+        let executor_clone = self.executor.clone();
         let Some((mut evm, metrics, terminate_execution)) = self.evm_for_ctx() else { return };
 
         while let Ok(tx) = txs.recv() {
@@ -331,6 +340,43 @@ where
             let (targets, storage_targets) = multiproof_targets_from_state(res.state);
             metrics.prefetch_storage_targets.record(storage_targets as f64);
             metrics.total_runtime.record(start.elapsed());
+
+            if let Some(executor) = executor_clone.as_ref() {
+                if let Some(triedb) = triedb_clone.as_ref() {
+                    let targets_clone = targets.clone();
+                    let mut triedb = triedb.clone();
+                    executor.spawn_blocking(move || {
+                    for (addr, storages) in targets_clone {
+                            let res = triedb.get_account_with_hash_state(addr);
+                            match res {
+                                Ok(_) => {
+                                    info!("Prefetched account: {:?}", addr);
+                                }
+                                Err(_) => {
+                                    warn!("Failed to prefetch error: {:?}", addr);
+                                }
+                            }
+                            info!("Prefetched account: {:?}", addr);
+                            for key in storages {
+                                let res = triedb.get_storage_with_hash_state(addr, key);
+                                match res {
+                                    Ok(_) => {
+                                        info!("Prefetched account: {:?}, storage: {:?}", addr, key);
+                                    }
+                                    Err(_) => {
+                                        warn!("Failed to prefetch storage: {:?}, error: {:?}", addr, key);
+                                    }
+                                }
+                            }
+                        }
+                    });
+                } else {
+                    warn!("Prefetcher triedb is not set");
+                }
+            } else {
+                warn!("Prefetcher executor is not set");
+            }
+
 
             let _ = sender.send(PrewarmTaskEvent::Outcome { proof_targets: Some(targets) });
         }
