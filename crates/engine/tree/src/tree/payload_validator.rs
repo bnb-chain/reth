@@ -442,10 +442,12 @@ where
         // } else {
         //     self.payload_processor.spawn_cache_exclusive(env.clone(), txs, provider_builder)
         // };
+        let difflayer_start = Instant::now();
         let parent_difflayer = self.compute_difflayer(
             persisting_kind,
             parent_hash,
             ctx.state());
+        self.metrics.block_validation.record_payload_difflayer(difflayer_start.elapsed().as_secs_f64());
 
         let mut handle = self.payload_processor.spawn_cache_exclusive_with_triedb(
             env.clone(),
@@ -611,10 +613,7 @@ where
             panic!("TrieDB update failed");
         };
 
-        let root_elapsed = root_time.elapsed();
-
-        // self.metrics.block_validation.record_state_root(&trie_output, root_elapsed.as_secs_f64());
-        debug!(target: "engine::tree", ?root_elapsed, block=?block_num_hash, "Calculated state root");
+        self.metrics.block_validation.record_payload_validation(root_time.elapsed().as_secs_f64());
 
         // ensure state root matches
         if state_root != block.header().state_root() {

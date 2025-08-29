@@ -334,7 +334,9 @@ where
 
         let (cache, cache_metrics) = self.cache_for(env.parent_hash).split();
         // configure prewarming
-        let mut triedb = TrieDB::new(self.path_db.clone());
+        let mut path_db = self.path_db.clone();
+        path_db.with_new_metrics("prefetcher");
+        let mut triedb = TrieDB::new(path_db);
         triedb.state_at(parent_root, difflayer).unwrap();
         let prewarm_ctx = PrewarmContext {
             env,

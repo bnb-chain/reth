@@ -84,6 +84,10 @@ pub(crate) struct BlockValidationMetrics {
     pub(crate) payload_validation_duration: Gauge,
     /// Histogram of payload validation latency
     pub(crate) payload_validation_histogram: Histogram,
+    /// Payload conversion and validation latency
+    pub(crate) payload_difflayer_duration: Gauge,
+    /// Histogram of payload validation latency
+    pub(crate) payload_difflayer_histogram: Histogram,
 }
 
 impl BlockValidationMetrics {
@@ -100,6 +104,13 @@ impl BlockValidationMetrics {
     pub(crate) fn record_payload_validation(&self, elapsed_as_secs: f64) {
         self.payload_validation_duration.set(elapsed_as_secs);
         self.payload_validation_histogram.record(elapsed_as_secs);
+    }
+
+    /// Records a new payload difflayer time, updating both the histogram and the payload
+    /// difflayer gauge
+    pub(crate) fn record_payload_difflayer(&self, elapsed_as_secs: f64) {
+        self.payload_difflayer_duration.set(elapsed_as_secs);
+        self.payload_difflayer_histogram.record(elapsed_as_secs);
     }
 }
 
