@@ -347,34 +347,13 @@ where
                     let mut triedb = triedb.clone();
                     executor.spawn_blocking(move || {
                     for (addr, storages) in targets_clone {
-                            let res = triedb.get_account_with_hash_state(addr);
-                            match res {
-                                Ok(_) => {
-                                    info!("Prefetched account: {:?}", addr);
-                                }
-                                Err(_) => {
-                                    warn!("Failed to prefetch error: {:?}", addr);
-                                }
-                            }
-                            info!("Prefetched account: {:?}", addr);
+                            let _ = triedb.get_account_with_hash_state(addr);
                             for key in storages {
-                                let res = triedb.get_storage_with_hash_state(addr, key);
-                                match res {
-                                    Ok(_) => {
-                                        info!("Prefetched account: {:?}, storage: {:?}", addr, key);
-                                    }
-                                    Err(_) => {
-                                        warn!("Failed to prefetch storage: {:?}, error: {:?}", addr, key);
-                                    }
-                                }
+                                let _ = triedb.get_storage_with_hash_state(addr, key);
                             }
                         }
                     });
-                } else {
-                    warn!("Prefetcher triedb is not set");
                 }
-            } else {
-                warn!("Prefetcher executor is not set");
             }
 
 
