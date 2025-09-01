@@ -275,11 +275,9 @@ impl TrieDBPrewarmTask {
                                 for (addr, storages) in unfetched_proofs {
                                     if storages.is_empty() {
                                         let _ = triedb_clone.get_account_with_hash_state(addr);
-                                        warn!("OptPrefetcher received account fetch, addr: {:?}", addr);
                                     }
                                     for key in storages {
                                         let _ = triedb_clone.get_storage_with_hash_state(addr, key);
-                                        warn!("OptPrefetcher received storage fetch, addr: {:?}, storage: {:?}", addr, key);
                                     }
                                 }
                             }
@@ -288,8 +286,6 @@ impl TrieDBPrewarmTask {
                     }
                     let _ = handles[task_idx].send(milti_proofs);
                     executing += 1;
-                } else {
-                    warn!("OptPrefetcher received non prefetch proofs message in prefetcher");
                 }
             }
             drop(handles);
