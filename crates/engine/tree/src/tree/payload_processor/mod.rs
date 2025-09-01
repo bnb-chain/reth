@@ -3,7 +3,7 @@
 use crate::tree::{
     cached_state::{CachedStateMetrics, ProviderCacheBuilder, ProviderCaches, SavedCache},
     payload_processor::{
-        prewarm::{PrewarmCacheTask, PrewarmContext, PrewarmTaskEvent},
+        prewarm::{PrewarmCacheTask, PrewarmContext, PrewarmTaskEvent, TrieDBPrewarmTask},
         sparse_trie::StateRootComputeOutcome,
     },
     sparse_trie::SparseTrieTask,
@@ -333,11 +333,23 @@ where
         }
 
         let (cache, cache_metrics) = self.cache_for(env.parent_hash).split();
-        // configure prewarming
+
         let mut path_db = self.path_db.clone();
         path_db.with_new_metrics("prefetcher");
         let mut triedb = TrieDB::new(path_db);
         triedb.state_at(parent_root, difflayer).unwrap();
+
+        let (triedb_prewarm_task, triedb_prewarm_tx) = TrieDBPrewarmTask::new(
+            self.executor.clone(),
+            triedb,
+            64,
+        );
+
+        self.executor.spawn_blocking(move || {
+            triedb_prewarm_task.run();
+        });
+
+        // configure prewarming
         let prewarm_ctx = PrewarmContext {
             env,
             evm_config: self.evm_config.clone(),
@@ -348,8 +360,6 @@ where
             terminate_execution: Arc::new(AtomicBool::new(false)),
             precompile_cache_disabled: self.precompile_cache_disabled,
             precompile_cache_map: self.precompile_cache_map.clone(),
-            executor: Some(self.executor.clone()),
-            triedb: Some(triedb),
         };
 
         let (prewarm_task, to_prewarm_task) = PrewarmCacheTask::new(
@@ -357,6 +367,7 @@ where
             self.execution_cache.clone(),
             prewarm_ctx,
             to_multi_proof,
+            Some(triedb_prewarm_tx),
         );
 
         // spawn pre-warm task
@@ -429,8 +440,6 @@ where
             terminate_execution: Arc::new(AtomicBool::new(false)),
             precompile_cache_disabled: self.precompile_cache_disabled,
             precompile_cache_map: self.precompile_cache_map.clone(),
-            executor: None,
-            triedb: None,
         };
 
         let (prewarm_task, to_prewarm_task) = PrewarmCacheTask::new(
@@ -438,6 +447,7 @@ where
             self.execution_cache.clone(),
             prewarm_ctx,
             to_multi_proof,
+            None,
         );
 
         // spawn pre-warm task
@@ -816,6 +826,7 @@ mod tests {
             EthEvmConfig::new(factory.chain_spec()),
             &TreeConfig::default(),
             PrecompileCacheMap::default(),
+            None
         );
         let provider = BlockchainProvider::new(factory).unwrap();
         let mut handle = payload_processor.spawn(

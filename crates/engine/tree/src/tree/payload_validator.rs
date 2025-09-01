@@ -478,7 +478,7 @@ where
         self.metrics.engine.block_execution_duration.record(execution_start.elapsed().as_secs_f64());
 
         // after executing the block we can stop executing transactions
-        handle.stop_prewarming_execution();
+        // handle.stop_prewarming_execution();
 
         let block = self.convert_to_block(input)?;
 
@@ -523,6 +523,8 @@ where
         }
 
         debug!(target: "engine::tree", block=?block_num_hash, "Calculating block state root");
+
+        handle.stop_prewarming_execution();
 
         let root_time = Instant::now();
 

@@ -25,10 +25,11 @@ use std::{
     },
     time::Instant,
 };
-use tracing::{debug, trace, warn, info};
+use tracing::{debug, trace, warn};
 
 use rust_eth_triedb::triedb::TrieDB;
 use rust_eth_triedb_pathdb::PathDB;
+use dashmap::DashSet;
 
 /// A task that is responsible for caching and prewarming the cache by executing transactions
 /// individually in parallel.
@@ -51,6 +52,8 @@ where
     to_multi_proof: Option<Sender<MultiProofMessage>>,
     /// Receiver for events produced by tx execution
     actions_rx: Receiver<PrewarmTaskEvent>,
+
+    triedb_prewarm_tx: Option<Sender<PrewarmTaskEvent>>,
 }
 
 impl<N, P, Evm> PrewarmCacheTask<N, P, Evm>
@@ -65,6 +68,7 @@ where
         execution_cache: ExecutionCache,
         ctx: PrewarmContext<N, P, Evm>,
         to_multi_proof: Option<Sender<MultiProofMessage>>,
+        triedb_prewarm_tx: Option<Sender<PrewarmTaskEvent>>,
     ) -> (Self, Sender<PrewarmTaskEvent>) {
         let (actions_tx, actions_rx) = channel();
         (
@@ -75,6 +79,7 @@ where
                 max_concurrency: 64,
                 to_multi_proof,
                 actions_rx,
+                triedb_prewarm_tx,
             },
             actions_tx,
         )
@@ -170,14 +175,17 @@ where
         while let Ok(event) = self.actions_rx.recv() {
             match event {
                 PrewarmTaskEvent::TerminateTransactionExecution => {
+                    self.triedb_prewarm_tx.as_ref().map(|tx| tx.send(PrewarmTaskEvent::TerminateTransactionExecution));
                     // stop tx processing
                     self.ctx.terminate_execution.store(true, Ordering::Relaxed);
                 }
                 PrewarmTaskEvent::Outcome { proof_targets } => {
+                    self.triedb_prewarm_tx.as_ref().map(|tx| tx.send(PrewarmTaskEvent::Outcome { proof_targets }));
                     // completed executing a set of transactions
-                    self.send_multi_proof_targets(proof_targets);
+                    // self.send_multi_proof_targets(proof_targets);
                 }
                 PrewarmTaskEvent::Terminate { block_output } => {
+                    self.triedb_prewarm_tx.as_ref().map(|tx| tx.send(PrewarmTaskEvent::Terminate { block_output: block_output.clone() }));
                     final_block_output = Some(block_output);
 
                     if finished_execution {
@@ -186,6 +194,8 @@ where
                     }
                 }
                 PrewarmTaskEvent::FinishedTxExecution { executed_transactions } => {
+                    self.triedb_prewarm_tx.as_ref().map(|tx| tx.send(PrewarmTaskEvent::FinishedTxExecution { executed_transactions }));
+
                     self.ctx.metrics.transactions.set(executed_transactions as f64);
                     self.ctx.metrics.transactions_histogram.record(executed_transactions as f64);
 
@@ -202,6 +212,114 @@ where
         // save caches and finish
         if let Some(Some(state)) = final_block_output {
             self.save_cache(state);
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct TrieDBPrewarmTask {
+    pub(super) max_concurrency: usize,
+    pub(super) actions_rx: Receiver<PrewarmTaskEvent>,
+    pub(super) executor: WorkloadExecutor,
+    pub(super) triedb: TrieDB<PathDB>,
+}
+
+impl TrieDBPrewarmTask {
+    pub(super) fn new(
+        executor: WorkloadExecutor,
+        triedb: TrieDB<PathDB>,
+        max_concurrency: usize,
+    ) -> (Self, Sender<PrewarmTaskEvent>) {
+        let (actions_tx, actions_rx) = channel();
+        (
+            Self { executor, triedb, max_concurrency, actions_rx },
+            actions_tx,
+        )
+    }
+    fn spawn_all(
+        &self,
+        prefetcher_rx: Receiver<MultiProofMessage>,
+    ) {
+        let executor = self.executor.clone();
+        let max_concurrency = self.max_concurrency;
+        let triedb = self.triedb.clone();
+
+        self.executor.spawn_blocking(move || {
+            let mut handles = Vec::new();
+            let mut executing = 0;
+            let filter = Arc::new(DashSet::<B256>::new());
+
+            while let Ok(message) = prefetcher_rx.recv() {
+                if let MultiProofMessage::PrefetchProofs (milti_proofs) = message {
+                    let task_idx = executing % max_concurrency;
+                    if handles.len() <= task_idx {
+                        let (tx, rx) = mpsc::channel::<MultiProofTargets>();
+                        let mut triedb_clone = triedb.clone();
+                        let filter_clone = filter.clone();
+                        executor.spawn_blocking(move || {
+                            while let Ok(proofs) = rx.recv() {
+                                let mut unfetched_proofs = MultiProofTargets::with_capacity(proofs.len());
+                                for (addr, storages) in proofs {
+                                    if !filter_clone.contains(&addr) {
+                                        unfetched_proofs.insert(addr, storages);
+                                        filter_clone.insert(addr);
+                                        continue
+                                    }
+                                    for storage in storages {
+                                        if !filter_clone.contains(&storage) {
+                                            unfetched_proofs.entry(addr).or_insert_with(B256Set::default).insert(storage);
+                                            filter_clone.insert(storage);
+                                        }
+                                    }
+                                }
+                                for (addr, storages) in unfetched_proofs {
+                                    if storages.is_empty() {
+                                        let _ = triedb_clone.get_account_with_hash_state(addr);
+                                        warn!("OptPrefetcher received account fetch, addr: {:?}", addr);
+                                    }
+                                    for key in storages {
+                                        let _ = triedb_clone.get_storage_with_hash_state(addr, key);
+                                        warn!("OptPrefetcher received storage fetch, addr: {:?}, storage: {:?}", addr, key);
+                                    }
+                                }
+                            }
+                        });
+                        handles.push(tx);
+                    }
+                    let _ = handles[task_idx].send(milti_proofs);
+                    executing += 1;
+                } else {
+                    warn!("OptPrefetcher received non prefetch proofs message in prefetcher");
+                }
+            }
+            drop(handles);
+        });
+    }
+
+    pub(super) fn run(self) {
+        let (prefetcher_tx, prefetcher_rx) = mpsc::channel::<MultiProofMessage>();
+        self.spawn_all(prefetcher_rx);
+        while let Ok(event) = self.actions_rx.recv() {
+            match event {
+                PrewarmTaskEvent::TerminateTransactionExecution => {
+                    drop(prefetcher_tx);
+                    break;
+                }
+                PrewarmTaskEvent::Outcome { proof_targets } => {
+                    // completed executing a set of transactions
+                    if let Some(targets) = proof_targets {
+                        let _ = prefetcher_tx.send(MultiProofMessage::PrefetchProofs(targets));
+                    } else {
+                        drop(prefetcher_tx);
+                        break;
+                    }
+                }
+                PrewarmTaskEvent::Terminate { block_output: _ } => {
+                    drop(prefetcher_tx);
+                    break;
+                }
+                PrewarmTaskEvent::FinishedTxExecution { executed_transactions: _ } => {}
+            }
         }
     }
 }
@@ -224,8 +342,6 @@ where
     pub(super) terminate_execution: Arc<AtomicBool>,
     pub(super) precompile_cache_disabled: bool,
     pub(super) precompile_cache_map: PrecompileCacheMap<SpecFor<Evm>>,
-    pub(super) executor: Option<WorkloadExecutor>,
-    pub(super) triedb: Option<TrieDB<PathDB>>,
 }
 
 impl<N, P, Evm> PrewarmContext<N, P, Evm>
@@ -247,8 +363,6 @@ where
             terminate_execution,
             precompile_cache_disabled,
             mut precompile_cache_map,
-            executor: _executor,
-            triedb: _triedb,
         } = self;
 
         let state_provider = match provider.build() {
@@ -308,8 +422,6 @@ where
         sender: Sender<PrewarmTaskEvent>,
         done_tx: Sender<()>,
     ) {
-        let triedb_clone = self.triedb.clone();
-        let executor_clone = self.executor.clone();
         let Some((mut evm, metrics, terminate_execution)) = self.evm_for_ctx() else { return };
 
         while let Ok(tx) = txs.recv() {
@@ -340,22 +452,6 @@ where
             let (targets, storage_targets) = multiproof_targets_from_state(res.state);
             metrics.prefetch_storage_targets.record(storage_targets as f64);
             metrics.total_runtime.record(start.elapsed());
-
-            if let Some(executor) = executor_clone.as_ref() {
-                if let Some(triedb) = triedb_clone.as_ref() {
-                    let targets_clone = targets.clone();
-                    let mut triedb = triedb.clone();
-                    executor.spawn_blocking(move || {
-                    for (addr, storages) in targets_clone {
-                            let _ = triedb.get_account_with_hash_state(addr);
-                            for key in storages {
-                                let _ = triedb.get_storage_with_hash_state(addr, key);
-                            }
-                        }
-                    });
-                }
-            }
-
 
             let _ = sender.send(PrewarmTaskEvent::Outcome { proof_targets: Some(targets) });
         }
