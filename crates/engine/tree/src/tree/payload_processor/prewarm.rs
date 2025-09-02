@@ -175,6 +175,7 @@ where
         while let Ok(event) = self.actions_rx.recv() {
             match event {
                 PrewarmTaskEvent::TerminateTransactionExecution => {
+                    warn!("OptPrefetcher prewarm task terminate transaction execution");
                     self.triedb_prewarm_tx.as_ref().map(|tx| tx.send(PrewarmTaskEvent::TerminateTransactionExecution));
                     // stop tx processing
                     self.ctx.terminate_execution.store(true, Ordering::Relaxed);
@@ -281,6 +282,7 @@ impl TrieDBPrewarmTask {
                                     }
                                 }
                             }
+                            warn!("OptPrefetcher prefetcher handle finished");
                         });
                         handles.push(tx);
                     }
@@ -288,6 +290,7 @@ impl TrieDBPrewarmTask {
                     executing += 1;
                 }
             }
+            warn!("OptPrefetcher drop handles: {:?}", handles.len());
             drop(handles);
         });
     }
@@ -298,6 +301,7 @@ impl TrieDBPrewarmTask {
         while let Ok(event) = self.actions_rx.recv() {
             match event {
                 PrewarmTaskEvent::TerminateTransactionExecution => {
+                    warn!("OptPrefetcher prefetcher task terminate transaction execution");
                     drop(prefetcher_tx);
                     break;
                 }
