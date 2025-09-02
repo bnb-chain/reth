@@ -54,6 +54,8 @@ where
     actions_rx: Receiver<PrewarmTaskEvent>,
 
     triedb_prewarm_tx: Option<Sender<PrewarmTaskEvent>>,
+
+    triedb_prewarm_task: Option<TrieDBPrewarmTask>,
 }
 
 impl<N, P, Evm> PrewarmCacheTask<N, P, Evm>
@@ -80,6 +82,7 @@ where
                 to_multi_proof,
                 actions_rx,
                 triedb_prewarm_tx,
+                triedb_prewarm_task: None,
             },
             actions_tx,
         )
@@ -282,6 +285,9 @@ impl TrieDBPrewarmTask {
                                     }
                                 }
                             }
+                            drop(rx);
+                            drop(triedb_clone);
+                            drop(filter_clone);
                             warn!("OptPrefetcher prefetcher handle finished");
                         });
                         handles.push(tx);
@@ -292,6 +298,8 @@ impl TrieDBPrewarmTask {
             }
             warn!("OptPrefetcher drop handles: {:?}", handles.len());
             drop(handles);
+            drop(triedb);
+            drop(filter);
         });
     }
 
