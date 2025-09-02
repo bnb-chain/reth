@@ -71,6 +71,7 @@ where
         ctx: PrewarmContext<N, P, Evm>,
         to_multi_proof: Option<Sender<MultiProofMessage>>,
         triedb_prewarm_tx: Option<Sender<PrewarmTaskEvent>>,
+        triedb_prewarm_task: Option<TrieDBPrewarmTask>,
     ) -> (Self, Sender<PrewarmTaskEvent>) {
         let (actions_tx, actions_rx) = channel();
         (
@@ -82,7 +83,7 @@ where
                 to_multi_proof,
                 actions_rx,
                 triedb_prewarm_tx,
-                triedb_prewarm_task: None,
+                triedb_prewarm_task,
             },
             actions_tx,
         )
@@ -178,18 +179,17 @@ where
         while let Ok(event) = self.actions_rx.recv() {
             match event {
                 PrewarmTaskEvent::TerminateTransactionExecution => {
-                    warn!("OptPrefetcher prewarm task terminate transaction execution");
-                    self.triedb_prewarm_tx.as_ref().map(|tx| tx.send(PrewarmTaskEvent::TerminateTransactionExecution));
+                    // self.triedb_prewarm_tx.as_ref().map(|tx| tx.send(PrewarmTaskEvent::TerminateTransactionExecution));
                     // stop tx processing
                     self.ctx.terminate_execution.store(true, Ordering::Relaxed);
                 }
                 PrewarmTaskEvent::Outcome { proof_targets } => {
-                    self.triedb_prewarm_tx.as_ref().map(|tx| tx.send(PrewarmTaskEvent::Outcome { proof_targets }));
+                    // self.triedb_prewarm_tx.as_ref().map(|tx| tx.send(PrewarmTaskEvent::Outcome { proof_targets }));
                     // completed executing a set of transactions
                     // self.send_multi_proof_targets(proof_targets);
                 }
                 PrewarmTaskEvent::Terminate { block_output } => {
-                    self.triedb_prewarm_tx.as_ref().map(|tx| tx.send(PrewarmTaskEvent::Terminate { block_output: block_output.clone() }));
+                    // self.triedb_prewarm_tx.as_ref().map(|tx| tx.send(PrewarmTaskEvent::Terminate { block_output: block_output.clone() }));
                     final_block_output = Some(block_output);
 
                     if finished_execution {
@@ -198,7 +198,7 @@ where
                     }
                 }
                 PrewarmTaskEvent::FinishedTxExecution { executed_transactions } => {
-                    self.triedb_prewarm_tx.as_ref().map(|tx| tx.send(PrewarmTaskEvent::FinishedTxExecution { executed_transactions }));
+                    // self.triedb_prewarm_tx.as_ref().map(|tx| tx.send(PrewarmTaskEvent::FinishedTxExecution { executed_transactions }));
 
                     self.ctx.metrics.transactions.set(executed_transactions as f64);
                     self.ctx.metrics.transactions_histogram.record(executed_transactions as f64);

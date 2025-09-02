@@ -334,20 +334,20 @@ where
 
         let (cache, cache_metrics) = self.cache_for(env.parent_hash).split();
 
-        let mut path_db = self.path_db.clone();
-        path_db.with_new_metrics("prefetcher");
-        let mut triedb = TrieDB::new(path_db);
-        triedb.state_at(parent_root, difflayer).unwrap();
+        // let mut path_db = self.path_db.clone();
+        // path_db.with_new_metrics("prefetcher");
+        // let mut triedb = TrieDB::new(path_db);
+        // triedb.state_at(parent_root, difflayer).unwrap();
 
-        let (triedb_prewarm_task, triedb_prewarm_tx) = TrieDBPrewarmTask::new(
-            self.executor.clone(),
-            triedb,
-            32,
-        );
+        // let (triedb_prewarm_task, triedb_prewarm_tx) = TrieDBPrewarmTask::new(
+        //     self.executor.clone(),
+        //     triedb,
+        //     32,
+        // );
 
-        self.executor.spawn_blocking(move || {
-            triedb_prewarm_task.run();
-        });
+        // self.executor.spawn_blocking(move || {
+        //     triedb_prewarm_task.run();
+        // });
 
         // configure prewarming
         let prewarm_ctx = PrewarmContext {
@@ -367,7 +367,9 @@ where
             self.execution_cache.clone(),
             prewarm_ctx,
             to_multi_proof,
-            Some(triedb_prewarm_tx),
+            // Some(triedb_prewarm_tx),
+            None,
+            None,
         );
 
         // spawn pre-warm task
@@ -447,6 +449,7 @@ where
             self.execution_cache.clone(),
             prewarm_ctx,
             to_multi_proof,
+            None,
             None,
         );
 
