@@ -76,7 +76,7 @@ where
                 executor,
                 execution_cache,
                 ctx,
-                max_concurrency: 64,
+                max_concurrency: 32,
                 to_multi_proof,
                 actions_rx,
                 triedb_prewarm_tx,

@@ -342,7 +342,7 @@ where
         let (triedb_prewarm_task, triedb_prewarm_tx) = TrieDBPrewarmTask::new(
             self.executor.clone(),
             triedb,
-            64,
+            32,
         );
 
         self.executor.spawn_blocking(move || {
