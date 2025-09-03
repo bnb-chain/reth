@@ -191,7 +191,7 @@ where
             let res = triedb.flush(
                 block_number,
                 state_root,
-                difflayer.clone());
+                &difflayer);
             if let Err(e) = res {
                 error!("Failed to flush difflayer: {:?}", e);
             }

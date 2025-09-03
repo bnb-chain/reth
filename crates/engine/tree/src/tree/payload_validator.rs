@@ -442,6 +442,9 @@ where
         // } else {
         //     self.payload_processor.spawn_cache_exclusive(env.clone(), txs, provider_builder)
         // };
+
+        println!("execute block: {:?}, +++++++++++++", parent_block.number());
+
         let difflayer_start = Instant::now();
         let parent_difflayer = self.compute_difflayer(
             persisting_kind,
@@ -449,12 +452,18 @@ where
             ctx.state());
         self.metrics.block_validation.record_payload_difflayer(difflayer_start.elapsed().as_secs_f64());
 
+        if let Some(ref difflayer) = parent_difflayer {
+            println!("execute block, 111111111111, parent_difflayer: {:?}", Arc::strong_count(difflayer));
+        } else {
+            println!("execute block, 111111111111, parent_difflayer: none");
+        }
+
         let mut handle = self.payload_processor.spawn_cache_exclusive_with_triedb(
             env.clone(),
             txs,
             provider_builder,
             parent_block.state_root(),
-            parent_difflayer.clone(),
+            None,
         );
 
         // Use cached state provider before executing, used in execution after prewarming threads
@@ -604,7 +613,11 @@ where
         //     (root, updates, root_time.elapsed())
         // };
 
-
+        if let Some(ref difflayer) = parent_difflayer {
+            println!("execute block, 222222222222, parent_difflayer: {:?}", Arc::strong_count(difflayer));
+        } else {
+            println!("commit_hashed_post_state, 222222222222, parent_difflayer: none");
+        }
 
         let (state_root, difflayer) = if let Ok(result) = self.get_triedb().commit_hashed_post_state(
             parent_block.state_root(),
@@ -614,6 +627,8 @@ where
         } else {
             panic!("TrieDB update failed");
         };
+
+        println!("execute block: {:?}, --------------", parent_block.number());
 
         self.metrics.block_validation.record_payload_validation(root_time.elapsed().as_secs_f64());
 
