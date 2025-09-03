@@ -79,9 +79,6 @@ use std::{
 };
 use tracing::{debug, trace};
 
-use rust_eth_triedb::TrieDB;
-use rust_eth_triedb_pathdb::{PathDB};
-
 /// A [`DatabaseProvider`] that holds a read-only database transaction.
 pub type DatabaseProviderRO<DB, N> = DatabaseProvider<<DB as Database>::TX, N>;
 
@@ -150,19 +147,12 @@ pub struct DatabaseProvider<TX, N: NodeTypes> {
     prune_modes: PruneModes,
     /// Node storage handler.
     storage: Arc<N::Storage>,
-    /// TrieDB instance
-    triedb: TrieDB<PathDB>,
 }
 
 impl<TX, N: NodeTypes> DatabaseProvider<TX, N> {
     /// Returns reference to prune modes.
     pub const fn prune_modes_ref(&self) -> &PruneModes {
         &self.prune_modes
-    }
-
-    /// Returns a reference to the trie database.
-    pub fn get_triedb(&self) -> &TrieDB<PathDB> {
-        &self.triedb
     }
 }
 
@@ -252,9 +242,8 @@ impl<TX: DbTxMut, N: NodeTypes> DatabaseProvider<TX, N> {
         static_file_provider: StaticFileProvider<N::Primitives>,
         prune_modes: PruneModes,
         storage: Arc<N::Storage>,
-        triedb: TrieDB<PathDB>,
     ) -> Self {
-        Self { tx, chain_spec, static_file_provider, prune_modes, storage, triedb }
+        Self { tx, chain_spec, static_file_provider, prune_modes, storage }
     }
 }
 
@@ -536,9 +525,8 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> DatabaseProvider<TX, N> {
         static_file_provider: StaticFileProvider<N::Primitives>,
         prune_modes: PruneModes,
         storage: Arc<N::Storage>,
-        triedb: TrieDB<PathDB>,
     ) -> Self {
-        Self { tx, chain_spec, static_file_provider, prune_modes, storage, triedb }
+        Self { tx, chain_spec, static_file_provider, prune_modes, storage }
     }
 
     /// Consume `DbTx` or `DbTxMut`.
@@ -3203,10 +3191,6 @@ impl<TX: DbTx + 'static, N: NodeTypes + 'static> DBProvider for DatabaseProvider
 
     fn prune_modes_ref(&self) -> &PruneModes {
         self.prune_modes_ref()
-    }
-
-    fn get_triedb(&self) -> TrieDB<PathDB> {
-        self.triedb.clone()
     }
 }
 

@@ -15,6 +15,7 @@ use reth_storage_errors::writer::UnifiedStorageWriterError;
 use revm_database::OriginalValuesKnown;
 use std::sync::Arc;
 use tracing::{debug, error};
+use rust_eth_triedb::get_global_triedb;
 
 /// [`UnifiedStorageWriter`] is responsible for managing the writing to storage with both database
 /// and static file providers.
@@ -152,7 +153,7 @@ where
 
         debug!(target: "provider::storage_writer", block_count = %blocks.len(), "Writing blocks and execution data to storage");
 
-        let mut triedb = self.database().get_triedb();
+        let mut triedb = get_global_triedb();
         // TODO: Do performant / batched writes for each type of object
         // instead of a loop over all blocks,
         // meaning:

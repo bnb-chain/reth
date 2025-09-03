@@ -28,9 +28,6 @@ pub trait DBProvider: Sized {
     /// Consumes the provider and returns the underlying transaction.
     fn into_tx(self) -> Self::Tx;
 
-    /// Returns a reference to the trie database.
-    fn get_triedb(&self) -> TrieDB<PathDB>;
-
     /// Disables long-lived read transaction safety guarantees for leaks prevention and
     /// observability improvements.
     ///

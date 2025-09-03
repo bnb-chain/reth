@@ -627,10 +627,6 @@ impl<ChainSpec: Send + Sync, N: NodePrimitives> DBProvider for NoopProvider<Chai
     fn prune_modes_ref(&self) -> &PruneModes {
         &self.prune_modes
     }
-
-    fn get_triedb(&self) -> TrieDB<PathDB> {
-        panic!("get_triedb is not implemented");
-    }
 }
 
 #[cfg(feature = "db-api")]

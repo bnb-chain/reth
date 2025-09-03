@@ -48,7 +48,7 @@ use tracing::{debug, error, info, trace, warn};
 
 use rust_eth_triedb_state_trie::node::DiffLayer;
 use rust_eth_triedb_pathdb::PathDB;
-use rust_eth_triedb::TrieDB;
+use rust_eth_triedb::{TrieDB, get_global_triedb};
 
 /// Context providing access to tree state during validation.
 ///
@@ -200,12 +200,7 @@ where
         config: TreeConfig,
         invalid_block_hook: Box<dyn InvalidBlockHook<N>>,
     ) -> Self {
-        let db_provider_rw = if let Ok(provider) = provider.database_provider_rw() {
-            provider
-        } else {
-            panic!("Failed to get database provider rw");
-        };
-        let mut triedb = db_provider_rw.get_triedb();
+        let mut triedb = get_global_triedb();
 
         let precompile_cache_map = PrecompileCacheMap::default();
         let payload_processor = PayloadProcessor::new(

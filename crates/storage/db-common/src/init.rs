@@ -27,6 +27,7 @@ use tracing::{debug, error, info, trace};
 
 use std::collections::HashSet;
 use rust_eth_triedb_state_trie::account::StateAccount;
+use rust_eth_triedb::get_global_triedb;
 use alloy_primitives::keccak256;
 
 /// Default soft limit for number of bytes to read from state dump file, before inserting into
@@ -143,7 +144,7 @@ where
     let provider_rw = factory.database_provider_rw()?;
     insert_genesis_hashes(&provider_rw, alloc.iter())?;
     insert_genesis_history(&provider_rw, alloc.iter())?;
-    let _= provider_rw.get_triedb();
+
     // Insert header
     insert_genesis_header(&provider_rw, &chain)?;
 
@@ -207,7 +208,7 @@ where
     let mut contracts: HashMap<B256, Bytecode> =
         HashMap::with_capacity_and_hasher(capacity, Default::default());
 
-    let mut triedb = provider.get_triedb();
+    let mut triedb = get_global_triedb();
     let mut state_accounts = HashMap::new();
     let mut storage_states = HashMap::new();
 

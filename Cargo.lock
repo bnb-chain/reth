@@ -7699,6 +7699,7 @@ dependencies = [
  "reth-static-file-types",
  "reth-trie",
  "reth-trie-db",
+ "rust-eth-triedb",
  "rust-eth-triedb-state-trie",
  "serde",
  "serde_json",
