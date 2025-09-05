@@ -355,7 +355,8 @@ where
             self.has_ancestors_with_missing_trie_updates(input.block_with_parent(), ctx.state());
         let mut use_state_root_task = run_parallel_state_root &&
             self.config.use_state_root_task() &&
-            !has_ancestors_with_missing_trie_updates;
+            !has_ancestors_with_missing_trie_updates &&
+            !self.config.skip_state_root_validation();
 
         debug!(
             target: "engine::tree",
@@ -473,91 +474,103 @@ where
             return Err(InsertBlockError::new(block.into_sealed_block(), err.into()).into())
         }
 
-        debug!(target: "engine::tree", block=?block_num_hash, "Calculating block state root");
+        // Skip state root computation entirely in fastnode mode
+        let (state_root, trie_output, _root_elapsed) = if self.config.skip_state_root_validation() {
+            debug!(target: "engine::tree", block=?block_num_hash, "Skipping state root calculation in fastnode mode");
+            // Use the state root from the block header directly without validation
+            (block.header().state_root(), TrieUpdates::default(), std::time::Duration::ZERO)
+        } else {
+            debug!(target: "engine::tree", block=?block_num_hash, "Calculating block state root");
 
-        let root_time = Instant::now();
+            let root_time = Instant::now();
+            let mut maybe_state_root = None;
 
-        let mut maybe_state_root = None;
 
-        if run_parallel_state_root {
-            // if we new payload extends the current canonical change we attempt to use the
-            // background task or try to compute it in parallel
-            if use_state_root_task {
-                debug!(target: "engine::tree", block=?block_num_hash, "Using sparse trie state root algorithm");
-                match handle.state_root() {
-                    Ok(StateRootComputeOutcome { state_root, trie_updates }) => {
-                        let elapsed = root_time.elapsed();
-                        info!(target: "engine::tree", ?state_root, ?elapsed, "State root task finished");
-                        // we double check the state root here for good measure
-                        if state_root == block.header().state_root() {
-                            maybe_state_root = Some((state_root, trie_updates, elapsed))
-                        } else {
-                            warn!(
-                                target: "engine::tree",
-                                ?state_root,
-                                block_state_root = ?block.header().state_root(),
-                                "State root task returned incorrect state root"
-                            );
+            if run_parallel_state_root {
+                // if we new payload extends the current canonical change we attempt to use the
+                // background task or try to compute it in parallel
+                if use_state_root_task {
+                    debug!(target: "engine::tree", block=?block_num_hash, "Using sparse trie state root algorithm");
+                    match handle.state_root() {
+                        Ok(StateRootComputeOutcome { state_root, trie_updates }) => {
+                            let elapsed = root_time.elapsed();
+                            info!(target: "engine::tree", ?state_root, ?elapsed, "State root task finished");
+                            // we double check the state root here for good measure
+                            if state_root == block.header().state_root() {
+                                maybe_state_root = Some((state_root, trie_updates, elapsed))
+                            } else {
+                                warn!(
+                                    target: "engine::tree",
+                                    ?state_root,
+                                    block_state_root = ?block.header().state_root(),
+                                    "State root task returned incorrect state root"
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            debug!(target: "engine::tree", %error, "Background parallel state root computation failed");
                         }
                     }
-                    Err(error) => {
-                        debug!(target: "engine::tree", %error, "Background parallel state root computation failed");
-                    }
-                }
-            } else {
-                debug!(target: "engine::tree", block=?block_num_hash, "Using parallel state root algorithm");
-                match self.compute_state_root_parallel(
-                    persisting_kind,
-                    block.parent_hash(),
-                    &hashed_state,
-                    ctx.state(),
-                ) {
-                    Ok(result) => {
-                        info!(
-                            target: "engine::tree",
-                            block = ?block_num_hash,
-                            regular_state_root = ?result.0,
-                            "Regular root task finished"
-                        );
-                        maybe_state_root = Some((result.0, result.1, root_time.elapsed()));
-                    }
-                    Err(ParallelStateRootError::Provider(ProviderError::ConsistentView(error))) => {
-                        debug!(target: "engine::tree", %error, "Parallel state root computation failed consistency check, falling back");
-                    }
-                    Err(error) => {
-                        return Err(InsertBlockError::new(
-                            block.into_sealed_block(),
-                            InsertBlockErrorKind::Other(Box::new(error)),
-                        )
-                        .into())
+                } else {
+                    debug!(target: "engine::tree", block=?block_num_hash, "Using parallel state root algorithm");
+                    match self.compute_state_root_parallel(
+                        persisting_kind,
+                        block.header().parent_hash(),
+                        &hashed_state,
+                        ctx.state(),
+                    ) {
+                        Ok(result) => {
+                            info!(
+                                target: "engine::tree",
+                                block = ?block_num_hash,
+                                regular_state_root = ?result.0,
+                                "Regular root task finished"
+                            );
+                            maybe_state_root = Some((result.0, result.1, root_time.elapsed()));
+                        }
+                        Err(ParallelStateRootError::Provider(ProviderError::ConsistentView(
+                            error,
+                        ))) => {
+                            debug!(target: "engine::tree", %error, "Parallel state root computation failed consistency check, falling back");
+                        }
+                        Err(error) => {
+                            return Err(InsertPayloadError::Block(InsertBlockError::new(
+                                block.into_sealed_block(),
+                                InsertBlockErrorKind::Other(Box::new(error)),
+                            )))
+                        }
                     }
                 }
             }
-        }
 
-        let (state_root, trie_output, root_elapsed) = if let Some(maybe_state_root) =
-            maybe_state_root
-        {
-            maybe_state_root
-        } else {
-            // fallback is to compute the state root regularly in sync
-            if self.config.state_root_fallback() {
-                debug!(target: "engine::tree", block=?block_num_hash, "Using state root fallback for testing");
+            let (state_root, trie_output, root_elapsed) = if let Some(maybe_state_root) =
+                maybe_state_root
+            {
+                maybe_state_root
             } else {
-                warn!(target: "engine::tree", block=?block_num_hash, ?persisting_kind, "Failed to compute state root in parallel");
-                self.metrics.block_validation.state_root_parallel_fallback_total.increment(1);
-            }
+                // fallback is to compute the state root regularly in sync
+                if self.config.state_root_fallback() {
+                    debug!(target: "engine::tree", block=?block_num_hash, "Using state root fallback for testing");
+                } else {
+                    warn!(target: "engine::tree", block=?block_num_hash, ?persisting_kind, "Failed to compute state root in parallel");
+                    self.metrics.block_validation.state_root_parallel_fallback_total.increment(1);
+                }
 
-            let (root, updates) =
-                ensure_ok!(state_provider.state_root_with_updates(hashed_state.clone()));
-            (root, updates, root_time.elapsed())
+                let (root, updates) =
+                    ensure_ok!(state_provider.state_root_with_updates(hashed_state.clone()));
+                (root, updates, root_time.elapsed())
+            };
+
+            self.metrics
+                .block_validation
+                .record_state_root(&trie_output, root_elapsed.as_secs_f64());
+            debug!(target: "engine::tree", ?root_elapsed, block=?block_num_hash, "Calculated state root");
+
+            (state_root, trie_output, root_elapsed)
         };
 
-        self.metrics.block_validation.record_state_root(&trie_output, root_elapsed.as_secs_f64());
-        debug!(target: "engine::tree", ?root_elapsed, block=?block_num_hash, "Calculated state root");
-
-        // ensure state root matches
-        if state_root != block.header().state_root() {
+        // ensure state root matches (validation already skipped in fastnode mode)
+        if !self.config.skip_state_root_validation() && state_root != block.header().state_root() {
             // call post-block hook
             self.on_invalid_block(
                 &parent_block,
