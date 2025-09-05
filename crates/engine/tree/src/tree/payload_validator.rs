@@ -608,12 +608,6 @@ where
         //     (root, updates, root_time.elapsed())
         // };
 
-        if let Some(ref difflayer) = parent_difflayer {
-            println!("execute block, 222222222222, parent_difflayer: {:?}", Arc::strong_count(difflayer));
-        } else {
-            println!("commit_hashed_post_state, 222222222222, parent_difflayer: none");
-        }
-
         let (state_root, difflayer) = if let Ok(result) = self.get_triedb().commit_hashed_post_state(
             parent_block.state_root(),
             parent_difflayer,
