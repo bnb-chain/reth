@@ -6125,8 +6125,7 @@ dependencies = [
 [[package]]
 name = "op-revm"
 version = "9.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f6889cdfed74c6c924a54b2357982fce232e06473c6bb73b9a0c71a9151bfabd"
+source = "git+https://github.com/bnb-chain/revm?rev=76a0eb54c81925bccf2037d7428efe4582cef82e#76a0eb54c81925bccf2037d7428efe4582cef82e"
 dependencies = [
  "auto_impl",
  "revm",
@@ -10734,8 +10733,7 @@ dependencies = [
 [[package]]
 name = "revm"
 version = "28.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee5d3f7d031e90ab47c7488061bdc4875abc4e9dcea6c18f5dee09732d0436fb"
+source = "git+https://github.com/bnb-chain/revm?rev=76a0eb54c81925bccf2037d7428efe4582cef82e#76a0eb54c81925bccf2037d7428efe4582cef82e"
 dependencies = [
  "revm-bytecode",
  "revm-context",
@@ -10753,8 +10751,7 @@ dependencies = [
 [[package]]
 name = "revm-bytecode"
 version = "6.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d800e6c2119457ded5b0af71634eb2468040bf97de468eee5a730272a106da0"
+source = "git+https://github.com/bnb-chain/revm?rev=76a0eb54c81925bccf2037d7428efe4582cef82e#76a0eb54c81925bccf2037d7428efe4582cef82e"
 dependencies = [
  "bitvec",
  "phf",
@@ -10765,8 +10762,7 @@ dependencies = [
 [[package]]
 name = "revm-context"
 version = "9.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c63485b4d1b0e67f342f9a8c0e9f78b6b5f1750863a39bdf6ceabdbaaf4aed1"
+source = "git+https://github.com/bnb-chain/revm?rev=76a0eb54c81925bccf2037d7428efe4582cef82e#76a0eb54c81925bccf2037d7428efe4582cef82e"
 dependencies = [
  "bitvec",
  "cfg-if",
@@ -10798,8 +10794,7 @@ dependencies = [
 [[package]]
 name = "revm-context-interface"
 version = "10.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "550cb8b9465e00bdb0a384922b69f864c5bcc228bed19c8ecbfa69fff2256382"
+source = "git+https://github.com/bnb-chain/revm?rev=76a0eb54c81925bccf2037d7428efe4582cef82e#76a0eb54c81925bccf2037d7428efe4582cef82e"
 dependencies = [
  "alloy-eip2930",
  "alloy-eip7702",
@@ -10814,8 +10809,7 @@ dependencies = [
 [[package]]
 name = "revm-database"
 version = "7.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "40000c7d917c865f6c232a78581b78e70c43f52db17282bd1b52d4f0565bc8a2"
+source = "git+https://github.com/bnb-chain/revm?rev=76a0eb54c81925bccf2037d7428efe4582cef82e#76a0eb54c81925bccf2037d7428efe4582cef82e"
 dependencies = [
  "alloy-eips",
  "revm-bytecode",
@@ -10828,8 +10822,7 @@ dependencies = [
 [[package]]
 name = "revm-database-interface"
 version = "7.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f4ccea7a168cba1196b1e57dd3e22c36047208c135f600f8e58cbe7d49957dba"
+source = "git+https://github.com/bnb-chain/revm?rev=76a0eb54c81925bccf2037d7428efe4582cef82e#76a0eb54c81925bccf2037d7428efe4582cef82e"
 dependencies = [
  "auto_impl",
  "either",
@@ -10841,11 +10834,13 @@ dependencies = [
 [[package]]
 name = "revm-handler"
 version = "9.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7cb09d07e6799823ce5a344f1604236b53fe1a92bacd7122c0b16286f92254c2"
+source = "git+https://github.com/bnb-chain/revm?rev=76a0eb54c81925bccf2037d7428efe4582cef82e#76a0eb54c81925bccf2037d7428efe4582cef82e"
 dependencies = [
  "auto_impl",
  "derive-where",
+ "lru 0.12.5",
+ "once_cell",
+ "parking_lot",
  "revm-bytecode",
  "revm-context",
  "revm-context-interface 10.0.1",
@@ -10855,13 +10850,13 @@ dependencies = [
  "revm-primitives",
  "revm-state",
  "serde",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
 name = "revm-inspector"
 version = "9.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2770c0d7e9f4f23660dc0b8b954b7a1eee8989ec97f936ebce366c78b6d7b915"
+source = "git+https://github.com/bnb-chain/revm?rev=76a0eb54c81925bccf2037d7428efe4582cef82e#76a0eb54c81925bccf2037d7428efe4582cef82e"
 dependencies = [
  "auto_impl",
  "either",
@@ -10910,9 +10905,9 @@ dependencies = [
 [[package]]
 name = "revm-interpreter"
 version = "25.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6c938c0d4d617c285203cad8aba1cefeec383fcff2fdf94a4469f588ab979b5"
+source = "git+https://github.com/bnb-chain/revm?rev=76a0eb54c81925bccf2037d7428efe4582cef82e#76a0eb54c81925bccf2037d7428efe4582cef82e"
 dependencies = [
+ "bitvec",
  "revm-bytecode",
  "revm-context-interface 10.0.1",
  "revm-primitives",
@@ -10922,8 +10917,7 @@ dependencies = [
 [[package]]
 name = "revm-precompile"
 version = "26.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f7bb5e8b92891c5ac9dd8dae157bd1d90aab01973ad4f99d4135d507facc3e7"
+source = "git+https://github.com/bnb-chain/revm?rev=76a0eb54c81925bccf2037d7428efe4582cef82e#76a0eb54c81925bccf2037d7428efe4582cef82e"
 dependencies = [
  "ark-bls12-381",
  "ark-bn254",
@@ -10948,8 +10942,7 @@ dependencies = [
 [[package]]
 name = "revm-primitives"
 version = "20.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5aa29d9da06fe03b249b6419b33968ecdf92ad6428e2f012dc57bcd619b5d94e"
+source = "git+https://github.com/bnb-chain/revm?rev=76a0eb54c81925bccf2037d7428efe4582cef82e#76a0eb54c81925bccf2037d7428efe4582cef82e"
 dependencies = [
  "alloy-primitives",
  "num_enum",
@@ -10960,8 +10953,7 @@ dependencies = [
 [[package]]
 name = "revm-state"
 version = "7.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f9d7f39ea56df3bfbb3c81c99b1f028d26f205b6004156baffbf1a4f84b46cfa"
+source = "git+https://github.com/bnb-chain/revm?rev=76a0eb54c81925bccf2037d7428efe4582cef82e#76a0eb54c81925bccf2037d7428efe4582cef82e"
 dependencies = [
  "bitflags 2.9.1",
  "revm-bytecode",
