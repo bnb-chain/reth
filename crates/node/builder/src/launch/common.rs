@@ -166,6 +166,12 @@ impl LaunchContext {
 
         // Update the config with the command line arguments
         toml_config.peers.trusted_nodes_only = config.network.trusted_only;
+        
+        // Apply fastnode settings when skip_state_root_validation is enabled
+        if config.engine.skip_state_root_validation {
+            info!(target: "reth::cli", "Fastnode mode enabled via --engine.skip-state-root-validation - disabling hashing stages and state root validation");
+            toml_config.stages.disable_hashing_stages = true;
+        }
 
         Ok(toml_config)
     }
