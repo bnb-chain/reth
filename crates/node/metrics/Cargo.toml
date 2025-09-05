@@ -26,7 +26,8 @@ tracing.workspace = true
 eyre.workspace = true
 
 [target.'cfg(unix)'.dependencies]
-tikv-jemalloc-ctl = { workspace = true, optional = true, features = ["stats"] }
+# tikv-jemalloc-ctl = { workspace = true, optional = true, features = ["stats"] }  # Commented out for standard jemalloc migration
+jemalloc-ctl = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 procfs = "0.17.0"
@@ -39,4 +40,5 @@ socket2.workspace = true
 workspace = true
 
 [features]
-jemalloc = ["dep:tikv-jemalloc-ctl"]
+# jemalloc = ["dep:tikv-jemalloc-ctl"]  # Commented out for standard jemalloc migration
+jemalloc = ["dep:jemalloc-ctl"]

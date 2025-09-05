@@ -88,7 +88,8 @@ impl fmt::Debug for Hooks {
 #[cfg(all(feature = "jemalloc", unix))]
 fn collect_memory_stats() {
     use metrics::gauge;
-    use tikv_jemalloc_ctl::{epoch, stats};
+    // use tikv_jemalloc_ctl::{epoch, stats};  // Commented out for standard jemalloc migration
+    use jemalloc_ctl::{epoch, stats};
     use tracing::error;
 
     if epoch::advance().map_err(|error| error!(%error, "Failed to advance jemalloc epoch")).is_err()

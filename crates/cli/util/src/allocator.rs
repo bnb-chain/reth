@@ -7,7 +7,8 @@
 // is prioritized.
 cfg_if::cfg_if! {
     if #[cfg(all(feature = "jemalloc", unix))] {
-        type AllocatorInner = tikv_jemallocator::Jemalloc;
+        // type AllocatorInner = tikv_jemallocator::Jemalloc;  // Commented out for standard jemalloc migration
+        type AllocatorInner = jemallocator::Jemalloc;
     } else if #[cfg(all(feature = "snmalloc", unix))] {
         type AllocatorInner = snmalloc_rs::SnMalloc;
     } else {
