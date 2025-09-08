@@ -28,6 +28,7 @@ use std::{
 use tracing::{debug, trace, warn};
 
 use rust_eth_triedb::triedb::TrieDB;
+use rust_eth_triedb_state_trie::DiffLayer;
 use rust_eth_triedb_pathdb::PathDB;
 use dashmap::DashSet;
 
@@ -54,8 +55,6 @@ where
     actions_rx: Receiver<PrewarmTaskEvent>,
 
     triedb_prewarm_tx: Option<Sender<PrewarmTaskEvent>>,
-
-    triedb_prewarm_task: Option<TrieDBPrewarmTask>,
 }
 
 impl<N, P, Evm> PrewarmCacheTask<N, P, Evm>
@@ -71,7 +70,7 @@ where
         ctx: PrewarmContext<N, P, Evm>,
         to_multi_proof: Option<Sender<MultiProofMessage>>,
         triedb_prewarm_tx: Option<Sender<PrewarmTaskEvent>>,
-        triedb_prewarm_task: Option<TrieDBPrewarmTask>,
+        max_concurrency: usize,
     ) -> (Self, Sender<PrewarmTaskEvent>) {
         let (actions_tx, actions_rx) = channel();
         (
@@ -79,11 +78,10 @@ where
                 executor,
                 execution_cache,
                 ctx,
-                max_concurrency: 32,
+                max_concurrency,
                 to_multi_proof,
                 actions_rx,
                 triedb_prewarm_tx,
-                triedb_prewarm_task,
             },
             actions_tx,
         )
@@ -179,17 +177,17 @@ where
         while let Ok(event) = self.actions_rx.recv() {
             match event {
                 PrewarmTaskEvent::TerminateTransactionExecution => {
-                    // self.triedb_prewarm_tx.as_ref().map(|tx| tx.send(PrewarmTaskEvent::TerminateTransactionExecution));
+                    self.triedb_prewarm_tx.as_ref().map(|tx| tx.send(PrewarmTaskEvent::TerminateTransactionExecution));
                     // stop tx processing
                     self.ctx.terminate_execution.store(true, Ordering::Relaxed);
                 }
                 PrewarmTaskEvent::Outcome { proof_targets } => {
-                    // self.triedb_prewarm_tx.as_ref().map(|tx| tx.send(PrewarmTaskEvent::Outcome { proof_targets }));
+                    self.triedb_prewarm_tx.as_ref().map(|tx| tx.send(PrewarmTaskEvent::Outcome { proof_targets }));
                     // completed executing a set of transactions
                     // self.send_multi_proof_targets(proof_targets);
                 }
                 PrewarmTaskEvent::Terminate { block_output } => {
-                    // self.triedb_prewarm_tx.as_ref().map(|tx| tx.send(PrewarmTaskEvent::Terminate { block_output: block_output.clone() }));
+                    self.triedb_prewarm_tx.as_ref().map(|tx| tx.send(PrewarmTaskEvent::Terminate { block_output: block_output.clone() }));
                     final_block_output = Some(block_output);
 
                     if finished_execution {
@@ -198,7 +196,7 @@ where
                     }
                 }
                 PrewarmTaskEvent::FinishedTxExecution { executed_transactions } => {
-                    // self.triedb_prewarm_tx.as_ref().map(|tx| tx.send(PrewarmTaskEvent::FinishedTxExecution { executed_transactions }));
+                    self.triedb_prewarm_tx.as_ref().map(|tx| tx.send(PrewarmTaskEvent::FinishedTxExecution { executed_transactions }));
 
                     self.ctx.metrics.transactions.set(executed_transactions as f64);
                     self.ctx.metrics.transactions_histogram.record(executed_transactions as f64);
@@ -225,18 +223,22 @@ pub(crate) struct TrieDBPrewarmTask {
     pub(super) max_concurrency: usize,
     pub(super) actions_rx: Receiver<PrewarmTaskEvent>,
     pub(super) executor: WorkloadExecutor,
-    pub(super) triedb: TrieDB<PathDB>,
+    pub(super) pathdb: PathDB,
+    pub(super) parent_root: B256,
+    pub(super) difflayer: Option<Arc<DiffLayer>>,
 }
 
 impl TrieDBPrewarmTask {
     pub(super) fn new(
         executor: WorkloadExecutor,
-        triedb: TrieDB<PathDB>,
+        pathdb: PathDB,
+        parent_root: B256,
+        difflayer: Option<Arc<DiffLayer>>,
         max_concurrency: usize,
     ) -> (Self, Sender<PrewarmTaskEvent>) {
         let (actions_tx, actions_rx) = channel();
         (
-            Self { executor, triedb, max_concurrency, actions_rx },
+            Self { executor, pathdb, parent_root, difflayer, max_concurrency, actions_rx },
             actions_tx,
         )
     }
@@ -246,7 +248,9 @@ impl TrieDBPrewarmTask {
     ) {
         let executor = self.executor.clone();
         let max_concurrency = self.max_concurrency;
-        let triedb = self.triedb.clone();
+        let parent_root = self.parent_root;
+        let pathdb_clone = self.pathdb.clone();
+        let difflayer_clone = self.difflayer.clone();
 
         self.executor.spawn_blocking(move || {
             let mut handles = Vec::new();
@@ -258,8 +262,10 @@ impl TrieDBPrewarmTask {
                     let task_idx = executing % max_concurrency;
                     if handles.len() <= task_idx {
                         let (tx, rx) = mpsc::channel::<MultiProofTargets>();
-                        let mut triedb_clone = triedb.clone();
+                        let mut triedb_clone = TrieDB::new(pathdb_clone.clone());
+                        triedb_clone.state_at(parent_root, difflayer_clone.clone()).unwrap();
                         let filter_clone = filter.clone();
+
                         executor.spawn_blocking(move || {
                             while let Ok(proofs) = rx.recv() {
                                 let mut unfetched_proofs = MultiProofTargets::with_capacity(proofs.len());
@@ -298,7 +304,8 @@ impl TrieDBPrewarmTask {
             }
             warn!("OptPrefetcher drop handles: {:?}", handles.len());
             drop(handles);
-            drop(triedb);
+            drop(pathdb_clone);
+            drop(difflayer_clone);
             drop(filter);
         });
     }
@@ -309,7 +316,6 @@ impl TrieDBPrewarmTask {
         while let Ok(event) = self.actions_rx.recv() {
             match event {
                 PrewarmTaskEvent::TerminateTransactionExecution => {
-                    warn!("OptPrefetcher prefetcher task terminate transaction execution");
                     drop(prefetcher_tx);
                     break;
                 }
@@ -326,7 +332,10 @@ impl TrieDBPrewarmTask {
                     drop(prefetcher_tx);
                     break;
                 }
-                PrewarmTaskEvent::FinishedTxExecution { executed_transactions: _ } => {}
+                PrewarmTaskEvent::FinishedTxExecution { executed_transactions: _ } => {
+                    // drop(prefetcher_tx);
+                    // break;
+                }
             }
         }
     }

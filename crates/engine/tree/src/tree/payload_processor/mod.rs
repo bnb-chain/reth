@@ -53,9 +53,10 @@ pub mod sparse_trie;
 
 use configured_sparse_trie::ConfiguredSparseTrie;
 
-use rust_eth_triedb::triedb::TrieDB;
+// use rust_eth_triedb::triedb::TrieDB;
 use rust_eth_triedb_pathdb::PathDB;
 use rust_eth_triedb_state_trie::DiffLayer;
+use std::thread;
 
 /// Entrypoint for executing the payload.
 #[derive(Debug)]
@@ -92,6 +93,9 @@ where
     trie_input: Option<TrieInput>,
     /// PathDB for storing the state changes
     path_db: PathDB,
+
+    /// Core count
+    core_count: usize,
 }
 
 impl<N, Evm> PayloadProcessor<Evm>
@@ -107,6 +111,15 @@ where
         precompile_cache_map: PrecompileCacheMap<SpecFor<Evm>>,
         path_db: PathDB,
     ) -> Self {
+        let mut path_db = path_db.clone();
+        path_db.with_new_metrics("prefetcher");
+
+
+        let core_count = thread::available_parallelism()
+                            .map(|n| n.get())
+                            .unwrap_or(1);
+
+        println!("core_count: {}", core_count);
         Self {
             executor,
             execution_cache: Default::default(),
@@ -120,6 +133,7 @@ where
             trie_input: None,
             use_parallel_sparse_trie: config.enable_parallel_sparse_trie(),
             path_db,
+            core_count,
         }
     }
 }
@@ -334,20 +348,30 @@ where
 
         let (cache, cache_metrics) = self.cache_for(env.parent_hash).split();
 
-        // let mut path_db = self.path_db.clone();
-        // path_db.with_new_metrics("prefetcher");
-        // let mut triedb = TrieDB::new(path_db);
+        // let mut triedb = TrieDB::new(self.path_db.clone());
         // triedb.state_at(parent_root, difflayer).unwrap();
 
-        // let (triedb_prewarm_task, triedb_prewarm_tx) = TrieDBPrewarmTask::new(
-        //     self.executor.clone(),
-        //     triedb,
-        //     32,
-        // );
+        let mut max_concurrency = self.core_count / 2;
+        if max_concurrency < 4 {
+            max_concurrency = 8;
+        }
 
-        // self.executor.spawn_blocking(move || {
-        //     triedb_prewarm_task.run();
-        // });
+        let mut reserved_cpu_cores = self.core_count / 2 - 1;
+        if reserved_cpu_cores < 4 {
+            reserved_cpu_cores = 8;
+        }
+
+        let (triedb_prewarm_task, triedb_prewarm_tx) = TrieDBPrewarmTask::new(
+            self.executor.clone(),
+            self.path_db.clone(),
+            parent_root,
+            difflayer,
+            max_concurrency,
+        );
+
+        self.executor.spawn_blocking(move || {
+            triedb_prewarm_task.run();
+        });
 
         // configure prewarming
         let prewarm_ctx = PrewarmContext {
@@ -367,9 +391,8 @@ where
             self.execution_cache.clone(),
             prewarm_ctx,
             to_multi_proof,
-            // Some(triedb_prewarm_tx),
-            None,
-            None,
+            Some(triedb_prewarm_tx),
+            reserved_cpu_cores,
         );
 
         // spawn pre-warm task
@@ -450,7 +473,7 @@ where
             prewarm_ctx,
             to_multi_proof,
             None,
-            None,
+            64
         );
 
         // spawn pre-warm task
