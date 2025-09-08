@@ -25,7 +25,7 @@ use std::{
     },
     time::Instant,
 };
-use tracing::{debug, trace, warn};
+use tracing::{debug, trace};
 
 use rust_eth_triedb::triedb::TrieDB;
 use rust_eth_triedb_state_trie::DiffLayer;
@@ -294,7 +294,6 @@ impl TrieDBPrewarmTask {
                             drop(rx);
                             drop(triedb_clone);
                             drop(filter_clone);
-                            warn!("OptPrefetcher prefetcher handle finished");
                         });
                         handles.push(tx);
                     }
@@ -302,7 +301,6 @@ impl TrieDBPrewarmTask {
                     executing += 1;
                 }
             }
-            warn!("OptPrefetcher drop handles: {:?}", handles.len());
             drop(handles);
             drop(pathdb_clone);
             drop(difflayer_clone);

@@ -438,20 +438,12 @@ where
         //     self.payload_processor.spawn_cache_exclusive(env.clone(), txs, provider_builder)
         // };
 
-        println!("execute block: {:?}, +++++++++++++", parent_block.number());
-
         let difflayer_start = Instant::now();
         let parent_difflayer = self.compute_difflayer(
             persisting_kind,
             parent_hash,
             ctx.state());
         self.metrics.block_validation.record_payload_difflayer(difflayer_start.elapsed().as_secs_f64());
-
-        if let Some(ref difflayer) = parent_difflayer {
-            println!("execute block, 111111111111, parent_difflayer: {:?}", Arc::strong_count(difflayer));
-        } else {
-            println!("execute block, 111111111111, parent_difflayer: none");
-        }
 
         let mut handle = self.payload_processor.spawn_cache_exclusive_with_triedb(
             env.clone(),
@@ -616,8 +608,6 @@ where
         } else {
             panic!("TrieDB update failed");
         };
-
-        println!("execute block: {:?}, --------------", parent_block.number());
 
         self.metrics.block_validation.record_payload_validation(root_time.elapsed().as_secs_f64());
 

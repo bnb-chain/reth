@@ -119,7 +119,6 @@ where
                             .map(|n| n.get())
                             .unwrap_or(1);
 
-        println!("core_count: {}", core_count);
         Self {
             executor,
             execution_cache: Default::default(),
