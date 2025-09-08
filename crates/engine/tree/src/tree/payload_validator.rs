@@ -600,14 +600,28 @@ where
         //     (root, updates, root_time.elapsed())
         // };
 
-        let (state_root, difflayer) = if let Ok(result) = self.get_triedb().commit_hashed_post_state(
-            parent_block.state_root(),
-            parent_difflayer,
-            &hashed_state_clone) {
-            result
+        let (state_root, difflayer) = if parent_block.state_root() == block.header().state_root() {
+            (block.header().state_root(), None)
         } else {
-            panic!("TrieDB update failed");
+            let (state_root, difflayer) = if let Ok(result) = self.get_triedb().commit_hashed_post_state(
+                parent_block.state_root(),
+                parent_difflayer,
+                &hashed_state_clone) {
+                result
+            } else {
+                panic!("TrieDB update failed");
+            };
+            (state_root, difflayer)
         };
+
+        // let (state_root, difflayer) = if let Ok(result) = self.get_triedb().commit_hashed_post_state(
+        //     parent_block.state_root(),
+        //     parent_difflayer,
+        //     &hashed_state_clone) {
+        //     result
+        // } else {
+        //     panic!("TrieDB update failed");
+        // };
 
         self.metrics.block_validation.record_payload_validation(root_time.elapsed().as_secs_f64());
 

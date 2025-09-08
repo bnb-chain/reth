@@ -350,22 +350,22 @@ where
         // let mut triedb = TrieDB::new(self.path_db.clone());
         // triedb.state_at(parent_root, difflayer).unwrap();
 
-        let mut max_concurrency = self.core_count / 2;
-        if max_concurrency < 4 {
-            max_concurrency = 8;
-        }
+        // let mut max_concurrency = self.core_count / 2;
+        // if max_concurrency < 4 {
+        //     max_concurrency = 8;
+        // }
 
-        let mut reserved_cpu_cores = self.core_count / 2 - 1;
-        if reserved_cpu_cores < 4 {
-            reserved_cpu_cores = 8;
-        }
+        // let mut reserved_cpu_cores = self.core_count / 2 - 1;
+        // if reserved_cpu_cores < 4 {
+        //     reserved_cpu_cores = 8;
+        // }
 
         let (triedb_prewarm_task, triedb_prewarm_tx) = TrieDBPrewarmTask::new(
             self.executor.clone(),
             self.path_db.clone(),
             parent_root,
             difflayer,
-            max_concurrency,
+            256,
         );
 
         self.executor.spawn_blocking(move || {
@@ -391,7 +391,7 @@ where
             prewarm_ctx,
             to_multi_proof,
             Some(triedb_prewarm_tx),
-            reserved_cpu_cores,
+            64,
         );
 
         // spawn pre-warm task
