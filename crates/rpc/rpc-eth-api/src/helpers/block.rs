@@ -64,7 +64,14 @@ pub trait EthBlocks:
             let block = block.clone_into_rpc_block(
                 full.into(),
                 |tx, tx_info| self.tx_resp_builder().fill(tx, tx_info),
-                |header, size| self.tx_resp_builder().convert_header(header, size),
+                |header, size| {
+                    let header_hash = header.hash();
+                    let td = self
+                        .provider()
+                        .header_td(&header_hash)
+                        .map_err(Self::Error::from_eth_err)?;
+                    self.tx_resp_builder().convert_header(header, size, td)
+                },
             )?;
             Ok(Some(block))
         }
@@ -155,7 +162,7 @@ pub trait EthBlocks:
                     })
                     .collect::<Vec<_>>();
 
-                return self.tx_resp_builder().convert_receipts(inputs).map(Some)
+                return self.tx_resp_builder().convert_receipts(inputs).map(Some);
             }
 
             Ok(None)
@@ -257,7 +264,7 @@ pub trait EthBlocks:
                     let size = block.length();
                     let header = self
                         .tx_resp_builder()
-                        .convert_header(SealedHeader::new_unhashed(block.header), size)?;
+                        .convert_header(SealedHeader::new_unhashed(block.header), size, None)?;
                     Ok(Block {
                         uncles: vec![],
                         header,

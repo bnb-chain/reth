@@ -10016,6 +10016,7 @@ dependencies = [
  "reth-primitives-traits",
  "reth-storage-api",
  "revm-context",
+ "serde",
  "thiserror 2.0.12",
 ]
 

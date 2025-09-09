@@ -256,7 +256,7 @@ where
     let block = block.into_rpc_block(
         txs_kind,
         |tx, tx_info| tx_resp_builder.fill(tx, tx_info),
-        |header, size| tx_resp_builder.convert_header(header, size),
+        |header, size| tx_resp_builder.convert_header(header, size, None),
     )?;
     Ok(SimulatedBlock { inner: block, calls })
 }
