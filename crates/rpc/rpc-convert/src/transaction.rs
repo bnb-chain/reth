@@ -59,7 +59,12 @@ pub trait ReceiptConverter<N: NodePrimitives>: Debug + 'static {
 /// A type that knows how to convert a consensus header into an RPC header.
 pub trait HeaderConverter<Consensus, Rpc>: Debug + Send + Sync + Unpin + Clone + 'static {
     /// Converts a consensus header into an RPC header.
-    fn convert_header(&self, header: SealedHeader<Consensus>, block_size: usize) -> Rpc;
+    fn convert_header(
+        &self,
+        header: SealedHeader<Consensus>,
+        block_size: usize,
+        td: Option<U256>,
+    ) -> Rpc;
 }
 
 /// Default implementation of [`HeaderConverter`] that uses [`FromConsensusHeader`] to convert
@@ -68,20 +73,53 @@ impl<Consensus, Rpc> HeaderConverter<Consensus, Rpc> for ()
 where
     Rpc: FromConsensusHeader<Consensus>,
 {
-    fn convert_header(&self, header: SealedHeader<Consensus>, block_size: usize) -> Rpc {
-        Rpc::from_consensus_header(header, block_size)
+    fn convert_header(
+        &self,
+        header: SealedHeader<Consensus>,
+        block_size: usize,
+        td: Option<U256>,
+    ) -> Rpc {
+        Rpc::from_consensus_header(header, block_size, td)
     }
 }
 
 /// Conversion trait for obtaining RPC header from a consensus header.
 pub trait FromConsensusHeader<T> {
     /// Takes a consensus header and converts it into `self`.
-    fn from_consensus_header(header: SealedHeader<T>, block_size: usize) -> Self;
+    fn from_consensus_header(header: SealedHeader<T>, block_size: usize, td: Option<U256>) -> Self;
 }
 
-impl<T: Sealable> FromConsensusHeader<T> for alloy_rpc_types_eth::Header<T> {
-    fn from_consensus_header(header: SealedHeader<T>, block_size: usize) -> Self {
-        Self::from_consensus(header.into(), None, Some(U256::from(block_size)))
+// impl<T: Sealable> FromConsensusHeader<T> for alloy_rpc_types_eth::Header<T> {
+//     fn from_consensus_header(header: SealedHeader<T>, block_size: usize, td: Option<U256>) -> Self {
+//         let header_hash = header.hash();
+//         Self {
+//             hash: header_hash,
+//             inner: header.into_header(),
+//             total_difficulty: td,
+//             size: Some(U256::from(block_size)),
+//         }
+//     }
+// }
+
+impl FromConsensusHeader<alloy_consensus::Header>
+    for crate::CustomRpcHeader<alloy_consensus::Header>
+{
+    fn from_consensus_header(
+        header: SealedHeader<alloy_consensus::Header>,
+        block_size: usize,
+        td: Option<U256>,
+    ) -> Self {
+        let header_hash = header.hash();
+        let consensus_header = header.into_header();
+        let milli_timestamp = Some(consensus_header.timestamp * 1000);
+
+        Self {
+            hash: header_hash,
+            inner: consensus_header,
+            total_difficulty: td,
+            size: Some(U256::from(block_size)),
+            milli_timestamp,
+        }
     }
 }
 
@@ -159,6 +197,7 @@ pub trait RpcConvert: Send + Sync + Unpin + Clone + Debug + 'static {
         &self,
         header: SealedHeaderFor<Self::Primitives>,
         block_size: usize,
+        td: Option<U256>,
     ) -> Result<RpcHeader<Self::Network>, Self::Error>;
 }
 
@@ -482,7 +521,7 @@ impl TryIntoTxEnv<TxEnv> for TransactionRequest {
     ) -> Result<TxEnv, Self::Err> {
         // Ensure that if versioned hashes are set, they're not empty
         if self.blob_versioned_hashes.as_ref().is_some_and(|hashes| hashes.is_empty()) {
-            return Err(CallFeesError::BlobTransactionMissingBlobHashes.into())
+            return Err(CallFeesError::BlobTransactionMissingBlobHashes.into());
         }
 
         let tx_type = self.minimal_tx_type() as u8;
@@ -910,8 +949,9 @@ where
         &self,
         header: SealedHeaderFor<Self::Primitives>,
         block_size: usize,
+        td: Option<U256>,
     ) -> Result<RpcHeader<Self::Network>, Self::Error> {
-        Ok(self.header_converter.convert_header(header, block_size))
+        Ok(self.header_converter.convert_header(header, block_size, td))
     }
 }
 
