@@ -18,6 +18,7 @@ use reth_rpc_convert::{transaction::ConvertReceiptInput, RpcConvert, RpcHeader};
 use reth_storage_api::{BlockIdReader, BlockReader, ProviderHeader, ProviderReceipt, ProviderTx};
 use reth_transaction_pool::{PoolTransaction, TransactionPool};
 use std::{borrow::Cow, sync::Arc};
+use reth_storage_api::HeaderProvider;
 
 /// Result type of the fetched block receipts.
 pub type BlockReceiptsResult<N, E> = Result<Option<Vec<RpcReceipt<N>>>, E>;
