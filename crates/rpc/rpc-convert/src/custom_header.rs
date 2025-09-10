@@ -23,7 +23,7 @@ pub struct CustomRpcHeader<H = alloy_consensus::Header> {
     pub size: Option<U256>,
     /// Millisecond timestamp - custom field for BNB Chain
     #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
-    pub milli_timestamp: Option<u64>,
+    pub milli_timestamp: Option<U256>,
 }
 
 impl<H> CustomRpcHeader<H> {
@@ -33,7 +33,7 @@ impl<H> CustomRpcHeader<H> {
         inner: H,
         total_difficulty: Option<U256>,
         size: Option<U256>,
-        milli_timestamp: Option<u64>,
+        milli_timestamp: Option<U256>,
     ) -> Self {
         Self { hash, inner, total_difficulty, size, milli_timestamp }
     }
@@ -45,7 +45,7 @@ impl<H> CustomRpcHeader<H> {
         size: Option<U256>,
     ) -> CustomRpcHeader<alloy_consensus::Header> {
         let hash = header.hash_slow();
-        let milli_timestamp = Some(calculate_millisecond_timestamp(&header));
+        let milli_timestamp = Some(U256::from(calculate_millisecond_timestamp(&header)));
 
         CustomRpcHeader { hash, inner: header, total_difficulty, size, milli_timestamp }
     }
@@ -57,7 +57,7 @@ impl<H> CustomRpcHeader<H> {
         total_difficulty: Option<U256>,
         size: Option<U256>,
     ) -> CustomRpcHeader<T> {
-        let milli_timestamp = Some(calculate_millisecond_timestamp(&header));
+        let milli_timestamp = Some(U256::from(calculate_millisecond_timestamp(&header)));
 
         CustomRpcHeader { hash, inner: header, total_difficulty, size, milli_timestamp }
     }
@@ -182,7 +182,7 @@ where
     ) -> CustomRpcHeader<H> {
         let header_hash = header.hash();
         let consensus_header = header.into_header();
-        let milli_timestamp = Some(calculate_millisecond_timestamp(&consensus_header));
+        let milli_timestamp = Some(U256::from(calculate_millisecond_timestamp(&consensus_header)));
 
         CustomRpcHeader {
             hash: header_hash,
