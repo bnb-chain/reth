@@ -32,12 +32,16 @@ where
     let cumulative_gas_used = receipt.cumulative_gas_used();
     let logs_bloom = receipt.bloom();
 
-    let logs = match receipt {
+    let mut logs = match receipt {
         Cow::Borrowed(r) => {
             Log::collect_for_receipt(*next_log_index, *meta, r.logs().iter().cloned())
         }
         Cow::Owned(r) => Log::collect_for_receipt(*next_log_index, *meta, r.into_logs()),
     };
+
+    for log in &mut logs {
+        log.block_timestamp = None;
+    }
 
     let rpc_receipt = alloy_rpc_types_eth::Receipt { status, cumulative_gas_used, logs };
 
