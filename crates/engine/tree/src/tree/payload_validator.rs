@@ -667,7 +667,7 @@ where
                 execution_output: Arc::new(ExecutionOutcome::from((output, block_num_hash.number))),
                 hashed_state: Arc::new(hashed_state),
             },
-            trie: ExecutedTrieUpdates::Missing,
+            trie: ExecutedTrieUpdates::Present(Arc::new(TrieUpdates::default())),
             difflayer: difflayer,
         })
     }
