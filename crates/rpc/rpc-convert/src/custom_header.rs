@@ -1,7 +1,7 @@
 //! Custom RPC header types with additional fields
 
-use alloy_primitives::{BlockHash, U256};
 use alloy_network::primitives::HeaderResponse;
+use alloy_primitives::{BlockHash, B256, U256};
 
 /// Custom RPC header that extends the standard header with additional fields
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,7 +23,7 @@ pub struct CustomRpcHeader<H = alloy_consensus::Header> {
     pub size: Option<U256>,
     /// Millisecond timestamp - custom field for BNB Chain
     #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
-    pub milli_timestamp: Option<u64>,
+    pub milli_timestamp: Option<U256>,
 }
 
 impl<H> CustomRpcHeader<H> {
@@ -33,7 +33,7 @@ impl<H> CustomRpcHeader<H> {
         inner: H,
         total_difficulty: Option<U256>,
         size: Option<U256>,
-        milli_timestamp: Option<u64>,
+        milli_timestamp: Option<U256>,
     ) -> Self {
         Self { hash, inner, total_difficulty, size, milli_timestamp }
     }
@@ -45,7 +45,7 @@ impl<H> CustomRpcHeader<H> {
         size: Option<U256>,
     ) -> CustomRpcHeader<alloy_consensus::Header> {
         let hash = header.hash_slow();
-        let milli_timestamp = Some(header.timestamp * 1000);
+        let milli_timestamp = Some(U256::from(calculate_millisecond_timestamp(&header)));
 
         CustomRpcHeader { hash, inner: header, total_difficulty, size, milli_timestamp }
     }
@@ -57,7 +57,7 @@ impl<H> CustomRpcHeader<H> {
         total_difficulty: Option<U256>,
         size: Option<U256>,
     ) -> CustomRpcHeader<T> {
-        let milli_timestamp = Some(header.timestamp() * 1000);
+        let milli_timestamp = Some(U256::from(calculate_millisecond_timestamp(&header)));
 
         CustomRpcHeader { hash, inner: header, total_difficulty, size, milli_timestamp }
     }
@@ -166,7 +166,7 @@ where
 /// Type alias for the standard Ethereum custom header
 pub type EthereumCustomHeader = CustomRpcHeader<alloy_consensus::Header>;
 
-/// Custom header converter that creates CustomRpcHeader instances
+/// Custom header converter that creates `CustomRpcHeader` instances
 #[derive(Debug, Clone)]
 pub struct CustomHeaderConverter;
 
@@ -182,7 +182,7 @@ where
     ) -> CustomRpcHeader<H> {
         let header_hash = header.hash();
         let consensus_header = header.into_header();
-        let milli_timestamp = Some(consensus_header.timestamp() * 1000);
+        let milli_timestamp = Some(U256::from(calculate_millisecond_timestamp(&consensus_header)));
 
         CustomRpcHeader {
             hash: header_hash,
@@ -192,4 +192,28 @@ where
             milli_timestamp,
         }
     }
+}
+
+/// calculate millisecond timestamp from header mix_hash for any BlockHeader type  
+pub fn calculate_millisecond_timestamp<T: reth_primitives_traits::BlockHeader>(header: &T) -> u64 {
+    let seconds = header.timestamp();
+    let mix_hash = header.mix_hash();
+
+    let ms_part = if let Some(mix_hash) = mix_hash {
+        if mix_hash != B256::ZERO {
+            let bytes = mix_hash.as_slice();
+            // Convert last 8 bytes to u64 (big-endian), equivalent to Go's uint256.SetBytes32().Uint64()
+            let mut result = 0u64;
+            for &byte in bytes.iter().skip(24).take(8) {
+                result = (result << 8) | u64::from(byte);
+            }
+            result
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+
+    seconds * 1000 + ms_part
 }

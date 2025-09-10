@@ -1,12 +1,11 @@
 //! Compatibility functions for rpc `Transaction` type.
 
 use crate::{
+    calculate_millisecond_timestamp,
     fees::{CallFees, CallFeesError},
     RpcHeader, RpcReceipt, RpcTransaction, RpcTxReq, RpcTypes,
 };
-use alloy_consensus::{
-    error::ValueError, transaction::Recovered, EthereumTxEnvelope, Sealable, TxEip4844,
-};
+use alloy_consensus::{error::ValueError, transaction::Recovered, EthereumTxEnvelope, TxEip4844};
 use alloy_network::Network;
 use alloy_primitives::{Address, TxKind, U256};
 use alloy_rpc_types_eth::{
@@ -111,7 +110,7 @@ impl FromConsensusHeader<alloy_consensus::Header>
     ) -> Self {
         let header_hash = header.hash();
         let consensus_header = header.into_header();
-        let milli_timestamp = Some(consensus_header.timestamp * 1000);
+        let milli_timestamp = Some(U256::from(calculate_millisecond_timestamp(&consensus_header)));
 
         Self {
             hash: header_hash,

@@ -18,7 +18,9 @@ mod rpc;
 pub mod transaction;
 
 pub use block::TryFromBlockResponse;
-pub use custom_header::{CustomHeaderConverter, CustomRpcHeader, EthereumCustomHeader};
+pub use custom_header::{
+    calculate_millisecond_timestamp, CustomHeaderConverter, CustomRpcHeader, EthereumCustomHeader,
+};
 pub use fees::{CallFees, CallFeesError};
 pub use receipt::TryFromReceiptResponse;
 pub use rpc::*;
