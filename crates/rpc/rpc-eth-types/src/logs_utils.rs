@@ -73,7 +73,7 @@ pub fn append_matching_block_logs<P>(
     block_num_hash: BlockNumHash,
     receipts: &[P::Receipt],
     removed: bool,
-    block_timestamp: u64,
+    _block_timestamp: u64,
 ) -> Result<(), ProviderError>
 where
     P: BlockReader<Transaction: SignedTransaction>,
@@ -135,7 +135,7 @@ where
                     transaction_index: Some(receipt_idx as u64),
                     log_index: Some(log_index),
                     removed,
-                    block_timestamp: Some(block_timestamp),
+                    block_timestamp: None,
                 };
                 all_logs.push(log);
             }
