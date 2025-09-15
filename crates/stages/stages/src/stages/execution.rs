@@ -15,6 +15,8 @@ use reth_provider::{
     LatestStateProviderRef, OriginalValuesKnown, ProviderError, StateCommitmentProvider,
     StateWriter, StaticFileProviderFactory, StatsReader, StorageLocation, TransactionVariant,
 };
+use reth_trie::HashedPostState;
+use reth_trie_db::StateCommitment;
 use reth_revm::database::StateProviderDatabase;
 use reth_stages_api::{
     BlockErrorKind, CheckpointBlockRange, EntitiesCheckpoint, ExecInput, ExecOutput,
@@ -454,8 +456,52 @@ where
 
         // write output
         provider.write_state(&state, OriginalValuesKnown::Yes, StorageLocation::StaticFiles)?;
-
         let db_write_duration = time.elapsed();
+
+        {
+            let merkle_time = Instant::now();
+            let hashed_post_state = HashedPostState::from_bundle_state::<
+                                <Provider::StateCommitment as StateCommitment>::KeyHasher,
+                            >(state.bundle.state());
+            if !hashed_post_state.is_empty() {
+                let root_hash = if start_block == 0 {
+                    alloy_trie::EMPTY_ROOT_HASH
+                } else {
+                    let block_number = start_block - 1;
+                    let block = provider
+                        .recovered_block(block_number.into(), TransactionVariant::NoHash)?
+                        .ok_or_else(|| ProviderError::HeaderNotFound(block_number.into()))?;
+                    block.header().state_root()
+                };
+
+                info!(target: "sync::stages::execution",
+                    "begin update triedb, start={}, end={}, accounts={}, storages={}",
+                    start_block,
+                    stage_progress,
+                    hashed_post_state.accounts.len(),
+                    hashed_post_state.storages.len(),
+                );
+
+                let mut triedb = rust_eth_triedb::get_global_triedb();
+                let (new_root, difflayer) = triedb.commit_hashed_post_state(root_hash, None, &hashed_post_state)
+                    .map_err(|e| StageError::Fatal(Box::new(e)))?;
+
+                triedb.flush(stage_progress, new_root, &difflayer)
+                    .map_err(|e| StageError::Fatal(Box::new(e)))?;
+                let merkle_time_duration = merkle_time.elapsed();
+
+                info!(target: "sync::stages::execution",
+                    "end update triedb, start={}, end={}, update_triedb_time={:?}",
+                    start_block,
+                    stage_progress,
+                    merkle_time_duration);
+
+            } else {
+                info!(target: "sync::stages::execution", "no state changes, skip update triedb");
+            }
+
+        }
+
         debug!(
             target: "sync::stages::execution",
             block_fetch = ?fetch_block_duration,
