@@ -474,10 +474,22 @@ where
                     block.header().state_root()
                 };
 
+                let validate_root = if stage_progress == 0 {
+                    alloy_trie::EMPTY_ROOT_HASH
+                } else {
+                    let block_number = stage_progress;
+                    let block = provider
+                        .recovered_block(block_number.into(), TransactionVariant::NoHash)?
+                        .ok_or_else(|| ProviderError::HeaderNotFound(block_number.into()))?;
+                    block.header().state_root()
+                };
+
                 info!(target: "sync::stages::execution",
-                    "begin update triedb, start={}, end={}, accounts={}, storages={}",
+                    "begin update triedb, start={}, end={}, parent_root={:?}, target_root={:?}, accounts={}, storages={}",
                     start_block,
                     stage_progress,
+                    root_hash,
+                    validate_root,
                     hashed_post_state.accounts.len(),
                     hashed_post_state.storages.len(),
                 );
@@ -486,14 +498,20 @@ where
                 let (new_root, difflayer) = triedb.commit_hashed_post_state(root_hash, None, &hashed_post_state)
                     .map_err(|e| StageError::Fatal(Box::new(e)))?;
 
+                if new_root != validate_root {
+                    panic!("execution update triedb, start={}, end={}, new_root({:?}) != validate_root({:?})", start_block, stage_progress, new_root, validate_root);
+                }
+
                 triedb.flush(stage_progress, new_root, &difflayer)
                     .map_err(|e| StageError::Fatal(Box::new(e)))?;
                 let merkle_time_duration = merkle_time.elapsed();
 
                 info!(target: "sync::stages::execution",
-                    "end update triedb, start={}, end={}, update_triedb_time={:?}",
+                    "end update triedb, start={}, end={}, parent_root={:?}, validate_root={:?}, update_triedb_time={:?}",
                     start_block,
                     stage_progress,
+                    root_hash,
+                    validate_root,
                     merkle_time_duration);
 
             } else {
