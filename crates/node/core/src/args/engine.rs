@@ -95,6 +95,12 @@ pub struct EngineArgs {
         default_value = "false"
     )]
     pub always_process_payload_attributes_on_canonical_head: bool,
+
+    /// Skip state root validation for fastnode mode.
+    /// This disables validation of state root hashes during live sync and also automatically
+    /// disables hashing stages for maximum sync speed at the cost of reduced validation.
+    #[arg(long = "engine.skip-state-root-validation", default_value = "false")]
+    pub skip_state_root_validation: bool,
 }
 
 #[allow(deprecated)]
@@ -118,6 +124,7 @@ impl Default for EngineArgs {
             precompile_cache_disabled: false,
             state_root_fallback: false,
             always_process_payload_attributes_on_canonical_head: false,
+            skip_state_root_validation: false,
         }
     }
 }
@@ -141,6 +148,7 @@ impl EngineArgs {
             .with_always_process_payload_attributes_on_canonical_head(
                 self.always_process_payload_attributes_on_canonical_head,
             )
+            .with_skip_state_root_validation(self.skip_state_root_validation)
     }
 }
 

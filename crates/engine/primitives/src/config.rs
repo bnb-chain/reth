@@ -95,6 +95,9 @@ pub struct TreeConfig {
     /// where immediate payload regeneration is desired despite the head not changing or moving to
     /// an ancestor.
     always_process_payload_attributes_on_canonical_head: bool,
+    /// Skip state root validation for fastnode mode.
+    /// This disables validation of state root hashes during live sync.
+    skip_state_root_validation: bool,
 }
 
 impl Default for TreeConfig {
@@ -117,6 +120,7 @@ impl Default for TreeConfig {
             precompile_cache_disabled: false,
             state_root_fallback: false,
             always_process_payload_attributes_on_canonical_head: false,
+            skip_state_root_validation: false,
         }
     }
 }
@@ -142,6 +146,7 @@ impl TreeConfig {
         precompile_cache_disabled: bool,
         state_root_fallback: bool,
         always_process_payload_attributes_on_canonical_head: bool,
+        skip_state_root_validation: bool,
     ) -> Self {
         Self {
             persistence_threshold,
@@ -161,6 +166,7 @@ impl TreeConfig {
             precompile_cache_disabled,
             state_root_fallback,
             always_process_payload_attributes_on_canonical_head,
+            skip_state_root_validation,
         }
     }
 
@@ -373,6 +379,20 @@ impl TreeConfig {
     pub const fn with_state_root_fallback(mut self, state_root_fallback: bool) -> Self {
         self.state_root_fallback = state_root_fallback;
         self
+    }
+
+    /// Setter for whether to skip state root validation.
+    pub const fn with_skip_state_root_validation(
+        mut self,
+        skip_state_root_validation: bool,
+    ) -> Self {
+        self.skip_state_root_validation = skip_state_root_validation;
+        self
+    }
+
+    /// Returns whether state root validation should be skipped.
+    pub const fn skip_state_root_validation(&self) -> bool {
+        self.skip_state_root_validation
     }
 
     /// Whether or not to use state root task
