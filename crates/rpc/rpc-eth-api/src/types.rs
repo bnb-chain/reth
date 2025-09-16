@@ -49,6 +49,9 @@ pub type RpcHeader<T> = <T as RpcTypes>::Header;
 /// Adapter for network specific error type.
 pub type RpcError<T> = <T as EthApiTypes>::Error;
 
+// /// Adapter for network specific data and receipt type.
+// pub type RpcDataAndReceipt<T> = <T as RpcTypes>::DataAndReceipt;
+
 /// Helper trait holds necessary trait bounds on [`EthApiTypes`] to implement `eth` API.
 pub trait FullEthApiTypes
 where
