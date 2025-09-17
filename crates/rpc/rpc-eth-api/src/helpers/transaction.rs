@@ -23,11 +23,11 @@ use reth_primitives_traits::{RecoveredBlock, SignedTransaction};
 use reth_rpc_convert::{transaction::RpcConvert, RpcTxReq};
 use reth_rpc_eth_types::{
     utils::binary_search, EthApiError, EthApiError::TransactionConfirmationTimeout, SignError,
-    TransactionSource,
+    TransactionDataAndReceipt, TransactionSource,
 };
 use reth_storage_api::{
-    BlockNumReader, BlockReaderIdExt, ProviderBlock, ProviderReceipt, ProviderTx, ReceiptProvider,
-    TransactionsProvider,
+    BlockIdReader, BlockNumReader, BlockReaderIdExt, ProviderBlock, ProviderReceipt, ProviderTx,
+    ReceiptProvider, TransactionsProvider,
 };
 use reth_transaction_pool::{
     AddedTransactionOutcome, PoolTransaction, TransactionOrigin, TransactionPool,
@@ -160,7 +160,7 @@ pub trait EthTransactions: LoadTransaction<Provider: BlockReaderIdExt> {
             if let Some(tx) =
                 self.pool().get_pooled_transaction_element(hash).map(|tx| tx.encoded_2718().into())
             {
-                return Ok(Some(tx))
+                return Ok(Some(tx));
             }
 
             self.spawn_blocking_io(move |ref this| {
@@ -271,11 +271,139 @@ pub trait EthTransactions: LoadTransaction<Provider: BlockReaderIdExt> {
 
                     return Ok(Some(
                         self.tx_resp_builder().fill(tx.clone().with_signer(*signer), tx_info)?,
-                    ))
+                    ));
                 }
             }
 
             Ok(None)
+        }
+    }
+
+    /// Get all transactions by [`BlockId`].
+    ///
+    /// Returns `Ok(None)` if the block does not exist.
+    #[expect(clippy::type_complexity)]
+    fn transactions_by_block_id(
+        &self,
+        block_id: BlockId,
+    ) -> impl Future<Output = Result<Option<Vec<RpcTransaction<Self::NetworkTypes>>>, Self::Error>> + Send
+    where
+        Self: LoadBlock,
+        Self::Provider: BlockIdReader,
+    {
+        async move {
+            let block_info = if let Some(block) = self.recovered_block(block_id).await? {
+                Some((block.hash(), block.number(), block.base_fee_per_gas()))
+            } else {
+                None
+            };
+
+            let block_hash = match block_id {
+                BlockId::Hash(hash) => hash.block_hash,
+                BlockId::Number(_) => {
+                    if let Some(hash) = self
+                        .provider()
+                        .block_hash_for_id(block_id)
+                        .map_err(Self::Error::from_eth_err)?
+                    {
+                        hash
+                    } else {
+                        return Ok(None);
+                    }
+                }
+            };
+
+            let transactions = EthTransactions::transactions_by_block(self, block_hash).await?;
+
+            match transactions {
+                Some(txs) => {
+                    let mut rpc_transactions = Vec::with_capacity(txs.len());
+                    for (index, tx) in txs.into_iter().enumerate() {
+                        let recovered = tx
+                            .try_into_recovered_unchecked()
+                            .map_err(|_| EthApiError::InvalidTransactionSignature)?;
+
+                        let source = match block_info {
+                            Some((block_hash, block_number, base_fee)) => {
+                                TransactionSource::Block {
+                                    transaction: recovered,
+                                    index: index as u64,
+                                    block_hash,
+                                    block_number,
+                                    base_fee,
+                                }
+                            }
+                            None => TransactionSource::Pool(recovered),
+                        };
+
+                        let rpc_tx = source.into_transaction(self.tx_resp_builder())?;
+                        rpc_transactions.push(rpc_tx);
+                    }
+                    Ok(Some(rpc_transactions))
+                }
+                None => Ok(None),
+            }
+        }
+    }
+
+    /// Get all pending transactions from the transaction pool.
+    ///
+    /// Returns `Ok(Some(Vec))` with all pending transactions converted to RPC format.
+    /// Returns `Ok(Some(Vec::new()))` if there are no pending transactions.
+    fn pending_transactions(
+        &self,
+    ) -> impl Future<Output = Result<Option<Vec<RpcTransaction<Self::NetworkTypes>>>, Self::Error>> + Send
+    {
+        async move {
+            let pending_txs = RpcNodeCore::pool(self).pending_transactions();
+            if pending_txs.is_empty() {
+                return Ok(Some(Vec::new()));
+            }
+
+            let mut rpc_transactions = Vec::with_capacity(pending_txs.len());
+            for pool_tx in pending_txs {
+                let recovered = pool_tx.transaction.clone_into_consensus();
+                let source = TransactionSource::Pool(recovered);
+                let rpc_tx = source.into_transaction(self.tx_resp_builder())?;
+                rpc_transactions.push(rpc_tx);
+            }
+
+            Ok(Some(rpc_transactions))
+        }
+    }
+
+    /// Get the transaction data and receipt for the given hash.
+    ///
+    /// Returns a structured response with `txData` and `receipt` fields.
+    /// Returns `Ok(None)` if the transaction does not exist.
+    fn transaction_data_and_receipt(
+        &self,
+        hash: B256,
+    ) -> impl Future<
+        Output = Result<
+            Option<
+                TransactionDataAndReceipt<
+                    RpcTransaction<Self::NetworkTypes>,
+                    RpcReceipt<Self::NetworkTypes>,
+                >,
+            >,
+            Self::Error,
+        >,
+    > + Send
+    where
+        Self: LoadReceipt,
+    {
+        async move {
+            let receipt = self.transaction_receipt(hash).await?;
+            let data = match LoadTransaction::transaction_by_hash(self, hash).await? {
+                Some(tx) => {
+                    let rpc_tx = tx.into_transaction(self.tx_resp_builder())?;
+                    Some(rpc_tx)
+                }
+                None => None,
+            };
+
+            Ok(Some(TransactionDataAndReceipt { tx_data: data, receipt }))
         }
     }
 
@@ -369,7 +497,7 @@ pub trait EthTransactions: LoadTransaction<Provider: BlockReaderIdExt> {
         async move {
             if let Some(block) = self.recovered_block(block_id).await? {
                 if let Some(tx) = block.body().transactions().get(index) {
-                    return Ok(Some(tx.encoded_2718().into()))
+                    return Ok(Some(tx.encoded_2718().into()));
                 }
             }
 
@@ -393,7 +521,7 @@ pub trait EthTransactions: LoadTransaction<Provider: BlockReaderIdExt> {
             };
 
             if self.find_signer(&from).is_err() {
-                return Err(SignError::NoAccount.into_eth_err())
+                return Err(SignError::NoAccount.into_eth_err());
             }
 
             // set nonce if not already set before
