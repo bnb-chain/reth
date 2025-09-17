@@ -26,7 +26,6 @@ impl<T> RpcTypes for T
 where
     T: Network<TransactionRequest: AsRef<TransactionRequest> + AsMut<TransactionRequest>> + Unpin,
 {
-    // type Header = T::HeaderResponse;
     type Header = crate::CustomRpcHeader<alloy_consensus::Header>;
     type Receipt = T::ReceiptResponse;
     type TransactionResponse = T::TransactionResponse;

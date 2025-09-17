@@ -88,18 +88,6 @@ pub trait FromConsensusHeader<T> {
     fn from_consensus_header(header: SealedHeader<T>, block_size: usize, td: Option<U256>) -> Self;
 }
 
-// impl<T: Sealable> FromConsensusHeader<T> for alloy_rpc_types_eth::Header<T> {
-//     fn from_consensus_header(header: SealedHeader<T>, block_size: usize, td: Option<U256>) -> Self {
-//         let header_hash = header.hash();
-//         Self {
-//             hash: header_hash,
-//             inner: header.into_header(),
-//             total_difficulty: td,
-//             size: Some(U256::from(block_size)),
-//         }
-//     }
-// }
-
 impl FromConsensusHeader<alloy_consensus::Header>
     for crate::CustomRpcHeader<alloy_consensus::Header>
 {
