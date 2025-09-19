@@ -55,7 +55,7 @@ use configured_sparse_trie::ConfiguredSparseTrie;
 
 // use rust_eth_triedb::triedb::TrieDB;
 use rust_eth_triedb_pathdb::PathDB;
-use rust_eth_triedb_state_trie::DiffLayer;
+use rust_eth_triedb_state_trie::DiffLayers;
 use std::thread;
 
 /// Entrypoint for executing the payload.
@@ -295,7 +295,7 @@ where
         transactions: I,
         provider_builder: StateProviderBuilder<N, P>,
         parent_root: B256,
-        difflayer: Option<Arc<DiffLayer>>,
+        difflayer: Option<DiffLayers>,
     ) -> PayloadHandle<WithTxEnv<TxEnvFor<Evm>, I::Tx>, I::Error>
     where
         P: BlockReader
@@ -329,7 +329,7 @@ where
         provider_builder: StateProviderBuilder<N, P>,
         to_multi_proof: Option<Sender<MultiProofMessage>>,
         parent_root: B256,
-        difflayer: Option<Arc<DiffLayer>>,
+        difflayer: Option<DiffLayers>,
     ) -> CacheTaskHandle
     where
         P: BlockReader

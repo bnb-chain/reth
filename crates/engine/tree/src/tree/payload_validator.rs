@@ -46,7 +46,7 @@ use reth_trie_parallel::root::{ParallelStateRoot, ParallelStateRootError};
 use std::{collections::HashMap, sync::Arc, time::Instant};
 use tracing::{debug, error, info, trace, warn};
 
-use rust_eth_triedb_state_trie::node::DiffLayer;
+use rust_eth_triedb_state_trie::node::DiffLayers;
 use rust_eth_triedb_pathdb::PathDB;
 use rust_eth_triedb::{TrieDB, get_global_triedb};
 
@@ -605,7 +605,7 @@ where
         } else {
             let (state_root, difflayer) = if let Ok(result) = self.get_triedb().commit_hashed_post_state(
                 parent_block.state_root(),
-                parent_difflayer,
+                parent_difflayer.as_ref(),
                 &hashed_state_clone) {
                 result
             } else {
@@ -865,7 +865,7 @@ where
         _persisting_kind: PersistingKind,
         parent_hash: B256,
         state: &EngineApiTreeState<N>,
-    ) -> Option<Arc<DiffLayer>> {
+    ) -> Option<DiffLayers> {
         // if !persisting_kind.is_descendant() {
         //     warn!("Not descendant, can not compute difflayer");
         // }

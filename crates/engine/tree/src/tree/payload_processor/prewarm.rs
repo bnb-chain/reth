@@ -28,7 +28,7 @@ use std::{
 use tracing::{debug, trace};
 
 use rust_eth_triedb::triedb::TrieDB;
-use rust_eth_triedb_state_trie::DiffLayer;
+use rust_eth_triedb_state_trie::DiffLayers;
 use rust_eth_triedb_pathdb::PathDB;
 use dashmap::DashSet;
 
@@ -225,7 +225,7 @@ pub(crate) struct TrieDBPrewarmTask {
     pub(super) executor: WorkloadExecutor,
     pub(super) pathdb: PathDB,
     pub(super) parent_root: B256,
-    pub(super) difflayer: Option<Arc<DiffLayer>>,
+    pub(super) difflayer: Option<DiffLayers>,
 }
 
 impl TrieDBPrewarmTask {
@@ -233,7 +233,7 @@ impl TrieDBPrewarmTask {
         executor: WorkloadExecutor,
         pathdb: PathDB,
         parent_root: B256,
-        difflayer: Option<Arc<DiffLayer>>,
+        difflayer: Option<DiffLayers>,
         max_concurrency: usize,
     ) -> (Self, Sender<PrewarmTaskEvent>) {
         let (actions_tx, actions_rx) = channel();
@@ -263,7 +263,7 @@ impl TrieDBPrewarmTask {
                     if handles.len() <= task_idx {
                         let (tx, rx) = mpsc::channel::<MultiProofTargets>();
                         let mut triedb_clone = TrieDB::new(pathdb_clone.clone());
-                        triedb_clone.state_at(parent_root, difflayer_clone.clone()).unwrap();
+                        triedb_clone.state_at(parent_root, difflayer_clone.as_ref()).unwrap();
                         let filter_clone = filter.clone();
 
                         executor.spawn_blocking(move || {
