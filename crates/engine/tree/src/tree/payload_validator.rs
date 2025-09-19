@@ -450,7 +450,7 @@ where
             txs,
             provider_builder,
             parent_block.state_root(),
-            None,
+            parent_difflayer.clone(),
         );
 
         // Use cached state provider before executing, used in execution after prewarming threads
