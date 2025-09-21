@@ -316,6 +316,11 @@ pub struct EngineArgs {
     /// If not specified, defaults to the same count as storage workers.
     #[arg(long = "engine.account-worker-count", default_value = Resettable::from(DefaultEngineValues::get_global().account_worker_count.map(|v| v.to_string().into())))]
     pub account_worker_count: Option<usize>,
+    /// Skip state root validation for fastnode mode.
+    /// This disables validation of state root hashes during live sync and also automatically
+    /// disables hashing stages for maximum sync speed at the cost of reduced validation.
+    #[arg(long = "engine.skip-state-root-validation", default_value = "false")]
+    pub skip_state_root_validation: bool,
 
     /// Enable V2 storage proofs for state root calculations
     #[arg(long = "engine.enable-proof-v2", default_value_t = DefaultEngineValues::get_global().enable_proof_v2)]
@@ -370,6 +375,7 @@ impl Default for EngineArgs {
             allow_unwind_canonical_header,
             storage_worker_count,
             account_worker_count,
+            skip_state_root_validation: false,
             enable_proof_v2,
         }
     }
@@ -396,7 +402,8 @@ impl EngineArgs {
             .with_always_process_payload_attributes_on_canonical_head(
                 self.always_process_payload_attributes_on_canonical_head,
             )
-            .with_unwind_canonical_header(self.allow_unwind_canonical_header);
+            .with_unwind_canonical_header(self.allow_unwind_canonical_header)
+            .with_skip_state_root_validation(self.skip_state_root_validation);
 
         if let Some(count) = self.storage_worker_count {
             config = config.with_storage_worker_count(count);
@@ -457,6 +464,7 @@ mod tests {
             allow_unwind_canonical_header: true,
             storage_worker_count: Some(16),
             account_worker_count: Some(8),
+            skip_state_root_validation: false,
             enable_proof_v2: false,
         };
 

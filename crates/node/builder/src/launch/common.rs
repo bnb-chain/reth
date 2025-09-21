@@ -174,6 +174,12 @@ impl LaunchContext {
         toml_config.static_files =
             config.static_files.merge_with_config(toml_config.static_files, config.pruning.minimal);
 
+        // Apply fastnode settings when skip_state_root_validation is enabled
+        if config.engine.skip_state_root_validation {
+            info!(target: "reth::cli", "Fastnode mode enabled via --engine.skip-state-root-validation - disabling hashing stages and state root validation");
+            toml_config.stages.disable_hashing_stages = true;
+        }
+
         Ok(toml_config)
     }
 

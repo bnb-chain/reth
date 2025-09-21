@@ -137,6 +137,9 @@ pub struct TreeConfig {
     account_worker_count: usize,
     /// Whether to enable V2 storage proofs.
     enable_proof_v2: bool,
+    /// Skip state root validation for fastnode mode.
+    /// This disables validation of state root hashes during live sync.
+    skip_state_root_validation: bool,
 }
 
 impl Default for TreeConfig {
@@ -166,6 +169,7 @@ impl Default for TreeConfig {
             storage_worker_count: default_storage_worker_count(),
             account_worker_count: default_account_worker_count(),
             enable_proof_v2: false,
+            skip_state_root_validation: false,
         }
     }
 }
@@ -198,6 +202,7 @@ impl TreeConfig {
         storage_worker_count: usize,
         account_worker_count: usize,
         enable_proof_v2: bool,
+        skip_state_root_validation: bool,
     ) -> Self {
         Self {
             persistence_threshold,
@@ -224,6 +229,7 @@ impl TreeConfig {
             storage_worker_count,
             account_worker_count,
             enable_proof_v2,
+            skip_state_root_validation,
         }
     }
 
@@ -466,6 +472,20 @@ impl TreeConfig {
     pub const fn with_unwind_canonical_header(mut self, unwind_canonical_header: bool) -> Self {
         self.allow_unwind_canonical_header = unwind_canonical_header;
         self
+    }
+
+    /// Setter for whether to skip state root validation.
+    pub const fn with_skip_state_root_validation(
+        mut self,
+        skip_state_root_validation: bool,
+    ) -> Self {
+        self.skip_state_root_validation = skip_state_root_validation;
+        self
+    }
+
+    /// Returns whether state root validation should be skipped.
+    pub const fn skip_state_root_validation(&self) -> bool {
+        self.skip_state_root_validation
     }
 
     /// Whether or not to use state root task

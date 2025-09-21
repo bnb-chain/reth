@@ -500,82 +500,116 @@ where
             block
         );
 
-        let root_time = Instant::now();
-        let mut maybe_state_root = None;
+        let (state_root, trie_output) = if self.config.skip_state_root_validation() {
+            debug!(
+                target: "engine::tree::payload_validator",
+                "Skipping state root calculation in fastnode mode"
+            );
+            // Use the state root from the block header directly without validation
+            (block.header().state_root(), TrieUpdates::default())
+        } else {
+            let root_time = Instant::now();
+            let mut maybe_state_root = None;
 
-        match strategy {
-            StateRootStrategy::StateRootTask => {
-                debug!(target: "engine::tree::payload_validator", "Using sparse trie state root algorithm");
-                match handle.state_root() {
-                    Ok(StateRootComputeOutcome { state_root, trie_updates }) => {
-                        let elapsed = root_time.elapsed();
-                        info!(target: "engine::tree::payload_validator", ?state_root, ?elapsed, "State root task finished");
-                        // we double check the state root here for good measure
-                        if state_root == block.header().state_root() {
-                            maybe_state_root = Some((state_root, trie_updates, elapsed))
-                        } else {
-                            warn!(
+            match strategy {
+                StateRootStrategy::StateRootTask => {
+                    debug!(target: "engine::tree::payload_validator", "Using sparse trie state root algorithm");
+                    match handle.state_root() {
+                        Ok(StateRootComputeOutcome { state_root, trie_updates }) => {
+                            let elapsed = root_time.elapsed();
+                            info!(target: "engine::tree::payload_validator", ?state_root, ?elapsed, "State root task finished");
+                            // we double check the state root here for good measure
+                            if state_root == block.header().state_root() {
+                                maybe_state_root = Some((state_root, trie_updates, elapsed))
+                            } else {
+                                warn!(
+                                    target: "engine::tree::payload_validator",
+                                    ?state_root,
+                                    block_state_root = ?block.header().state_root(),
+                                    "State root task returned incorrect state root"
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            debug!(
                                 target: "engine::tree::payload_validator",
-                                ?state_root,
-                                block_state_root = ?block.header().state_root(),
-                                "State root task returned incorrect state root"
+                                %error,
+                                "State root task failed"
                             );
                         }
                     }
-                    Err(error) => {
-                        debug!(target: "engine::tree::payload_validator", %error, "State root task failed");
+                }
+                StateRootStrategy::Parallel => {
+                    debug!(target: "engine::tree::payload_validator", "Using parallel state root algorithm");
+                    match self.compute_state_root_parallel(overlay_factory.clone(), &hashed_state) {
+                        Ok(result) => {
+                            let elapsed = root_time.elapsed();
+                            info!(
+                                target: "engine::tree::payload_validator",
+                                regular_state_root = ?result.0,
+                                ?elapsed,
+                                "Regular root task finished"
+                            );
+                            maybe_state_root = Some((result.0, result.1, elapsed));
+                        }
+                        Err(error) => {
+                            debug!(
+                                target: "engine::tree::payload_validator",
+                                %error,
+                                "Parallel state root computation failed"
+                            );
+                        }
                     }
                 }
+                StateRootStrategy::Synchronous => {}
             }
-            StateRootStrategy::Parallel => {
-                debug!(target: "engine::tree::payload_validator", "Using parallel state root algorithm");
-                match self.compute_state_root_parallel(overlay_factory.clone(), &hashed_state) {
-                    Ok(result) => {
-                        let elapsed = root_time.elapsed();
-                        info!(
-                            target: "engine::tree::payload_validator",
-                            regular_state_root = ?result.0,
-                            ?elapsed,
-                            "Regular root task finished"
-                        );
-                        maybe_state_root = Some((result.0, result.1, elapsed));
-                    }
-                    Err(error) => {
-                        debug!(target: "engine::tree::payload_validator", %error, "Parallel state root computation failed");
-                    }
-                }
-            }
-            StateRootStrategy::Synchronous => {}
-        }
 
-        // Determine the state root.
-        // If the state root was computed in parallel, we use it.
-        // Otherwise, we fall back to computing it synchronously.
-        let (state_root, trie_output, root_elapsed) = if let Some(maybe_state_root) =
-            maybe_state_root
-        {
-            maybe_state_root
-        } else {
-            // fallback is to compute the state root regularly in sync
-            if self.config.state_root_fallback() {
-                debug!(target: "engine::tree::payload_validator", "Using state root fallback for testing");
+            // Determine the state root.
+            // If the state root was computed in parallel, we use it.
+            // Otherwise, we fall back to computing it synchronously.
+            let (state_root, trie_output, root_elapsed) = if let Some(maybe_state_root) =
+                maybe_state_root
+            {
+                maybe_state_root
             } else {
-                warn!(target: "engine::tree::payload_validator", "Failed to compute state root in parallel");
-                self.metrics.block_validation.state_root_parallel_fallback_total.increment(1);
-            }
+                // fallback is to compute the state root regularly in sync
+                if self.config.state_root_fallback() {
+                    debug!(
+                        target: "engine::tree::payload_validator",
+                        "Using state root fallback for testing"
+                    );
+                } else {
+                    warn!(
+                        target: "engine::tree::payload_validator",
+                        "Failed to compute state root in parallel"
+                    );
+                    self.metrics
+                        .block_validation
+                        .state_root_parallel_fallback_total
+                        .increment(1);
+                }
 
-            let (root, updates) = ensure_ok_post_block!(
-                self.compute_state_root_serial(overlay_factory.clone(), &hashed_state),
-                block
+                let (root, updates) = ensure_ok_post_block!(
+                    self.compute_state_root_serial(overlay_factory.clone(), &hashed_state),
+                    block
+                );
+                (root, updates, root_time.elapsed())
+            };
+
+            self.metrics
+                .block_validation
+                .record_state_root(&trie_output, root_elapsed.as_secs_f64());
+            debug!(
+                target: "engine::tree::payload_validator",
+                ?root_elapsed,
+                "Calculated state root"
             );
-            (root, updates, root_time.elapsed())
+
+            (state_root, trie_output)
         };
 
-        self.metrics.block_validation.record_state_root(&trie_output, root_elapsed.as_secs_f64());
-        debug!(target: "engine::tree::payload_validator", ?root_elapsed, "Calculated state root");
-
-        // ensure state root matches
-        if state_root != block.header().state_root() {
+        // ensure state root matches (validation already skipped in fastnode mode)
+        if !self.config.skip_state_root_validation() && state_root != block.header().state_root() {
             // call post-block hook
             self.on_invalid_block(
                 &parent_block,
@@ -970,7 +1004,7 @@ where
     /// Note: Use state root task only if prefix sets are empty, otherwise proof generation is
     /// too expensive because it requires walking all paths in every proof.
     const fn plan_state_root_computation(&self) -> StateRootStrategy {
-        if self.config.state_root_fallback() {
+        if self.config.skip_state_root_validation() || self.config.state_root_fallback() {
             StateRootStrategy::Synchronous
         } else if self.config.use_state_root_task() {
             StateRootStrategy::StateRootTask
