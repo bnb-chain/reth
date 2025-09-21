@@ -127,6 +127,8 @@ pub struct StageConfig {
     pub index_storage_history: IndexHistoryConfig,
     /// Common ETL related configuration.
     pub etl: EtlConfig,
+    /// Disable hashing stages for fastnode mode.
+    pub disable_hashing_stages: bool,
 }
 
 impl StageConfig {

@@ -114,6 +114,11 @@ pub struct EngineArgs {
     /// If not specified, defaults to the same count as storage workers.
     #[arg(long = "engine.account-worker-count")]
     pub account_worker_count: Option<usize>,
+    /// Skip state root validation for fastnode mode.
+    /// This disables validation of state root hashes during live sync and also automatically
+    /// disables hashing stages for maximum sync speed at the cost of reduced validation.
+    #[arg(long = "engine.skip-state-root-validation", default_value = "false")]
+    pub skip_state_root_validation: bool,
 }
 
 #[allow(deprecated)]
@@ -141,6 +146,7 @@ impl Default for EngineArgs {
             allow_unwind_canonical_header: false,
             storage_worker_count: None,
             account_worker_count: None,
+            skip_state_root_validation: false,
         }
     }
 }
@@ -165,7 +171,8 @@ impl EngineArgs {
             .with_always_process_payload_attributes_on_canonical_head(
                 self.always_process_payload_attributes_on_canonical_head,
             )
-            .with_unwind_canonical_header(self.allow_unwind_canonical_header);
+            .with_unwind_canonical_header(self.allow_unwind_canonical_header)
+            .with_skip_state_root_validation(self.skip_state_root_validation);
 
         if let Some(count) = self.storage_worker_count {
             config = config.with_storage_worker_count(count);
