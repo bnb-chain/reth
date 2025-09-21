@@ -796,127 +796,131 @@ where
             block
         );
 
-        let root_time = Instant::now();
-        let mut maybe_state_root = None;
-        let mut state_root_task_failed = false;
         #[cfg(feature = "trie-debug")]
         let mut trie_debug_recorders = Vec::new();
 
-        match strategy {
-            StateRootStrategy::StateRootTask => {
-                debug!(target: "engine::tree::payload_validator", "Using sparse trie state root algorithm");
+        let (state_root, trie_output, root_elapsed) = if self.config.skip_state_root_validation() {
+            debug!(target: "engine::tree::payload_validator", "Skipping state root calculation in fastnode mode");
+            (block.header().state_root(), Arc::new(TrieUpdates::default()), std::time::Duration::ZERO)
+        } else {
+            let root_time = Instant::now();
+            let mut maybe_state_root = None;
+            let mut state_root_task_failed = false;
 
-                let task_result = ensure_ok_post_block!(
-                    self.await_state_root_with_timeout(
-                        &mut handle,
-                        overlay_factory.clone(),
-                        &hashed_state,
-                    ),
-                    block
-                );
+            match strategy {
+                StateRootStrategy::StateRootTask => {
+                    debug!(target: "engine::tree::payload_validator", "Using sparse trie state root algorithm");
 
-                match task_result {
-                    Ok(StateRootComputeOutcome {
-                        state_root,
-                        trie_updates,
-                        #[cfg(feature = "trie-debug")]
-                        debug_recorders,
-                    }) => {
-                        let elapsed = root_time.elapsed();
-                        info!(target: "engine::tree::payload_validator", ?state_root, ?elapsed, "State root task finished");
+                    let task_result = ensure_ok_post_block!(
+                        self.await_state_root_with_timeout(
+                            &mut handle,
+                            overlay_factory.clone(),
+                            &hashed_state,
+                        ),
+                        block
+                    );
 
-                        #[cfg(feature = "trie-debug")]
-                        {
-                            trie_debug_recorders = debug_recorders;
-                        }
-
-                        // Compare trie updates with serial computation if configured
-                        if self.config.always_compare_trie_updates() {
-                            let _has_diff = self.compare_trie_updates_with_serial(
-                                overlay_factory.clone(),
-                                &hashed_state,
-                                trie_updates.as_ref().clone(),
-                            );
+                    match task_result {
+                        Ok(StateRootComputeOutcome {
+                            state_root,
+                            trie_updates,
                             #[cfg(feature = "trie-debug")]
-                            if _has_diff {
+                            debug_recorders,
+                        }) => {
+                            let elapsed = root_time.elapsed();
+                            info!(target: "engine::tree::payload_validator", ?state_root, ?elapsed, "State root task finished");
+
+                            #[cfg(feature = "trie-debug")]
+                            {
+                                trie_debug_recorders = debug_recorders;
+                            }
+
+                            // Compare trie updates with serial computation if configured
+                            if self.config.always_compare_trie_updates() {
+                                let _has_diff = self.compare_trie_updates_with_serial(
+                                    overlay_factory.clone(),
+                                    &hashed_state,
+                                    trie_updates.as_ref().clone(),
+                                );
+                                #[cfg(feature = "trie-debug")]
+                                if _has_diff {
+                                    Self::write_trie_debug_recorders(
+                                        block.header().number(),
+                                        &trie_debug_recorders,
+                                    );
+                                }
+                            }
+
+                            // we double check the state root here for good measure
+                            if state_root == block.header().state_root() {
+                                maybe_state_root = Some((state_root, trie_updates, elapsed))
+                            } else {
+                                warn!(
+                                    target: "engine::tree::payload_validator",
+                                    ?state_root,
+                                    block_state_root = ?block.header().state_root(),
+                                    "State root task returned incorrect state root"
+                                );
+                                #[cfg(feature = "trie-debug")]
                                 Self::write_trie_debug_recorders(
                                     block.header().number(),
                                     &trie_debug_recorders,
                                 );
+                                state_root_task_failed = true;
                             }
                         }
-
-                        // we double check the state root here for good measure
-                        if state_root == block.header().state_root() {
-                            maybe_state_root = Some((state_root, trie_updates, elapsed))
-                        } else {
-                            warn!(
-                                target: "engine::tree::payload_validator",
-                                ?state_root,
-                                block_state_root = ?block.header().state_root(),
-                                "State root task returned incorrect state root"
-                            );
-                            #[cfg(feature = "trie-debug")]
-                            Self::write_trie_debug_recorders(
-                                block.header().number(),
-                                &trie_debug_recorders,
-                            );
+                        Err(error) => {
+                            debug!(target: "engine::tree::payload_validator", %error, "State root task failed");
                             state_root_task_failed = true;
                         }
                     }
-                    Err(error) => {
-                        debug!(target: "engine::tree::payload_validator", %error, "State root task failed");
-                        state_root_task_failed = true;
+                }
+                StateRootStrategy::Parallel => {
+                    debug!(target: "engine::tree::payload_validator", "Using parallel state root algorithm");
+                    match self.compute_state_root_parallel(overlay_factory.clone(), &hashed_state) {
+                        Ok(result) => {
+                            let elapsed = root_time.elapsed();
+                            info!(
+                                target: "engine::tree::payload_validator",
+                                regular_state_root = ?result.0,
+                                ?elapsed,
+                                "Regular root task finished"
+                            );
+                            maybe_state_root = Some((result.0, Arc::new(result.1), elapsed));
+                        }
+                        Err(error) => {
+                            debug!(target: "engine::tree::payload_validator", %error, "Parallel state root computation failed");
+                        }
                     }
                 }
+                StateRootStrategy::Synchronous => {}
             }
-            StateRootStrategy::Parallel => {
-                debug!(target: "engine::tree::payload_validator", "Using parallel state root algorithm");
-                match self.compute_state_root_parallel(overlay_factory.clone(), &hashed_state) {
-                    Ok(result) => {
-                        let elapsed = root_time.elapsed();
-                        info!(
-                            target: "engine::tree::payload_validator",
-                            regular_state_root = ?result.0,
-                            ?elapsed,
-                            "Regular root task finished"
-                        );
-                        maybe_state_root = Some((result.0, Arc::new(result.1), elapsed));
-                    }
-                    Err(error) => {
-                        debug!(target: "engine::tree::payload_validator", %error, "Parallel state root computation failed");
-                    }
-                }
-            }
-            StateRootStrategy::Synchronous => {}
-        }
 
-        // Determine the state root.
-        // If the state root was computed in parallel, we use it.
-        // Otherwise, we fall back to computing it synchronously.
-        let (state_root, trie_output, root_elapsed) = if let Some(maybe_state_root) =
-            maybe_state_root
-        {
-            maybe_state_root
-        } else {
-            // fallback is to compute the state root regularly in sync
-            if self.config.state_root_fallback() {
-                debug!(target: "engine::tree::payload_validator", "Using state root fallback for testing");
+            // Determine the state root.
+            // If the state root was computed in parallel, we use it.
+            // Otherwise, we fall back to computing it synchronously.
+            if let Some(maybe_state_root) = maybe_state_root {
+                maybe_state_root
             } else {
-                warn!(target: "engine::tree::payload_validator", "Failed to compute state root in parallel");
-                self.metrics.block_validation.state_root_parallel_fallback_total.increment(1);
+                // fallback is to compute the state root regularly in sync
+                if self.config.state_root_fallback() {
+                    debug!(target: "engine::tree::payload_validator", "Using state root fallback for testing");
+                } else {
+                    warn!(target: "engine::tree::payload_validator", "Failed to compute state root in parallel");
+                    self.metrics.block_validation.state_root_parallel_fallback_total.increment(1);
+                }
+
+                let (root, updates) = ensure_ok_post_block!(
+                    Self::compute_state_root_serial(overlay_factory.clone(), &hashed_state),
+                    block
+                );
+
+                if state_root_task_failed {
+                    self.metrics.block_validation.state_root_task_fallback_success_total.increment(1);
+                }
+
+                (root, Arc::new(updates), root_time.elapsed())
             }
-
-            let (root, updates) = ensure_ok_post_block!(
-                Self::compute_state_root_serial(overlay_factory.clone(), &hashed_state),
-                block
-            );
-
-            if state_root_task_failed {
-                self.metrics.block_validation.state_root_task_fallback_success_total.increment(1);
-            }
-
-            (root, Arc::new(updates), root_time.elapsed())
         };
 
         self.metrics.block_validation.record_state_root(&trie_output, root_elapsed.as_secs_f64());
@@ -925,7 +929,7 @@ where
         debug!(target: "engine::tree::payload_validator", ?root_elapsed, "Calculated state root");
 
         // ensure state root matches
-        if state_root != block.header().state_root() {
+        if !self.config.skip_state_root_validation() && state_root != block.header().state_root() {
             #[cfg(feature = "trie-debug")]
             Self::write_trie_debug_recorders(block.header().number(), &trie_debug_recorders);
 
@@ -1671,7 +1675,7 @@ where
     /// Note: Use state root task only if prefix sets are empty, otherwise proof generation is
     /// too expensive because it requires walking all paths in every proof.
     const fn plan_state_root_computation(&self) -> StateRootStrategy {
-        if self.config.state_root_fallback() {
+        if self.config.skip_state_root_validation() || self.config.state_root_fallback() {
             StateRootStrategy::Synchronous
         } else if self.config.use_state_root_task() {
             StateRootStrategy::StateRootTask
