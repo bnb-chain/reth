@@ -112,6 +112,12 @@ impl<N: NodeTypesWithDB> ProviderFactory<N> {
     pub fn into_db(self) -> N::DB {
         self.db
     }
+
+    /// Returns true if the database is active eth triedb
+    /// TODO:: active by cli flag and persist to database
+    pub fn is_active_eth_triedb(&self) -> bool {
+        true
+    }
 }
 
 impl<N: NodeTypesWithDB<DB = Arc<DatabaseEnv>>> ProviderFactory<N> {

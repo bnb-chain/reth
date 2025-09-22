@@ -3187,6 +3187,10 @@ impl<TX: DbTx + 'static, N: NodeTypes + 'static> DBProvider for DatabaseProvider
     fn prune_modes_ref(&self) -> &PruneModes {
         self.prune_modes_ref()
     }
+
+    fn is_active_eth_triedb(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]

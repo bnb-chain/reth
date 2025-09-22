@@ -294,6 +294,10 @@ impl<T: NodePrimitives, ChainSpec: EthChainSpec + 'static> DBProvider
     fn prune_modes_ref(&self) -> &PruneModes {
         &self.prune_modes
     }
+
+    fn is_active_eth_triedb(&self) -> bool {
+        panic!("MockEthProvider does not support eth triedb");
+    }
 }
 
 impl<T: NodePrimitives, ChainSpec: EthChainSpec + Send + Sync + 'static> HeaderProvider
