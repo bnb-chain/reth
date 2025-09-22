@@ -10203,6 +10203,7 @@ dependencies = [
  "reth-primitives-traits",
  "reth-storage-api",
  "revm-context",
+ "serde",
  "serde_json",
  "thiserror 2.0.17",
 ]

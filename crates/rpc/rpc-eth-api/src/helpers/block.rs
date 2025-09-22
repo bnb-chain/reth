@@ -62,7 +62,7 @@ pub trait EthBlocks:
             let block = block.clone_into_rpc_block(
                 full.into(),
                 |tx, tx_info| self.tx_resp_builder().fill(tx, tx_info),
-                |header, size| self.tx_resp_builder().convert_header(header, size),
+                |header, size| self.tx_resp_builder().convert_header(header, size, None),
             )?;
             Ok(Some(block))
         }
@@ -259,7 +259,7 @@ pub trait EthBlocks:
                     let size = block.length();
                     let header = self
                         .tx_resp_builder()
-                        .convert_header(SealedHeader::new_unhashed(block.header), size)?;
+                        .convert_header(SealedHeader::new_unhashed(block.header), size, None)?;
                     Ok(Block {
                         uncles: vec![],
                         header,

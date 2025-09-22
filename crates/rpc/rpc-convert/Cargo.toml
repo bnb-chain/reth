@@ -45,12 +45,17 @@ thiserror.workspace = true
 auto_impl.workspace = true
 dyn-clone.workspace = true
 
+# serialization
+serde = { workspace = true, features = ["derive"], optional = true }
+
 [dev-dependencies]
 serde_json.workspace = true
 
 [features]
-default = []
+default = ["serde"]
+serde = ["dep:serde"]
 op = [
+    "dep:serde",
     "dep:op-alloy-consensus",
     "dep:op-alloy-rpc-types",
     "dep:op-alloy-network",
