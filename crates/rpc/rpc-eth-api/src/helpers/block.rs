@@ -60,7 +60,7 @@ pub trait EthBlocks: LoadBlock<RpcConvert: RpcConvert<Primitives = Self::Primiti
             let block = block.clone_into_rpc_block(
                 full.into(),
                 |tx, tx_info| self.converter().fill(tx, tx_info),
-                |header, size| self.converter().convert_header(header, size),
+                |header, size| self.converter().convert_header(header, size, None),
             )?;
             Ok(Some(block))
         }
@@ -261,7 +261,7 @@ pub trait EthBlocks: LoadBlock<RpcConvert: RpcConvert<Primitives = Self::Primiti
                     let size = block.length();
                     let header = self
                         .converter()
-                        .convert_header(SealedHeader::new_unhashed(block.header), size)?;
+                        .convert_header(SealedHeader::new_unhashed(block.header), size, None)?;
                     Ok(Block {
                         uncles: vec![],
                         header,

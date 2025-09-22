@@ -11,11 +11,15 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod block;
+pub mod custom_header;
 pub mod receipt;
 mod rpc;
 pub mod transaction;
 
 pub use block::TryFromBlockResponse;
+pub use custom_header::{
+    calculate_millisecond_timestamp, CustomHeaderConverter, CustomRpcHeader, EthereumCustomHeader,
+};
 pub use receipt::TryFromReceiptResponse;
 pub use rpc::*;
 pub use transaction::{
