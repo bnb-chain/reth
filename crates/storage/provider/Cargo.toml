@@ -41,6 +41,10 @@ alloy-consensus.workspace = true
 revm-database.workspace = true
 revm-state = { workspace = true, optional = true }
 
+# rust-eth-triedb
+rust-eth-triedb.workspace = true
+rust-eth-triedb-pathdb.workspace = true
+
 # tracing
 tracing.workspace = true
 

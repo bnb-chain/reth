@@ -51,6 +51,8 @@ mod metrics;
 mod chain;
 pub use chain::*;
 
+use rust_eth_triedb::init_global_manager;
+
 /// A common provider that fetches data from a database or static file.
 ///
 /// This provider implements most provider or provider factory traits.
@@ -81,6 +83,9 @@ impl<N: NodeTypesWithDB> ProviderFactory<N> {
         chain_spec: Arc<N::ChainSpec>,
         static_file_provider: StaticFileProvider<N::Primitives>,
     ) -> Self {
+
+        init_global_manager();
+
         Self {
             db,
             chain_spec,
@@ -129,6 +134,9 @@ impl<N: NodeTypesWithDB<DB = Arc<DatabaseEnv>>> ProviderFactory<N> {
         args: DatabaseArguments,
         static_file_provider: StaticFileProvider<N::Primitives>,
     ) -> RethResult<Self> {
+
+        init_global_manager();
+
         Ok(Self {
             db: Arc::new(init_db(path, args).map_err(RethError::msg)?),
             chain_spec,

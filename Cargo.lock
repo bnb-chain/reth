@@ -1594,6 +1594,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "bindgen"
+version = "0.72.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "993776b509cfb49c750f11b8f07a46fa23e0a1386ffc01fb1e7d343efc387895"
+dependencies = [
+ "bitflags 2.9.1",
+ "cexpr",
+ "clang-sys",
+ "itertools 0.13.0",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "rustc-hash 2.1.1",
+ "shlex",
+ "syn 2.0.104",
+]
+
+[[package]]
 name = "bit-set"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1933,6 +1951,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d71b6127be86fdcfddb610f7182ac57211d4b18a3e9c82eb2d17662f2227ad6a"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "bzip2-sys"
+version = "0.1.13+1.0.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "225bff33b2141874fe80d71e07d6eec4f85c5c216453dd96388240f96e1acc14"
+dependencies = [
+ "cc",
+ "pkg-config",
 ]
 
 [[package]]
@@ -2286,7 +2314,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "117725a109d387c937a1533ce01b450cbde6b88abceea8473c4d7a85853cda3c"
 dependencies = [
  "lazy_static",
- "windows-sys 0.48.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3184,7 +3212,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "778e2ac28f6c47af28e4907f13ffd1e1ddbd400980a9abd7c8df189bf578a5ad"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4462,7 +4490,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.57.0",
+ "windows-core 0.61.2",
 ]
 
 [[package]]
@@ -4918,7 +4946,7 @@ checksum = "e04d7f318608d35d4b61ddd75cbdaee86b023ebe2bd5a66ee0915f0bf93095a9"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5274,7 +5302,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "07033963ba89ebaf1584d767badaa2e8fcec21aedea6b8c0346d487d49c28667"
 dependencies = [
  "cfg-if",
- "windows-targets 0.48.5",
+ "windows-targets 0.53.3",
 ]
 
 [[package]]
@@ -5308,7 +5336,7 @@ version = "0.14.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e78a09b56be5adbcad5aa1197371688dc6bb249a26da3bca2011ee2fb987ebfb"
 dependencies = [
- "bindgen",
+ "bindgen 0.70.1",
  "errno",
  "libc",
 ]
@@ -5322,6 +5350,23 @@ dependencies = [
  "bitflags 2.9.1",
  "libc",
  "redox_syscall",
+]
+
+[[package]]
+name = "librocksdb-sys"
+version = "0.17.3+10.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cef2a00ee60fe526157c9023edab23943fae1ce2ab6f4abb2a807c1746835de9"
+dependencies = [
+ "bindgen 0.72.1",
+ "bzip2-sys",
+ "cc",
+ "libc",
+ "libz-sys",
+ "lz4-sys",
+ "pkg-config",
+ "tikv-jemalloc-sys",
+ "zstd-sys",
 ]
 
 [[package]]
@@ -6820,7 +6865,7 @@ dependencies = [
  "once_cell",
  "socket2 0.5.10",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -8623,7 +8668,7 @@ dependencies = [
 name = "reth-mdbx-sys"
 version = "1.6.0"
 dependencies = [
- "bindgen",
+ "bindgen 0.70.1",
  "cc",
 ]
 
@@ -9690,6 +9735,8 @@ dependencies = [
  "revm-database",
  "revm-database-interface",
  "revm-state",
+ "rust-eth-triedb",
+ "rust-eth-triedb-pathdb",
  "strum 0.27.2",
  "tempfile",
  "tokio",
@@ -11060,6 +11107,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rocksdb"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ddb7af00d2b17dbd07d82c0063e25411959748ff03e8d4f96134c2ff41fce34f"
+dependencies = [
+ "libc",
+ "librocksdb-sys",
+]
+
+[[package]]
 name = "rolling-file"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11151,6 +11208,77 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48fd7bd8a6377e15ad9d42a8ec25371b94ddc67abe7c8b9127bec79bebaaae18"
 
 [[package]]
+name = "rust-eth-triedb"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-trie",
+ "metrics",
+ "once_cell",
+ "rayon",
+ "reth-metrics",
+ "reth-trie-common",
+ "rust-eth-triedb-common",
+ "rust-eth-triedb-pathdb",
+ "rust-eth-triedb-state-trie",
+ "serde",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "rust-eth-triedb-common"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "auto_impl",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "rust-eth-triedb-memorydb"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "auto_impl",
+ "parking_lot",
+ "rust-eth-triedb-common",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "rust-eth-triedb-pathdb"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "metrics",
+ "reth-metrics",
+ "rocksdb",
+ "rust-eth-triedb-common",
+ "schnellru",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tracing",
+]
+
+[[package]]
+name = "rust-eth-triedb-state-trie"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-rlp",
+ "alloy-trie",
+ "auto_impl",
+ "hex",
+ "rand 0.8.5",
+ "rayon",
+ "rust-eth-triedb-common",
+ "rust-eth-triedb-memorydb",
+ "rust-eth-triedb-pathdb",
+ "thiserror 1.0.69",
+ "tracing",
+]
+
+[[package]]
 name = "rustc-demangle"
 version = "0.1.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11205,7 +11333,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -11218,7 +11346,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.9.4",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -11276,7 +11404,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs 0.26.11",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -12075,7 +12203,7 @@ dependencies = [
  "getrandom 0.3.3",
  "once_cell",
  "rustix 1.0.8",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -12722,7 +12850,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "319c70195101a93f56db4c74733e272d720768e13471f400c78406a326b172b0"
 dependencies = [
  "cc",
- "windows-targets 0.48.5",
+ "windows-targets 0.52.6",
 ]
 
 [[package]]
@@ -13268,7 +13396,7 @@ version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf221c93e13a30d793f7645a0e7762c55d169dbb0a49671918a2319d289b10bb"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
