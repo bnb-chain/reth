@@ -2294,51 +2294,52 @@ impl<TX: DbTxMut + DbTx + 'static, N: NodeTypesForProvider> StateWriter
 
 impl<TX: DbTxMut + DbTx + 'static, N: NodeTypes> TrieWriter for DatabaseProvider<TX, N> {
     /// Writes trie updates. Returns the number of entries modified.
-    fn write_trie_updates(&self, trie_updates: &TrieUpdates) -> ProviderResult<usize> {
-        if trie_updates.is_empty() {
-            return Ok(0)
-        }
+    fn write_trie_updates(&self, _trie_updates: &TrieUpdates) -> ProviderResult<usize> {
+        panic!("write_account_trie_updates is forbidden");
+        // if trie_updates.is_empty() {
+        //     return Ok(0)
+        // }
 
-        // Track the number of inserted entries.
-        let mut num_entries = 0;
+        // // Track the number of inserted entries.
+        // let mut num_entries = 0;
 
-        // Merge updated and removed nodes. Updated nodes must take precedence.
-        let mut account_updates = trie_updates
-            .removed_nodes_ref()
-            .iter()
-            .filter_map(|n| {
-                (!trie_updates.account_nodes_ref().contains_key(n)).then_some((n, None))
-            })
-            .collect::<Vec<_>>();
-        account_updates.extend(
-            trie_updates.account_nodes_ref().iter().map(|(nibbles, node)| (nibbles, Some(node))),
-        );
-        // Sort trie node updates.
-        account_updates.sort_unstable_by(|a, b| a.0.cmp(b.0));
+        // // Merge updated and removed nodes. Updated nodes must take precedence.
+        // let mut account_updates = trie_updates
+        //     .removed_nodes_ref()
+        //     .iter()
+        //     .filter_map(|n| {
+        //         (!trie_updates.account_nodes_ref().contains_key(n)).then_some((n, None))
+        //     })
+        //     .collect::<Vec<_>>();
+        // account_updates.extend(
+        //     trie_updates.account_nodes_ref().iter().map(|(nibbles, node)| (nibbles, Some(node))),
+        // );
+        // // Sort trie node updates.
+        // account_updates.sort_unstable_by(|a, b| a.0.cmp(b.0));
 
-        let tx = self.tx_ref();
-        let mut account_trie_cursor = tx.cursor_write::<tables::AccountsTrie>()?;
-        for (key, updated_node) in account_updates {
-            let nibbles = StoredNibbles(*key);
-            match updated_node {
-                Some(node) => {
-                    if !nibbles.0.is_empty() {
-                        num_entries += 1;
-                        account_trie_cursor.upsert(nibbles, node)?;
-                    }
-                }
-                None => {
-                    num_entries += 1;
-                    if account_trie_cursor.seek_exact(nibbles)?.is_some() {
-                        account_trie_cursor.delete_current()?;
-                    }
-                }
-            }
-        }
+        // let tx = self.tx_ref();
+        // let mut account_trie_cursor = tx.cursor_write::<tables::AccountsTrie>()?;
+        // for (key, updated_node) in account_updates {
+        //     let nibbles = StoredNibbles(*key);
+        //     match updated_node {
+        //         Some(node) => {
+        //             if !nibbles.0.is_empty() {
+        //                 num_entries += 1;
+        //                 account_trie_cursor.upsert(nibbles, node)?;
+        //             }
+        //         }
+        //         None => {
+        //             num_entries += 1;
+        //             if account_trie_cursor.seek_exact(nibbles)?.is_some() {
+        //                 account_trie_cursor.delete_current()?;
+        //             }
+        //         }
+        //     }
+        // }
 
-        num_entries += self.write_storage_trie_updates(trie_updates.storage_tries_ref())?;
+        // num_entries += self.write_storage_trie_updates(trie_updates.storage_tries_ref())?;
 
-        Ok(num_entries)
+        // Ok(num_entries)
     }
 }
 
@@ -2347,21 +2348,22 @@ impl<TX: DbTxMut + DbTx + 'static, N: NodeTypes> StorageTrieWriter for DatabaseP
     /// updates by the hashed address, writing in sorted order.
     fn write_storage_trie_updates(
         &self,
-        storage_tries: &B256Map<StorageTrieUpdates>,
+        _storage_tries: &B256Map<StorageTrieUpdates>,
     ) -> ProviderResult<usize> {
-        let mut num_entries = 0;
-        let mut storage_tries = Vec::from_iter(storage_tries);
-        storage_tries.sort_unstable_by(|a, b| a.0.cmp(b.0));
-        let mut cursor = self.tx_ref().cursor_dup_write::<tables::StoragesTrie>()?;
-        for (hashed_address, storage_trie_updates) in storage_tries {
-            let mut db_storage_trie_cursor =
-                DatabaseStorageTrieCursor::new(cursor, *hashed_address);
-            num_entries +=
-                db_storage_trie_cursor.write_storage_trie_updates(storage_trie_updates)?;
-            cursor = db_storage_trie_cursor.cursor;
-        }
+        panic!("write_storage_trie_updates is forbidden");
+        // let mut num_entries = 0;
+        // let mut storage_tries = Vec::from_iter(storage_tries);
+        // storage_tries.sort_unstable_by(|a, b| a.0.cmp(b.0));
+        // let mut cursor = self.tx_ref().cursor_dup_write::<tables::StoragesTrie>()?;
+        // for (hashed_address, storage_trie_updates) in storage_tries {
+        //     let mut db_storage_trie_cursor =
+        //         DatabaseStorageTrieCursor::new(cursor, *hashed_address);
+        //     num_entries +=
+        //         db_storage_trie_cursor.write_storage_trie_updates(storage_trie_updates)?;
+        //     cursor = db_storage_trie_cursor.cursor;
+        // }
 
-        Ok(num_entries)
+        // Ok(num_entries)
     }
 
     fn write_individual_storage_trie_updates(

@@ -42,9 +42,13 @@ reth-trie-db = { workspace = true, features = ["metrics"] }
 
 reth-testing-utils = { workspace = true, optional = true }
 
+# rust-eth-triedb
+rust-eth-triedb.workspace = true
+
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
 alloy-consensus.workspace = true
+alloy-trie.workspace = true
 
 # async
 tokio = { workspace = true, features = ["sync"] }
