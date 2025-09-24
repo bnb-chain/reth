@@ -8,7 +8,7 @@ use clap::{
     error::ErrorKind,
     Arg, Args, Command, Error,
 };
-use reth_db::{mdbx::MaxReadTransactionDuration, ClientVersion};
+use reth_db::{mdbx::{MaxReadTransactionDuration, SyncMode}, ClientVersion};
 use reth_storage_errors::db::LogLevel;
 
 /// Parameters for database configuration
@@ -34,6 +34,9 @@ pub struct DatabaseArgs {
     /// Maximum number of readers allowed to access the database concurrently.
     #[arg(long = "db.max-readers")]
     pub max_readers: Option<u64>,
+    /// Database synchronization mode for write transactions.
+    #[arg(long = "db.sync-mode", value_parser = SyncModeValueParser::default())]
+    pub sync_mode: Option<SyncMode>,
 }
 
 impl DatabaseArgs {
@@ -61,6 +64,50 @@ impl DatabaseArgs {
             .with_geometry_max_size(self.max_size)
             .with_growth_step(self.growth_step)
             .with_max_readers(self.max_readers)
+            .with_sync_mode(self.sync_mode)
+    }
+}
+
+/// clap value parser for [`SyncMode`].
+#[derive(Clone, Debug, Default)]
+#[non_exhaustive]
+struct SyncModeValueParser;
+
+impl TypedValueParser for SyncModeValueParser {
+    type Value = SyncMode;
+
+    fn parse_ref(
+        &self,
+        _cmd: &Command,
+        arg: Option<&Arg>,
+        value: &std::ffi::OsStr,
+    ) -> Result<Self::Value, Error> {
+        let val =
+            value.to_str().ok_or_else(|| Error::raw(ErrorKind::InvalidUtf8, "Invalid UTF-8"))?;
+
+        match val.to_lowercase().as_str() {
+            "durable" => Ok(SyncMode::Durable),
+            "nometasync" => Ok(SyncMode::NoMetaSync),
+            "safenosync" => Ok(SyncMode::SafeNoSync),
+            "utterlynosync" => Ok(SyncMode::UtterlyNoSync),
+            _ => {
+                let arg = arg.map(|a| a.to_string()).unwrap_or_else(|| "...".to_owned());
+                let msg = format!(
+                    "Invalid value '{val}' for {arg}. Possible values: durable, nometasync, safenosync, utterlynosync"
+                );
+                Err(clap::Error::raw(clap::error::ErrorKind::InvalidValue, msg))
+            }
+        }
+    }
+
+    fn possible_values(&self) -> Option<Box<dyn Iterator<Item = PossibleValue> + '_>> {
+        let values = [
+            PossibleValue::new("durable").help("Default robust and durable sync mode (safest, slowest)"),
+            PossibleValue::new("nometasync").help("Don't sync the meta-page after commit (~2x faster)"),
+            PossibleValue::new("safenosync").help("Don't sync anything but keep previous steady commits (~10x faster)"),
+            PossibleValue::new("utterlynosync").help("Don't sync anything and wipe previous steady commits (~100x faster, risky)"),
+        ];
+        Some(Box::new(values.into_iter()))
     }
 }
 
@@ -339,5 +386,55 @@ mod tests {
     fn test_command_parser_without_log_level() {
         let cmd = CommandParser::<DatabaseArgs>::try_parse_from(["reth"]).unwrap();
         assert_eq!(cmd.args.log_level, None);
+    }
+
+    #[test]
+    fn test_command_parser_with_valid_sync_mode() {
+        let test_cases = [
+            ("durable", SyncMode::Durable),
+            ("nometasync", SyncMode::NoMetaSync),
+            ("safenosync", SyncMode::SafeNoSync),
+            ("utterlynosync", SyncMode::UtterlyNoSync),
+        ];
+
+        for (input, expected) in test_cases {
+            let cmd = CommandParser::<DatabaseArgs>::try_parse_from([
+                "reth",
+                "--db.sync-mode",
+                input,
+            ])
+            .unwrap();
+            assert_eq!(cmd.args.sync_mode, Some(expected));
+        }
+    }
+
+    #[test]
+    fn test_command_parser_with_invalid_sync_mode() {
+        let result = CommandParser::<DatabaseArgs>::try_parse_from([
+            "reth",
+            "--db.sync-mode",
+            "invalid",
+        ]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_command_parser_without_sync_mode() {
+        let cmd = CommandParser::<DatabaseArgs>::try_parse_from(["reth"]).unwrap();
+        assert_eq!(cmd.args.sync_mode, None);
+    }
+
+    #[test]
+    fn test_sync_mode_parser_possible_values() {
+        let parser = SyncModeValueParser;
+        let possible_values: Vec<PossibleValue> = parser.possible_values().unwrap().collect();
+        
+        let expected_names = ["durable", "nometasync", "safenosync", "utterlynosync"];
+        assert_eq!(possible_values.len(), expected_names.len());
+        
+        for (actual, expected_name) in possible_values.iter().zip(expected_names.iter()) {
+            assert_eq!(actual.get_name(), *expected_name);
+            assert!(actual.get_help().is_some());
+        }
     }
 }

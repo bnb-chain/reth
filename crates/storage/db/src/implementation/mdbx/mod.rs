@@ -28,6 +28,7 @@ use std::{
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
+use reth_tracing::tracing::log::log;
 use tx::Tx;
 
 pub mod cursor;
@@ -102,6 +103,8 @@ pub struct DatabaseArguments {
     /// MDBX allows up to 32767 readers (`MDBX_READERS_LIMIT`). This arg is to configure the max
     /// readers.
     max_readers: Option<u64>,
+    /// Sync mode for write transactions. If [None], the default value (Durable) is used.
+    sync_mode: Option<SyncMode>,
 }
 
 impl Default for DatabaseArguments {
@@ -125,6 +128,7 @@ impl DatabaseArguments {
             max_read_transaction_duration: None,
             exclusive: None,
             max_readers: None,
+            sync_mode: None,
         }
     }
 
@@ -176,6 +180,12 @@ impl DatabaseArguments {
     /// Set `max_readers` flag.
     pub const fn with_max_readers(mut self, max_readers: Option<u64>) -> Self {
         self.max_readers = max_readers;
+        self
+    }
+
+    /// Set the sync mode for write transactions.
+    pub const fn with_sync_mode(mut self, sync_mode: Option<SyncMode>) -> Self {
+        self.sync_mode = sync_mode;
         self
     }
 
@@ -320,7 +330,13 @@ impl DatabaseEnv {
             DatabaseEnvKind::RW => {
                 // enable writemap mode in RW mode
                 inner_env.write_map();
-                Mode::ReadWrite { sync_mode: SyncMode::Durable }
+                let sync_mode = args.sync_mode.unwrap_or(SyncMode::Durable);
+                reth_tracing::tracing::info!(
+                    target: "storage::db::mdbx", 
+                    ?sync_mode,
+                    "Opening database in ReadWrite mode"
+                );
+                Mode::ReadWrite { sync_mode }
             }
         };
 
