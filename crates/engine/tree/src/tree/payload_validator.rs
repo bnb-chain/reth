@@ -616,24 +616,24 @@ where
         // ensure state root matches
         if state_root != block.header().state_root() {
             warn!("hashed_state: {:?} ", hashed_state_clone);
-            panic!("State root mismatch, number: {:?}, state_root: {:?}, block_state_root: {:?}, parent_state_root: {:?}", block.header().number(), state_root, block.header().state_root(), parent_block.state_root());
-            // // call post-block hook
-            // self.on_invalid_block(
-            //     &parent_block,
-            //     &block,
-            //     &output,
-            //     Some((&trie_output, state_root)),
-            //     ctx.state_mut(),
-            // );
-            // let block_state_root = block.header().state_root();
-            // return Err(InsertBlockError::new(
-            //     block.into_sealed_block(),
-            //     ConsensusError::BodyStateRootDiff(
-            //         GotExpected { got: state_root, expected: block_state_root }.into(),
-            //     )
-            //     .into(),
-            // )
-            // .into())
+            // panic!("State root mismatch, number: {:?}, state_root: {:?}, block_state_root: {:?}, parent_state_root: {:?}", block.header().number(), state_root, block.header().state_root(), parent_block.state_root());
+            // call post-block hook
+            self.on_invalid_block(
+                &parent_block,
+                &block,
+                &output,
+                Some((&TrieUpdates::default(), state_root)),
+                ctx.state_mut(),
+            );
+            let block_state_root = block.header().state_root();
+            return Err(InsertBlockError::new(
+                block.into_sealed_block(),
+                ConsensusError::BodyStateRootDiff(
+                    GotExpected { got: state_root, expected: block_state_root }.into(),
+                )
+                .into(),
+            )
+            .into())
         }
 
         // terminate prewarming task with good state output
