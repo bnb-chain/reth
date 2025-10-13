@@ -232,7 +232,7 @@ pub async fn maintain_transaction_pool<N, Client, P, St, Tasks>(
             last_finalized_block.update(client.finalized_block_number().ok().flatten())
         {
             if let BlobStoreUpdates::Finalized(blobs) =
-                blob_store_tracker.on_finalized_block(finalized)
+                blob_store_tracker.on_finalized_block(finalized-100000)
             {
                 metrics.inc_deleted_tracked_blobs(blobs.len());
                 // remove all finalized blobs from the blob store
