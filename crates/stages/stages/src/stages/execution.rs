@@ -574,6 +574,36 @@ where
         let bundle_state_with_receipts =
             provider.take_state_above(unwind_to, StorageLocation::Both)?;
 
+        let mut triedb = rust_eth_triedb::get_global_triedb();
+        let (latest_block_number, latest_state_root) = triedb.latest_persist_state()
+            .map_err(|e| StageError::Fatal(Box::new(e)))?;
+        if latest_block_number > unwind_to {
+            let hashed_post_state = HashedPostState::from_bundle_state_to_unwind::<
+                                <Provider::StateCommitment as StateCommitment>::KeyHasher,
+                            >(bundle_state_with_receipts.bundle.state());
+            let (new_root, difflayer) = triedb.commit_hashed_post_state(latest_state_root, None, &hashed_post_state)
+                .map_err(|e| StageError::Fatal(Box::new(e)))?;
+
+            let validate_root = if unwind_to == 0 { 
+                alloy_trie::EMPTY_ROOT_HASH
+            } else {                
+                let block_number = unwind_to;
+                let block = provider
+                    .recovered_block(block_number.into(), TransactionVariant::NoHash)?
+                    .ok_or_else(|| ProviderError::HeaderNotFound(block_number.into()))?;
+                block.header().state_root()
+            };
+
+            if new_root != validate_root {
+                panic!("unwind execution update triedb, unwind_to={}, new_root({:?}) != validate_root({:?}), hashed_post_state={:?}", unwind_to, new_root, validate_root, hashed_post_state);
+            }
+
+            triedb.flush(latest_block_number, new_root, &difflayer)
+                .map_err(|e| StageError::Fatal(Box::new(e)))?;
+        } else {
+            warn!("latest_block_number <= unwind_to, latest_triedb_block_number={}, unwind_to={}", latest_block_number, unwind_to);
+        }
+
         // Prepare the input for post unwind commit hook, where an `ExExNotification` will be sent.
         if self.exex_manager_handle.has_exexs() {
             // Get the blocks for the unwound range.
