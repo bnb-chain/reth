@@ -239,13 +239,14 @@ pub async fn maintain_transaction_pool<N, Client, P, St, Tasks>(
                 if let BlobStoreUpdates::Finalized(blobs) =
                     blob_store_tracker.on_finalized_block(finalized-FINALIZED_BLOCK_OFFSET)
                 {
-                    metrics.inc_deleted_tracked_blobs(blobs.len());
+                    let num_blobs = blobs.len();
+                    metrics.inc_deleted_tracked_blobs(num_blobs);
                     // remove all finalized blobs from the blob store
                     pool.delete_blobs(blobs);
                     // and also do periodic cleanup
                     let pool = pool.clone();
                     task_spawner.spawn_blocking(Box::pin(async move {
-                        debug!(target: "txpool", finalized_block = %finalized, "cleaning up blob store");
+                        debug!(target: "txpool", finalized_block = %finalized, num_blobs = %num_blobs, "cleaning up blob store");
                         pool.cleanup_blobs();
                     }));
                 }
