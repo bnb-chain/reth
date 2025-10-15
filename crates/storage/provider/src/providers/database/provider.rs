@@ -62,7 +62,7 @@ use reth_storage_errors::provider::{ProviderResult, RootMismatch};
 use reth_trie::{
     prefix_set::{PrefixSet, PrefixSetMut, TriePrefixSets},
     updates::{StorageTrieUpdates, TrieUpdates},
-    HashedPostStateSorted, Nibbles, StateRoot, StoredNibbles,
+    HashedPostStateSorted, HashedPostState, Nibbles, StateRoot, KeccakKeyHasher,
 };
 use reth_trie_db::{DatabaseStateRoot, DatabaseStorageTrieCursor};
 use revm_database::states::{
@@ -268,19 +268,19 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
 
         // Unwind account hashes. Add changed accounts to account prefix set.
         let hashed_addresses = self.unwind_account_hashing(changed_accounts.iter())?;
-        let mut account_prefix_set = PrefixSetMut::with_capacity(hashed_addresses.len());
-        let mut destroyed_accounts = HashSet::default();
-        for (hashed_address, account) in hashed_addresses {
-            account_prefix_set.insert(Nibbles::unpack(hashed_address));
-            if account.is_none() {
-                destroyed_accounts.insert(hashed_address);
-            }
-        }
+        // let mut account_prefix_set = PrefixSetMut::with_capacity(hashed_addresses.len());
+        // let mut destroyed_accounts = HashSet::default();
+        // for (hashed_address, account) in hashed_addresses {
+        //     account_prefix_set.insert(Nibbles::unpack(hashed_address));
+        //     if account.is_none() {
+        //         destroyed_accounts.insert(hashed_address);
+        //     }
+        // }
 
         // Unwind account history indices.
         self.unwind_account_history_indices(changed_accounts.iter())?;
-        let storage_range = BlockNumberAddress::range(range.clone());
 
+        let storage_range = BlockNumberAddress::range(range.clone());
         let changed_storages = self
             .tx
             .cursor_read::<tables::StorageChangeSets>()?
@@ -289,52 +289,109 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
 
         // Unwind storage hashes. Add changed account and storage keys to corresponding prefix
         // sets.
-        let mut storage_prefix_sets = B256Map::<PrefixSet>::default();
+        // let mut storage_prefix_sets = B256Map::<PrefixSet>::default();
         let storage_entries = self.unwind_storage_hashing(changed_storages.iter().copied())?;
-        for (hashed_address, hashed_slots) in storage_entries {
-            account_prefix_set.insert(Nibbles::unpack(hashed_address));
-            let mut storage_prefix_set = PrefixSetMut::with_capacity(hashed_slots.len());
-            for slot in hashed_slots {
-                storage_prefix_set.insert(Nibbles::unpack(slot));
-            }
-            storage_prefix_sets.insert(hashed_address, storage_prefix_set.freeze());
-        }
+        // for (hashed_address, hashed_slots) in storage_entries {
+        //     account_prefix_set.insert(Nibbles::unpack(hashed_address));
+        //     let mut storage_prefix_set = PrefixSetMut::with_capacity(hashed_slots.len());
+        //     for slot in hashed_slots {
+        //         storage_prefix_set.insert(Nibbles::unpack(slot));
+        //     }
+        //     storage_prefix_sets.insert(hashed_address, storage_prefix_set.freeze());
+        // }
 
         // Unwind storage history indices.
         self.unwind_storage_history_indices(changed_storages.iter().copied())?;
 
-        // Calculate the reverted merkle root.
-        // This is the same as `StateRoot::incremental_root_with_updates`, only the prefix sets
-        // are pre-loaded.
-        let prefix_sets = TriePrefixSets {
-            account_prefix_set: account_prefix_set.freeze(),
-            storage_prefix_sets,
-            destroyed_accounts,
-        };
-        let (new_state_root, trie_updates) = StateRoot::from_tx(&self.tx)
-            .with_prefix_sets(prefix_sets)
-            .root_with_updates()
-            .map_err(reth_db_api::DatabaseError::from)?;
+        // handle triedb state reverts
+        {
+            let mut triedb = rust_eth_triedb::get_global_triedb();
+            let (latest_block_number, latest_state_root) = triedb.latest_persist_state()
+                .map_err(|e| ProviderError::Database(DatabaseError::Other(e.to_string())))?;
 
-        let parent_number = range.start().saturating_sub(1);
-        let parent_state_root = self
-            .header_by_number(parent_number)?
-            .ok_or_else(|| ProviderError::HeaderNotFound(parent_number.into()))?
-            .state_root();
+            if latest_block_number < *range.start() {
+                panic!("latest_block_number < range.start() should unwind the entire state, latest_block_number={}, range.start()={}", latest_block_number, range.start());
+            }
 
-        // state root should be always correct as we are reverting state.
-        // but for sake of double verification we will check it again.
-        if new_state_root != parent_state_root {
-            let parent_hash = self
-                .block_hash(parent_number)?
-                .ok_or_else(|| ProviderError::HeaderNotFound(parent_number.into()))?;
-            return Err(ProviderError::UnwindStateRootMismatch(Box::new(RootMismatch {
-                root: GotExpected { got: new_state_root, expected: parent_state_root },
-                block_number: parent_number,
-                block_hash: parent_hash,
-            })))
+            let mut plain_accounts_cursor = self.tx.cursor_write::<tables::PlainAccountState>()?;
+            let mut plain_storage_cursor = self.tx.cursor_dup_write::<tables::PlainStorageState>()?;
+            
+            let (state, reverts) = self.populate_bundle_state(
+                changed_accounts, 
+                changed_storages, 
+                &mut plain_accounts_cursor,
+                &mut plain_storage_cursor,
+            )?;
+
+            let bundle_state: ExecutionOutcome<ReceiptTy<N>> = ExecutionOutcome::new_init(
+                state,
+                reverts,
+                Vec::new(),
+                Vec::new(),
+                *range.start(),
+                Vec::new(),
+            );
+            
+            let hashed_post_state = HashedPostState::from_bundle_state_to_unwind::<
+                KeccakKeyHasher,
+            >(bundle_state.bundle.state());
+            
+            let (new_root, difflayer) = triedb.commit_hashed_post_state(latest_state_root, None, &hashed_post_state)
+                .map_err(|e| ProviderError::Database(DatabaseError::Other(e.to_string())))?;
+            let parent_number = range.start().saturating_sub(1);
+            let parent_state_root = self
+                .header_by_number(parent_number)?
+                .ok_or_else(|| ProviderError::HeaderNotFound(parent_number.into()))?
+                .state_root();
+
+            if new_root != parent_state_root {
+                let parent_hash = self
+                    .block_hash(parent_number)?
+                    .ok_or_else(|| ProviderError::HeaderNotFound(parent_number.into()))?;
+                return Err(ProviderError::UnwindStateRootMismatch(Box::new(RootMismatch {
+                    root: GotExpected { got: new_root, expected: parent_state_root },
+                    block_number: parent_number,
+                    block_hash: parent_hash,
+                })))
+            }
+
+            triedb.flush(latest_block_number, new_root, &difflayer)
+                .map_err(|e| ProviderError::Database(DatabaseError::Other(e.to_string())))?;
+            triedb.clear_cache();
         }
-        self.write_trie_updates(&trie_updates)?;
+
+        // // Calculate the reverted merkle root.
+        // // This is the same as `StateRoot::incremental_root_with_updates`, only the prefix sets
+        // // are pre-loaded.
+        // let prefix_sets = TriePrefixSets {
+        //     account_prefix_set: account_prefix_set.freeze(),
+        //     storage_prefix_sets,
+        //     destroyed_accounts,
+        // };
+        // let (new_state_root, trie_updates) = StateRoot::from_tx(&self.tx)
+        //     .with_prefix_sets(prefix_sets)
+        //     .root_with_updates()
+        //     .map_err(reth_db_api::DatabaseError::from)?;
+
+        // let parent_number = range.start().saturating_sub(1);
+        // let parent_state_root = self
+        //     .header_by_number(parent_number)?
+        //     .ok_or_else(|| ProviderError::HeaderNotFound(parent_number.into()))?
+        //     .state_root();
+
+        // // state root should be always correct as we are reverting state.
+        // // but for sake of double verification we will check it again.
+        // if new_state_root != parent_state_root {
+        //     let parent_hash = self
+        //         .block_hash(parent_number)?
+        //         .ok_or_else(|| ProviderError::HeaderNotFound(parent_number.into()))?;
+        //     return Err(ProviderError::UnwindStateRootMismatch(Box::new(RootMismatch {
+        //         root: GotExpected { got: new_state_root, expected: parent_state_root },
+        //         block_number: parent_number,
+        //         block_hash: parent_hash,
+        //     })))
+        // }
+        // self.write_trie_updates(&trie_updates)?;
 
         Ok(())
     }
