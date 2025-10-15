@@ -59,6 +59,10 @@ pub(crate) struct EngineMetrics {
     /// Tracks the how often we failed to deliver a forkchoice update response.
     pub(crate) failed_forkchoice_updated_response_deliveries: Counter,
     // TODO add latency metrics
+    /// Overall block processing duration (from start to finish)
+    pub(crate) block_insert_total_duration: Histogram,
+    /// The instantaneous amount of gas processed per second.
+    pub block_insert_gas_per_second: Gauge,
 }
 
 /// Metrics for non-execution related block validation.
