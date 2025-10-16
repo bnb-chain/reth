@@ -98,6 +98,7 @@ impl FromConsensusHeader<alloy_consensus::Header>
         block_size: usize,
         td: Option<U256>,
     ) -> Self {
+        info!("td in FromConsensusHeader from_consensus_header: {:?}, block: {:?}", td, header.number);
         let header_hash = header.hash();
         let consensus_header = header.into_header();
         let milli_timestamp = Some(U256::from(calculate_millisecond_timestamp(&consensus_header)));

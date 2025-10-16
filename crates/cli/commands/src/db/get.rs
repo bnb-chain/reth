@@ -1,15 +1,13 @@
 use alloy_primitives::{hex, BlockHash};
 use clap::Parser;
 use reth_db::{
-    static_file::{
-        AccountChangesetMask, ColumnSelectorOne, ColumnSelectorTwo, HeaderWithHashMask,
-        ReceiptMask, TransactionMask, TransactionSenderMask,
-    },
+    static_file::{AccountChangesetMask, ReceiptMask, TransactionMask, TransactionSenderMask},
     RawDupSort,
 };
 use reth_db_api::{
     cursor::{DbCursorRO, DbDupCursorRO},
     database::Database,
+    models::CompactU256,
     table::{Compress, Decompress, DupSort, Table},
     tables,
     transaction::DbTx,
@@ -83,11 +81,7 @@ impl Command {
             }
             Subcommand::StaticFile { segment, key, subkey, raw } => {
                 let (key, subkey, mask): (u64, _, _) = match segment {
-                    StaticFileSegment::Headers => (
-                        table_key::<tables::Headers>(&key)?,
-                        None,
-                        <HeaderWithHashMask<HeaderTy<N>>>::MASK,
-                    ),
+                    StaticFileSegment::Headers => (table_key::<tables::Headers>(&key)?, None, 0b111),
                     StaticFileSegment::Transactions => (
                         table_key::<tables::Transactions>(&key)?,
                         None,
@@ -161,10 +155,13 @@ impl Command {
                             match segment {
                                 StaticFileSegment::Headers => {
                                     let header = HeaderTy::<N>::decompress(content[0].as_slice())?;
-                                    let block_hash = BlockHash::decompress(content[1].as_slice())?;
+                                    let total_difficulty =
+                                        CompactU256::decompress(content[1].as_slice())?;
+                                    let block_hash = BlockHash::decompress(content[2].as_slice())?;
                                     println!(
-                                        "Header\n{}\n\nBlockHash\n{}",
+                                        "Header\n{}\n\nTotalDifficulty\n{}\n\nBlockHash\n{}",
                                         serde_json::to_string_pretty(&header)?,
+                                        total_difficulty.0,
                                         serde_json::to_string_pretty(&block_hash)?
                                     );
                                 }
