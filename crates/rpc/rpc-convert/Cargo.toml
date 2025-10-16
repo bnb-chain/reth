@@ -45,6 +45,9 @@ thiserror.workspace = true
 # serialization
 serde = { workspace = true, features = ["derive"], optional = true }
 
+# tracing
+tracing.workspace = true
+
 [features]
 default = ["serde"]
 serde = ["dep:serde"]

@@ -2,12 +2,11 @@ use alloy_consensus::Header;
 use alloy_primitives::{hex, BlockHash};
 use clap::Parser;
 use reth_db::{
-    static_file::{
-        ColumnSelectorOne, ColumnSelectorTwo, HeaderWithHashMask, ReceiptMask, TransactionMask,
-    },
+    static_file::{ColumnSelectorOne, ReceiptMask, TransactionMask},
     RawDupSort,
 };
 use reth_db_api::{
+    models::CompactU256,
     table::{Decompress, DupSort, Table},
     tables, RawKey, RawTable, Receipts, TableViewer, Transactions,
 };
@@ -67,7 +66,7 @@ impl Command {
             Subcommand::StaticFile { segment, key, raw } => {
                 let (key, mask): (u64, _) = match segment {
                     StaticFileSegment::Headers => {
-                        (table_key::<tables::Headers>(&key)?, <HeaderWithHashMask<Header>>::MASK)
+                        (table_key::<tables::Headers>(&key)?, 0b111)
                     }
                     StaticFileSegment::Transactions => {
                         (table_key::<tables::Transactions>(&key)?, <TransactionMask<TxTy<N>>>::MASK)
@@ -97,10 +96,13 @@ impl Command {
                             match segment {
                                 StaticFileSegment::Headers => {
                                     let header = Header::decompress(content[0].as_slice())?;
-                                    let block_hash = BlockHash::decompress(content[1].as_slice())?;
+                                    let total_difficulty =
+                                        CompactU256::decompress(content[1].as_slice())?;
+                                    let block_hash = BlockHash::decompress(content[2].as_slice())?;
                                     println!(
-                                        "Header\n{}\n\nBlockHash\n{}",
+                                        "Header\n{}\n\nTotalDifficulty\n{}\n\nBlockHash\n{}",
                                         serde_json::to_string_pretty(&header)?,
+                                        total_difficulty.0,
                                         serde_json::to_string_pretty(&block_hash)?
                                     );
                                 }

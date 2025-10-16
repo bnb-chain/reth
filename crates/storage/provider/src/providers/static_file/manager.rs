@@ -374,6 +374,7 @@ impl<N: NodePrimitives> StaticFileProvider<N> {
         block: BlockNumber,
         path: Option<&Path>,
     ) -> ProviderResult<StaticFileJarProvider<'_, N>> {
+        info!("get_segment_provider_from_block, segment: {:?}, block: {:?}, path: {:?}", segment, block, path);
         self.get_segment_provider(
             segment,
             || self.get_segment_ranges_from_block(segment, block),
@@ -1235,18 +1236,28 @@ impl<N: NodePrimitives> StaticFileProvider<N> {
         FS: Fn(&Self) -> ProviderResult<Option<T>>,
         FD: Fn() -> ProviderResult<Option<T>>,
     {
+        info!("get_with_static_file_or_database, segment: {:?}, number: {:?}", segment, number);
         // If there is, check the maximum block or transaction number of the segment.
         let static_file_upper_bound = if segment.is_block_based() {
-            self.get_highest_static_file_block(segment)
+            info!("get_highest_static_file_block in get_with_static_file_or_database, segment: {:?}, is_block_based: {:?}", segment, segment.is_block_based());
+            let a = self.get_highest_static_file_block(segment);
+            info!("a: {:?}", a);
+            a
         } else {
-            self.get_highest_static_file_tx(segment)
+            info!("get_highest_static_file_tx in get_with_static_file_or_database, segment: {:?}, is_block_based: {:?}", segment, segment.is_block_based());
+            let b = self.get_highest_static_file_tx(segment);
+            info!("b: {:?}", b);
+            b
         };
 
+        info!("static_file_upper_bound: {:?}, number: {:?}, segment: {:?}", static_file_upper_bound, number, segment);
         if static_file_upper_bound
             .is_some_and(|static_file_upper_bound| static_file_upper_bound >= number)
         {
+            info!("fetch data from static file, number: {:?}", number);
             return fetch_from_static_file(self)
         }
+        info!("fetch data from database, number: {:?}", number);
         fetch_from_database()
     }
 
@@ -1405,15 +1416,21 @@ impl<N: NodePrimitives<BlockHeader: Value>> HeaderProvider for StaticFileProvide
     }
 
     fn header_td_by_number(&self, num: BlockNumber) -> ProviderResult<Option<U256>> {
-        self.get_segment_provider_from_block(StaticFileSegment::Headers, num, None)
+        info!("header_td_by_number nenndudn3u43d4du, num: {:?}", num);
+        let td = self.get_segment_provider_from_block(StaticFileSegment::Headers, num, None)
             .and_then(|provider| provider.header_td_by_number(num))
             .or_else(|err| {
                 if let ProviderError::MissingStaticFileBlock(_, _) = err {
+                    info!("MissingStaticFileBlock, num: {:?}", num);
                     Ok(None)
                 } else {
+                    info!("Other error, num: {:?}, err: {:?}", num, err);
                     Err(err)
                 }
-            })
+            })?;
+
+        info!("22222 td: {:?}, num: {:?}", td, num);
+        Ok(td)
     }
 
     fn headers_range(

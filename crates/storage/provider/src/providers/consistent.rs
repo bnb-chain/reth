@@ -668,6 +668,7 @@ impl<N: ProviderNodeTypes> HeaderProvider for ConsistentProvider<N> {
         } else {
             Ok(None)
         }
+        // self.storage_provider.header_td(hash)
     }
 
     fn header_td_by_number(&self, number: BlockNumber) -> ProviderResult<Option<U256>> {

@@ -15,10 +15,11 @@ use reth_primitives_traits::{
     AlloyBlockHeader, RecoveredBlock, SealedHeader, SignedTransaction, TransactionMeta,
 };
 use reth_rpc_convert::{transaction::ConvertReceiptInput, RpcConvert, RpcHeader};
+use reth_storage_api::HeaderProvider;
 use reth_storage_api::{BlockIdReader, BlockReader, ProviderHeader, ProviderReceipt, ProviderTx};
 use reth_transaction_pool::{PoolTransaction, TransactionPool};
 use std::{borrow::Cow, sync::Arc};
-use reth_storage_api::HeaderProvider;
+use tracing::info;
 
 /// Result type of the fetched block receipts.
 pub type BlockReceiptsResult<N, E> = Result<Option<Vec<RpcReceipt<N>>>, E>;
@@ -66,11 +67,22 @@ pub trait EthBlocks:
                 full.into(),
                 |tx, tx_info| self.tx_resp_builder().fill(tx, tx_info),
                 |header, size| {
-                    let header_hash = header.hash();
-                    let td = self
-                        .provider()
-                        .header_td(&header_hash)
+                    let block_number = header.number();
+                    info!("block_number in rpc_block: {:?}", block_number);
+
+                    let provider = self.provider();
+                    info!("Provider type: {:?}", std::any::type_name_of_val(provider));
+
+                    // if let Ok(blockchain_provider) = provider.as_any().downcast_ref::<reth_provider::providers::BlockchainProvider<_>>() {
+                    //     info!("Provider is BlockchainProvider");
+                    // } else {
+                    //     info!("Provider is not BlockchainProvider");
+                    // }
+
+                    let td = provider
+                        .header_td_by_number(block_number)
                         .map_err(Self::Error::from_eth_err)?;
+                    info!("td in rpc_block: {:?}, block_number: {:?}", td, block_number);
                     self.tx_resp_builder().convert_header(header, size, td)
                 },
             )?;

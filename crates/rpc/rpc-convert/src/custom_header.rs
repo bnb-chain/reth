@@ -2,6 +2,7 @@
 
 use alloy_network::primitives::HeaderResponse;
 use alloy_primitives::{BlockHash, B256, U256};
+use tracing::info;
 
 /// Custom RPC header that extends the standard header with additional fields
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -180,6 +181,7 @@ where
         block_size: usize,
         td: Option<alloy_primitives::U256>,
     ) -> CustomRpcHeader<H> {
+        info!("td in CustomHeaderConverter convert_header: {:?}", td);
         let header_hash = header.hash();
         let consensus_header = header.into_header();
         let milli_timestamp = Some(U256::from(calculate_millisecond_timestamp(&consensus_header)));

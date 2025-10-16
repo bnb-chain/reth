@@ -75,7 +75,7 @@ use std::{
     ops::{Deref, DerefMut, Range, RangeBounds, RangeInclusive},
     sync::{mpsc, Arc},
 };
-use tracing::{debug, trace};
+use tracing::{debug, info, trace};
 
 /// A [`DatabaseProvider`] that holds a read-only database transaction.
 pub type DatabaseProviderRO<DB, N> = DatabaseProvider<<DB as Database>::TX, N>;
@@ -995,6 +995,7 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> HeaderProvider for DatabasePro
     type Header = HeaderTy<N>;
 
     fn header(&self, block_hash: &BlockHash) -> ProviderResult<Option<Self::Header>> {
+        info!("HeaderProvider DatabaseProvider header, block_hash: {:?}", block_hash);
         if let Some(num) = self.block_number(*block_hash)? {
             Ok(self.header_by_number(num)?)
         } else {
@@ -1003,6 +1004,7 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> HeaderProvider for DatabasePro
     }
 
     fn header_by_number(&self, num: BlockNumber) -> ProviderResult<Option<Self::Header>> {
+        info!("HeaderProvider DatabaseProvider header_by_number, num: {:?}", num);
         self.static_file_provider.get_with_static_file_or_database(
             StaticFileSegment::Headers,
             num,
@@ -1012,6 +1014,7 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> HeaderProvider for DatabasePro
     }
 
     fn header_td(&self, block_hash: &BlockHash) -> ProviderResult<Option<U256>> {
+        info!("header_td 0iwewdkeiw");
         if let Some(num) = self.block_number(*block_hash)? {
             self.header_td_by_number(num)
         } else {
@@ -1020,20 +1023,43 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> HeaderProvider for DatabasePro
     }
 
     fn header_td_by_number(&self, number: BlockNumber) -> ProviderResult<Option<U256>> {
+        info!("HeaderProvider DatabaseProvider header_td_by_number, number: {:?}", number);
         if self.chain_spec.is_paris_active_at_block(number) {
+            info!("query data from chain spec");
             if let Some(td) = self.chain_spec.final_paris_total_difficulty() {
                 // if this block is higher than the final paris(merge) block, return the final paris
                 // difficulty
+                info!("query data from chain spec, return final paris difficulty");
                 return Ok(Some(td))
             }
         }
 
-        self.static_file_provider.get_with_static_file_or_database(
+        info!("query data from static file, number: {:?}", number);
+        let td = self.static_file_provider.get_with_static_file_or_database(
             StaticFileSegment::Headers,
             number,
-            |static_file| static_file.header_td_by_number(number),
-            || Ok(self.tx.get::<tables::HeaderTerminalDifficulties>(number)?.map(|td| td.0)),
-        )
+            |static_file| {
+                info!("enter static file closure, number: {:?}", number);
+                match static_file.header_td_by_number(number) {
+                    Ok(td) => {
+                        info!("33333 td: {:?}, number: {:?}", td, number);
+                        Ok(td)
+                    }
+                    Err(err) => {
+                        info!("error in static file closure, number: {:?}, err: {:?}", number, err);
+                        Err(err)
+                    }
+                }
+            },
+            || {
+                info!("enter database closure, number: {:?}", number);
+                let td = self.tx.get::<tables::HeaderTerminalDifficulties>(number)?.map(|td| td.0);
+                info!("44444 td: {:?}, number: {:?}", td, number);
+                Ok(td)
+            },
+        );
+        info!("11111 td: {:?}, number: {:?}", td.clone()?, number);
+        td
     }
 
     fn headers_range(
@@ -1053,6 +1079,7 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> HeaderProvider for DatabasePro
         &self,
         number: BlockNumber,
     ) -> ProviderResult<Option<SealedHeader<Self::Header>>> {
+        info!("SealedHeader DatabaseProvider sealed_header, number: {:?}", number);
         self.static_file_provider.get_with_static_file_or_database(
             StaticFileSegment::Headers,
             number,
