@@ -232,6 +232,25 @@ pub trait EthApi<TxReq: RpcObject, T: RpcObject, B: RpcObject, R: RpcObject, H: 
     #[method(name = "getHeaderByHash")]
     async fn header_by_hash(&self, hash: B256) -> RpcResult<Option<H>>;
 
+    /// Returns the finalized block header.
+    ///
+    /// The `verified_validator_num` parameter is provided for BSC compatibility but is not used
+    /// in standard Ethereum. The finalized block is determined by the Beacon Chain consensus
+    /// (Casper FFG) and requires 2/3+ validator attestations.
+    #[method(name = "getFinalizedHeader")]
+    async fn finalized_header(&self, verified_validator_num: u64) -> RpcResult<Option<H>>;
+
+    /// Returns the finalized block.
+    ///
+    /// The `verified_validator_num` parameter is provided for BSC compatibility but is not used
+    /// in standard Ethereum. The finalized block is determined by the Beacon Chain consensus
+    /// (Casper FFG) and requires 2/3+ validator attestations.
+    ///
+    /// If `full` is true, the block object will contain all transaction objects,
+    /// otherwise it will only contain the transaction hashes.
+    #[method(name = "getFinalizedBlock")]
+    async fn finalized_block(&self, verified_validator_num: u64, full: bool) -> RpcResult<Option<B>>;
+
     /// `eth_simulateV1` executes an arbitrary number of transactions on top of the requested state.
     /// The transactions are packed into individual blocks. Overrides can be provided.
     #[method(name = "simulateV1")]
@@ -713,6 +732,18 @@ where
     async fn header_by_hash(&self, hash: B256) -> RpcResult<Option<RpcHeader<T::NetworkTypes>>> {
         trace!(target: "rpc::eth", ?hash, "Serving eth_getHeaderByHash");
         Ok(EthBlocks::rpc_block_header(self, hash.into()).await?)
+    }
+
+    /// Handler for: `eth_getFinalizedHeader`
+    async fn finalized_header(&self, verified_validator_num: u64) -> RpcResult<Option<RpcHeader<T::NetworkTypes>>> {
+        trace!(target: "rpc::eth", verified_validator_num, "Serving eth_getFinalizedHeader");
+        Ok(EthBlocks::rpc_finalized_header(self, verified_validator_num).await?)
+    }
+
+    /// Handler for: `eth_getFinalizedBlock`
+    async fn finalized_block(&self, verified_validator_num: u64, full: bool) -> RpcResult<Option<RpcBlock<T::NetworkTypes>>> {
+        trace!(target: "rpc::eth", verified_validator_num, ?full, "Serving eth_getFinalizedBlock");
+        Ok(EthBlocks::rpc_finalized_block(self, verified_validator_num, full).await?)
     }
 
     /// Handler for: `eth_simulateV1`
