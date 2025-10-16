@@ -8953,6 +8953,7 @@ dependencies = [
  "reth-tokio-util",
  "reth-tracing",
  "reth-transaction-pool",
+ "rust-eth-triedb",
  "secp256k1 0.30.0",
  "serde_json",
  "tempfile",
