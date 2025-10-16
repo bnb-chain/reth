@@ -75,7 +75,7 @@ use std::{
     ops::{Deref, DerefMut, Range, RangeBounds, RangeInclusive},
     sync::{mpsc, Arc},
 };
-use tracing::{debug, trace};
+use tracing::{debug, info, trace};
 
 /// A [`DatabaseProvider`] that holds a read-only database transaction.
 pub type DatabaseProviderRO<DB, N> = DatabaseProvider<<DB as Database>::TX, N>;
@@ -315,10 +315,10 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
 
             let mut plain_accounts_cursor = self.tx.cursor_write::<tables::PlainAccountState>()?;
             let mut plain_storage_cursor = self.tx.cursor_dup_write::<tables::PlainStorageState>()?;
-            
+
             let (state, reverts) = self.populate_bundle_state(
-                changed_accounts, 
-                changed_storages, 
+                changed_accounts,
+                changed_storages,
                 &mut plain_accounts_cursor,
                 &mut plain_storage_cursor,
             )?;
@@ -331,11 +331,11 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
                 *range.start(),
                 Vec::new(),
             );
-            
+
             let hashed_post_state = HashedPostState::from_bundle_state_to_unwind::<
                 KeccakKeyHasher,
             >(bundle_state.bundle.state());
-            
+
             let (new_root, difflayer) = triedb.commit_hashed_post_state(latest_state_root, None, &hashed_post_state)
                 .map_err(|e| ProviderError::Database(DatabaseError::Other(e.to_string())))?;
             let parent_number = range.start().saturating_sub(1);
@@ -354,6 +354,8 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
                     block_hash: parent_hash,
                 })))
             }
+
+            info!("live sync unwind_trie_state_range, from_block_number={}, to_block_number={}, old_state_root={:?}, new_root={:?}", latest_block_number, range.start(), latest_state_root, new_root);
 
             triedb.flush(latest_block_number, new_root, &difflayer)
                 .map_err(|e| ProviderError::Database(DatabaseError::Other(e.to_string())))?;
