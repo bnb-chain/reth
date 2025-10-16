@@ -372,6 +372,7 @@ impl<N: NodePrimitives> StaticFileProvider<N> {
         block: BlockNumber,
         path: Option<&Path>,
     ) -> ProviderResult<StaticFileJarProvider<'_, N>> {
+        info!("get_segment_provider_from_block, segment: {:?}, block: {:?}, path: {:?}", segment, block, path);
         self.get_segment_provider(
             segment,
             || self.get_segment_ranges_from_block(segment, block),
@@ -1295,18 +1296,28 @@ impl<N: NodePrimitives> StaticFileProvider<N> {
         FS: Fn(&Self) -> ProviderResult<Option<T>>,
         FD: Fn() -> ProviderResult<Option<T>>,
     {
+        info!("get_with_static_file_or_database, segment: {:?}, number: {:?}", segment, number);
         // If there is, check the maximum block or transaction number of the segment.
         let static_file_upper_bound = if segment.is_block_based() {
-            self.get_highest_static_file_block(segment)
+            info!("get_highest_static_file_block in get_with_static_file_or_database, segment: {:?}, is_block_based: {:?}", segment, segment.is_block_based());
+            let a = self.get_highest_static_file_block(segment);
+            info!("a: {:?}", a);
+            a
         } else {
-            self.get_highest_static_file_tx(segment)
+            info!("get_highest_static_file_tx in get_with_static_file_or_database, segment: {:?}, is_block_based: {:?}", segment, segment.is_block_based());
+            let b = self.get_highest_static_file_tx(segment);
+            info!("b: {:?}", b);
+            b
         };
 
+        info!("static_file_upper_bound: {:?}, number: {:?}, segment: {:?}", static_file_upper_bound, number, segment);
         if static_file_upper_bound
             .is_some_and(|static_file_upper_bound| static_file_upper_bound >= number)
         {
+            info!("fetch data from static file, number: {:?}", number);
             return fetch_from_static_file(self)
         }
+        info!("fetch data from database, number: {:?}", number);
         fetch_from_database()
     }
 

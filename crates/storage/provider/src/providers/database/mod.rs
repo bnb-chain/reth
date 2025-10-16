@@ -34,7 +34,7 @@ use std::{
     sync::Arc,
 };
 
-use tracing::trace;
+use tracing::{info, trace};
 
 mod provider;
 pub use provider::{DatabaseProvider, DatabaseProviderRO, DatabaseProviderRW};
@@ -235,11 +235,18 @@ impl<N: ProviderNodeTypes> HeaderProvider for ProviderFactory<N> {
     type Header = HeaderTy<N>;
 
     fn header(&self, block_hash: BlockHash) -> ProviderResult<Option<Self::Header>> {
+        info!("HeaderProvider ProviderFactory header, block_hash: {:?}", block_hash);
         self.provider()?.header(block_hash)
     }
 
     fn header_by_number(&self, num: BlockNumber) -> ProviderResult<Option<Self::Header>> {
-        self.static_file_provider.header_by_number(num)
+        info!("HeaderProvider ProviderFactory header_by_number, num: {:?}", num);
+        self.static_file_provider.get_with_static_file_or_database(
+            StaticFileSegment::Headers,
+            num,
+            |static_file| static_file.header_by_number(num),
+            || self.provider()?.header_by_number(num),
+        )
     }
 
     fn headers_range(
@@ -253,7 +260,13 @@ impl<N: ProviderNodeTypes> HeaderProvider for ProviderFactory<N> {
         &self,
         number: BlockNumber,
     ) -> ProviderResult<Option<SealedHeader<Self::Header>>> {
-        self.static_file_provider.sealed_header(number)
+        info!("ProviderFactory sealed_header, number: {:?}", number);
+        self.static_file_provider.get_with_static_file_or_database(
+            StaticFileSegment::Headers,
+            number,
+            |static_file| static_file.sealed_header(number),
+            || self.provider()?.sealed_header(number),
+        )
     }
 
     fn sealed_headers_range(
@@ -274,7 +287,13 @@ impl<N: ProviderNodeTypes> HeaderProvider for ProviderFactory<N> {
 
 impl<N: ProviderNodeTypes> BlockHashReader for ProviderFactory<N> {
     fn block_hash(&self, number: u64) -> ProviderResult<Option<B256>> {
-        self.static_file_provider.block_hash(number)
+        info!("BlockHashReader block_hash, number: {:?}", number);
+        self.static_file_provider.get_with_static_file_or_database(
+            StaticFileSegment::Headers,
+            number,
+            |static_file| static_file.block_hash(number),
+            || self.provider()?.block_hash(number),
+        )
     }
 
     fn canonical_hashes_range(
