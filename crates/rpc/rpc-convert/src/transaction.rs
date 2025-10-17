@@ -24,7 +24,6 @@ use reth_primitives_traits::{
 use revm_context::{BlockEnv, CfgEnv, TxEnv};
 use std::{convert::Infallible, error::Error, fmt::Debug, marker::PhantomData};
 use thiserror::Error;
-use tracing::info;
 
 /// Input for [`RpcConvert::convert_receipts`].
 #[derive(Debug, Clone)]
@@ -108,7 +107,6 @@ impl FromConsensusHeader<alloy_consensus::Header>
         block_size: usize,
         td: Option<U256>,
     ) -> Self {
-        info!("td in FromConsensusHeader from_consensus_header: {:?}, block: {:?}", td, header.number);
         let header_hash = header.hash();
         let consensus_header = header.into_header();
         let milli_timestamp = Some(U256::from(calculate_millisecond_timestamp(&consensus_header)));

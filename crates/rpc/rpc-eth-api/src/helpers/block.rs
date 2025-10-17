@@ -257,9 +257,11 @@ pub trait EthBlocks:
                     let block =
                         alloy_consensus::Block::<alloy_consensus::TxEnvelope, _>::uncle(header);
                     let size = block.length();
-                    let header = self
-                        .tx_resp_builder()
-                        .convert_header(SealedHeader::new_unhashed(block.header), size, None)?;
+                    let header = self.tx_resp_builder().convert_header(
+                        SealedHeader::new_unhashed(block.header),
+                        size,
+                        None,
+                    )?;
                     Ok(Block {
                         uncles: vec![],
                         header,
