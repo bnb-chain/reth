@@ -46,7 +46,7 @@ use std::{
     sync::Arc,
     time::Instant,
 };
-use tracing::{trace, info};
+use tracing::trace;
 
 /// The main type for interacting with the blockchain.
 ///
@@ -191,12 +191,10 @@ impl<N: ProviderNodeTypes> HeaderProvider for BlockchainProvider<N> {
     }
 
     fn header_td(&self, hash: &BlockHash) -> ProviderResult<Option<U256>> {
-        info!("header_td in BlockchainProvider: {:?}", hash);
         self.consistent_provider()?.header_td(hash)
     }
 
     fn header_td_by_number(&self, number: BlockNumber) -> ProviderResult<Option<U256>> {
-        info!("header_td_by_number in BlockchainProvider: {:?}", number);
         self.consistent_provider()?.header_td_by_number(number)
     }
 

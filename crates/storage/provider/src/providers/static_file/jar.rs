@@ -23,7 +23,6 @@ use std::{
     ops::{Deref, RangeBounds, RangeInclusive},
     sync::Arc,
 };
-use tracing::info;
 /// Provider over a specific `NippyJar` and range.
 #[derive(Debug)]
 pub struct StaticFileJarProvider<'a, N> {
@@ -111,10 +110,7 @@ impl<N: NodePrimitives<BlockHeader: Value>> HeaderProvider for StaticFileJarProv
     }
 
     fn header_td_by_number(&self, num: BlockNumber) -> ProviderResult<Option<U256>> {
-        info!("header_td_by_number in jar, num: {:?}", num);
-        let td = self.cursor()?.get_one::<TotalDifficultyMask>(num.into())?.map(Into::into);
-        info!("the bottom, td: {:?}, num: {:?}", td, num);
-        Ok(td)
+        Ok(self.cursor()?.get_one::<TotalDifficultyMask>(num.into())?.map(Into::into))
     }
 
     fn headers_range(
