@@ -82,7 +82,7 @@ use std::{
     thread,
     time::Instant,
 };
-use tracing::{debug, info, instrument, trace};
+use tracing::{debug, instrument, trace};
 
 /// A [`DatabaseProvider`] that holds a read-only database transaction.
 pub type DatabaseProviderRO<DB, N> = DatabaseProvider<<DB as Database>::TX, N>;
@@ -1442,7 +1442,6 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> HeaderProvider for DatabasePro
     type Header = HeaderTy<N>;
 
     fn header(&self, block_hash: BlockHash) -> ProviderResult<Option<Self::Header>> {
-        info!("HeaderProvider DatabaseProvider header, block_hash: {:?}", block_hash);
         if let Some(num) = self.block_number(block_hash)? {
             Ok(self.header_by_number(num)?)
         } else {
@@ -1451,7 +1450,6 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> HeaderProvider for DatabasePro
     }
 
     fn header_by_number(&self, num: BlockNumber) -> ProviderResult<Option<Self::Header>> {
-        info!("HeaderProvider DatabaseProvider header_by_number, num: {:?}", num);
         self.static_file_provider.get_with_static_file_or_database(
             StaticFileSegment::Headers,
             num,
@@ -1471,7 +1469,6 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> HeaderProvider for DatabasePro
         &self,
         number: BlockNumber,
     ) -> ProviderResult<Option<SealedHeader<Self::Header>>> {
-        info!("SealedHeader DatabaseProvider sealed_header, number: {:?}", number);
         self.static_file_provider.get_with_static_file_or_database(
             StaticFileSegment::Headers,
             number,

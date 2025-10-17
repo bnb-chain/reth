@@ -53,7 +53,7 @@ use std::{
     sync::{atomic::AtomicU64, mpsc, Arc},
     thread,
 };
-use tracing::{debug, info, instrument, trace, warn};
+use tracing::{debug, instrument, trace, warn};
 
 /// Alias type for a map that can be queried for block or transaction ranges. It uses `u64` to
 /// represent either a block or a transaction number end of a static file range.
@@ -759,7 +759,6 @@ impl<N: NodePrimitives> StaticFileProvider<N> {
         block: BlockNumber,
         path: Option<&Path>,
     ) -> ProviderResult<StaticFileJarProvider<'_, N>> {
-        info!("get_segment_provider_from_block, segment: {:?}, block: {:?}, path: {:?}", segment, block, path);
         self.get_segment_provider_for_range(
             segment,
             || self.get_segment_ranges_from_block(segment, block),
@@ -1895,36 +1894,18 @@ impl<N: NodePrimitives> StaticFileProvider<N> {
         FS: Fn(&Self) -> ProviderResult<Option<T>>,
         FD: Fn() -> ProviderResult<Option<T>>,
     {
-        info!("get_with_static_file_or_database, segment: {:?}, number: {:?}", segment, number);
         // If there is, check the maximum block or transaction number of the segment.
-        let static_file_upper_bound = if segment.is_block_or_change_based() {
-            info!(
-                "get_highest_static_file_block in get_with_static_file_or_database, segment: {:?}, is_block_or_change_based: {:?}",
-                segment,
-                segment.is_block_or_change_based()
-            );
-            let upper = self.get_highest_static_file_block(segment);
-            info!("static_file_upper_bound (block): {:?}", upper);
-            upper
+        let static_file_upper_bound = if segment.is_block_based() {
+            self.get_highest_static_file_block(segment)
         } else {
-            info!(
-                "get_highest_static_file_tx in get_with_static_file_or_database, segment: {:?}, is_block_or_change_based: {:?}",
-                segment,
-                segment.is_block_or_change_based()
-            );
-            let upper = self.get_highest_static_file_tx(segment);
-            info!("static_file_upper_bound (tx): {:?}", upper);
-            upper
+            self.get_highest_static_file_tx(segment)
         };
 
-        info!("static_file_upper_bound: {:?}, number: {:?}, segment: {:?}", static_file_upper_bound, number, segment);
         if static_file_upper_bound
             .is_some_and(|static_file_upper_bound| static_file_upper_bound >= number)
         {
-            info!("fetch data from static file, number: {:?}", number);
             return fetch_from_static_file(self);
         }
-        info!("fetch data from database, number: {:?}", number);
         fetch_from_database()
     }
 
