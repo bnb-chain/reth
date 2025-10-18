@@ -6,7 +6,7 @@ use crate::{
     RpcReceipt,
 };
 use alloy_consensus::TxReceipt;
-use alloy_eips::BlockId;
+use alloy_eips::{BlockId, BlockNumberOrTag};
 use alloy_rlp::Encodable;
 use alloy_rpc_types_eth::{Block, BlockTransactions, Index};
 use futures::Future;
@@ -15,7 +15,7 @@ use reth_primitives_traits::{
     AlloyBlockHeader, RecoveredBlock, SealedHeader, SignedTransaction, TransactionMeta,
 };
 use reth_rpc_convert::{transaction::ConvertReceiptInput, RpcConvert, RpcHeader};
-use reth_storage_api::{BlockIdReader, BlockReader, ProviderHeader, ProviderReceipt, ProviderTx};
+use reth_storage_api::{BlockIdReader, BlockReader, HeaderProvider, ProviderHeader, ProviderReceipt, ProviderTx};
 use reth_transaction_pool::{PoolTransaction, TransactionPool};
 use std::{borrow::Cow, sync::Arc};
 
@@ -74,6 +74,46 @@ pub trait EthBlocks:
                 },
             )?;
             Ok(Some(block))
+        }
+    }
+
+    /// Returns the finalized block header.
+    ///
+    /// The `verified_validator_num` parameter is provided for BSC compatibility but is ignored
+    /// in the implementation. In standard Ethereum, the finalized block is determined by the
+    /// Beacon Chain consensus (Casper FFG).
+    fn rpc_finalized_header(
+        &self,
+        _verified_validator_num: u64,
+    ) -> impl Future<Output = Result<Option<RpcHeader<Self::NetworkTypes>>, Self::Error>> + Send
+    where
+        Self: FullEthApiTypes,
+    {
+        async move {
+            // Simply delegate to rpc_block_header with Finalized tag
+            self.rpc_block_header(BlockNumberOrTag::Finalized.into()).await
+        }
+    }
+
+    /// Returns the finalized block.
+    ///
+    /// The `verified_validator_num` parameter is provided for BSC compatibility but is ignored
+    /// in the implementation. In standard Ethereum, the finalized block is determined by the
+    /// Beacon Chain consensus (Casper FFG).
+    ///
+    /// If `full` is true, the block object will contain all transaction objects, otherwise it will
+    /// only contain the transaction hashes.
+    fn rpc_finalized_block(
+        &self,
+        _verified_validator_num: u64,
+        full: bool,
+    ) -> impl Future<Output = Result<Option<RpcBlock<Self::NetworkTypes>>, Self::Error>> + Send
+    where
+        Self: FullEthApiTypes,
+    {
+        async move {
+            // Simply delegate to rpc_block with Finalized tag
+            self.rpc_block(BlockNumberOrTag::Finalized.into(), full).await
         }
     }
 
