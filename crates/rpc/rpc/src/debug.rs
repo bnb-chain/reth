@@ -79,6 +79,20 @@ impl<Eth> DebugApi<Eth>
 where
     Eth: EthApiTypes + TraceExt + 'static,
 {
+    /// Handles BSC system transactions by disabling block gas limit validation.
+    ///
+    /// BSC system transactions are identified by:
+    /// 1. gas_limit == u64::MAX / 2
+    /// 2. caller == block beneficiary (coinbase)
+    fn handle_bsc_system_transaction(
+        evm_env: &mut EvmEnvFor<Eth::Evm>,
+        tx_env: &TxEnvFor<Eth::Evm>,
+    ) {
+        if tx_env.gas_limit() == u64::MAX / 2 && tx_env.caller() == evm_env.block_env.beneficiary {
+            evm_env.cfg_env.disable_block_gas_limit = true;
+        }
+    }
+
     /// Acquires a permit to execute a tracing call.
     async fn acquire_trace_permit(&self) -> Result<OwnedSemaphorePermit, AcquireError> {
         self.inner.blocking_task_guard.clone().acquire_owned().await
@@ -285,7 +299,8 @@ where
                         let mut inspector = FourByteInspector::default();
                         let inspector = self
                             .eth_api()
-                            .spawn_with_call_at(call, at, overrides, move |db, evm_env, tx_env| {
+                            .spawn_with_call_at(call, at, overrides, move |db, mut evm_env, tx_env| {
+                                Self::handle_bsc_system_transaction(&mut evm_env, &tx_env);
                                 this.eth_api().inspect(db, evm_env, tx_env, &mut inspector)?;
                                 Ok(inspector)
                             })
@@ -303,7 +318,9 @@ where
 
                         let frame = self
                             .eth_api()
-                            .spawn_with_call_at(call, at, overrides, move |db, evm_env, tx_env| {
+                            .spawn_with_call_at(call, at, overrides, move |db, mut evm_env, tx_env| {
+                                Self::handle_bsc_system_transaction(&mut evm_env, &tx_env);
+                                
                                 let gas_limit = tx_env.gas_limit();
                                 let res =
                                     this.eth_api().inspect(db, evm_env, tx_env, &mut inspector)?;
@@ -326,10 +343,12 @@ where
 
                         let frame = self
                             .eth_api()
-                            .spawn_with_call_at(call, at, overrides, move |db, evm_env, tx_env| {
+                            .spawn_with_call_at(call, at, overrides, move |db, mut evm_env, tx_env| {
                                 // wrapper is hack to get around 'higher-ranked lifetime error',
                                 // see <https://github.com/rust-lang/rust/issues/100013>
                                 let db = db.0;
+
+                                Self::handle_bsc_system_transaction(&mut evm_env, &tx_env);
 
                                 let gas_limit = tx_env.gas_limit();
                                 let res = this.eth_api().inspect(
@@ -360,7 +379,7 @@ where
                         let frame = self
                             .inner
                             .eth_api
-                            .spawn_with_call_at(call, at, overrides, move |db, evm_env, tx_env| {
+                            .spawn_with_call_at(call, at, overrides, move |db, mut evm_env, tx_env| {
                                 // wrapper is hack to get around 'higher-ranked lifetime error', see
                                 // <https://github.com/rust-lang/rust/issues/100013>
                                 let db = db.0;
@@ -372,6 +391,8 @@ where
                                     block_hash: None,
                                     index: None,
                                 };
+
+                                Self::handle_bsc_system_transaction(&mut evm_env, &tx_env);
 
                                 let res = this.eth_api().inspect(
                                     &mut *db,
@@ -399,7 +420,9 @@ where
                         let frame: FlatCallFrame = self
                             .inner
                             .eth_api
-                            .spawn_with_call_at(call, at, overrides, move |db, evm_env, tx_env| {
+                            .spawn_with_call_at(call, at, overrides, move |db, mut evm_env, tx_env| {
+                                Self::handle_bsc_system_transaction(&mut evm_env, &tx_env);
+                                
                                 let gas_limit = tx_env.gas_limit();
                                 this.eth_api().inspect(db, evm_env, tx_env, &mut inspector)?;
                                 let tx_info = TransactionInfo::default();
@@ -726,7 +749,7 @@ where
     fn trace_transaction(
         &self,
         opts: &GethDebugTracingOptions,
-        evm_env: EvmEnvFor<Eth::Evm>,
+        mut evm_env: EvmEnvFor<Eth::Evm>,
         tx_env: TxEnvFor<Eth::Evm>,
         db: &mut StateCacheDb<'_>,
         transaction_context: Option<TransactionContext>,
@@ -751,6 +774,7 @@ where
                 GethDebugTracerType::BuiltInTracer(tracer) => match tracer {
                     GethDebugBuiltInTracerType::FourByteTracer => {
                         let mut inspector = FourByteInspector::default();
+                        Self::handle_bsc_system_transaction(&mut evm_env, &tx_env);
                         let res = self.eth_api().inspect(db, evm_env, tx_env, &mut inspector)?;
                         return Ok((FourByteFrame::from(&inspector).into(), res.state))
                     }
@@ -766,6 +790,8 @@ where
                             ))
                         });
 
+                        Self::handle_bsc_system_transaction(&mut evm_env, &tx_env);
+                        
                         let gas_limit = tx_env.gas_limit();
                         let res = self.eth_api().inspect(db, evm_env, tx_env, &mut inspector)?;
 
@@ -788,6 +814,9 @@ where
                                 TracingInspectorConfig::from_geth_prestate_config(&prestate_config),
                             )
                         });
+                        
+                        Self::handle_bsc_system_transaction(&mut evm_env, &tx_env);
+                        
                         let gas_limit = tx_env.gas_limit();
                         let res =
                             self.eth_api().inspect(&mut *db, evm_env, tx_env, &mut inspector)?;
@@ -812,6 +841,8 @@ where
                         let mut inspector = MuxInspector::try_from_config(mux_config)
                             .map_err(Eth::Error::from_eth_err)?;
 
+                        Self::handle_bsc_system_transaction(&mut evm_env, &tx_env);
+
                         let res =
                             self.eth_api().inspect(&mut *db, evm_env, tx_env, &mut inspector)?;
                         let frame = inspector
@@ -828,6 +859,8 @@ where
                         let mut inspector = TracingInspector::new(
                             TracingInspectorConfig::from_flat_call_config(&flat_call_config),
                         );
+
+                        Self::handle_bsc_system_transaction(&mut evm_env, &tx_env);
 
                         let gas_limit = tx_env.gas_limit();
                         let res = self.eth_api().inspect(db, evm_env, tx_env, &mut inspector)?;
