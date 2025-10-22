@@ -671,7 +671,7 @@ impl<N: ProviderNodeTypes> HeaderProvider for ConsistentProvider<N> {
     }
 
     fn header_td_by_number(&self, number: BlockNumber) -> ProviderResult<Option<U256>> {
-        let number = if self.head_block.as_ref().map(|b| b.block_on_chain(number.into())).is_some()
+        let number = if self.head_block.as_ref().and_then(|b| b.block_on_chain(number.into())).is_some()
         {
             // If the block exists in memory, we should return a TD for it.
             //
