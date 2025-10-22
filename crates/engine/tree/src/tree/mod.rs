@@ -6,9 +6,8 @@ use crate::{
     tree::{error::InsertPayloadError, payload_validator::TreeCtx},
 };
 use alloy_consensus::BlockHeader;
-use alloy_eips::{eip1898::BlockWithParent, merge::EPOCH_SLOTS, BlockNumHash, NumHash};
-use alloy_evm::block::StateChangeSource;
-use alloy_primitives::{B256, BlockHash, BlockNumber};
+use alloy_eips::{eip1898::BlockWithParent, BlockNumHash, NumHash};
+use alloy_primitives::{BlockHash, BlockNumber, B256};
 use alloy_rpc_types_engine::{
     ForkchoiceState, PayloadStatus, PayloadStatusEnum, PayloadValidationError,
 };
@@ -88,8 +87,8 @@ pub mod state;
 /// an epoch has slots), then this exceeds the threshold at which the pipeline should be used to
 /// backfill this gap.
 ///
-/// This is kept for backwards compatibility with tests. Use `TreeConfig::min_blocks_for_pipeline_run()`
-/// for configurable threshold.
+/// This is kept for backwards compatibility with tests. Use
+/// `TreeConfig::min_blocks_for_pipeline_run()` for configurable threshold.
 #[cfg(test)]
 pub(crate) const MIN_BLOCKS_FOR_PIPELINE_RUN: u64 = DEFAULT_MIN_BLOCKS_FOR_PIPELINE_RUN;
 

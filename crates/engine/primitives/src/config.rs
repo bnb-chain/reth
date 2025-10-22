@@ -582,14 +582,13 @@ impl TreeConfig {
         self
     }
 
-
     /// Returns the number of storage proof worker threads.
     pub const fn storage_worker_count(&self) -> usize {
         self.storage_worker_count
     }
 
     /// Setter for the number of storage proof worker threads.
-    pub fn with_storage_worker_count(mut self, storage_worker_count: usize) -> Self {
+    pub const fn with_storage_worker_count(mut self, storage_worker_count: usize) -> Self {
         self.storage_worker_count = storage_worker_count;
         self
     }
@@ -600,7 +599,7 @@ impl TreeConfig {
     }
 
     /// Setter for the number of account proof worker threads.
-    pub fn with_account_worker_count(mut self, account_worker_count: usize) -> Self {
+    pub const fn with_account_worker_count(mut self, account_worker_count: usize) -> Self {
         self.account_worker_count = account_worker_count;
         self
     }
@@ -643,7 +642,6 @@ impl TreeConfig {
         self.min_blocks_for_pipeline_run = min_blocks_for_pipeline_run;
         self
     }
-
 
     /// Whether or not to use state root task
     pub const fn use_state_root_task(&self) -> bool {
