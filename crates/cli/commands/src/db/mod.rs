@@ -16,6 +16,7 @@ mod copy;
 mod diff;
 mod get;
 mod list;
+mod mdbx_to_mdbx;
 mod migrate;
 mod prune_checkpoints;
 mod repair_trie;
@@ -62,6 +63,8 @@ pub enum Subcommands {
     Clear(clear::Command),
     /// Migrate database to another location
     Migrate(migrate::Command),
+    /// Copy database to another location (mdbx-to-mdbx)
+    MdbxToMdbx(mdbx_to_mdbx::Command),
     /// Verifies trie consistency and outputs any inconsistencies
     RepairTrie(repair_trie::Command),
     /// Reads and displays the static file segment header
@@ -182,7 +185,14 @@ impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> Command<C>
             Subcommands::Migrate(command) => {
                 // Get database arguments from system configuration
                 let db_args = self.env.db.database_args();
-                db_ro_exec!(self.env, tool, N, {
+                db_exec!(self.env, tool, N, AccessRights::RO, {
+                    command.execute(tool.provider_factory.db_ref(), &db_args)?;
+                });
+            }
+            Subcommands::MdbxToMdbx(command) => {
+                // Get database arguments from system configuration
+                let db_args = self.env.db.database_args();
+                db_exec!(self.env, tool, N, AccessRights::RO, {
                     command.execute(tool.provider_factory.db_ref(), &db_args)?;
                 });
             }
