@@ -273,9 +273,7 @@ macro_rules! impl_compression_fixed_compact {
 
 impl_compression_fixed_compact!(B256, Address);
 
-// -----------------------------------------------------------------------------
-//  Parlia snapshot raw blob (BNB Smart Chain checkpoints)
-// -----------------------------------------------------------------------------
+/// Parlia snapshot raw blob (BNB Smart Chain checkpoints)
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ParliaSnapshotBlob(pub Vec<u8>);
 
