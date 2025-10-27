@@ -839,6 +839,7 @@ where
                 let block_with_trie = ExecutedBlockWithTrieUpdates {
                     block: executed_block,
                     trie: ExecutedTrieUpdates::Missing,
+                    difflayer: None,
                 };
 
                 // Perform the reorg to properly handle the unwind
@@ -899,6 +900,7 @@ where
             let block_with_trie = ExecutedBlockWithTrieUpdates {
                 block: executed_block,
                 trie: ExecutedTrieUpdates::Missing,
+                difflayer: None,
             };
 
             self.canonical_in_memory_state
@@ -1626,46 +1628,46 @@ where
         blocks_to_persist.reverse();
 
         // Calculate missing trie updates
-        for block in &mut blocks_to_persist {
-            if block.trie.is_present() {
-                continue
-            }
+        // for block in &mut blocks_to_persist {
+        //     if block.trie.is_present() {
+        //         continue
+        //     }
 
-            debug!(
-                target: "engine::tree",
-                block = ?block.recovered_block().num_hash(),
-                "Calculating trie updates before persisting"
-            );
+        //     debug!(
+        //         target: "engine::tree",
+        //         block = ?block.recovered_block().num_hash(),
+        //         "Calculating trie updates before persisting"
+        //     );
 
-            let provider = self
-                .state_provider_builder(block.recovered_block().parent_hash())?
-                .ok_or(AdvancePersistenceError::MissingAncestor(
-                    block.recovered_block().parent_hash(),
-                ))?
-                .build()?;
+        //     let provider = self
+        //         .state_provider_builder(block.recovered_block().parent_hash())?
+        //         .ok_or(AdvancePersistenceError::MissingAncestor(
+        //             block.recovered_block().parent_hash(),
+        //         ))?
+        //         .build()?;
 
-            let mut trie_input = self.compute_trie_input(
-                self.persisting_kind_for(block.recovered_block.block_with_parent()),
-                self.provider.database_provider_ro()?,
-                block.recovered_block().parent_hash(),
-                None,
-            )?;
-            // Extend with block we are generating trie updates for.
-            trie_input.append_ref(block.hashed_state());
-            let (_root, updates) = provider.state_root_from_nodes_with_updates(trie_input)?;
-            debug_assert_eq!(_root, block.recovered_block().state_root());
+        //     let mut trie_input = self.compute_trie_input(
+        //         self.persisting_kind_for(block.recovered_block.block_with_parent()),
+        //         self.provider.database_provider_ro()?,
+        //         block.recovered_block().parent_hash(),
+        //         None,
+        //     )?;
+        //     // Extend with block we are generating trie updates for.
+        //     trie_input.append_ref(block.hashed_state());
+        //     let (_root, updates) = provider.state_root_from_nodes_with_updates(trie_input)?;
+        //     debug_assert_eq!(_root, block.recovered_block().state_root());
 
-            // Update trie updates in both tree state and blocks to persist that we return
-            let trie_updates = Arc::new(updates);
-            let tree_state_block = self
-                .state
-                .tree_state
-                .blocks_by_hash
-                .get_mut(&block.recovered_block().hash())
-                .expect("blocks to persist are constructed from tree state blocks");
-            tree_state_block.trie.set_present(trie_updates.clone());
-            block.trie.set_present(trie_updates);
-        }
+        //     // Update trie updates in both tree state and blocks to persist that we return
+        //     let trie_updates = Arc::new(updates);
+        //     let tree_state_block = self
+        //         .state
+        //         .tree_state
+        //         .blocks_by_hash
+        //         .get_mut(&block.recovered_block().hash())
+        //         .expect("blocks to persist are constructed from tree state blocks");
+        //     tree_state_block.trie.set_present(trie_updates.clone());
+        //     block.trie.set_present(trie_updates);
+        // }
 
         Ok(blocks_to_persist)
     }
@@ -2111,6 +2113,7 @@ where
                     Some(ExecutedBlockWithTrieUpdates {
                         block: block.clone(),
                         trie: ExecutedTrieUpdates::Present(trie),
+                        difflayer: None,
                     })
                 })
                 .collect::<Vec<_>>();
@@ -2360,6 +2363,8 @@ where
 
         let executed = execute(&mut self.payload_validator, input, ctx)?;
 
+        let gas_used = executed.sealed_block().header().gas_used();
+
         // if the parent is the canonical head, we can insert the block as the pending block
         if self.state.tree_state.canonical_block_hash() == executed.recovered_block().parent_hash()
         {
@@ -2383,6 +2388,10 @@ where
             .engine
             .block_insert_total_duration
             .record(block_insert_start.elapsed().as_secs_f64());
+        self.metrics
+            .engine
+            .block_insert_gas_per_second
+            .set(gas_used as f64 / elapsed.as_secs_f64());
         debug!(target: "engine::tree", block=?block_num_hash, "Finished inserting block");
         Ok(InsertPayloadOk::Inserted(BlockStatus::Valid))
     }

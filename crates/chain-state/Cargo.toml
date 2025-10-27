@@ -22,6 +22,9 @@ reth-primitives-traits.workspace = true
 reth-storage-api.workspace = true
 reth-trie.workspace = true
 
+# rust-eth-triedb
+rust-eth-triedb-state-trie.workspace = true
+
 # ethereum
 alloy-eips.workspace = true
 alloy-primitives = { workspace = true, features = ["std"] }

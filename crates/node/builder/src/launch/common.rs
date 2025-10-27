@@ -92,6 +92,8 @@ use futures::{future::Either, stream, Stream, StreamExt};
 use reth_node_ethstats::EthStatsService;
 use reth_node_events::{cl::ConsensusLayerHealthEvents, node::NodeEvent};
 
+use reth_provider::HeaderProvider;
+
 /// Reusable setup for launching a node.
 ///
 /// This is the entry point for the node launch process. It implements a builder
@@ -166,7 +168,7 @@ impl LaunchContext {
 
         // Update the config with the command line arguments
         toml_config.peers.trusted_nodes_only = config.network.trusted_only;
-        
+
         // Apply fastnode settings when skip_state_root_validation is enabled
         if config.engine.skip_state_root_validation {
             info!(target: "reth::cli", "Fastnode mode enabled via --engine.skip-state-root-validation - disabling hashing stages and state root validation");
@@ -937,18 +939,96 @@ where
             // If the checkpoint of any stage is less than the checkpoint of the first stage,
             // retrieve and return the block hash of the latest header and use it as the target.
             if stage_checkpoint < first_stage_checkpoint {
-                debug!(
-                    target: "consensus::engine",
-                    first_stage_checkpoint,
-                    inconsistent_stage_id = %stage_id,
-                    inconsistent_stage_checkpoint = stage_checkpoint,
-                    "Pipeline sync progress is inconsistent"
-                );
-                return self.blockchain_db().block_hash(first_stage_checkpoint);
+                let execution_stage_checkpoint = self
+                    .blockchain_db()
+                    .get_stage_checkpoint(StageId::Execution)?
+                    .unwrap_or_default()
+                    .block_number;
+                let execution_stage_checkpoint_header = self.blockchain_db().header_by_number(execution_stage_checkpoint)?
+                    .ok_or_else(|| reth_provider::ProviderError::HeaderNotFound(alloy_eips::BlockHashOrNumber::Number(execution_stage_checkpoint)))?;
+                let last_executed_state_root = execution_stage_checkpoint_header.state_root();
+
+                let triedb = rust_eth_triedb::get_global_triedb();
+                let (latest_block_number, latest_state_root) = triedb.latest_persist_state().unwrap();
+
+                if latest_block_number != 0 { // skip genesis block
+                    if latest_state_root != last_executed_state_root {
+                        warn!("stage sync check failed, latest_state_root != last_persisted_state_root, should unwind,
+                               latest_triedb_block_number={},
+                               latest_triedb_state_root={:?},
+                               last_executed_block_number={},
+                               last_executed_state_root={:?}",
+                               latest_block_number,
+                               latest_state_root,
+                               execution_stage_checkpoint,
+                               last_executed_state_root);
+                    } else {
+                        info!("stage sync check passed, latest_state_root == last_persisted_state_root,
+                               latest_triedb_block_number={},
+                               latest_triedb_state_root={:?},
+                               last_executed_block_number={},
+                               last_executed_state_root={:?}",
+                               latest_block_number,
+                               latest_state_root,
+                               execution_stage_checkpoint,
+                               last_executed_state_root);
+                    }
+                }
+
+                let target = if latest_block_number > first_stage_checkpoint {
+                    latest_block_number
+                } else {
+                    first_stage_checkpoint
+                };
             }
         }
 
         self.ensure_chain_specific_db_checks()?;
+
+        let last_persisted_block_number = self.blockchain_db().last_block_number()?;
+        let last_persisted_header = self.blockchain_db().header_by_number(last_persisted_block_number)?
+            .ok_or_else(|| reth_provider::ProviderError::HeaderNotFound(alloy_eips::BlockHashOrNumber::Number(last_persisted_block_number)))?;
+        let last_persisted_state_root = last_persisted_header.state_root();
+        let triedb = rust_eth_triedb::get_global_triedb();
+        let (latest_block_number, latest_state_root) = triedb.latest_persist_state().unwrap();
+
+        if latest_block_number > last_persisted_block_number {
+            info!("live sync check failed, sync to latest triedb state,
+            latest_block_number={},
+            last_persisted_block_number={}",
+            latest_block_number,
+            last_persisted_block_number);
+            return self.blockchain_db().block_hash(latest_block_number);
+        } else if latest_block_number < last_persisted_block_number {
+            info!("live sync check failed, sync to last persisted block,
+            latest_block_number={},
+            last_persisted_block_number={}",
+            latest_block_number,
+            last_persisted_block_number);
+            return self.blockchain_db().block_hash(last_persisted_block_number);
+        } else {
+            if latest_state_root != last_persisted_state_root {
+                warn!("live sync check failed, latest_state_root != last_persisted_state_root, should unwind,
+                        latest_block_number={},
+                        latest_state_root={:?},
+                        last_persisted_block_number={},
+                        last_persisted_state_root={:?}",
+                        latest_block_number,
+                        latest_state_root,
+                        last_persisted_block_number,
+                        last_persisted_state_root);
+            } else {
+                info!("live sync check passed, latest_state_root == last_persisted_state_root,
+                        latest_block_number={},
+                        latest_state_root={:?},
+                        last_persisted_block_number={},
+                        last_persisted_state_root={:?}",
+                        latest_block_number,
+                        latest_state_root,
+                        last_persisted_block_number,
+                        last_persisted_state_root);
+            }
+        }
 
         Ok(None)
     }

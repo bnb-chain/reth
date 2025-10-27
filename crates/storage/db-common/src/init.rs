@@ -28,6 +28,10 @@ use serde::{Deserialize, Serialize};
 use std::io::BufRead;
 use tracing::{debug, error, info, trace};
 
+use std::collections::HashSet;
+use rust_eth_triedb_state_trie::account::StateAccount;
+use rust_eth_triedb::get_global_triedb;
+
 /// Default soft limit for number of bytes to read from state dump file, before inserting into
 /// database.
 ///
@@ -104,6 +108,8 @@ where
     let genesis = chain.genesis();
     let hash = chain.genesis_hash();
 
+    info!(target: "reth::storage", "genesis header state root: {:?}", chain.genesis_header().state_root());
+
     // Check if we already have the genesis header or if we have the wrong one.
     match factory.block_hash(0) {
         Ok(None) | Err(ProviderError::MissingStaticFileBlock(StaticFileSegment::Headers, 0)) => {}
@@ -147,7 +153,9 @@ where
     insert_genesis_state(&provider_rw, alloc.iter())?;
 
     // compute state root to populate trie tables
-    compute_state_root(&provider_rw, None)?;
+    if !provider_rw.is_active_eth_triedb() {
+        compute_state_root(&provider_rw, None)?;
+    }
 
     // insert sync stage
     for stage in StageId::ALL {
@@ -181,7 +189,140 @@ where
         + StateWriter
         + AsRef<Provider>,
 {
-    insert_state(provider, alloc, 0)
+    if provider.is_active_eth_triedb() {
+        insert_eth_triedb_state(provider, alloc, 0)
+    } else {
+        insert_state(provider, alloc, 0)
+    }
+}
+
+/// Inserts state at given block into rust eth triedb.
+pub fn insert_eth_triedb_state<'a, 'b, Provider>(
+    provider: &Provider,
+    alloc: impl Iterator<Item = (&'a Address, &'b GenesisAccount)>,
+    block: u64,
+) -> ProviderResult<()>
+where
+    Provider: StaticFileProviderFactory
+        + DBProvider<Tx: DbTxMut>
+        + HeaderProvider
+        + StateWriter
+        + AsRef<Provider>,
+{
+    let capacity = alloc.size_hint().1.unwrap_or(0);
+    let mut state_init: BundleStateInit =
+        HashMap::with_capacity_and_hasher(capacity, Default::default());
+    let mut reverts_init = HashMap::with_capacity_and_hasher(capacity, Default::default());
+    let mut contracts: HashMap<B256, Bytecode> =
+        HashMap::with_capacity_and_hasher(capacity, Default::default());
+
+    let mut triedb = get_global_triedb();
+    let mut state_accounts = HashMap::new();
+    let mut storage_states = HashMap::new();
+
+    for (address, account) in alloc {
+        let bytecode_hash = if let Some(code) = &account.code {
+            match Bytecode::new_raw_checked(code.clone()) {
+                Ok(bytecode) => {
+                    let hash = bytecode.hash_slow();
+                    contracts.insert(hash, bytecode);
+                    Some(hash)
+                }
+                Err(err) => {
+                    error!(%address, %err, "Failed to decode genesis bytecode.");
+                    return Err(DatabaseError::Other(err.to_string()).into());
+                }
+            }
+        } else {
+            None
+        };
+
+        let hashed_address = keccak256(address);
+        let mut state_account = StateAccount::default()
+            .with_nonce(account.nonce.unwrap_or_default())
+            .with_balance(account.balance);
+        if bytecode_hash.is_some() {
+            state_account = state_account.with_code_hash(bytecode_hash.unwrap());
+        }
+        state_accounts.insert(hashed_address, Some(state_account));
+
+        let mut storage_kvs = HashMap::new();
+
+        // get state
+        let storage = account
+            .storage
+            .as_ref()
+            .map(|m| {
+                m.iter()
+                    .map(|(key, value)| {
+                        let hashed_key = keccak256(key);
+                        storage_kvs.insert(hashed_key, Some(U256::from_be_bytes(value.0)));
+
+                        let value = U256::from_be_bytes(value.0);
+                        (*key, (U256::ZERO, value))
+                    })
+                    .collect::<HashMap<_, _>>()
+            })
+            .unwrap_or_default();
+
+        if !storage_kvs.is_empty() {
+            storage_states.insert(hashed_address, storage_kvs);
+        }
+
+        reverts_init.insert(
+            *address,
+            (Some(None), storage.keys().map(|k| StorageEntry::new(*k, U256::ZERO)).collect()),
+        );
+
+        state_init.insert(
+            *address,
+            (
+                None,
+                Some(Account {
+                    nonce: account.nonce.unwrap_or_default(),
+                    balance: account.balance,
+                    bytecode_hash,
+                }),
+                storage,
+            ),
+        );
+    }
+
+
+    let (root, nodes) = triedb.update_and_commit(
+        alloy_trie::EMPTY_ROOT_HASH,
+        None,
+        state_accounts,
+        HashSet::new(),
+        storage_states)
+        .map_err(|_| ProviderError::Database(DatabaseError::Other("Failed to update and commit state".to_string())))?;
+
+    let difflayer = nodes.as_ref().map(|d| d.to_difflayer());
+    triedb.flush(0, root, &difflayer).map_err(|_| ProviderError::Database(DatabaseError::Other("Failed to flush state".to_string())))?;
+
+    info!(target: "reth::storage", "Triedb genesis state root computed: {:?}", root);
+
+
+    let all_reverts_init: RevertsInit = HashMap::from_iter([(block, reverts_init)]);
+
+    let execution_outcome = ExecutionOutcome::new_init(
+        state_init,
+        all_reverts_init,
+        contracts,
+        Vec::default(),
+        block,
+        Vec::new(),
+    );
+
+    provider.write_state(
+        &execution_outcome,
+        OriginalValuesKnown::Yes,
+        StorageLocation::Database,
+    )?;
+
+    trace!(target: "reth::cli", "Inserted state");
+
+    Ok(())
 }
 
 /// Inserts state at given block into database.

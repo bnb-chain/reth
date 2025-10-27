@@ -153,6 +153,8 @@ pub(crate) struct EngineMetrics {
     pub(crate) failed_forkchoice_updated_response_deliveries: Counter,
     /// block insert duration
     pub(crate) block_insert_total_duration: Histogram,
+    /// The instantaneous amount of gas processed per second.
+    pub(crate) block_insert_gas_per_second: Gauge,
 }
 
 /// Metrics for non-execution related block validation.
@@ -173,6 +175,10 @@ pub(crate) struct BlockValidationMetrics {
     pub(crate) payload_validation_duration: Gauge,
     /// Histogram of payload validation latency
     pub(crate) payload_validation_histogram: Histogram,
+    /// Payload conversion and validation latency
+    pub(crate) payload_difflayer_duration: Gauge,
+    /// Histogram of payload validation latency
+    pub(crate) payload_difflayer_histogram: Histogram,
 }
 
 impl BlockValidationMetrics {
@@ -184,11 +190,23 @@ impl BlockValidationMetrics {
         self.state_root_histogram.record(elapsed_as_secs);
     }
 
+    pub(crate) fn record_state_root_duration(&self, elapsed_as_secs: f64) {
+        self.state_root_duration.set(elapsed_as_secs);
+        self.state_root_histogram.record(elapsed_as_secs);
+    }
+
     /// Records a new payload validation time, updating both the histogram and the payload
     /// validation gauge
     pub(crate) fn record_payload_validation(&self, elapsed_as_secs: f64) {
         self.payload_validation_duration.set(elapsed_as_secs);
         self.payload_validation_histogram.record(elapsed_as_secs);
+    }
+
+    /// Records a new payload difflayer time, updating both the histogram and the payload
+    /// difflayer gauge
+    pub(crate) fn record_payload_difflayer(&self, elapsed_as_secs: f64) {
+        self.payload_difflayer_duration.set(elapsed_as_secs);
+        self.payload_difflayer_histogram.record(elapsed_as_secs);
     }
 }
 

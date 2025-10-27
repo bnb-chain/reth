@@ -27,6 +27,11 @@ use std::{
 };
 use tracing::{debug, trace};
 
+use rust_eth_triedb::triedb::TrieDB;
+use rust_eth_triedb_state_trie::DiffLayers;
+use rust_eth_triedb_pathdb::PathDB;
+use dashmap::DashSet;
+
 /// A task that is responsible for caching and prewarming the cache by executing transactions
 /// individually in parallel.
 ///
@@ -48,6 +53,8 @@ where
     to_multi_proof: Option<Sender<MultiProofMessage>>,
     /// Receiver for events produced by tx execution
     actions_rx: Receiver<PrewarmTaskEvent>,
+    /// Sender to emit triedb prewarm task events
+    triedb_prewarm_tx: Option<Sender<PrewarmTaskEvent>>,
 }
 
 impl<N, P, Evm> PrewarmCacheTask<N, P, Evm>
@@ -62,6 +69,8 @@ where
         execution_cache: ExecutionCache,
         ctx: PrewarmContext<N, P, Evm>,
         to_multi_proof: Option<Sender<MultiProofMessage>>,
+        triedb_prewarm_tx: Option<Sender<PrewarmTaskEvent>>,
+        max_concurrency: usize,
     ) -> (Self, Sender<PrewarmTaskEvent>) {
         let (actions_tx, actions_rx) = channel();
         (
@@ -69,9 +78,10 @@ where
                 executor,
                 execution_cache,
                 ctx,
-                max_concurrency: 64,
+                max_concurrency,
                 to_multi_proof,
                 actions_rx,
+                triedb_prewarm_tx,
             },
             actions_tx,
         )
@@ -167,14 +177,17 @@ where
         while let Ok(event) = self.actions_rx.recv() {
             match event {
                 PrewarmTaskEvent::TerminateTransactionExecution => {
+                    self.triedb_prewarm_tx.as_ref().map(|tx| tx.send(PrewarmTaskEvent::TerminateTransactionExecution));
                     // stop tx processing
                     self.ctx.terminate_execution.store(true, Ordering::Relaxed);
                 }
                 PrewarmTaskEvent::Outcome { proof_targets } => {
+                    self.triedb_prewarm_tx.as_ref().map(|tx| tx.send(PrewarmTaskEvent::Outcome { proof_targets }));
                     // completed executing a set of transactions
-                    self.send_multi_proof_targets(proof_targets);
+                    // self.send_multi_proof_targets(proof_targets);
                 }
                 PrewarmTaskEvent::Terminate { block_output } => {
+                    self.triedb_prewarm_tx.as_ref().map(|tx| tx.send(PrewarmTaskEvent::Terminate { block_output: block_output.clone() }));
                     trace!(target: "engine::tree::prewarm", "Received termination signal");
                     final_block_output = Some(block_output);
 
@@ -184,6 +197,8 @@ where
                     }
                 }
                 PrewarmTaskEvent::FinishedTxExecution { executed_transactions } => {
+                    self.triedb_prewarm_tx.as_ref().map(|tx| tx.send(PrewarmTaskEvent::FinishedTxExecution { executed_transactions }));
+
                     trace!(target: "engine::tree::prewarm", "Finished prewarm execution signal");
                     self.ctx.metrics.transactions.set(executed_transactions as f64);
                     self.ctx.metrics.transactions_histogram.record(executed_transactions as f64);
@@ -203,6 +218,127 @@ where
         // save caches and finish
         if let Some(Some(state)) = final_block_output {
             self.save_cache(state);
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct TrieDBPrewarmTask {
+    pub(super) max_concurrency: usize,
+    pub(super) actions_rx: Receiver<PrewarmTaskEvent>,
+    pub(super) executor: WorkloadExecutor,
+    pub(super) pathdb: PathDB,
+    pub(super) parent_root: B256,
+    pub(super) difflayer: Option<DiffLayers>,
+}
+
+impl TrieDBPrewarmTask {
+    pub(super) fn new(
+        executor: WorkloadExecutor,
+        pathdb: PathDB,
+        parent_root: B256,
+        difflayer: Option<DiffLayers>,
+        max_concurrency: usize,
+    ) -> (Self, Sender<PrewarmTaskEvent>) {
+        let (actions_tx, actions_rx) = channel();
+        (
+            Self { executor, pathdb, parent_root, difflayer, max_concurrency, actions_rx },
+            actions_tx,
+        )
+    }
+    fn spawn_all(
+        &self,
+        prefetcher_rx: Receiver<MultiProofMessage>,
+    ) {
+        let executor = self.executor.clone();
+        let max_concurrency = self.max_concurrency;
+        let parent_root = self.parent_root;
+        let pathdb_clone = self.pathdb.clone();
+        let difflayer_clone = self.difflayer.clone();
+
+        self.executor.spawn_blocking(move || {
+            let mut handles = Vec::new();
+            let mut executing = 0;
+            let filter = Arc::new(DashSet::<B256>::new());
+
+            while let Ok(message) = prefetcher_rx.recv() {
+                if let MultiProofMessage::PrefetchProofs (milti_proofs) = message {
+                    let task_idx = executing % max_concurrency;
+                    if handles.len() <= task_idx {
+                        let (tx, rx) = mpsc::channel::<MultiProofTargets>();
+                        let mut triedb_clone = TrieDB::new(pathdb_clone.clone());
+                        triedb_clone.state_at(parent_root, difflayer_clone.as_ref()).unwrap();
+                        let filter_clone = filter.clone();
+
+                        executor.spawn_blocking(move || {
+                            while let Ok(proofs) = rx.recv() {
+                                let mut unfetched_proofs = MultiProofTargets::with_capacity(proofs.len());
+                                for (addr, storages) in proofs {
+                                    if !filter_clone.contains(&addr) {
+                                        unfetched_proofs.insert(addr, storages);
+                                        filter_clone.insert(addr);
+                                        continue
+                                    }
+                                    for storage in storages {
+                                        if !filter_clone.contains(&storage) {
+                                            unfetched_proofs.entry(addr).or_insert_with(B256Set::default).insert(storage);
+                                            filter_clone.insert(storage);
+                                        }
+                                    }
+                                }
+                                for (addr, storages) in unfetched_proofs {
+                                    if storages.is_empty() {
+                                        let _ = triedb_clone.get_account_with_hash_state(addr);
+                                    }
+                                    for key in storages {
+                                        let _ = triedb_clone.get_storage_with_hash_state(addr, key);
+                                    }
+                                }
+                            }
+                            drop(rx);
+                            drop(triedb_clone);
+                            drop(filter_clone);
+                        });
+                        handles.push(tx);
+                    }
+                    let _ = handles[task_idx].send(milti_proofs);
+                    executing += 1;
+                }
+            }
+            drop(handles);
+            drop(pathdb_clone);
+            drop(difflayer_clone);
+            drop(filter);
+        });
+    }
+
+    pub(super) fn run(self) {
+        let (prefetcher_tx, prefetcher_rx) = mpsc::channel::<MultiProofMessage>();
+        self.spawn_all(prefetcher_rx);
+        while let Ok(event) = self.actions_rx.recv() {
+            match event {
+                PrewarmTaskEvent::TerminateTransactionExecution => {
+                    drop(prefetcher_tx);
+                    break;
+                }
+                PrewarmTaskEvent::Outcome { proof_targets } => {
+                    // completed executing a set of transactions
+                    if let Some(targets) = proof_targets {
+                        let _ = prefetcher_tx.send(MultiProofMessage::PrefetchProofs(targets));
+                    } else {
+                        drop(prefetcher_tx);
+                        break;
+                    }
+                }
+                PrewarmTaskEvent::Terminate { block_output: _ } => {
+                    drop(prefetcher_tx);
+                    break;
+                }
+                PrewarmTaskEvent::FinishedTxExecution { executed_transactions: _ } => {
+                    // drop(prefetcher_tx);
+                    // break;
+                }
+            }
         }
     }
 }

@@ -15,6 +15,9 @@ use revm_database::OriginalValuesKnown;
 use std::sync::Arc;
 use tracing::debug;
 
+use tracing::{error};
+use rust_eth_triedb::get_global_triedb;
+
 /// [`UnifiedStorageWriter`] is responsible for managing the writing to storage with both database
 /// and static file providers.
 #[derive(Debug)]
@@ -151,6 +154,8 @@ where
 
         debug!(target: "provider::storage_writer", block_count = %blocks.len(), "Writing blocks and execution data to storage");
 
+        let mut triedb = get_global_triedb();
+
         // TODO: Do performant / batched writes for each type of object
         // instead of a loop over all blocks,
         // meaning:
@@ -162,9 +167,13 @@ where
         // Insert the blocks
         for ExecutedBlockWithTrieUpdates {
             block: ExecutedBlock { recovered_block, execution_output, hashed_state },
-            trie,
+            trie:_,
+            difflayer,
         } in blocks
         {
+            let block_number = recovered_block.number();
+            let state_root = recovered_block.state_root();
+
             let block_hash = recovered_block.hash();
             self.database()
                 .insert_block(Arc::unwrap_or_clone(recovered_block), StorageLocation::Both)?;
@@ -180,9 +189,16 @@ where
             // insert hashes and intermediate merkle nodes
             self.database()
                 .write_hashed_state(&Arc::unwrap_or_clone(hashed_state).into_sorted())?;
-            self.database().write_trie_updates(
-                trie.as_ref().ok_or(ProviderError::MissingTrieUpdates(block_hash))?,
-            )?;
+            // self.database().write_trie_updates(
+            //     trie.as_ref().ok_or(ProviderError::MissingTrieUpdates(block_hash))?,
+            // )?;
+            let res = triedb.flush(
+                block_number,
+                state_root,
+                &difflayer);
+            if let Err(e) = res {
+                error!("Failed to flush difflayer: {:?}", e);
+            }
         }
 
         // update history indices

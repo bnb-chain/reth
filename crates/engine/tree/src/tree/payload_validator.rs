@@ -46,6 +46,10 @@ use reth_trie_parallel::root::{ParallelStateRoot, ParallelStateRootError};
 use std::{collections::HashMap, sync::Arc, time::Instant};
 use tracing::{debug, debug_span, error, info, trace, warn};
 
+use rust_eth_triedb_state_trie::node::DiffLayers;
+use rust_eth_triedb_pathdb::PathDB;
+use rust_eth_triedb::{TrieDB, get_global_triedb};
+
 /// Context providing access to tree state during validation.
 ///
 /// This context is provided to the [`EngineValidator`] and includes the state of the tree's
@@ -161,6 +165,8 @@ where
     metrics: EngineApiMetrics,
     /// Validator for the payload.
     validator: V,
+    /// TrieDB for the engine.
+    triedb: TrieDB<PathDB>,
 }
 
 impl<N, P, Evm, V> BasicEngineValidator<P, Evm, V>
@@ -185,12 +191,15 @@ where
         config: TreeConfig,
         invalid_block_hook: Box<dyn InvalidBlockHook<N>>,
     ) -> Self {
+        let mut triedb = get_global_triedb();
+
         let precompile_cache_map = PrecompileCacheMap::default();
         let payload_processor = PayloadProcessor::new(
             WorkloadExecutor::default(),
             evm_config.clone(),
             &config,
             precompile_cache_map.clone(),
+            triedb.get_mut_db_ref().clone(),
         );
         Self {
             provider,
@@ -203,7 +212,13 @@ where
             invalid_block_hook,
             metrics: EngineApiMetrics::default(),
             validator,
+            triedb,
         }
+    }
+
+    // Returns a mutable reference to the TrieDB.
+    pub fn get_triedb(&mut self) -> &mut TrieDB<PathDB> {
+        &mut self.triedb
     }
 
     /// Converts a [`BlockOrPayload`] to a recovered block.
@@ -341,78 +356,93 @@ where
         // See https://github.com/paradigmxyz/reth/issues/12688 for more details
         let persisting_kind = ctx.persisting_kind_for(input.block_with_parent());
         // don't run parallel if state root fallback is set
-        let run_parallel_state_root =
-            persisting_kind.can_run_parallel_state_root() && !self.config.state_root_fallback();
+        // let run_parallel_state_root =
+        //     persisting_kind.can_run_parallel_state_root() && !self.config.state_root_fallback();
 
-        // Use state root task only if:
-        // 1. No persistence is in progress
-        // 2. Config allows it
-        // 3. No ancestors with missing trie updates. If any exist, it will mean that every state
-        //    root task proof calculation will include a lot of unrelated paths in the prefix sets.
-        //    It's cheaper to run a parallel state root that does one walk over trie tables while
-        //    accounting for the prefix sets.
-        let has_ancestors_with_missing_trie_updates =
-            self.has_ancestors_with_missing_trie_updates(input.block_with_parent(), ctx.state());
-        let mut use_state_root_task = run_parallel_state_root &&
-            self.config.use_state_root_task() &&
-            !has_ancestors_with_missing_trie_updates &&
-            !self.config.skip_state_root_validation();
+        // // Use state root task only if:
+        // // 1. No persistence is in progress
+        // // 2. Config allows it
+        // // 3. No ancestors with missing trie updates. If any exist, it will mean that every state
+        // //    root task proof calculation will include a lot of unrelated paths in the prefix sets.
+        // //    It's cheaper to run a parallel state root that does one walk over trie tables while
+        // //    accounting for the prefix sets.
+        // let has_ancestors_with_missing_trie_updates =
+        //     self.has_ancestors_with_missing_trie_updates(input.block_with_parent(), ctx.state());
+        // let mut use_state_root_task = run_parallel_state_root &&
+        //     self.config.use_state_root_task() &&
+        //     !has_ancestors_with_missing_trie_updates &&
+        //     !self.config.skip_state_root_validation();
 
-        debug!(
-            target: "engine::tree",
-            block=?block_num_hash,
-            run_parallel_state_root,
-            has_ancestors_with_missing_trie_updates,
-            use_state_root_task,
-            config_allows_state_root_task=self.config.use_state_root_task(),
-            "Deciding which state root algorithm to run"
-        );
+        // debug!(
+        //     target: "engine::tree",
+        //     block=?block_num_hash,
+        //     run_parallel_state_root,
+        //     has_ancestors_with_missing_trie_updates,
+        //     use_state_root_task,
+        //     config_allows_state_root_task=self.config.use_state_root_task(),
+        //     "Deciding which state root algorithm to run"
+        // );
 
         // use prewarming background task
         let txs = self.tx_iterator_for(&input)?;
-        let mut handle = if use_state_root_task {
-            // use background tasks for state root calc
-            let consistent_view =
-                ensure_ok!(ConsistentDbView::new_with_latest_tip(self.provider.clone()));
+        // let mut handle = if use_state_root_task {
+        //     // use background tasks for state root calc
+        //     let consistent_view =
+        //         ensure_ok!(ConsistentDbView::new_with_latest_tip(self.provider.clone()));
 
-            // get allocated trie input if it exists
-            let allocated_trie_input = self.payload_processor.take_trie_input();
+        //     // get allocated trie input if it exists
+        //     let allocated_trie_input = self.payload_processor.take_trie_input();
 
-            // Compute trie input
-            let trie_input_start = Instant::now();
-            let trie_input = ensure_ok!(self.compute_trie_input(
-                persisting_kind,
-                ensure_ok!(consistent_view.provider_ro()),
-                parent_hash,
-                ctx.state(),
-                allocated_trie_input,
-            ));
+        //     // Compute trie input
+        //     let trie_input_start = Instant::now();
+        //     let trie_input = ensure_ok!(self.compute_trie_input(
+        //         persisting_kind,
+        //         ensure_ok!(consistent_view.provider_ro()),
+        //         parent_hash,
+        //         ctx.state(),
+        //         allocated_trie_input,
+        //     ));
 
-            self.metrics
-                .block_validation
-                .trie_input_duration
-                .record(trie_input_start.elapsed().as_secs_f64());
+        //     self.metrics
+        //         .block_validation
+        //         .trie_input_duration
+        //         .record(trie_input_start.elapsed().as_secs_f64());
 
-            // Use state root task only if prefix sets are empty, otherwise proof generation is too
-            // expensive because it requires walking over the paths in the prefix set in every
-            // proof.
-            if trie_input.prefix_sets.is_empty() {
-                self.payload_processor.spawn(
-                    env.clone(),
-                    txs,
-                    provider_builder,
-                    consistent_view,
-                    trie_input,
-                    &self.config,
-                )
-            } else {
-                debug!(target: "engine::tree", block=?block_num_hash, "Disabling state root task due to non-empty prefix sets");
-                use_state_root_task = false;
-                self.payload_processor.spawn_cache_exclusive(env.clone(), txs, provider_builder)
-            }
-        } else {
-            self.payload_processor.spawn_cache_exclusive(env.clone(), txs, provider_builder)
-        };
+        //     // Use state root task only if prefix sets are empty, otherwise proof generation is too
+        //     // expensive because it requires walking over the paths in the prefix set in every
+        //     // proof.
+        //     if trie_input.prefix_sets.is_empty() {
+        //         self.payload_processor.spawn(
+        //             env.clone(),
+        //             txs,
+        //             provider_builder,
+        //             consistent_view,
+        //             trie_input,
+        //             &self.config,
+        //         )
+        //     } else {
+        //         debug!(target: "engine::tree", block=?block_num_hash, "Disabling state root task due to non-empty prefix sets");
+        //         use_state_root_task = false;
+        //         self.payload_processor.spawn_cache_exclusive(env.clone(), txs, provider_builder)
+        //     }
+        // } else {
+        //     self.payload_processor.spawn_cache_exclusive(env.clone(), txs, provider_builder)
+        // };
+
+        let difflayer_start = Instant::now();
+        let parent_difflayer = self.compute_difflayer(
+            persisting_kind,
+            parent_hash,
+            ctx.state());
+        self.metrics.block_validation.record_payload_difflayer(difflayer_start.elapsed().as_secs_f64());
+
+        let mut handle = self.payload_processor.spawn_cache_exclusive_with_triedb(
+            env.clone(),
+            txs,
+            provider_builder,
+            parent_block.state_root(),
+            parent_difflayer.clone(),
+        );
 
         // Use cached state provider before executing, used in execution after prewarming threads
         // complete
@@ -432,7 +462,7 @@ where
         };
 
         // after executing the block we can stop executing transactions
-        handle.stop_prewarming_execution();
+        // handle.stop_prewarming_execution();
 
         let block = self.convert_to_block(input)?;
 
@@ -466,6 +496,8 @@ where
 
         let hashed_state = self.provider.hashed_post_state(&output.state);
 
+        let hashed_state_clone = hashed_state.clone();
+
         if let Err(err) =
             self.validator.validate_block_post_execution_with_hashed_state(&hashed_state, &block)
         {
@@ -474,109 +506,30 @@ where
             return Err(InsertBlockError::new(block.into_sealed_block(), err.into()).into())
         }
 
-        // Skip state root computation entirely in fastnode mode
-        let (state_root, trie_output, _root_elapsed) = if self.config.skip_state_root_validation() {
-            debug!(target: "engine::tree", block=?block_num_hash, "Skipping state root calculation in fastnode mode");
-            // Use the state root from the block header directly without validation
-            (block.header().state_root(), TrieUpdates::default(), std::time::Duration::ZERO)
+        handle.stop_prewarming_execution();
+        let root_time = Instant::now();
+        let (state_root, difflayer) = if parent_block.state_root() == block.header().state_root() {
+            (block.header().state_root(), None)
         } else {
-            debug!(target: "engine::tree", block=?block_num_hash, "Calculating block state root");
-
-            let root_time = Instant::now();
-            let mut maybe_state_root = None;
-
-
-            if run_parallel_state_root {
-                // if we new payload extends the current canonical change we attempt to use the
-                // background task or try to compute it in parallel
-                if use_state_root_task {
-                    debug!(target: "engine::tree", block=?block_num_hash, "Using sparse trie state root algorithm");
-                    match handle.state_root() {
-                        Ok(StateRootComputeOutcome { state_root, trie_updates }) => {
-                            let elapsed = root_time.elapsed();
-                            info!(target: "engine::tree", ?state_root, ?elapsed, "State root task finished");
-                            // we double check the state root here for good measure
-                            if state_root == block.header().state_root() {
-                                maybe_state_root = Some((state_root, trie_updates, elapsed))
-                            } else {
-                                warn!(
-                                    target: "engine::tree",
-                                    ?state_root,
-                                    block_state_root = ?block.header().state_root(),
-                                    "State root task returned incorrect state root"
-                                );
-                            }
-                        }
-                        Err(error) => {
-                            debug!(target: "engine::tree", %error, "Background parallel state root computation failed");
-                        }
-                    }
-                } else {
-                    debug!(target: "engine::tree", block=?block_num_hash, "Using parallel state root algorithm");
-                    match self.compute_state_root_parallel(
-                        persisting_kind,
-                        block.header().parent_hash(),
-                        &hashed_state,
-                        ctx.state(),
-                    ) {
-                        Ok(result) => {
-                            info!(
-                                target: "engine::tree",
-                                block = ?block_num_hash,
-                                regular_state_root = ?result.0,
-                                "Regular root task finished"
-                            );
-                            maybe_state_root = Some((result.0, result.1, root_time.elapsed()));
-                        }
-                        Err(ParallelStateRootError::Provider(ProviderError::ConsistentView(
-                            error,
-                        ))) => {
-                            debug!(target: "engine::tree", %error, "Parallel state root computation failed consistency check, falling back");
-                        }
-                        Err(error) => {
-                            return Err(InsertPayloadError::Block(InsertBlockError::new(
-                                block.into_sealed_block(),
-                                InsertBlockErrorKind::Other(Box::new(error)),
-                            )))
-                        }
-                    }
-                }
-            }
-
-            let (state_root, trie_output, root_elapsed) = if let Some(maybe_state_root) =
-                maybe_state_root
-            {
-                maybe_state_root
+            let (state_root, difflayer) = if let Ok(result) = self.get_triedb().commit_hashed_post_state(
+                parent_block.state_root(),
+                parent_difflayer.as_ref(),
+                &hashed_state_clone) {
+                result
             } else {
-                // fallback is to compute the state root regularly in sync
-                if self.config.state_root_fallback() {
-                    debug!(target: "engine::tree", block=?block_num_hash, "Using state root fallback for testing");
-                } else {
-                    warn!(target: "engine::tree", block=?block_num_hash, ?persisting_kind, "Failed to compute state root in parallel");
-                    self.metrics.block_validation.state_root_parallel_fallback_total.increment(1);
-                }
-
-                let (root, updates) =
-                    ensure_ok!(state_provider.state_root_with_updates(hashed_state.clone()));
-                (root, updates, root_time.elapsed())
+                panic!("TrieDB update failed");
             };
-
-            self.metrics
-                .block_validation
-                .record_state_root(&trie_output, root_elapsed.as_secs_f64());
-            debug!(target: "engine::tree", ?root_elapsed, block=?block_num_hash, "Calculated state root");
-
-            (state_root, trie_output, root_elapsed)
+            (state_root, difflayer)
         };
+        self.metrics.block_validation.record_state_root_duration(root_time.elapsed().as_secs_f64());
 
-        // ensure state root matches (validation already skipped in fastnode mode)
-        if !self.config.skip_state_root_validation() && state_root != block.header().state_root() {
-            // call post-block hook
+        if state_root != block.header().state_root() {
+            warn!("hashed_state: {:?} ", hashed_state_clone);
             self.on_invalid_block(
                 &parent_block,
                 &block,
                 &output,
-                Some((&trie_output, state_root)),
+                Some((&TrieUpdates::default(), state_root)),
                 ctx.state_mut(),
             );
             let block_state_root = block.header().state_root();
@@ -590,8 +543,124 @@ where
             .into())
         }
 
+        // // Skip state root computation entirely in fastnode mode
+        // let (state_root, trie_output, _root_elapsed) = if self.config.skip_state_root_validation() {
+        //     debug!(target: "engine::tree", block=?block_num_hash, "Skipping state root calculation in fastnode mode");
+        //     // Use the state root from the block header directly without validation
+        //     (block.header().state_root(), TrieUpdates::default(), std::time::Duration::ZERO)
+        // } else {
+        //     debug!(target: "engine::tree", block=?block_num_hash, "Calculating block state root");
+
+        //     let root_time = Instant::now();
+        //     let mut maybe_state_root = None;
+
+
+        //     if run_parallel_state_root {
+        //         // if we new payload extends the current canonical change we attempt to use the
+        //         // background task or try to compute it in parallel
+        //         if use_state_root_task {
+        //             debug!(target: "engine::tree", block=?block_num_hash, "Using sparse trie state root algorithm");
+        //             match handle.state_root() {
+        //                 Ok(StateRootComputeOutcome { state_root, trie_updates }) => {
+        //                     let elapsed = root_time.elapsed();
+        //                     info!(target: "engine::tree", ?state_root, ?elapsed, "State root task finished");
+        //                     // we double check the state root here for good measure
+        //                     if state_root == block.header().state_root() {
+        //                         maybe_state_root = Some((state_root, trie_updates, elapsed))
+        //                     } else {
+        //                         warn!(
+        //                             target: "engine::tree",
+        //                             ?state_root,
+        //                             block_state_root = ?block.header().state_root(),
+        //                             "State root task returned incorrect state root"
+        //                         );
+        //                     }
+        //                 }
+        //                 Err(error) => {
+        //                     debug!(target: "engine::tree", %error, "Background parallel state root computation failed");
+        //                 }
+        //             }
+        //         } else {
+        //             debug!(target: "engine::tree", block=?block_num_hash, "Using parallel state root algorithm");
+        //             match self.compute_state_root_parallel(
+        //                 persisting_kind,
+        //                 block.header().parent_hash(),
+        //                 &hashed_state,
+        //                 ctx.state(),
+        //             ) {
+        //                 Ok(result) => {
+        //                     info!(
+        //                         target: "engine::tree",
+        //                         block = ?block_num_hash,
+        //                         regular_state_root = ?result.0,
+        //                         "Regular root task finished"
+        //                     );
+        //                     maybe_state_root = Some((result.0, result.1, root_time.elapsed()));
+        //                 }
+        //                 Err(ParallelStateRootError::Provider(ProviderError::ConsistentView(
+        //                     error,
+        //                 ))) => {
+        //                     debug!(target: "engine::tree", %error, "Parallel state root computation failed consistency check, falling back");
+        //                 }
+        //                 Err(error) => {
+        //                     return Err(InsertPayloadError::Block(InsertBlockError::new(
+        //                         block.into_sealed_block(),
+        //                         InsertBlockErrorKind::Other(Box::new(error)),
+        //                     )))
+        //                 }
+        //             }
+        //         }
+        //     }
+
+        //     let (state_root, trie_output, root_elapsed) = if let Some(maybe_state_root) =
+        //         maybe_state_root
+        //     {
+        //         maybe_state_root
+        //     } else {
+        //         // fallback is to compute the state root regularly in sync
+        //         if self.config.state_root_fallback() {
+        //             debug!(target: "engine::tree", block=?block_num_hash, "Using state root fallback for testing");
+        //         } else {
+        //             warn!(target: "engine::tree", block=?block_num_hash, ?persisting_kind, "Failed to compute state root in parallel");
+        //             self.metrics.block_validation.state_root_parallel_fallback_total.increment(1);
+        //         }
+
+        //         let (root, updates) =
+        //             ensure_ok!(state_provider.state_root_with_updates(hashed_state.clone()));
+        //         (root, updates, root_time.elapsed())
+        //     };
+
+        //     self.metrics
+        //         .block_validation
+        //         .record_state_root(&trie_output, root_elapsed.as_secs_f64());
+        //     debug!(target: "engine::tree", ?root_elapsed, block=?block_num_hash, "Calculated state root");
+
+        //     (state_root, trie_output, root_elapsed)
+        // };
+
+        // // ensure state root matches (validation already skipped in fastnode mode)
+        // if !self.config.skip_state_root_validation() && state_root != block.header().state_root() {
+        //     // call post-block hook
+        //     self.on_invalid_block(
+        //         &parent_block,
+        //         &block,
+        //         &output,
+        //         Some((&trie_output, state_root)),
+        //         ctx.state_mut(),
+        //     );
+        //     let block_state_root = block.header().state_root();
+        //     return Err(InsertBlockError::new(
+        //         block.into_sealed_block(),
+        //         ConsensusError::BodyStateRootDiff(
+        //             GotExpected { got: state_root, expected: block_state_root }.into(),
+        //         )
+        //         .into(),
+        //     )
+        //     .into())
+        // }
+
         // terminate prewarming task with good state output
-        handle.terminate_caching(Some(output.state.clone()));
+        // handle.terminate_caching(Some(output.state.clone()));
 
         // If the block doesn't connect to the database tip, we don't save its trie updates, because
         // they may be incorrect as they were calculated on top of the forked block.
@@ -600,23 +669,23 @@ where
         // trie updates may be incorrect.
         //
         // Instead, they will be recomputed on persistence.
-        let connects_to_last_persisted =
-            ensure_ok!(self.block_connects_to_last_persisted(ctx, &block));
-        let should_discard_trie_updates =
-            !connects_to_last_persisted || has_ancestors_with_missing_trie_updates;
-        debug!(
-            target: "engine::tree",
-            block = ?block_num_hash,
-            connects_to_last_persisted,
-            has_ancestors_with_missing_trie_updates,
-            should_discard_trie_updates,
-            "Checking if should discard trie updates"
-        );
-        let trie_updates = if should_discard_trie_updates {
-            ExecutedTrieUpdates::Missing
-        } else {
-            ExecutedTrieUpdates::Present(Arc::new(trie_output))
-        };
+        // let connects_to_last_persisted =
+        //     ensure_ok!(self.block_connects_to_last_persisted(ctx, &block));
+        // let should_discard_trie_updates =
+        //     !connects_to_last_persisted || has_ancestors_with_missing_trie_updates;
+        // debug!(
+        //     target: "engine::tree",
+        //     block = ?block_num_hash,
+        //     connects_to_last_persisted,
+        //     has_ancestors_with_missing_trie_updates,
+        //     should_discard_trie_updates,
+        //     "Checking if should discard trie updates"
+        // );
+        // let trie_updates = if should_discard_trie_updates {
+        //     ExecutedTrieUpdates::Missing
+        // } else {
+        //     ExecutedTrieUpdates::Present(Arc::new(trie_output))
+        // };
 
         Ok(ExecutedBlockWithTrieUpdates {
             block: ExecutedBlock {
@@ -624,8 +693,18 @@ where
                 execution_output: Arc::new(ExecutionOutcome::from((output, block_num_hash.number))),
                 hashed_state: Arc::new(hashed_state),
             },
-            trie: trie_updates,
+            trie: ExecutedTrieUpdates::Present(Arc::new(TrieUpdates::default())),
+            difflayer: difflayer,
         })
+    }
+
+    fn compute_difflayer(
+        &self,
+        _persisting_kind: PersistingKind,
+        parent_hash: B256,
+        state: &EngineApiTreeState<N>,
+    ) -> Option<DiffLayers> {
+        return state.tree_state.merged_difflayer_by_hash(parent_hash);
     }
 
     /// Return sealed block header from database or in-memory state by hash.
