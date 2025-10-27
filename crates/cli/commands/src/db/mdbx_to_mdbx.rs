@@ -229,7 +229,6 @@ impl Command {
         
         // Start with system database arguments (includes log_level, exclusive, max_readers, etc.)
         // then override with user-specified parameters
-        let client_version = base_db_args.client_version().clone();
         let mut dst_args = base_db_args.clone();
         
         // Determine target parameters
@@ -262,17 +261,12 @@ impl Command {
             info!(target: "reth::cli", "  (Other settings: log_level, exclusive, max_readers, etc. inherited from system config)");
         }
 
-        // Create destination database with custom parameters
-        // We use create_db() instead of init_db() because:
-        // - init_db() pre-creates all tables (unnecessary, wastes time)
-        // - Tables will be automatically created when we open them during copy
-        let dst_env = reth_db::create_db(&self.to, dst_args)?;
-        
-        // Record client version for compatibility tracking
-        dst_env.record_client_version(client_version)?;
+        // Create destination database and initialize all tables
+        // Using init_db() to properly create all tables and record client version
+        let dst_env = reth_db::init_db(&self.to, dst_args)?;
 
         if !self.quiet {
-            info!(target: "reth::cli", "Destination database created (tables will be created during copy)");
+            info!(target: "reth::cli", "Destination database initialized");
         }
 
         // Determine which tables to copy
