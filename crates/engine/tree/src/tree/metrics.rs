@@ -98,6 +98,10 @@ impl BlockValidationMetrics {
         self.state_root_histogram.record(elapsed_as_secs);
     }
 
+    pub(crate) fn record_state_root_duration(&self, elapsed_as_secs: f64) {
+        self.state_root_duration.set(elapsed_as_secs);
+        self.state_root_histogram.record(elapsed_as_secs);
+    }
     /// Records a new payload validation time, updating both the histogram and the payload
     /// validation gauge
     pub(crate) fn record_payload_validation(&self, elapsed_as_secs: f64) {

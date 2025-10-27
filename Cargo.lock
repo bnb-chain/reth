@@ -11231,6 +11231,7 @@ dependencies = [
  "rust-eth-triedb-common",
  "rust-eth-triedb-pathdb",
  "rust-eth-triedb-state-trie",
+ "schnellru",
  "serde",
  "thiserror 1.0.69",
 ]

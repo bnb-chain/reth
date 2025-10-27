@@ -2144,6 +2144,7 @@ where
         let start = Instant::now();
 
         let executed = execute(&mut self.payload_validator, input, ctx)?;
+        let elapsed = start.elapsed();
 
         let gas_used = executed.sealed_block().header().gas_used();
 
@@ -2158,7 +2159,6 @@ where
         self.metrics.engine.executed_blocks.set(self.state.tree_state.block_count() as f64);
 
         // emit insert event
-        let elapsed = start.elapsed();
         let engine_event = if is_fork {
             BeaconConsensusEngineEvent::ForkBlockAdded(executed, elapsed)
         } else {

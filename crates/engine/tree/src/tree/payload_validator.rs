@@ -611,7 +611,7 @@ where
             (state_root, difflayer)
         };
 
-        self.metrics.block_validation.record_payload_validation(root_time.elapsed().as_secs_f64());
+        self.metrics.block_validation.record_state_root_duration(root_time.elapsed().as_secs_f64());
 
         // ensure state root matches
         if state_root != block.header().state_root() {
