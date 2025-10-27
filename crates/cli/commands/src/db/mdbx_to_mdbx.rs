@@ -1,65 +1,141 @@
 //! MDBX to MDBX copy tool
-//! 
+//!
 //! Similar to Erigon's mdbx_to_mdbx implementation, this copies data from one
 //! MDBX database to another, table by table.
-//! 
+//!
 //! Reference: https://github.com/erigontech/erigon/blob/devel/cmd/integration/commands/backup.go
 
 use clap::Parser;
 use reth_db::DatabaseEnv;
-use reth_db::mdbx::DatabaseArguments;
-use reth_db_api::{database::Database, models::ClientVersion, transaction::DbTx};
+use reth_db_api::{database::Database, transaction::DbTx};
 use reth_libmdbx::WriteFlags;
 use std::{path::PathBuf, time::Instant};
 use tracing::info;
 
+/// Parse byte size from string (e.g., "4GB", "16KB", "1024")
+fn parse_byte_size(s: &str) -> Result<usize, String> {
+    let s = s.trim().to_uppercase();
+    
+    let (num_str, unit) = if let Some(pos) = s.find(|c: char| c.is_alphabetic()) {
+        s.split_at(pos)
+    } else {
+        return s.parse().map_err(|_| "Invalid number".to_string());
+    };
+
+    let num: usize = num_str.trim().parse().map_err(|_| "Invalid number".to_string())?;
+
+    let multiplier = match unit.trim() {
+        "B" | "" => 1,
+        "KB" => 1024,
+        "MB" => 1024 * 1024,
+        "GB" => 1024 * 1024 * 1024,
+        "TB" => 1024 * 1024 * 1024 * 1024,
+        _ => return Err(format!("Invalid unit: {unit}. Use B, KB, MB, GB, or TB.")),
+    };
+
+    Ok(num * multiplier)
+}
+
+/// Format byte size to human-readable string
+fn format_byte_size(bytes: usize) -> String {
+    const KB: usize = 1024;
+    const MB: usize = KB * 1024;
+    const GB: usize = MB * 1024;
+    const TB: usize = GB * 1024;
+
+    if bytes >= TB {
+        format!("{:.2} TB", bytes as f64 / TB as f64)
+    } else if bytes >= GB {
+        format!("{:.2} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.2} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.2} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
 /// Arguments for the `reth db mdbx-to-mdbx` command
 #[derive(Parser, Debug)]
+#[command(next_help_heading = "Copy Options")]
 pub struct Command {
-    /// Path to the destination database
-    #[arg(long, value_name = "DEST_PATH")]
+    /// The path to the destination database directory.
+    ///
+    /// The destination directory must not exist; it will be created during the copy process.
+    #[arg(long, value_name = "DEST_PATH", verbatim_doc_comment)]
     to: PathBuf,
 
-    /// List of tables to copy (comma-separated). If empty, copies all tables
-    #[arg(long, value_delimiter = ',')]
+    /// List of specific tables to copy (comma-separated).
+    ///
+    /// If not specified, all tables will be copied.
+    ///
+    /// Example: --tables Headers,Bodies,Transactions
+    #[arg(long, value_delimiter = ',', verbatim_doc_comment)]
     tables: Vec<String>,
 
-    /// Target database page size in KB (e.g., 4, 8, 16)
-    /// If not specified, uses source database's page size in fast mode,
-    /// or auto-detects in custom mode
-    #[arg(long)]
+    /// Target database page size (e.g., 4KB, 8KB, 16KB).
+    ///
+    /// Supports units: B, KB, MB, GB, TB.
+    ///
+    /// NOTE: Page size can only be set when creating a new database and cannot be changed later.
+    /// The page size must be a power of 2 between 256 bytes and 64KB (typical range: 4KB-16KB).
+    /// If not specified, uses the system default page size (typically 4KB on Linux, 16KB on macOS).
+    ///
+    /// Only used in record-by-record mode (not in --fast mode).
+    #[arg(long, value_parser = parse_byte_size, verbatim_doc_comment)]
     page_size: Option<usize>,
 
-    /// Target database maximum size in GB
-    /// If not specified, uses source database's max size
-    #[arg(long)]
+    /// Target database maximum size (e.g., 4TB, 500GB, 8MB).
+    ///
+    /// Supports units: B, KB, MB, GB, TB.
+    /// If not specified, uses the source database's maximum size.
+    /// Only used in record-by-record mode (not in --fast mode).
+    #[arg(long, value_parser = parse_byte_size, verbatim_doc_comment)]
     max_size: Option<usize>,
 
-    /// Database growth step in GB (default: 4)
-    #[arg(long, default_value = "4")]
+    /// Database growth step (e.g., 4GB, 1GB).
+    ///
+    /// Supports units: B, KB, MB, GB, TB.
+    /// Only used in record-by-record mode (not in --fast mode).
+    #[arg(long, default_value = "4GB", value_parser = parse_byte_size, verbatim_doc_comment)]
     growth_step: usize,
 
-    /// Use fast mode (MDBX native copy, ignores custom parameters)
+    /// Use fast mode (MDBX native copy).
+    ///
+    /// Fast mode uses the native MDBX copy API which is much faster but
+    /// ignores custom parameters like --page-size, --max-size, and --growth-step.
+    /// The destination database will have identical parameters to the source.
+    ///
     /// By default, uses record-by-record copy which allows parameter customization
-    #[arg(long)]
+    /// but is slower.
+    #[arg(long, verbatim_doc_comment)]
     fast: bool,
 
-    /// Commit interval: commit transaction every N records (default: 100000)
-    #[arg(long, default_value = "100000")]
+    /// Commit transaction every N records.
+    ///
+    /// Controls how often transactions are committed during the copy process.
+    /// Smaller values use less memory but may be slower.
+    /// Only used in record-by-record mode (not in --fast mode).
+    #[arg(long, default_value = "100000", verbatim_doc_comment)]
     commit_every: usize,
 
-    /// Skip confirmation prompt
+    /// Skip confirmation prompt.
     #[arg(long, short)]
     force: bool,
 
-    /// Be quiet (suppress progress messages)
+    /// Suppress progress messages.
     #[arg(long, short)]
     quiet: bool,
 }
 
 impl Command {
     /// Execute the mdbx-to-mdbx copy
-    pub fn execute(&self, src_env: &DatabaseEnv) -> eyre::Result<()> {
+    pub fn execute(
+        &self,
+        src_env: &DatabaseEnv,
+        db_args: &reth_db::mdbx::DatabaseArguments,
+    ) -> eyre::Result<()> {
         use std::io::Write;
 
         // Determine mode
@@ -110,7 +186,7 @@ impl Command {
             self.execute_fast_copy(src_env)?;
         } else {
             // Default mode: record-by-record copy with parameter customization
-            self.execute_custom_copy(src_env)?;
+            self.execute_custom_copy(src_env, db_args)?;
         }
 
         let elapsed = start.elapsed();
@@ -119,8 +195,8 @@ impl Command {
             info!(target: "reth::cli", "Copy completed in {:.2}s", elapsed.as_secs_f64());
             
             if let Ok(metadata) = std::fs::metadata(&self.to) {
-                info!(target: "reth::cli", "Destination size: {} MB",
-                      metadata.len() / 1024 / 1024);
+                info!(target: "reth::cli", "Destination size: {}", 
+                      format_byte_size(metadata.len() as usize));
             }
         }
 
@@ -138,41 +214,65 @@ impl Command {
     }
 
     /// Custom copy with parameter customization
-    fn execute_custom_copy(&self, src_env: &DatabaseEnv) -> eyre::Result<()> {
+    fn execute_custom_copy(
+        &self,
+        src_env: &DatabaseEnv,
+        base_db_args: &reth_db::mdbx::DatabaseArguments,
+    ) -> eyre::Result<()> {
         use reth_db::tables::Tables;
         
-        // Get source database parameters
+        // Get source database parameters for display
         let src_info = src_env.info()?;
         let src_stat = src_env.stat()?;
         let src_page_size = src_stat.page_size();
         let src_map_size = src_info.map_size();
         
+        // Start with system database arguments (includes log_level, exclusive, max_readers, etc.)
+        // then override with user-specified parameters
+        let client_version = base_db_args.client_version().clone();
+        let mut dst_args = base_db_args.clone();
+        
         // Determine target parameters
-        let page_size_bytes = self.page_size.map(|kb| kb * 1024).unwrap_or(src_page_size as usize);
-        let max_size_bytes = self.max_size
-            .map(|gb| gb * 1024 * 1024 * 1024)
-            .unwrap_or(src_map_size);
-        let growth_step_bytes = self.growth_step * 1024 * 1024 * 1024;
+        // Priority: user specified > system config > source database
+        let max_size_bytes = self.max_size.unwrap_or(src_map_size);
+        let growth_step_bytes = self.growth_step;
+        
+        dst_args = dst_args
+            .with_geometry_max_size(Some(max_size_bytes))
+            .with_growth_step(Some(growth_step_bytes));
+        
+        // Override page size if user specified it
+        if let Some(page_size) = self.page_size {
+            dst_args = dst_args.with_page_size(Some(page_size));
+        }
 
         if !self.quiet {
-            info!(target: "reth::cli", "Source parameters:");
-            info!(target: "reth::cli", "  Page size: {} KB", src_page_size / 1024);
-            info!(target: "reth::cli", "  Map size: {} GB", src_map_size / 1024 / 1024 / 1024);
-            info!(target: "reth::cli", "Target parameters:");
-            info!(target: "reth::cli", "  Page size: {} KB", page_size_bytes / 1024);
-            info!(target: "reth::cli", "  Map size: {} GB", max_size_bytes / 1024 / 1024 / 1024);
-            info!(target: "reth::cli", "  Growth step: {} GB", self.growth_step);
+            info!(target: "reth::cli", "Source database parameters:");
+            info!(target: "reth::cli", "  Page size: {}", format_byte_size(src_page_size as usize));
+            info!(target: "reth::cli", "  Map size: {}", format_byte_size(src_map_size));
+            info!(target: "reth::cli", "Target database parameters:");
+            if let Some(page_size) = self.page_size {
+                info!(target: "reth::cli", "  Page size: {} (custom)", format_byte_size(page_size));
+            } else {
+                info!(target: "reth::cli", "  Page size: {} (using system default)", 
+                      format_byte_size(src_page_size as usize));
+            }
+            info!(target: "reth::cli", "  Map size: {}", format_byte_size(max_size_bytes));
+            info!(target: "reth::cli", "  Growth step: {}", format_byte_size(growth_step_bytes));
+            info!(target: "reth::cli", "  (Other settings: log_level, exclusive, max_readers, etc. inherited from system config)");
         }
 
         // Create destination database with custom parameters
-        let dst_args = DatabaseArguments::new(ClientVersion::default())
-            .with_geometry_max_size(Some(max_size_bytes))
-            .with_growth_step(Some(growth_step_bytes));
-
-        let dst_env = reth_db::init_db(&self.to, dst_args)?;
+        // We use create_db() instead of init_db() because:
+        // - init_db() pre-creates all tables (unnecessary, wastes time)
+        // - Tables will be automatically created when we open them during copy
+        let dst_env = reth_db::create_db(&self.to, dst_args)?;
+        
+        // Record client version for compatibility tracking
+        dst_env.record_client_version(client_version)?;
 
         if !self.quiet {
-            info!(target: "reth::cli", "Destination database created");
+            info!(target: "reth::cli", "Destination database created (tables will be created during copy)");
         }
 
         // Determine which tables to copy

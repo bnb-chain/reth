@@ -142,8 +142,10 @@ impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> Command<C>
                 command.execute(provider_factory)?;
             }
             Subcommands::MdbxToMdbx(command) => {
+                // Get database arguments from system configuration
+                let db_args = self.env.db.database_args();
                 db_ro_exec!(self.env, tool, N, {
-                    command.execute(tool.provider_factory.db_ref())?;
+                    command.execute(tool.provider_factory.db_ref(), &db_args)?;
                 });
             }
             Subcommands::RepairTrie(command) => {
