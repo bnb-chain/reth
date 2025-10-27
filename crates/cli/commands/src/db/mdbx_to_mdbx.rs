@@ -329,8 +329,10 @@ impl Command {
         let mut dst_tx = dst_env.tx_mut()?;
         
         // Open the databases (tables) by name
+        // Source: read-only, use open_db() - table must exist
         let src_db = src_tx.inner.open_db(Some(table_name))?;
-        let dst_db = dst_tx.inner.open_db(Some(table_name))?;
+        // Destination: read-write, use create_db() - will create table if needed
+        let dst_db = dst_tx.inner.create_db(Some(table_name), reth_libmdbx::DatabaseFlags::empty())?;
         
         // Get cursor for source and destination
         let src_cursor = src_tx.inner.cursor(&src_db)?;
@@ -357,6 +359,7 @@ impl Command {
                 
                 // Start new transaction
                 dst_tx = dst_env.tx_mut()?;
+                // Re-open destination table (already created, but need handle in new transaction)
                 let dst_db = dst_tx.inner.open_db(Some(table_name))?;
                 dst_cursor = dst_tx.inner.cursor(&dst_db)?;
                 batch_count = 0;
