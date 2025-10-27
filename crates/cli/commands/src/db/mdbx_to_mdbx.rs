@@ -263,6 +263,9 @@ impl Command {
 
         if !self.quiet {
             info!(target: "reth::cli", "Copying {} tables", tables_to_copy.len());
+            if !self.tables.is_empty() {
+                info!(target: "reth::cli", "  Note: Only copying selected tables. Other tables will be empty.");
+            }
         }
 
         // Copy each table using table-specific implementations
@@ -298,8 +301,8 @@ impl Command {
         // Open the databases (tables) by name
         // Source: read-only, use open_db() - table must exist
         let src_db = src_tx.inner.open_db(Some(table_name))?;
-        // Destination: read-write, use create_db() - will create table if needed
-        let dst_db = dst_tx.inner.create_db(Some(table_name), reth_libmdbx::DatabaseFlags::empty())?;
+        // Destination: tables are already created by init_db(), just open them
+        let dst_db = dst_tx.inner.open_db(Some(table_name))?;
         
         // Clear destination table before copying
         // This is necessary because:
@@ -383,14 +386,23 @@ impl Command {
             } else {
                 copied as f64
             };
-            info!(
-                target: "reth::cli",
-                "  Completed table '{}': {} records in {:.2}s ({:.0} records/sec)",
-                table_name,
-                copied,
-                elapsed.as_secs_f64(),
-                rate
-            );
+            
+            if copied == 0 {
+                info!(
+                    target: "reth::cli",
+                    "  Completed table '{}': empty table",
+                    table_name
+                );
+            } else {
+                info!(
+                    target: "reth::cli",
+                    "  Completed table '{}': {} records in {:.2}s ({:.0} records/sec)",
+                    table_name,
+                    copied,
+                    elapsed.as_secs_f64(),
+                    rate
+                );
+            }
         }
         
         Ok(copied)
