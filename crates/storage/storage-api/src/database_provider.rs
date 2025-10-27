@@ -138,6 +138,10 @@ pub trait DBProvider: Sized {
         }
         Ok(items)
     }
+
+    /// Returns true if the database is active eth triedb
+    /// TODO:: active by cli flag and persist to database
+    fn is_active_eth_triedb(&self) -> bool;
 }
 
 /// Database provider factory.

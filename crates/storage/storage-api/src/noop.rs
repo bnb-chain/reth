@@ -624,6 +624,10 @@ impl<ChainSpec: Send + Sync, N: NodePrimitives> DBProvider for NoopProvider<Chai
     fn prune_modes_ref(&self) -> &PruneModes {
         &self.prune_modes
     }
+
+    fn is_active_eth_triedb(&self) -> bool {
+        panic!("NoopProvider does not support eth triedb");
+    }
 }
 
 #[cfg(feature = "db-api")]

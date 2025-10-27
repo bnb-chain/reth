@@ -133,7 +133,9 @@ impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> Command<C>
                     prune_modes.clone(),
                 )
                 .builder()
-                .disable(reth_stages::StageId::SenderRecovery),
+                .disable(reth_stages::StageId::SenderRecovery)
+                .disable(reth_stages::StageId::MerkleExecute)
+                .disable(reth_stages::StageId::MerkleUnwind),
             )
         } else {
             Pipeline::<N>::builder().with_tip_sender(tip_tx).add_stages(
@@ -148,6 +150,9 @@ impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> Command<C>
                     prune_modes.clone(),
                     None,
                 )
+                .builder()
+                .disable(reth_stages::StageId::MerkleExecute)
+                .disable(reth_stages::StageId::MerkleUnwind)
                 .set(ExecutionStage::new(
                     evm_config,
                     Arc::new(NoopConsensus::default()),

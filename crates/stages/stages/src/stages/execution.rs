@@ -33,6 +33,9 @@ use tracing::*;
 
 use super::missing_static_data_error;
 
+use reth_trie::HashedPostState;
+use reth_trie_db::StateCommitment;
+
 /// The execution stage executes all transactions and
 /// update history indexes.
 ///
@@ -456,6 +459,76 @@ where
         provider.write_state(&state, OriginalValuesKnown::Yes, StorageLocation::StaticFiles)?;
 
         let db_write_duration = time.elapsed();
+
+        {
+            let merkle_time = Instant::now();
+
+            let hashed_post_state = HashedPostState::from_bundle_state::<
+                                <Provider::StateCommitment as StateCommitment>::KeyHasher,
+                            >(state.bundle.state());
+            let mut triedb = rust_eth_triedb::get_global_triedb();
+
+            let (latest_block_number, latest_state_root) = triedb.latest_persist_state()
+                .map_err(|e| StageError::Fatal(Box::new(e)))?;
+
+            if latest_block_number < stage_progress {
+                let root_hash = if start_block == 0 {
+                    alloy_trie::EMPTY_ROOT_HASH
+                } else if latest_block_number > start_block {
+                    latest_state_root
+                } else if latest_block_number == start_block {
+                    let block_number = start_block - 1;
+                    let block = provider
+                        .recovered_block(block_number.into(), TransactionVariant::NoHash)?
+                        .ok_or_else(|| ProviderError::HeaderNotFound(block_number.into()))?;
+                    block.header().state_root()
+                } else {
+                    panic!("latest_block_number < start_block, latest_block_number={}, start_block={}", latest_block_number, start_block);
+                };
+
+                let validate_root = if stage_progress == 0 {
+                    alloy_trie::EMPTY_ROOT_HASH
+                } else {
+                    let block_number = stage_progress;
+                    let block = provider
+                        .recovered_block(block_number.into(), TransactionVariant::NoHash)?
+                        .ok_or_else(|| ProviderError::HeaderNotFound(block_number.into()))?;
+                    block.header().state_root()
+                };
+
+                info!(target: "sync::stages::execution",
+                    "begin update triedb, start={}, end={}, parent_root={:?}, target_root={:?}, accounts={}, storages={}",
+                    start_block,
+                    stage_progress,
+                    root_hash,
+                    validate_root,
+                    hashed_post_state.accounts.len(),
+                    hashed_post_state.storages.len(),
+                );
+
+                let (new_root, difflayer) = triedb.commit_hashed_post_state(root_hash, None, &hashed_post_state)
+                    .map_err(|e| StageError::Fatal(Box::new(e)))?;
+
+                if new_root != validate_root {
+                    panic!("execution update triedb, start={}, end={}, new_root({:?}) != validate_root({:?})", start_block, stage_progress, new_root, validate_root);
+                }
+
+                triedb.flush(stage_progress, new_root, &difflayer)
+                    .map_err(|e| StageError::Fatal(Box::new(e)))?;
+                let merkle_time_duration = merkle_time.elapsed();
+
+                info!(target: "sync::stages::execution",
+                    "end update triedb, start={}, end={}, parent_root={:?}, validate_root={:?}, update_triedb_time={:?}",
+                    start_block,
+                    stage_progress,
+                    root_hash,
+                    validate_root,
+                    merkle_time_duration);
+            } else {
+                info!(target: "sync::stages::execution", "latest_block_number >= stage_progress skip update triedb, latest_block_number={}, stage_progress={}", latest_block_number, stage_progress);
+            }
+        }
+
         debug!(
             target: "sync::stages::execution",
             block_fetch = ?fetch_block_duration,
@@ -507,6 +580,36 @@ where
         // This also updates `PlainStorageState` and `PlainAccountState`.
         let bundle_state_with_receipts =
             provider.take_state_above(unwind_to, StorageLocation::Both)?;
+
+        let mut triedb = rust_eth_triedb::get_global_triedb();
+        let (latest_block_number, latest_state_root) = triedb.latest_persist_state()
+            .map_err(|e| StageError::Fatal(Box::new(e)))?;
+        if latest_block_number > unwind_to {
+            let hashed_post_state = HashedPostState::from_bundle_state_to_unwind::<
+                                <Provider::StateCommitment as StateCommitment>::KeyHasher,
+                            >(bundle_state_with_receipts.bundle.state());
+            let (new_root, difflayer) = triedb.commit_hashed_post_state(latest_state_root, None, &hashed_post_state)
+                .map_err(|e| StageError::Fatal(Box::new(e)))?;
+
+            let validate_root = if unwind_to == 0 {
+                alloy_trie::EMPTY_ROOT_HASH
+            } else {
+                let block_number = unwind_to;
+                let block = provider
+                    .recovered_block(block_number.into(), TransactionVariant::NoHash)?
+                    .ok_or_else(|| ProviderError::HeaderNotFound(block_number.into()))?;
+                block.header().state_root()
+            };
+
+            if new_root != validate_root {
+                panic!("unwind execution update triedb, unwind_to={}, new_root({:?}) != validate_root({:?}), hashed_post_state={:?}", unwind_to, new_root, validate_root, hashed_post_state);
+            }
+
+            triedb.flush(latest_block_number, new_root, &difflayer)
+                .map_err(|e| StageError::Fatal(Box::new(e)))?;
+        } else {
+            warn!("latest_block_number <= unwind_to, latest_triedb_block_number={}, unwind_to={}", latest_block_number, unwind_to);
+        }
 
         // Prepare the input for post unwind commit hook, where an `ExExNotification` will be sent.
         if self.exex_manager_handle.has_exexs() {

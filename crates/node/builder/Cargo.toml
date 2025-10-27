@@ -58,6 +58,9 @@ reth-transaction-pool.workspace = true
 reth-basic-payload-builder.workspace = true
 reth-node-ethstats.workspace = true
 
+## rust_eth_triedb
+rust-eth-triedb.workspace = true
+
 ## ethereum
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true

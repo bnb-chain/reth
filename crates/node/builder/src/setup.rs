@@ -27,6 +27,8 @@ use reth_tasks::TaskExecutor;
 use reth_tracing::tracing::debug;
 use tokio::sync::watch;
 
+use tracing::*;
+
 /// Constructs a [Pipeline] that's wired to the network
 #[expect(clippy::too_many_arguments)]
 pub fn build_networked_pipeline<N, Client, Evm>(
@@ -123,6 +125,9 @@ where
                 prune_modes,
                 era_import_source,
             )
+            .builder()
+            .disable(reth_stages::StageId::MerkleExecute)
+            .disable(reth_stages::StageId::MerkleUnwind)
             .set(ExecutionStage::new(
                 evm_config,
                 consensus,
@@ -132,6 +137,8 @@ where
             )),
         )
         .build(provider_factory, static_file_producer);
+
+    info!(target: "reth::cli", "Pipeline built, without MerkleExecute and MerkleUnwind");
 
     Ok(pipeline)
 }
