@@ -298,14 +298,7 @@ impl Command {
                       idx + 1, total_tables, table_name);
             }
             
-            let table_start = Instant::now();
-            let copied = self.copy_table_generic(src_env, &dst_env, table_name)?;
-            let table_elapsed = table_start.elapsed();
-            
-            if !self.quiet && copied > 0 {
-                info!(target: "reth::cli", "  Copied {} records in {:.2}s ({:.0} rec/s)", 
-                      copied, table_elapsed.as_secs_f64(), copied as f64 / table_elapsed.as_secs_f64());
-            }
+            self.copy_table_generic(src_env, &dst_env, table_name)?;
         }
 
         Ok(())
@@ -319,7 +312,12 @@ impl Command {
         dst_env: &DatabaseEnv,
         table_name: &str,
     ) -> eyre::Result<usize> {
-        let src_tx = src_env.tx()?;
+        let mut src_tx = src_env.tx()?;
+        
+        // Disable timeout for long-running read transaction during copy
+        // This is necessary because copying large tables can take a very long time
+        src_tx.disable_long_read_transaction_safety();
+        
         let mut dst_tx = dst_env.tx_mut()?;
         
         // Open the databases (tables) by name
@@ -328,6 +326,18 @@ impl Command {
         // Destination: read-write, use create_db() - will create table if needed
         let dst_db = dst_tx.inner.create_db(Some(table_name), reth_libmdbx::DatabaseFlags::empty())?;
         
+        // Get total number of entries for progress calculation
+        let total_entries = src_tx.inner.db_stat(&src_db)?.entries();
+        
+        if !self.quiet {
+            info!(
+                target: "reth::cli",
+                "  Starting copy of table '{}' ({} records)",
+                table_name,
+                total_entries
+            );
+        }
+        
         // Get cursor for source and destination
         let src_cursor = src_tx.inner.cursor(&src_db)?;
         let mut dst_cursor = dst_tx.inner.cursor(&dst_db)?;
@@ -335,6 +345,7 @@ impl Command {
         let mut copied = 0usize;
         let mut batch_count = 0usize;
         let mut last_progress = Instant::now();
+        let start_time = Instant::now();
         
         // Iterate through all records as byte slices
         for item in src_cursor.iter_slices() {
@@ -360,7 +371,18 @@ impl Command {
                 
                 // Progress logging
                 if !self.quiet && last_progress.elapsed().as_secs() >= 5 {
-                    info!(target: "reth::cli", "    Progress: {} records", copied);
+                    let percentage = if total_entries > 0 {
+                        (copied as f64 / total_entries as f64 * 100.0).min(100.0)
+                    } else {
+                        0.0
+                    };
+                    info!(
+                        target: "reth::cli", 
+                        "    Progress: {}/{} records ({:.2}%)", 
+                        copied, 
+                        total_entries,
+                        percentage
+                    );
                     last_progress = Instant::now();
                 }
             }
@@ -370,6 +392,24 @@ impl Command {
         if batch_count > 0 {
             drop(dst_cursor);
             dst_tx.commit()?;
+        }
+        
+        // Log completion
+        if !self.quiet {
+            let elapsed = start_time.elapsed();
+            let rate = if elapsed.as_secs() > 0 {
+                copied as f64 / elapsed.as_secs() as f64
+            } else {
+                copied as f64
+            };
+            info!(
+                target: "reth::cli",
+                "  Completed table '{}': {} records in {:.2}s ({:.0} records/sec)",
+                table_name,
+                copied,
+                elapsed.as_secs_f64(),
+                rate
+            );
         }
         
         Ok(copied)
