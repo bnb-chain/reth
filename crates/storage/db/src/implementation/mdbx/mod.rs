@@ -183,6 +183,7 @@ impl DatabaseArguments {
     /// Sets the page size for the database.
     ///
     /// Note: Page size can only be set when creating a new database and cannot be changed later.
+    /// The page size must be a power of 2 between the minimum and maximum values supported by MDBX.
     pub const fn with_page_size(mut self, page_size: Option<usize>) -> Self {
         if let Some(page_size) = page_size {
             self.geometry.page_size = Some(PageSize::Set(page_size));
