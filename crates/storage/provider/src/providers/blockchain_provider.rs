@@ -133,7 +133,7 @@ impl<N: ProviderNodeTypes> BlockchainProvider<N> {
     /// [`BlockHashReader`]. This may fail if the inner read database transaction fails to open.
     #[track_caller]
     pub fn consistent_provider(&self) -> ProviderResult<ConsistentProvider<N>> {
-        ConsistentProvider::new(self.database.clone(), self.canonical_in_memory_state())
+        ConsistentProvider::new(self.chain_spec(), self.database.clone(), self.canonical_in_memory_state())
     }
 
     /// This uses a given [`BlockState`] to initialize a state provider for that block.
