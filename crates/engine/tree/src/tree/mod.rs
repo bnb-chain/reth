@@ -2595,14 +2595,15 @@ where
         }
         
         // query header td from last block number
+        tracing::debug!(target: "engine::tree", number=?number, hash=?hash, "querying TD from fork headers");  
         let mut ret_td = U256::ZERO;
-        let header = self.state.tree_state.blocks_by_hash.get(&hash).
+        let ret_header = self.state.tree_state.blocks_by_hash.get(&hash).
             and_then(|b| Some(b.block.recovered_block().clone_header())).
             ok_or(ProviderError::HeaderNotFound(hash.into()))?;
-        ret_td = ret_td.wrapping_add(header.difficulty());
+        ret_td = ret_td.wrapping_add(ret_header.difficulty());
 
         let last_block_number = self.provider.last_block_number()?;
-        let (mut current_number, mut current_hash) = (number-1, header.parent_hash());
+        let (mut current_number, mut current_hash) = (number-1, ret_header.parent_hash());
         while current_number >= last_block_number {
             match self.provider.block_number(current_hash)? {
                 Some(block_number) => {
@@ -2610,11 +2611,12 @@ where
                     match self.provider.header_td_by_number(block_number)? {
                         Some(td) => {
                             ret_td = ret_td.wrapping_add(td);
-                            return Ok((header, Some(ret_td)))
+                            return Ok((ret_header, Some(ret_td)))
                         }
                         None => {
-                            tracing::warn!(target: "engine::tree", number=?number, hash=?hash, "header td not found for block number, just return none");
-                            return Ok((header, None))
+                            tracing::warn!(target: "engine::tree", current_number=?current_number, current_hash=?current_hash, 
+                                "header td not found for block number, just return none");
+                            return Ok((ret_header, None))
                         }
                     }
                 }
@@ -2631,10 +2633,11 @@ where
         }
         
         if current_number < last_block_number {
-            tracing::warn!(target: "engine::tree", number=?number, hash=?hash, "cannot find header td for block number, query beyond last block number, just return none");
-            return Ok((header, None))
+            tracing::warn!(target: "engine::tree", current_number=?current_number, current_hash=?current_hash, last_block_number=?last_block_number,
+                 "cannot find header td for block number, query beyond last block number, just return none");
+            return Ok((ret_header, None))
         }
-        Ok((header, Some(ret_td)))
+        Ok((ret_header, Some(ret_td)))
     }
 }
 

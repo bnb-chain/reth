@@ -690,7 +690,7 @@ impl<N: ProviderNodeTypes> HeaderProvider for ConsistentProvider<N> {
             return Ok(Some(td))
         }
 
-        // eth TD calculation logic
+        // ETH TD calculation logic
         let number = if self.head_block.as_ref().and_then(|b| b.block_on_chain(number.into())).is_some()
         {
             // If the block exists in memory, we should return a TD for it.
