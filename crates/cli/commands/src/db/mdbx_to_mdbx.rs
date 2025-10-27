@@ -120,10 +120,6 @@ pub struct Command {
     #[arg(long, default_value = "100000", verbatim_doc_comment)]
     commit_every: usize,
 
-    /// Skip confirmation prompt.
-    #[arg(long, short)]
-    force: bool,
-
     /// Suppress progress messages.
     #[arg(long, short)]
     quiet: bool,
@@ -136,31 +132,6 @@ impl Command {
         src_env: &DatabaseEnv,
         db_args: &reth_db::mdbx::DatabaseArguments,
     ) -> eyre::Result<()> {
-        use std::io::Write;
-
-        // Determine mode
-        let mode = if self.fast {
-            "fast (MDBX native copy)"
-        } else {
-            "record-by-record (with parameter customization)"
-        };
-
-        if !self.force {
-            print!(
-                "Copy database to {:?}? Mode: {}. (y/N): ",
-                self.to, mode
-            );
-            std::io::stdout().flush()?;
-
-            let mut input = String::new();
-            std::io::stdin().read_line(&mut input)?;
-
-            if !input.trim().eq_ignore_ascii_case("y") {
-                info!("Copy aborted!");
-                return Ok(());
-            }
-        }
-
         // Ensure destination doesn't exist
         if self.to.exists() {
             eyre::bail!("Destination {:?} already exists", self.to);
@@ -175,7 +146,11 @@ impl Command {
 
         if !self.quiet {
             info!(target: "reth::cli", "Starting database copy...");
-            info!(target: "reth::cli", "Mode: {}", mode);
+            if self.fast {
+                info!(target: "reth::cli", "Mode: fast (MDBX native copy)");
+            } else {
+                info!(target: "reth::cli", "Mode: record-by-record (with parameter customization)");
+            }
             info!(target: "reth::cli", "Destination: {:?}", self.to);
         }
 
@@ -325,6 +300,12 @@ impl Command {
         let src_db = src_tx.inner.open_db(Some(table_name))?;
         // Destination: read-write, use create_db() - will create table if needed
         let dst_db = dst_tx.inner.create_db(Some(table_name), reth_libmdbx::DatabaseFlags::empty())?;
+        
+        // Clear destination table before copying
+        // This is necessary because:
+        // 1. init_db() may have pre-populated some tables (e.g., VersionHistory)
+        // 2. APPEND flag requires an empty table or strictly ordered keys
+        dst_tx.inner.clear_db(dst_db.dbi())?;
         
         // Get total number of entries for progress calculation
         let total_entries = src_tx.inner.db_stat(&src_db)?.entries();
