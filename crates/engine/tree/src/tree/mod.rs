@@ -2585,9 +2585,9 @@ where
     /// Query the header and TD of the given block number and hash.
     /// If the block is not found, the header and TD of the last block will be returned.
     pub fn query_header_with_td(&self, number: BlockNumber, hash: BlockHash) -> ProviderResult<(N::BlockHeader, Option<U256>)> {
-        // query header td from cannonical chain
+        // query header td from canonical chain
         if let Some(block_number) = self.provider.block_number(hash)? {
-            tracing::debug!(target: "engine::tree", number=?number, hash=?hash, "querying TD from cannonical chain");
+            tracing::debug!(target: "engine::tree", number=?number, hash=?hash, "querying TD from canonical chain");
             let header = self.provider.header_by_number(block_number)?.
                 ok_or(ProviderError::HeaderNotFound(block_number.into()))?;
             let td = self.provider.header_td_by_number(block_number)?;
@@ -2598,16 +2598,16 @@ where
         tracing::debug!(target: "engine::tree", number=?number, hash=?hash, "querying TD from fork headers");  
         let mut ret_td = U256::ZERO;
         let ret_header = self.state.tree_state.blocks_by_hash.get(&hash).
-            and_then(|b| Some(b.block.recovered_block().clone_header())).
+            map(|b| b.block.recovered_block().clone_header()).
             ok_or(ProviderError::HeaderNotFound(hash.into()))?;
         ret_td = ret_td.wrapping_add(ret_header.difficulty());
 
         let last_block_number = self.provider.last_block_number()?;
-        let (mut current_number, mut current_hash) = (number-1, ret_header.parent_hash());
+        let (mut current_number, mut current_hash) = (number - 1, ret_header.parent_hash());
         while current_number >= last_block_number {
             match self.provider.block_number(current_hash)? {
                 Some(block_number) => {
-                    // add cannonical chain td
+                    // add canonical chain td
                     match self.provider.header_td_by_number(block_number)? {
                         Some(td) => {
                             ret_td = ret_td.wrapping_add(td);
@@ -2623,13 +2623,13 @@ where
                 None => {
                     // continue to query forks
                     let header = self.state.tree_state.blocks_by_hash.get(&current_hash).
-                        and_then(|b| Some(b.block.recovered_block().header())).
+                        map(|b| b.block.recovered_block().header()).
                         ok_or(ProviderError::HeaderNotFound(current_hash.into()))?;
                     current_hash = header.parent_hash();
                     ret_td = ret_td.wrapping_add(header.difficulty());
                 }
             }
-            current_number = current_number - 1;
+            current_number -= 1;
         }
         
         if current_number < last_block_number {
