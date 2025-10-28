@@ -1,9 +1,9 @@
-//! MDBX to MDBX copy tool
+//! Database migration tool
 //!
-//! Similar to Erigon's mdbx_to_mdbx implementation, this copies data from one
-//! MDBX database to another, table by table.
-//!
-//! Reference: https://github.com/erigontech/erigon/blob/devel/cmd/integration/commands/backup.go
+//! This tool copies data from one MDBX database to another, table by table.
+//! It supports two modes:
+//! - Fast mode: uses MDBX native copy API for maximum speed
+//! - Custom mode: allows parameter customization (page size, max size, etc.)
 
 use clap::Parser;
 use reth_db::DatabaseEnv;
@@ -56,7 +56,7 @@ fn format_byte_size(bytes: usize) -> String {
     }
 }
 
-/// Arguments for the `reth db mdbx-to-mdbx` command
+/// Arguments for the `reth db migrate` command
 #[derive(Parser, Debug)]
 #[command(next_help_heading = "Copy Options")]
 pub struct Command {
@@ -80,13 +80,13 @@ pub struct Command {
     ///
     /// NOTE: Page size can only be set when creating a new database and cannot be changed later.
     /// The page size must be a power of 2 between 256 bytes and 64KB (typical range: 4KB-16KB).
-    /// If not specified, uses the system default page size (typically 4KB on Linux, 16KB on macOS).
+    /// If not specified, uses the system default page size (typically 4KB).
     ///
     /// Only used in record-by-record mode (not in --fast mode).
     #[arg(long, value_parser = parse_byte_size, verbatim_doc_comment)]
     page_size: Option<usize>,
 
-    /// Target database maximum size (e.g., 4TB, 500GB, 8MB).
+    /// Target database maximum size (e.g., 4TB, 12TB, 500GB).
     ///
     /// Supports units: B, KB, MB, GB, TB.
     /// If not specified, uses the source database's maximum size.
@@ -94,7 +94,7 @@ pub struct Command {
     #[arg(long, value_parser = parse_byte_size, verbatim_doc_comment)]
     max_size: Option<usize>,
 
-    /// Database growth step (e.g., 4GB, 1GB).
+    /// Database growth step (e.g., 4GB, 8GB).
     ///
     /// Supports units: B, KB, MB, GB, TB.
     /// Only used in record-by-record mode (not in --fast mode).
@@ -126,7 +126,7 @@ pub struct Command {
 }
 
 impl Command {
-    /// Execute the mdbx-to-mdbx copy
+    /// Execute the database migration
     pub fn execute(
         &self,
         src_env: &DatabaseEnv,
@@ -169,9 +169,24 @@ impl Command {
         if !self.quiet {
             info!(target: "reth::cli", "Copy completed in {:.2}s", elapsed.as_secs_f64());
             
-            if let Ok(metadata) = std::fs::metadata(&self.to) {
-                info!(target: "reth::cli", "Destination size: {}", 
-                      format_byte_size(metadata.len() as usize));
+            // Display size comparison
+            let src_size = src_env.info()?.map_size();
+            if let Ok(dst_metadata) = std::fs::metadata(&self.to.join("mdbx.dat")) {
+                let dst_size = dst_metadata.len() as usize;
+                info!(target: "reth::cli", "Source database map size: {}", format_byte_size(src_size));
+                info!(target: "reth::cli", "Destination file size: {}", format_byte_size(dst_size));
+                
+                if dst_size < src_size {
+                    let reduction = ((src_size - dst_size) as f64 / src_size as f64) * 100.0;
+                    info!(target: "reth::cli", 
+                          "Size reduction: {} ({:.2}% smaller due to defragmentation)",
+                          format_byte_size(src_size - dst_size),
+                          reduction);
+                    info!(target: "reth::cli", 
+                          "  Note: This is normal. The copy process eliminates fragmentation,");
+                    info!(target: "reth::cli", 
+                          "  empty pages, and compacts the data structure.");
+                }
             }
         }
 
@@ -207,7 +222,7 @@ impl Command {
         let mut dst_args = base_db_args.clone();
         
         // Determine target parameters
-        // Priority: user specified > system config > source database
+        // Priority: user specified > source database
         let max_size_bytes = self.max_size.unwrap_or(src_map_size);
         let growth_step_bytes = self.growth_step;
         

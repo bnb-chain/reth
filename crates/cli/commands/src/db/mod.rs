@@ -13,7 +13,7 @@ mod clear;
 mod diff;
 mod get;
 mod list;
-mod mdbx_to_mdbx;
+mod migrate;
 mod repair_trie;
 mod stats;
 /// DB List TUI
@@ -50,8 +50,8 @@ pub enum Subcommands {
     },
     /// Deletes all table entries
     Clear(clear::Command),
-    /// Copy database to another location (mdbx-to-mdbx)
-    MdbxToMdbx(mdbx_to_mdbx::Command),
+    /// Migrate database to another location
+    Migrate(migrate::Command),
     /// Verifies trie consistency and outputs any inconsistencies
     RepairTrie(repair_trie::Command),
     /// Lists current and local database versions
@@ -141,7 +141,7 @@ impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> Command<C>
                 let Environment { provider_factory, .. } = self.env.init::<N>(AccessRights::RW)?;
                 command.execute(provider_factory)?;
             }
-            Subcommands::MdbxToMdbx(command) => {
+            Subcommands::Migrate(command) => {
                 // Get database arguments from system configuration
                 let db_args = self.env.db.database_args();
                 db_ro_exec!(self.env, tool, N, {
