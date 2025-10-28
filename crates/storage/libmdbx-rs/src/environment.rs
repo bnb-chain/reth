@@ -228,7 +228,6 @@ impl Environment {
     /// Copy the environment to the specified path.
     ///
     /// This uses MDBX's native copy functionality for optimal performance.
-    /// Similar to Erigon's mdbx_to_mdbx but uses the underlying C implementation.
     ///
     /// # Arguments
     ///
