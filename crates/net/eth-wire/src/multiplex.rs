@@ -781,11 +781,10 @@ impl<'a> std::future::Future for ProtocolsPoller<'a> {
 mod tests {
     use super::*;
     use crate::{
-        test_utils::{
+        UnauthedEthStream, UnauthedP2PStream, handshake::EthHandshake, test_utils::{
             connect_passthrough, eth_handshake, eth_hello,
-            proto::{test_hello, TestProtoMessage},
-        },
-        UnauthedP2PStream,
+            proto::{TestProtoMessage, test_hello},
+        }
     };
     use reth_eth_wire_types::EthNetworkPrimitives;
     use tokio::{net::TcpListener, sync::oneshot};
