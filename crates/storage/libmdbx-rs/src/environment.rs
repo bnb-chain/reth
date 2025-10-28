@@ -225,32 +225,6 @@ impl Environment {
 
         Ok(freelist)
     }
-
-    /// Copy the environment to the specified path.
-    ///
-    /// This uses MDBX's native copy functionality for optimal performance.
-    ///
-    /// # Arguments
-    ///
-    /// * `dest_path` - Destination path for the copied database
-    /// * `compact` - If true, omit free pages (compaction)
-    /// * `force_dynamic` - If true, make the copy resizable
-    pub fn copy_to_path(&self, dest_path: &Path, compact: bool, force_dynamic: bool) -> Result<()> {
-        let dest = CString::new(dest_path.to_str().ok_or(Error::Invalid)?)
-            .map_err(|_| Error::Invalid)?;
-        
-        let mut flags = 0u32;
-        if compact {
-            flags |= ffi::MDBX_CP_COMPACT;
-        }
-        if force_dynamic {
-            flags |= ffi::MDBX_CP_FORCE_DYNAMIC_SIZE;
-        }
-        
-        mdbx_result(unsafe { ffi::mdbx_env_copy(self.env_ptr(), dest.as_ptr(), flags) })?;
-        
-        Ok(())
-    }
 }
 
 /// Container type for Environment internals.

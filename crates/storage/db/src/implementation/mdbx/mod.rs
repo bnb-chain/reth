@@ -490,15 +490,6 @@ impl DatabaseEnv {
         Ok(())
     }
 
-    /// Copy the database to the specified path.
-    ///
-    /// This is a wrapper around MDBX's native copy.
-    pub fn copy_to_path(&self, dest_path: &Path, compact: bool, force_dynamic: bool) -> Result<(), DatabaseError> {
-        self.inner
-            .copy_to_path(dest_path, compact, force_dynamic)
-            .map_err(|e| DatabaseError::Other(format!("Failed to copy database: {}", e)))
-    }
-
     /// Records version that accesses the database with write privileges.
     pub fn record_client_version(&self, version: ClientVersion) -> Result<(), DatabaseError> {
         if version.is_empty() {

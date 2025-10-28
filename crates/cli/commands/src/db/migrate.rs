@@ -1,9 +1,7 @@
 //! Database migration tool
 //!
-//! This tool copies data from one MDBX database to another, table by table.
-//! It supports two modes:
-//! - Fast mode: uses MDBX native copy API for maximum speed
-//! - Custom mode: allows parameter customization (page size, max size, etc.)
+//! Copies data from one MDBX database to another, table by table.
+//! Allows customization of database parameters (page size, max size, growth step, etc.).
 
 use clap::Parser;
 use reth_db::DatabaseEnv;
@@ -43,10 +41,6 @@ pub struct Command {
     #[arg(long, default_value = "4GB", value_parser = parse_byte_size)]
     growth_step: usize,
 
-    /// Use fast mode (native MDBX copy, ignores custom parameters).
-    #[arg(long)]
-    fast: bool,
-
     /// Commit every N records. Smaller = less memory, slower.
     #[arg(long, default_value = "100000")]
     commit_every: usize,
@@ -76,24 +70,12 @@ impl Command {
         }
 
         if !self.quiet {
-            info!(target: "reth::cli", "Starting database copy...");
-            if self.fast {
-                info!(target: "reth::cli", "Mode: fast (MDBX native copy)");
-            } else {
-                info!(target: "reth::cli", "Mode: record-by-record (with parameter customization)");
-            }
+            info!(target: "reth::cli", "Starting database migration...");
             info!(target: "reth::cli", "Destination: {:?}", self.to);
         }
 
         let start = Instant::now();
-
-        if self.fast {
-            // Fast mode: use MDBX native copy
-            self.execute_fast_copy(src_env)?;
-        } else {
-            // Default mode: record-by-record copy with parameter customization
-            self.execute_custom_copy(src_env, db_args)?;
-        }
+        self.execute_custom_copy(src_env, db_args)?;
 
         let elapsed = start.elapsed();
 
@@ -124,17 +106,7 @@ impl Command {
         Ok(())
     }
 
-    /// Fast copy using MDBX native copy API
-    fn execute_fast_copy(&self, src_env: &DatabaseEnv) -> eyre::Result<()> {
-        if !self.quiet {
-            info!(target: "reth::cli", "Using MDBX native copy (ignoring custom parameters)");
-        }
-        
-        src_env.copy_to_path(&self.to, false, false)?;
-        Ok(())
-    }
-
-    /// Custom copy with parameter customization
+    /// Execute database copy with parameter customization
     fn execute_custom_copy(
         &self,
         src_env: &DatabaseEnv,
