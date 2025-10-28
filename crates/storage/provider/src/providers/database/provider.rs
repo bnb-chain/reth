@@ -1028,7 +1028,7 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> HeaderProvider for DatabasePro
             if let Some(td) = self.chain_spec.final_paris_total_difficulty() {
                 // if this block is higher than the final paris(merge) block, return the final paris
                 // difficulty
-                return Ok(Some(td))
+                return Ok(Some(td));
             }
         }
 

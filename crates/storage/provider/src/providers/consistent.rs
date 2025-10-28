@@ -683,11 +683,11 @@ impl<N: ProviderNodeTypes> HeaderProvider for ConsistentProvider<N> {
             }
             // found head in memory, calculate td by adding in-memory canonical tds
             let mut td = self.storage_provider.header_td_by_number(latest_block_number)?.ok_or(ProviderError::HeaderNotFound(latest_block_number.into()))?;
-            for num in latest_block_number+1..=number {
+            for num in latest_block_number + 1..=number {
                 let header = self.header_by_number(num)?.ok_or(ProviderError::HeaderNotFound(num.into()))?;
                 td = td.wrapping_add(header.difficulty());
             }
-            return Ok(Some(td))
+            return Ok(Some(td));
         }
 
         // ETH TD calculation logic
