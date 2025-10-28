@@ -14,7 +14,6 @@ mod diff;
 mod get;
 mod list;
 mod migrate;
-mod mdbx_to_mdbx;
 mod repair_trie;
 mod stats;
 /// DB List TUI
@@ -53,8 +52,6 @@ pub enum Subcommands {
     Clear(clear::Command),
     /// Migrate database to another location
     Migrate(migrate::Command),
-    /// Copy database to another location (mdbx-to-mdbx)
-    MdbxToMdbx(mdbx_to_mdbx::Command),
     /// Verifies trie consistency and outputs any inconsistencies
     RepairTrie(repair_trie::Command),
     /// Lists current and local database versions
@@ -68,7 +65,7 @@ macro_rules! db_ro_exec {
     ($env:expr, $tool:ident, $N:ident, $command:block) => {
         let Environment { provider_factory, .. } = $env.init::<$N>(AccessRights::RO)?;
 
-        let $tool = DbTool::new(provider_factory)?;
+        let $tool = DbTool::new(provider_factory.clone())?;
         $command;
     };
 }
@@ -145,13 +142,6 @@ impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> Command<C>
                 command.execute(provider_factory)?;
             }
             Subcommands::Migrate(command) => {
-                // Get database arguments from system configuration
-                let db_args = self.env.db.database_args();
-                db_ro_exec!(self.env, tool, N, {
-                    command.execute(tool.provider_factory.db_ref(), &db_args)?;
-                });
-            }
-            Subcommands::MdbxToMdbx(command) => {
                 // Get database arguments from system configuration
                 let db_args = self.env.db.database_args();
                 db_ro_exec!(self.env, tool, N, {
