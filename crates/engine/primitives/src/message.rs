@@ -1,5 +1,5 @@
 use crate::{
-    error::BeaconForkChoiceUpdateError, BeaconOnNewPayloadError, ExecutionPayload, ForkchoiceStatus,
+    BSCEngineMessageError, BeaconOnNewPayloadError, ExecutionPayload, ForkchoiceStatus, error::BeaconForkChoiceUpdateError
 };
 use alloy_primitives::{BlockHash, BlockNumber, U256};
 use alloy_rpc_types_engine::{
@@ -266,5 +266,16 @@ where
             version,
         });
         rx
+    }
+
+    /// Sends a query TD message to the beacon consensus engine and waits for a response.
+    pub async fn query_td(
+        &self,
+        number: BlockNumber,
+        hash: BlockHash,
+    ) -> Result<Option<U256>, BSCEngineMessageError> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.to_engine.send(BeaconEngineMessage::QueryTd { number, hash, tx });
+        rx.await.map_err(BSCEngineMessageError::internal)?.map_err(BSCEngineMessageError::internal)
     }
 }
