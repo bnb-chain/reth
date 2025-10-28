@@ -35,15 +35,17 @@ pub struct DatabaseArgs {
     pub max_size: Option<usize>,
     /// Database page size (e.g., 4KB, 8KB, 16KB).
     ///
-    /// Specifies the page size used by the MDBX database.
+    /// NOTE: Page size can only be set when creating a new database and cannot be changed later.
+    /// The page size must be a power of 2 between 256 bytes and 64KB.
+    /// If not specified, uses the system default (typically 4KB on Linux, 16KB on macOS).
     ///
     /// The page size determines the maximum database size.
     /// MDBX supports up to 2^31 pages, so with the default 4KB page size, the maximum
     /// database size is 8TB. To allow larger databases, increase this value to 8KB or higher.
     ///
-    /// WARNING: This setting is only configurable at database creation; changing
-    /// it later requires re-syncing.
-    #[arg(long = "db.page-size", value_parser = parse_byte_size)]
+    /// WARNING: Changing page size on an existing database will cause errors.
+    /// Only use this flag when initializing a new node.
+    #[arg(long = "db.page-size", value_parser = parse_byte_size, verbatim_doc_comment)]
     pub page_size: Option<usize>,
     /// Database growth step (e.g., 4GB, 4KB)
     #[arg(long = "db.growth-step", value_parser = parse_byte_size)]
