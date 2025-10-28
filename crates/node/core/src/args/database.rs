@@ -22,6 +22,16 @@ pub struct DatabaseArgs {
     /// NFS volume.
     #[arg(long = "db.exclusive")]
     pub exclusive: Option<bool>,
+    /// Database page size (e.g., 4KB, 8KB, 16KB)
+    ///
+    /// NOTE: Page size can only be set when creating a NEW database and cannot be changed later.
+    /// The page size must be a power of 2 between 256 bytes and 64KB.
+    /// If not specified, uses the system default (typically 4KB on Linux, 16KB on macOS).
+    ///
+    /// WARNING: Changing page size on an existing database will cause errors.
+    /// Only use this flag when initializing a new node.
+    #[arg(long = "db.page-size", value_parser = parse_byte_size, verbatim_doc_comment)]
+    pub page_size: Option<usize>,
     /// Maximum database size (e.g., 4TB, 8MB)
     #[arg(long = "db.max-size", value_parser = parse_byte_size)]
     pub max_size: Option<usize>,
@@ -58,6 +68,7 @@ impl DatabaseArgs {
             .with_log_level(self.log_level)
             .with_exclusive(self.exclusive)
             .with_max_read_transaction_duration(max_read_transaction_duration)
+            .with_page_size(self.page_size)
             .with_geometry_max_size(self.max_size)
             .with_growth_step(self.growth_step)
             .with_max_readers(self.max_readers)
