@@ -9,115 +9,46 @@ use clap::Parser;
 use reth_db::DatabaseEnv;
 use reth_db_api::{database::Database, transaction::DbTx};
 use reth_libmdbx::WriteFlags;
+use reth_node_core::args::{parse_byte_size, ByteSize};
 use std::{path::PathBuf, time::Instant};
 use tracing::info;
 
-/// Parse byte size from string (e.g., "4GB", "16KB", "1024")
-fn parse_byte_size(s: &str) -> Result<usize, String> {
-    let s = s.trim().to_uppercase();
-    
-    let (num_str, unit) = if let Some(pos) = s.find(|c: char| c.is_alphabetic()) {
-        s.split_at(pos)
-    } else {
-        return s.parse().map_err(|_| "Invalid number".to_string());
-    };
-
-    let num: usize = num_str.trim().parse().map_err(|_| "Invalid number".to_string())?;
-
-    let multiplier = match unit.trim() {
-        "B" | "" => 1,
-        "KB" => 1024,
-        "MB" => 1024 * 1024,
-        "GB" => 1024 * 1024 * 1024,
-        "TB" => 1024 * 1024 * 1024 * 1024,
-        _ => return Err(format!("Invalid unit: {unit}. Use B, KB, MB, GB, or TB.")),
-    };
-
-    Ok(num * multiplier)
-}
-
 /// Format byte size to human-readable string
 fn format_byte_size(bytes: usize) -> String {
-    const KB: usize = 1024;
-    const MB: usize = KB * 1024;
-    const GB: usize = MB * 1024;
-    const TB: usize = GB * 1024;
-
-    if bytes >= TB {
-        format!("{:.2} TB", bytes as f64 / TB as f64)
-    } else if bytes >= GB {
-        format!("{:.2} GB", bytes as f64 / GB as f64)
-    } else if bytes >= MB {
-        format!("{:.2} MB", bytes as f64 / MB as f64)
-    } else if bytes >= KB {
-        format!("{:.2} KB", bytes as f64 / KB as f64)
-    } else {
-        format!("{} B", bytes)
-    }
+    ByteSize(bytes).to_string()
 }
 
 /// Arguments for the `reth db migrate` command
 #[derive(Parser, Debug)]
 #[command(next_help_heading = "Copy Options")]
 pub struct Command {
-    /// The path to the destination database directory.
-    ///
-    /// The destination directory must not exist; it will be created during the copy process.
-    #[arg(long, value_name = "DEST_PATH", verbatim_doc_comment)]
+    /// Destination database directory (must not exist).
+    #[arg(long, value_name = "DEST_PATH")]
     to: PathBuf,
 
-    /// List of specific tables to copy (comma-separated).
-    ///
-    /// If not specified, all tables will be copied.
-    ///
-    /// Example: --tables Headers,Bodies,Transactions
-    #[arg(long, value_delimiter = ',', verbatim_doc_comment)]
+    /// Specific tables to copy (comma-separated). Example: --tables Headers,Bodies
+    #[arg(long, value_delimiter = ',')]
     tables: Vec<String>,
 
-    /// Target database page size (e.g., 4KB, 8KB, 16KB).
-    ///
-    /// Supports units: B, KB, MB, GB, TB.
-    ///
-    /// NOTE: Page size can only be set when creating a new database and cannot be changed later.
-    /// The page size must be a power of 2 between 256 bytes and 64KB (typical range: 4KB-16KB).
-    /// If not specified, uses the system default page size (typically 4KB).
-    ///
-    /// Only used in record-by-record mode (not in --fast mode).
+    /// Page size (e.g., 4KB, 8KB). Default: system default (typically 4KB).
+    /// NOTE: Can only be set when creating a new database.
     #[arg(long, value_parser = parse_byte_size, verbatim_doc_comment)]
     page_size: Option<usize>,
 
-    /// Target database maximum size (e.g., 4TB, 12TB, 500GB).
-    ///
-    /// Supports units: B, KB, MB, GB, TB.
-    /// If not specified, uses the source database's maximum size.
-    /// Only used in record-by-record mode (not in --fast mode).
-    #[arg(long, value_parser = parse_byte_size, verbatim_doc_comment)]
+    /// Maximum database size (e.g., 4TB, 12TB). Default: source database size.
+    #[arg(long, value_parser = parse_byte_size)]
     max_size: Option<usize>,
 
     /// Database growth step (e.g., 4GB, 8GB).
-    ///
-    /// Supports units: B, KB, MB, GB, TB.
-    /// Only used in record-by-record mode (not in --fast mode).
-    #[arg(long, default_value = "4GB", value_parser = parse_byte_size, verbatim_doc_comment)]
+    #[arg(long, default_value = "4GB", value_parser = parse_byte_size)]
     growth_step: usize,
 
-    /// Use fast mode (MDBX native copy).
-    ///
-    /// Fast mode uses the native MDBX copy API which is much faster but
-    /// ignores custom parameters like --page-size, --max-size, and --growth-step.
-    /// The destination database will have identical parameters to the source.
-    ///
-    /// By default, uses record-by-record copy which allows parameter customization
-    /// but is slower.
-    #[arg(long, verbatim_doc_comment)]
+    /// Use fast mode (native MDBX copy, ignores custom parameters).
+    #[arg(long)]
     fast: bool,
 
-    /// Commit transaction every N records.
-    ///
-    /// Controls how often transactions are committed during the copy process.
-    /// Smaller values use less memory but may be slower.
-    /// Only used in record-by-record mode (not in --fast mode).
-    #[arg(long, default_value = "100000", verbatim_doc_comment)]
+    /// Commit every N records. Smaller = less memory, slower.
+    #[arg(long, default_value = "100000")]
     commit_every: usize,
 
     /// Suppress progress messages.

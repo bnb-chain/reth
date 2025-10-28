@@ -22,14 +22,8 @@ pub struct DatabaseArgs {
     /// NFS volume.
     #[arg(long = "db.exclusive")]
     pub exclusive: Option<bool>,
-    /// Database page size (e.g., 4KB, 8KB, 16KB)
-    ///
-    /// NOTE: Page size can only be set when creating a NEW database and cannot be changed later.
-    /// The page size must be a power of 2 between 256 bytes and 64KB.
-    /// If not specified, uses the system default (typically 4KB on Linux, 16KB on macOS).
-    ///
-    /// WARNING: Changing page size on an existing database will cause errors.
-    /// Only use this flag when initializing a new node.
+    /// Database page size (e.g., 4KB, 8KB, 16KB).
+    /// NOTE: Can only be set when creating a new database. Default: system default (typically 4KB).
     #[arg(long = "db.page-size", value_parser = parse_byte_size, verbatim_doc_comment)]
     pub page_size: Option<usize>,
     /// Maximum database size (e.g., 4TB, 8MB)
@@ -182,7 +176,7 @@ impl fmt::Display for ByteSize {
 }
 
 /// Value parser function that supports various formats.
-fn parse_byte_size(s: &str) -> Result<usize, String> {
+pub fn parse_byte_size(s: &str) -> Result<usize, String> {
     s.parse::<ByteSize>().map(Into::into)
 }
 

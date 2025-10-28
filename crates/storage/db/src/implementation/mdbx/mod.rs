@@ -147,7 +147,6 @@ impl DatabaseArguments {
     /// Sets the page size for the database.
     ///
     /// Note: Page size can only be set when creating a new database and cannot be changed later.
-    /// The page size must be a power of 2 between the minimum and maximum values supported by MDBX.
     pub const fn with_page_size(mut self, page_size: Option<usize>) -> Self {
         if let Some(page_size) = page_size {
             self.geometry.page_size = Some(PageSize::Set(page_size));
@@ -493,8 +492,7 @@ impl DatabaseEnv {
 
     /// Copy the database to the specified path.
     ///
-    /// This is a wrapper around MDBX's native copy, similar to Erigon's mdbx_to_mdbx
-    /// but using the high-performance C implementation instead of record-by-record copying.
+    /// This is a wrapper around MDBX's native copy.
     pub fn copy_to_path(&self, dest_path: &Path, compact: bool, force_dynamic: bool) -> Result<(), DatabaseError> {
         self.inner
             .copy_to_path(dest_path, compact, force_dynamic)
