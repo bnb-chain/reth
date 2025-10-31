@@ -45,3 +45,18 @@ impl BeaconForkChoiceUpdateError {
         Self::Internal(Box::new(e))
     }
 }
+
+/// Represents error cases for a BSC message.
+#[derive(Debug, thiserror::Error)]
+pub enum BSCEngineMessageError {
+    /// An internal error occurred, not necessarily related to the message.
+    #[error(transparent)]
+    Internal(Box<dyn core::error::Error + Send + Sync>),
+}
+
+impl BSCEngineMessageError {
+    /// Create a new internal error.
+    pub fn internal<E: core::error::Error + Send + Sync + 'static>(e: E) -> Self {
+        Self::Internal(Box::new(e))
+    }
+}

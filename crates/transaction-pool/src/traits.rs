@@ -624,6 +624,13 @@ pub trait TransactionPool: Clone + Debug + Send + Sync {
         &self,
         versioned_hashes: &[B256],
     ) -> Result<Option<Vec<BlobAndProofV2>>, BlobStoreError>;
+
+    /// Inserts a blob sidecar into the blob store for the given transaction hash.
+    fn insert_blob(
+        &self,
+        tx_hash: TxHash,
+        blob: BlobTransactionSidecarVariant,
+    ) -> Result<(), BlobStoreError>;
 }
 
 /// Extension for [`TransactionPool`] trait that allows to set the current block info.
