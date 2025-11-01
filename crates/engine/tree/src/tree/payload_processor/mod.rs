@@ -37,7 +37,7 @@ use reth_trie_sparse::{
 };
 use std::sync::{
     atomic::AtomicBool,
-    mpsc::{self, channel, Sender},
+    mpsc::{self, channel, Sender, Receiver},
     Arc,
 };
 
@@ -51,9 +51,13 @@ pub mod sparse_trie;
 
 use configured_sparse_trie::ConfiguredSparseTrie;
 
+use rust_eth_triedb::{TrieDB, get_global_triedb};
 use rust_eth_triedb_pathdb::PathDB;
-use rust_eth_triedb_state_trie::DiffLayers;
+use rust_eth_triedb_state_trie::{DiffLayer, DiffLayers};
 use std::thread;
+
+use reth_trie::{HashedPostState};
+use tracing::info;
 
 /// Entrypoint for executing the payload.
 #[derive(Debug)]
@@ -252,6 +256,7 @@ where
             prewarm_handle,
             state_root: Some(state_root_rx),
             transactions: execution_rx,
+            triedb_state_root: None,
         }
     }
 
@@ -274,6 +279,7 @@ where
             prewarm_handle,
             state_root: None,
             transactions: execution_rx,
+            triedb_state_root: None,
         }
     }
 
@@ -299,13 +305,28 @@ where
             provider_builder,
             None,
             parent_root,
-            difflayer,
+            difflayer.clone(),
         );
+
+        let (targets_tx, targets_rx) = channel();
+        let (state_root_tx, state_root_rx) = channel();
+        let triedb_task = TriedbTask::new(
+            parent_root,
+            difflayer,
+            targets_rx,
+            state_root_tx);
+
+        // spawn multi-proof task
+        self.executor.spawn_blocking(move || {
+            triedb_task.run();
+        });
+
         PayloadHandle {
-            to_multi_proof: None,
+            to_multi_proof: Some(targets_tx),
             prewarm_handle,
             state_root: None,
             transactions: execution_rx,
+            triedb_state_root: Some(state_root_rx),
         }
     }
 
@@ -528,6 +549,8 @@ pub struct PayloadHandle<Tx, Err> {
     state_root: Option<mpsc::Receiver<Result<StateRootComputeOutcome, ParallelStateRootError>>>,
     /// Stream of block transactions
     transactions: mpsc::Receiver<Result<Tx, Err>>,
+
+    triedb_state_root: Option<mpsc::Receiver<Result<(B256, Option<Arc<DiffLayer>>), String>>>,
 }
 
 impl<Tx, Err> PayloadHandle<Tx, Err> {
@@ -542,6 +565,16 @@ impl<Tx, Err> PayloadHandle<Tx, Err> {
             .expect("state_root is None")
             .recv()
             .map_err(|_| ParallelStateRootError::Other("sparse trie task dropped".to_string()))?
+    }
+
+    /// Returns the triedb state root
+    pub fn triedb_state_root(&mut self) -> Result<(B256, Option<Arc<DiffLayer>>), String> {
+        self.triedb_state_root
+            .take()
+            .expect("triedb_state_root is None")
+            .recv()
+            .map_err(|_| "triedb state root dropped".to_string())?
+            .map_err(|e| format!("triedb state root error: {}", e))
     }
 
     /// Returns a state hook to be used to send state updates to this task.
@@ -681,6 +714,99 @@ where
             evm_env: Default::default(),
             hash: Default::default(),
             parent_hash: Default::default(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct TriedbTask {
+    parent_root: B256,
+    difflayer: Option<DiffLayers>,
+    hashe_post_state: HashedPostState,
+    triedb: TrieDB<PathDB>,
+
+    targets_rx: Receiver<MultiProofMessage>,
+    state_root_tx: mpsc::Sender<Result<(B256, Option<Arc<DiffLayer>>), String>>,
+}
+
+impl TriedbTask {
+    fn new(
+        parent_root: B256,
+        difflayer: Option<DiffLayers>,
+        targets_rx: Receiver<MultiProofMessage>,
+        state_root_tx: mpsc::Sender<Result<(B256, Option<Arc<DiffLayer>>), String>>,
+    ) -> Self {
+
+        let mut triedb = get_global_triedb();
+        triedb.state_at(parent_root, difflayer.as_ref()).unwrap();
+
+        Self {
+            parent_root,
+            difflayer,
+            hashe_post_state: HashedPostState::default(),
+            triedb,
+            targets_rx,
+            state_root_tx
+        }
+    }
+
+    pub(crate) fn is_update(&self) -> bool {
+        if self.hashe_post_state.accounts.len() > 100 || self.hashe_post_state.storages.len() > 10 {
+            return true;
+        }
+        return false;
+    }
+
+    pub(crate) fn run(mut self) {
+        let mut total_tx = 0;
+        let mut update_tx = 0;
+        loop {
+            match self.targets_rx.recv() {
+                Ok(message) => match message {
+                    MultiProofMessage::StateUpdate(_source, state) => {
+                        let hashed_state_update = evm_state_to_hashed_post_state(state);
+                        self.hashe_post_state.extend(hashed_state_update);
+                        total_tx += 1;
+                        if self.is_update() {
+                            update_tx += 1;
+                            info!(target: "engine::tree", "triedb update hashed post state");
+                            self.triedb.update_hashed_post_state(&self.hashe_post_state).unwrap();
+                            self.triedb.calculate_hash().unwrap();
+                            self.hashe_post_state = HashedPostState::default();
+                        }
+                    }
+                    MultiProofMessage::FinishedStateUpdates => {
+                        if !self.hashe_post_state.is_empty() {
+                            update_tx += 1;
+                            self.triedb.update_hashed_post_state(&self.hashe_post_state).unwrap();
+                            self.hashe_post_state = HashedPostState::default();
+                        }
+                        let (root_hash, difflayer) = self.triedb.commit_all_hashed_post_state().unwrap();
+
+                        info!(target: "engine::tree", "finish async triedb calc hash task finished, total_tx={}, update_tx={}", total_tx, update_tx);
+
+                        self.state_root_tx
+                            .send(Ok((root_hash, difflayer)))
+                            .expect("failed to send state root result");
+                        break;
+                    }
+                    MultiProofMessage::PrefetchProofs(_) => {
+                        panic!("triedb calc hash task receive exception prefetch proofs message")
+                    }
+                    MultiProofMessage::ProofCalculated(_) => {
+                        panic!("triedb calc hash task receive exception proof calculated message")
+                    }
+                    MultiProofMessage::ProofCalculationError(err) => {
+                        panic!("triedb calc hash task receive exception proof calculation error message, {:?}", err)
+                    }
+                    MultiProofMessage::EmptyProof { .. } => {
+                        panic!("triedb calc hash task receive exception empty proof message")
+                    }
+                }
+                Err(err) => {
+                    panic!("triedb calc hash task receive error, {:?}", err)
+                }
+            }
         }
     }
 }
