@@ -179,6 +179,10 @@ pub(crate) struct BlockValidationMetrics {
     pub(crate) payload_difflayer_duration: Gauge,
     /// Histogram of payload validation latency
     pub(crate) payload_difflayer_histogram: Histogram,
+    /// Total number of times the payload sync validate is used
+    pub(crate) payload_sync_validate_total: Counter,
+    /// Total number of times the payload async validate is used
+    pub(crate) payload_async_validate_duration: Counter,
 }
 
 impl BlockValidationMetrics {

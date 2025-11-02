@@ -521,7 +521,22 @@ where
             // };
             // (state_root, difflayer)
             let (state_root, difflayer) = handle.triedb_state_root().unwrap();
-            (state_root, difflayer)
+            if state_root != block.header().state_root() {
+                let (state_root, difflayer) = if let Ok(result) = self.get_triedb().commit_hashed_post_state(
+                    parent_block.state_root(),
+                    parent_difflayer.as_ref(),
+                    &hashed_state_clone) {
+                    result
+                } else {
+                    panic!("TrieDB update failed");
+                };
+                info!(target: "engine::tree", "state root mismatch, switch to sync commit");
+                self.metrics.block_validation.payload_sync_validate_total.increment(1);
+                (state_root, difflayer)
+            } else {
+                self.metrics.block_validation.payload_async_validate_duration.increment(1);
+                (state_root, difflayer)
+            }
         };
         self.metrics.block_validation.record_state_root_duration(root_time.elapsed().as_secs_f64());
 
