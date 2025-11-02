@@ -4,7 +4,7 @@
 pub const DEFAULT_PERSISTENCE_THRESHOLD: u64 = 2;
 
 /// How close to the canonical head we persist blocks.
-pub const DEFAULT_MEMORY_BLOCK_BUFFER_TARGET: u64 = 2;
+pub const DEFAULT_MEMORY_BLOCK_BUFFER_TARGET: u64 = 0;
 
 /// Default maximum concurrency for proof tasks
 pub const DEFAULT_MAX_PROOF_TASK_CONCURRENCY: u64 = 256;
@@ -65,8 +65,8 @@ pub struct TreeConfig {
     always_compare_trie_updates: bool,
     /// Whether to disable cross-block caching and parallel prewarming.
     disable_caching_and_prewarming: bool,
-    /// Whether to enable the parallel sparse trie state root algorithm.
-    enable_parallel_sparse_trie: bool,
+    /// Whether to disable the parallel sparse trie state root algorithm.
+    disable_parallel_sparse_trie: bool,
     /// Whether to enable state provider metrics.
     state_provider_metrics: bool,
     /// Cross-block cache size in bytes.
@@ -95,6 +95,9 @@ pub struct TreeConfig {
     /// where immediate payload regeneration is desired despite the head not changing or moving to
     /// an ancestor.
     always_process_payload_attributes_on_canonical_head: bool,
+    /// Skip state root validation for fastnode mode.
+    /// This disables validation of state root hashes during live sync.
+    skip_state_root_validation: bool,
 }
 
 impl Default for TreeConfig {
@@ -108,7 +111,7 @@ impl Default for TreeConfig {
             legacy_state_root: false,
             always_compare_trie_updates: false,
             disable_caching_and_prewarming: false,
-            enable_parallel_sparse_trie: false,
+            disable_parallel_sparse_trie: false,
             state_provider_metrics: false,
             cross_block_cache_size: DEFAULT_CROSS_BLOCK_CACHE_SIZE,
             has_enough_parallelism: has_enough_parallelism(),
@@ -117,6 +120,7 @@ impl Default for TreeConfig {
             precompile_cache_disabled: false,
             state_root_fallback: false,
             always_process_payload_attributes_on_canonical_head: false,
+            skip_state_root_validation: false,
         }
     }
 }
@@ -133,7 +137,7 @@ impl TreeConfig {
         legacy_state_root: bool,
         always_compare_trie_updates: bool,
         disable_caching_and_prewarming: bool,
-        enable_parallel_sparse_trie: bool,
+        disable_parallel_sparse_trie: bool,
         state_provider_metrics: bool,
         cross_block_cache_size: u64,
         has_enough_parallelism: bool,
@@ -142,6 +146,7 @@ impl TreeConfig {
         precompile_cache_disabled: bool,
         state_root_fallback: bool,
         always_process_payload_attributes_on_canonical_head: bool,
+        skip_state_root_validation: bool,
     ) -> Self {
         Self {
             persistence_threshold,
@@ -152,7 +157,7 @@ impl TreeConfig {
             legacy_state_root,
             always_compare_trie_updates,
             disable_caching_and_prewarming,
-            enable_parallel_sparse_trie,
+            disable_parallel_sparse_trie,
             state_provider_metrics,
             cross_block_cache_size,
             has_enough_parallelism,
@@ -161,6 +166,7 @@ impl TreeConfig {
             precompile_cache_disabled,
             state_root_fallback,
             always_process_payload_attributes_on_canonical_head,
+            skip_state_root_validation,
         }
     }
 
@@ -210,9 +216,9 @@ impl TreeConfig {
         self.state_provider_metrics
     }
 
-    /// Returns whether or not the parallel sparse trie is enabled.
-    pub const fn enable_parallel_sparse_trie(&self) -> bool {
-        self.enable_parallel_sparse_trie
+    /// Returns whether or not the parallel sparse trie is disabled.
+    pub const fn disable_parallel_sparse_trie(&self) -> bool {
+        self.disable_parallel_sparse_trie
     }
 
     /// Returns whether or not cross-block caching and parallel prewarming should be used.
@@ -340,11 +346,11 @@ impl TreeConfig {
     }
 
     /// Setter for using the parallel sparse trie
-    pub const fn with_enable_parallel_sparse_trie(
+    pub const fn with_disable_parallel_sparse_trie(
         mut self,
-        enable_parallel_sparse_trie: bool,
+        disable_parallel_sparse_trie: bool,
     ) -> Self {
-        self.enable_parallel_sparse_trie = enable_parallel_sparse_trie;
+        self.disable_parallel_sparse_trie = disable_parallel_sparse_trie;
         self
     }
 
@@ -373,6 +379,20 @@ impl TreeConfig {
     pub const fn with_state_root_fallback(mut self, state_root_fallback: bool) -> Self {
         self.state_root_fallback = state_root_fallback;
         self
+    }
+
+    /// Setter for whether to skip state root validation.
+    pub const fn with_skip_state_root_validation(
+        mut self,
+        skip_state_root_validation: bool,
+    ) -> Self {
+        self.skip_state_root_validation = skip_state_root_validation;
+        self
+    }
+
+    /// Returns whether state root validation should be skipped.
+    pub const fn skip_state_root_validation(&self) -> bool {
+        self.skip_state_root_validation
     }
 
     /// Whether or not to use state root task

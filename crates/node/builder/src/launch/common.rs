@@ -166,6 +166,12 @@ impl LaunchContext {
 
         // Update the config with the command line arguments
         toml_config.peers.trusted_nodes_only = config.network.trusted_only;
+        
+        // Apply fastnode settings when skip_state_root_validation is enabled
+        if config.engine.skip_state_root_validation {
+            info!(target: "reth::cli", "Fastnode mode enabled via --engine.skip-state-root-validation - disabling hashing stages and state root validation");
+            toml_config.stages.disable_hashing_stages = true;
+        }
 
         Ok(toml_config)
     }
@@ -312,7 +318,7 @@ impl<L, R> LaunchContextWith<Attached<L, R>> {
         &self.attachment.right
     }
 
-    /// Get a mutable reference to the right value.
+    /// Get a mutable reference to the left value.
     pub const fn left_mut(&mut self) -> &mut L {
         &mut self.attachment.left
     }
@@ -442,7 +448,10 @@ impl<R, ChainSpec: EthChainSpec> LaunchContextWith<Attached<WithConfigs<ChainSpe
     }
 
     /// Returns the [`MiningMode`] intended for --dev mode.
-    pub fn dev_mining_mode(&self, pool: impl TransactionPool) -> MiningMode {
+    pub fn dev_mining_mode<Pool>(&self, pool: Pool) -> MiningMode<Pool>
+    where
+        Pool: TransactionPool + Unpin,
+    {
         if let Some(interval) = self.node_config().dev.block_time {
             MiningMode::interval(interval)
         } else {
@@ -961,7 +970,10 @@ where
                 let Some(latest) = self.blockchain_db().latest_header()? else { return Ok(()) };
                 if latest.number() > merge_block {
                     let provider = self.blockchain_db().static_file_provider();
-                    if provider.get_lowest_transaction_static_file_block() < Some(merge_block) {
+                    if provider
+                        .get_lowest_transaction_static_file_block()
+                        .is_some_and(|lowest| lowest < merge_block)
+                    {
                         info!(target: "reth::cli", merge_block, "Expiring pre-merge transactions");
                         provider.delete_transactions_below(merge_block)?;
                     } else {
@@ -1116,9 +1128,9 @@ impl<L, R> Attached<L, R> {
         &self.right
     }
 
-    /// Get a mutable reference to the right value.
-    pub const fn left_mut(&mut self) -> &mut R {
-        &mut self.right
+    /// Get a mutable reference to the left value.
+    pub const fn left_mut(&mut self) -> &mut L {
+        &mut self.left
     }
 
     /// Get a mutable reference to the right value.

@@ -35,16 +35,16 @@ use reth_primitives_traits::{
     AlloyBlockHeader, BlockTy, GotExpected, NodePrimitives, RecoveredBlock, SealedHeader,
 };
 use reth_provider::{
-    BlockExecutionOutput, BlockNumReader, BlockReader, DBProvider, DatabaseProviderFactory,
-    ExecutionOutcome, HashedPostStateProvider, ProviderError, StateCommitmentProvider,
-    StateProvider, StateProviderFactory, StateReader, StateRootProvider,
+    BlockExecutionOutput, BlockHashReader, BlockNumReader, BlockReader, DBProvider,
+    DatabaseProviderFactory, ExecutionOutcome, HashedPostStateProvider, HeaderProvider,
+    ProviderError, StateProvider, StateProviderFactory, StateReader, StateRootProvider,
 };
 use reth_revm::db::State;
-use reth_trie::{updates::TrieUpdates, HashedPostState, TrieInput};
-use reth_trie_db::{DatabaseHashedPostState, StateCommitment};
+use reth_trie::{updates::TrieUpdates, HashedPostState, KeccakKeyHasher, TrieInput};
+use reth_trie_db::DatabaseHashedPostState;
 use reth_trie_parallel::root::{ParallelStateRoot, ParallelStateRootError};
 use std::{collections::HashMap, sync::Arc, time::Instant};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, debug_span, error, info, trace, warn};
 
 /// Context providing access to tree state during validation.
 ///
@@ -57,8 +57,6 @@ pub struct TreeCtx<'a, N: NodePrimitives> {
     persistence: &'a PersistenceState,
     /// Reference to the canonical in-memory state
     canonical_in_memory_state: &'a CanonicalInMemoryState<N>,
-    /// Whether the currently validated block is on a fork chain.
-    is_fork: bool,
 }
 
 impl<'a, N: NodePrimitives> std::fmt::Debug for TreeCtx<'a, N> {
@@ -77,9 +75,8 @@ impl<'a, N: NodePrimitives> TreeCtx<'a, N> {
         state: &'a mut EngineApiTreeState<N>,
         persistence: &'a PersistenceState,
         canonical_in_memory_state: &'a CanonicalInMemoryState<N>,
-        is_fork: bool,
     ) -> Self {
-        Self { state, persistence, canonical_in_memory_state, is_fork }
+        Self { state, persistence, canonical_in_memory_state }
     }
 
     /// Returns a reference to the engine tree state
@@ -100,11 +97,6 @@ impl<'a, N: NodePrimitives> TreeCtx<'a, N> {
     /// Returns a reference to the canonical in-memory state
     pub const fn canonical_in_memory_state(&self) -> &'a CanonicalInMemoryState<N> {
         self.canonical_in_memory_state
-    }
-
-    /// Returns whether the currently validated block is on a fork chain.
-    pub const fn is_fork(&self) -> bool {
-        self.is_fork
     }
 
     /// Determines the persisting kind for the given block based on persistence info.
@@ -178,7 +170,6 @@ where
         + BlockReader<Header = N::BlockHeader>
         + StateProviderFactory
         + StateReader
-        + StateCommitmentProvider
         + HashedPostStateProvider
         + Clone
         + 'static,
@@ -364,7 +355,8 @@ where
             self.has_ancestors_with_missing_trie_updates(input.block_with_parent(), ctx.state());
         let mut use_state_root_task = run_parallel_state_root &&
             self.config.use_state_root_task() &&
-            !has_ancestors_with_missing_trie_updates;
+            !has_ancestors_with_missing_trie_updates &&
+            !self.config.skip_state_root_validation();
 
         debug!(
             target: "engine::tree",
@@ -430,12 +422,11 @@ where
             handle.cache_metrics(),
         );
 
-        let (output, execution_finish) = if self.config.state_provider_metrics() {
+        let output = if self.config.state_provider_metrics() {
             let state_provider = InstrumentedStateProvider::from_state_provider(&state_provider);
-            let (output, execution_finish) =
-                ensure_ok!(self.execute_block(&state_provider, env, &input, &mut handle));
+            let output = ensure_ok!(self.execute_block(&state_provider, env, &input, &mut handle));
             state_provider.record_total_latency();
-            (output, execution_finish)
+            output
         } else {
             ensure_ok!(self.execute_block(&state_provider, env, &input, &mut handle))
         };
@@ -483,91 +474,103 @@ where
             return Err(InsertBlockError::new(block.into_sealed_block(), err.into()).into())
         }
 
-        debug!(target: "engine::tree", block=?block_num_hash, "Calculating block state root");
+        // Skip state root computation entirely in fastnode mode
+        let (state_root, trie_output, _root_elapsed) = if self.config.skip_state_root_validation() {
+            debug!(target: "engine::tree", block=?block_num_hash, "Skipping state root calculation in fastnode mode");
+            // Use the state root from the block header directly without validation
+            (block.header().state_root(), TrieUpdates::default(), std::time::Duration::ZERO)
+        } else {
+            debug!(target: "engine::tree", block=?block_num_hash, "Calculating block state root");
 
-        let root_time = Instant::now();
+            let root_time = Instant::now();
+            let mut maybe_state_root = None;
 
-        let mut maybe_state_root = None;
 
-        if run_parallel_state_root {
-            // if we new payload extends the current canonical change we attempt to use the
-            // background task or try to compute it in parallel
-            if use_state_root_task {
-                debug!(target: "engine::tree", block=?block_num_hash, "Using sparse trie state root algorithm");
-                match handle.state_root() {
-                    Ok(StateRootComputeOutcome { state_root, trie_updates }) => {
-                        let elapsed = execution_finish.elapsed();
-                        info!(target: "engine::tree", ?state_root, ?elapsed, "State root task finished");
-                        // we double check the state root here for good measure
-                        if state_root == block.header().state_root() {
-                            maybe_state_root = Some((state_root, trie_updates, elapsed))
-                        } else {
-                            warn!(
-                                target: "engine::tree",
-                                ?state_root,
-                                block_state_root = ?block.header().state_root(),
-                                "State root task returned incorrect state root"
-                            );
+            if run_parallel_state_root {
+                // if we new payload extends the current canonical change we attempt to use the
+                // background task or try to compute it in parallel
+                if use_state_root_task {
+                    debug!(target: "engine::tree", block=?block_num_hash, "Using sparse trie state root algorithm");
+                    match handle.state_root() {
+                        Ok(StateRootComputeOutcome { state_root, trie_updates }) => {
+                            let elapsed = root_time.elapsed();
+                            info!(target: "engine::tree", ?state_root, ?elapsed, "State root task finished");
+                            // we double check the state root here for good measure
+                            if state_root == block.header().state_root() {
+                                maybe_state_root = Some((state_root, trie_updates, elapsed))
+                            } else {
+                                warn!(
+                                    target: "engine::tree",
+                                    ?state_root,
+                                    block_state_root = ?block.header().state_root(),
+                                    "State root task returned incorrect state root"
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            debug!(target: "engine::tree", %error, "Background parallel state root computation failed");
                         }
                     }
-                    Err(error) => {
-                        debug!(target: "engine::tree", %error, "Background parallel state root computation failed");
-                    }
-                }
-            } else {
-                debug!(target: "engine::tree", block=?block_num_hash, "Using parallel state root algorithm");
-                match self.compute_state_root_parallel(
-                    persisting_kind,
-                    block.parent_hash(),
-                    &hashed_state,
-                    ctx.state(),
-                ) {
-                    Ok(result) => {
-                        info!(
-                            target: "engine::tree",
-                            block = ?block_num_hash,
-                            regular_state_root = ?result.0,
-                            "Regular root task finished"
-                        );
-                        maybe_state_root = Some((result.0, result.1, root_time.elapsed()));
-                    }
-                    Err(ParallelStateRootError::Provider(ProviderError::ConsistentView(error))) => {
-                        debug!(target: "engine::tree", %error, "Parallel state root computation failed consistency check, falling back");
-                    }
-                    Err(error) => {
-                        return Err(InsertBlockError::new(
-                            block.into_sealed_block(),
-                            InsertBlockErrorKind::Other(Box::new(error)),
-                        )
-                        .into())
+                } else {
+                    debug!(target: "engine::tree", block=?block_num_hash, "Using parallel state root algorithm");
+                    match self.compute_state_root_parallel(
+                        persisting_kind,
+                        block.header().parent_hash(),
+                        &hashed_state,
+                        ctx.state(),
+                    ) {
+                        Ok(result) => {
+                            info!(
+                                target: "engine::tree",
+                                block = ?block_num_hash,
+                                regular_state_root = ?result.0,
+                                "Regular root task finished"
+                            );
+                            maybe_state_root = Some((result.0, result.1, root_time.elapsed()));
+                        }
+                        Err(ParallelStateRootError::Provider(ProviderError::ConsistentView(
+                            error,
+                        ))) => {
+                            debug!(target: "engine::tree", %error, "Parallel state root computation failed consistency check, falling back");
+                        }
+                        Err(error) => {
+                            return Err(InsertPayloadError::Block(InsertBlockError::new(
+                                block.into_sealed_block(),
+                                InsertBlockErrorKind::Other(Box::new(error)),
+                            )))
+                        }
                     }
                 }
             }
-        }
 
-        let (state_root, trie_output, root_elapsed) = if let Some(maybe_state_root) =
-            maybe_state_root
-        {
-            maybe_state_root
-        } else {
-            // fallback is to compute the state root regularly in sync
-            if self.config.state_root_fallback() {
-                debug!(target: "engine::tree", block=?block_num_hash, "Using state root fallback for testing");
+            let (state_root, trie_output, root_elapsed) = if let Some(maybe_state_root) =
+                maybe_state_root
+            {
+                maybe_state_root
             } else {
-                warn!(target: "engine::tree", block=?block_num_hash, ?persisting_kind, "Failed to compute state root in parallel");
-                self.metrics.block_validation.state_root_parallel_fallback_total.increment(1);
-            }
+                // fallback is to compute the state root regularly in sync
+                if self.config.state_root_fallback() {
+                    debug!(target: "engine::tree", block=?block_num_hash, "Using state root fallback for testing");
+                } else {
+                    warn!(target: "engine::tree", block=?block_num_hash, ?persisting_kind, "Failed to compute state root in parallel");
+                    self.metrics.block_validation.state_root_parallel_fallback_total.increment(1);
+                }
 
-            let (root, updates) =
-                ensure_ok!(state_provider.state_root_with_updates(hashed_state.clone()));
-            (root, updates, root_time.elapsed())
+                let (root, updates) =
+                    ensure_ok!(state_provider.state_root_with_updates(hashed_state.clone()));
+                (root, updates, root_time.elapsed())
+            };
+
+            self.metrics
+                .block_validation
+                .record_state_root(&trie_output, root_elapsed.as_secs_f64());
+            debug!(target: "engine::tree", ?root_elapsed, block=?block_num_hash, "Calculated state root");
+
+            (state_root, trie_output, root_elapsed)
         };
 
-        self.metrics.block_validation.record_state_root(&trie_output, root_elapsed.as_secs_f64());
-        debug!(target: "engine::tree", ?root_elapsed, block=?block_num_hash, "Calculated state root");
-
-        // ensure state root matches
-        if state_root != block.header().state_root() {
+        // ensure state root matches (validation already skipped in fastnode mode)
+        if !self.config.skip_state_root_validation() && state_root != block.header().state_root() {
             // call post-block hook
             self.on_invalid_block(
                 &parent_block,
@@ -590,9 +593,26 @@ where
         // terminate prewarming task with good state output
         handle.terminate_caching(Some(output.state.clone()));
 
-        // If the block is a fork, we don't save the trie updates, because they may be incorrect.
+        // If the block doesn't connect to the database tip, we don't save its trie updates, because
+        // they may be incorrect as they were calculated on top of the forked block.
+        //
+        // We also only save trie updates if all ancestors have trie updates, because otherwise the
+        // trie updates may be incorrect.
+        //
         // Instead, they will be recomputed on persistence.
-        let trie_updates = if ctx.is_fork() {
+        let connects_to_last_persisted =
+            ensure_ok!(self.block_connects_to_last_persisted(ctx, &block));
+        let should_discard_trie_updates =
+            !connects_to_last_persisted || has_ancestors_with_missing_trie_updates;
+        debug!(
+            target: "engine::tree",
+            block = ?block_num_hash,
+            connects_to_last_persisted,
+            has_ancestors_with_missing_trie_updates,
+            should_discard_trie_updates,
+            "Checking if should discard trie updates"
+        );
+        let trie_updates = if should_discard_trie_updates {
             ExecutedTrieUpdates::Missing
         } else {
             ExecutedTrieUpdates::Present(Arc::new(trie_output))
@@ -608,18 +628,17 @@ where
         })
     }
 
-    /// Return sealed block from database or in-memory state by hash.
+    /// Return sealed block header from database or in-memory state by hash.
     fn sealed_header_by_hash(
         &self,
         hash: B256,
         state: &EngineApiTreeState<N>,
     ) -> ProviderResult<Option<SealedHeader<N::BlockHeader>>> {
         // check memory first
-        let block =
-            state.tree_state.block_by_hash(hash).map(|block| block.as_ref().clone_sealed_header());
+        let header = state.tree_state.sealed_header_by_hash(&hash);
 
-        if block.is_some() {
-            Ok(block)
+        if header.is_some() {
+            Ok(header)
         } else {
             self.provider.sealed_header_by_hash(hash)
         }
@@ -648,7 +667,7 @@ where
         env: ExecutionEnv<Evm>,
         input: &BlockOrPayload<T>,
         handle: &mut PayloadHandle<impl ExecutableTxFor<Evm>, Err>,
-    ) -> Result<(BlockExecutionOutput<N::Receipt>, Instant), InsertBlockErrorKind>
+    ) -> Result<BlockExecutionOutput<N::Receipt>, InsertBlockErrorKind>
     where
         S: StateProvider,
         Err: core::error::Error + Send + Sync + 'static,
@@ -657,7 +676,11 @@ where
         Evm: ConfigureEngineEvm<T::ExecutionData, Primitives = N>,
     {
         let num_hash = NumHash::new(env.evm_env.block_env.number.to(), env.hash);
-        debug!(target: "engine::tree", block=?num_hash, "Executing block");
+
+        let span = debug_span!(target: "engine::tree", "execute_block", num = ?num_hash.number, hash = ?num_hash.hash);
+        let _enter = span.enter();
+        debug!(target: "engine::tree", "Executing block");
+
         let mut db = State::builder()
             .with_database(StateProviderDatabase::new(&state_provider))
             .with_bundle_update()
@@ -687,7 +710,7 @@ where
 
         let execution_start = Instant::now();
         let state_hook = Box::new(handle.state_hook());
-        let output = self.metrics.executor.execute_metered(
+        let output = self.metrics.execute_metered(
             executor,
             handle.iter_transactions().map(|res| res.map_err(BlockExecutionError::other)),
             state_hook,
@@ -695,7 +718,7 @@ where
         let execution_finish = Instant::now();
         let execution_time = execution_finish.duration_since(execution_start);
         debug!(target: "engine::tree", elapsed = ?execution_time, number=?num_hash.number, "Executed block");
-        Ok((output, execution_finish))
+        Ok(output)
     }
 
     /// Compute state root for the given hashed post state in parallel.
@@ -726,6 +749,51 @@ where
         input.append_ref(hashed_state);
 
         ParallelStateRoot::new(consistent_view, input).incremental_root_with_updates()
+    }
+
+    /// Checks if the given block connects to the last persisted block, i.e. if the last persisted
+    /// block is the ancestor of the given block.
+    ///
+    /// This checks the database for the actual last persisted block, not [`PersistenceState`].
+    fn block_connects_to_last_persisted(
+        &self,
+        ctx: TreeCtx<'_, N>,
+        block: &RecoveredBlock<N::Block>,
+    ) -> ProviderResult<bool> {
+        let provider = self.provider.database_provider_ro()?;
+        let last_persisted_block = provider.last_block_number()?;
+        let last_persisted_hash = provider
+            .block_hash(last_persisted_block)?
+            .ok_or(ProviderError::HeaderNotFound(last_persisted_block.into()))?;
+        let last_persisted = NumHash::new(last_persisted_block, last_persisted_hash);
+
+        let parent_num_hash = |hash: B256| -> ProviderResult<NumHash> {
+            let parent_num_hash =
+                if let Some(header) = ctx.state().tree_state.sealed_header_by_hash(&hash) {
+                    Some(header.parent_num_hash())
+                } else {
+                    provider.sealed_header_by_hash(hash)?.map(|header| header.parent_num_hash())
+                };
+
+            parent_num_hash.ok_or(ProviderError::BlockHashNotFound(hash))
+        };
+
+        let mut parent_block = block.parent_num_hash();
+        while parent_block.number > last_persisted.number {
+            parent_block = parent_num_hash(parent_block.hash)?;
+        }
+
+        let connects = parent_block == last_persisted;
+
+        debug!(
+            target: "engine::tree",
+            num_hash = ?block.num_hash(),
+            ?last_persisted,
+            ?parent_block,
+            "Checking if block connects to last persisted block"
+        );
+
+        Ok(connects)
     }
 
     /// Check if the given block has any ancestors with missing trie updates.
@@ -874,9 +942,10 @@ where
             debug!(target: "engine::tree", block_number, best_block_number, "Empty revert state");
             HashedPostState::default()
         } else {
-            let revert_state = HashedPostState::from_reverts::<
-                <P::StateCommitment as StateCommitment>::KeyHasher,
-            >(provider.tx_ref(), block_number + 1)
+            let revert_state = HashedPostState::from_reverts::<KeccakKeyHasher>(
+                provider.tx_ref(),
+                block_number + 1,
+            )
             .map_err(ProviderError::from)?;
             debug!(
                 target: "engine::tree",
@@ -960,7 +1029,6 @@ where
         + BlockReader<Header = N::BlockHeader>
         + StateProviderFactory
         + StateReader
-        + StateCommitmentProvider
         + HashedPostStateProvider
         + Clone
         + 'static,
