@@ -13,6 +13,7 @@ use reth_errors::ProviderError;
 use reth_metrics::Metrics;
 use reth_provider::{providers::ConsistentDbView, BlockReader, DatabaseProviderFactory, FactoryTx};
 use reth_revm::state::EvmState;
+use revm::state::AccountStatus;
 use reth_trie::{
     added_removed_keys::MultiAddedRemovedKeys, prefix_set::TriePrefixSetsMut,
     updates::TrieUpdatesSorted, DecodedMultiProof, HashedPostState, HashedPostStateSorted,
@@ -218,6 +219,14 @@ pub(crate) fn evm_state_to_hashed_post_state_without_loss(update: EvmState) -> H
     let mut hashed_state = HashedPostState::with_capacity(update.len());
 
     for (address, account) in update {
+        if account.status.contains(AccountStatus::Touched)
+            && account.status.contains(AccountStatus::LoadedAsNotExisting)
+            && !account.status.contains(AccountStatus::Created)
+            && !account.status.contains(AccountStatus::SelfDestructed)
+            && !account.storage.iter().any(|(_, slot)| slot.is_changed()){
+            continue;
+        }
+
         // Process all accounts, not just touched ones (consistent with from_bundle_state)
         let hashed_address = keccak256(address);
         trace!(target: "engine::root", ?address, ?hashed_address, "Adding account to state update");
