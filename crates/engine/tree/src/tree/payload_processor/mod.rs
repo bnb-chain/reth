@@ -765,8 +765,11 @@ impl TriedbTask {
         loop {
             match self.targets_rx.recv() {
                 Ok(message) => match message {
-                    MultiProofMessage::StateUpdate(_source, state) => {
-                        let hashed_state_update = evm_state_to_hashed_post_state_without_loss(state);
+                    MultiProofMessage::StateUpdate(source, state) => {
+                        let hashed_state_update = evm_state_to_hashed_post_state_without_loss(state.clone());
+
+                        info!(target: "engine::tree", "source: {:?}, evm_state: {:?}, hashed_state_update: {:?}", source, state, hashed_state_update);
+
                         self.total_hashe_post_state.extend(hashed_state_update.clone());
                         self.hashe_post_state.extend(hashed_state_update);
                         total_tx += 1;

@@ -526,7 +526,7 @@ where
         self.metrics.block_validation.record_state_root_duration(root_time.elapsed().as_secs_f64());
 
         if state_root != block.header().state_root() {
-            warn!("hashed_state: {:?} ", hashed_state_clone);
+            warn!("state root mismatch, block: {:?}, hashed_state: {:?} ", block.number(), hashed_state_clone);
             self.on_invalid_block(
                 &parent_block,
                 &block,
