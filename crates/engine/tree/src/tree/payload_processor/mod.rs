@@ -723,6 +723,7 @@ pub(crate) struct TriedbTask {
     parent_root: B256,
     difflayer: Option<DiffLayers>,
     hashe_post_state: HashedPostState,
+    total_hashe_post_state: HashedPostState,
     triedb: TrieDB<PathDB>,
 
     targets_rx: Receiver<MultiProofMessage>,
@@ -744,6 +745,7 @@ impl TriedbTask {
             parent_root,
             difflayer,
             hashe_post_state: HashedPostState::default(),
+            total_hashe_post_state: HashedPostState::default(),
             triedb,
             targets_rx,
             state_root_tx
@@ -765,6 +767,7 @@ impl TriedbTask {
                 Ok(message) => match message {
                     MultiProofMessage::StateUpdate(_source, state) => {
                         let hashed_state_update = evm_state_to_hashed_post_state(state);
+                        self.total_hashe_post_state.extend(hashed_state_update.clone());
                         self.hashe_post_state.extend(hashed_state_update);
                         total_tx += 1;
                         if self.is_update() {
@@ -784,7 +787,7 @@ impl TriedbTask {
                         let (root_hash, difflayer) = self.triedb.commit_all_hashed_post_state().unwrap();
 
                         info!(target: "engine::tree", "finish async triedb calc hash task finished, total_tx={}, update_tx={}", total_tx, update_tx);
-
+                        info!(target: "engine::tree", "total hashed post state: {:?}", self.total_hashe_post_state);
                         self.state_root_tx
                             .send(Ok((root_hash, difflayer)))
                             .expect("failed to send state root result");
