@@ -213,6 +213,39 @@ impl Drop for StateHookSender {
     }
 }
 
+
+pub(crate) fn evm_state_to_hashed_post_state_without_loss(update: EvmState) -> HashedPostState {
+    let mut hashed_state = HashedPostState::with_capacity(update.len());
+
+    for (address, account) in update {
+        // Process all accounts, not just touched ones (consistent with from_bundle_state)
+        let hashed_address = keccak256(address);
+        trace!(target: "engine::root", ?address, ?hashed_address, "Adding account to state update");
+
+        let destroyed = account.is_selfdestructed();
+        let info = if destroyed { None } else { Some(account.info.into()) };
+        hashed_state.accounts.insert(hashed_address, info);
+
+        // Include only changed storage slots (consistent with the requirement)
+        let changed_storage_iter = account
+            .storage
+            .into_iter()
+            .filter(|(_slot, value)| value.is_changed())
+            .map(|(slot, value)| (keccak256(B256::from(slot)), value.present_value));
+
+        if destroyed {
+            hashed_state.storages.insert(hashed_address, HashedStorage::new(true));
+        } else {
+            let storage = HashedStorage::from_iter(false, changed_storage_iter);
+            if !storage.is_empty() {
+                hashed_state.storages.insert(hashed_address, storage);
+            }
+        }
+    }
+
+    hashed_state
+}
+
 pub(crate) fn evm_state_to_hashed_post_state(update: EvmState) -> HashedPostState {
     let mut hashed_state = HashedPostState::with_capacity(update.len());
 
