@@ -1,6 +1,7 @@
 use crate::{
-    error::BeaconForkChoiceUpdateError, BeaconOnNewPayloadError, ExecutionPayload, ForkchoiceStatus,
+    error::BeaconForkChoiceUpdateError, BeaconOnNewPayloadError, BSCEngineMessageError, ExecutionPayload, ForkchoiceStatus
 };
+use alloy_primitives::{BlockHash, BlockNumber, U256};
 use alloy_rpc_types_engine::{
     ForkChoiceUpdateResult, ForkchoiceState, ForkchoiceUpdateError, ForkchoiceUpdated, PayloadId,
     PayloadStatus, PayloadStatusEnum,
@@ -164,6 +165,16 @@ pub enum BeaconEngineMessage<Payload: PayloadTypes> {
         /// The sender for returning forkchoice updated result.
         tx: oneshot::Sender<RethResult<OnForkChoiceUpdated>>,
     },
+
+    /// BSC specific engine message
+    QueryTd {
+        /// The block number to query the TD of.
+        number: BlockNumber,
+        /// The block hash to query the TD of.
+        hash: BlockHash,
+        /// The sender for returning the TD.
+        tx: oneshot::Sender<RethResult<Option<U256>>>,
+    },
 }
 
 impl<Payload: PayloadTypes> Display for BeaconEngineMessage<Payload> {
@@ -186,6 +197,9 @@ impl<Payload: PayloadTypes> Display for BeaconEngineMessage<Payload> {
                     "ForkchoiceUpdated {{ state: {state:?}, has_payload_attributes: {} }}",
                     payload_attrs.is_some()
                 )
+            }
+            Self::QueryTd { number, hash, .. } => {
+                write!(f, "QueryHeaderWithTd {{ number: {}, hash: {} }}", number, hash)
             }
         }
     }
@@ -256,5 +270,16 @@ where
             version,
         });
         rx
+    }
+
+    /// Sends a query TD message to the beacon consensus engine and waits for a response.
+    pub async fn query_td(
+        &self,
+        number: BlockNumber,
+        hash: BlockHash,
+    ) -> Result<Option<U256>, BSCEngineMessageError> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.to_engine.send(BeaconEngineMessage::QueryTd { number, hash, tx });
+        rx.await.map_err(BSCEngineMessageError::internal)?.map_err(BSCEngineMessageError::internal)
     }
 }

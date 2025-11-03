@@ -13,7 +13,7 @@ use crate::{
 };
 use alloy_consensus::transaction::TransactionMeta;
 use alloy_eips::{BlockHashOrNumber, BlockId, BlockNumHash, BlockNumberOrTag};
-use alloy_primitives::{Address, BlockHash, BlockNumber, TxHash, TxNumber, B256};
+use alloy_primitives::{Address, BlockHash, BlockNumber, TxHash, TxNumber, B256, U256};
 use alloy_rpc_types_engine::ForkchoiceState;
 use reth_chain_state::{
     BlockState, CanonicalInMemoryState, ForkChoiceNotifications, ForkChoiceSubscriptions,
@@ -121,7 +121,7 @@ impl<N: ProviderNodeTypes> BlockchainProvider<N> {
     /// [`BlockHashReader`]. This may fail if the inner read database transaction fails to open.
     #[track_caller]
     pub fn consistent_provider(&self) -> ProviderResult<ConsistentProvider<N>> {
-        ConsistentProvider::new(self.database.clone(), self.canonical_in_memory_state())
+        ConsistentProvider::new(self.chain_spec(), self.database.clone(), self.canonical_in_memory_state())
     }
 
     /// This uses a given [`BlockState`] to initialize a state provider for that block.
@@ -197,6 +197,14 @@ impl<N: ProviderNodeTypes> HeaderProvider for BlockchainProvider<N> {
 
     fn header_by_number(&self, num: BlockNumber) -> ProviderResult<Option<Self::Header>> {
         self.consistent_provider()?.header_by_number(num)
+    }
+
+    fn header_td(&self, hash: &BlockHash) -> ProviderResult<Option<U256>> {
+        self.consistent_provider()?.header_td(hash)
+    }
+
+    fn header_td_by_number(&self, number: BlockNumber) -> ProviderResult<Option<U256>> {
+        self.consistent_provider()?.header_td_by_number(number)
     }
 
     fn headers_range(

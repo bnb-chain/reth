@@ -27,14 +27,14 @@ use alloy_consensus::{
 use alloy_eips::BlockHashOrNumber;
 use alloy_primitives::{
     keccak256,
-    map::{hash_map, HashMap, HashSet},
-    Address, BlockHash, BlockNumber, TxHash, TxNumber, B256,
+    map::{hash_map, B256Map, HashMap, HashSet},
+    Address, BlockHash, BlockNumber, TxHash, TxNumber, B256, U256,
 };
 use itertools::Itertools;
 use parking_lot::RwLock;
 use rayon::slice::ParallelSliceMut;
 use reth_chain_state::{ComputedTrieData, ExecutedBlock};
-use reth_chainspec::{ChainInfo, ChainSpecProvider, EthChainSpec};
+use reth_chainspec::{ChainInfo, ChainSpecProvider, EthChainSpec, EthereumHardforks};
 use reth_db_api::{
     cursor::{DbCursorRO, DbCursorRW, DbDupCursorRO, DbDupCursorRW},
     database::Database,
@@ -1455,6 +1455,31 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> HeaderProvider for DatabasePro
             num,
             |static_file| static_file.header_by_number(num),
             || Ok(self.tx.get::<tables::Headers<Self::Header>>(num)?),
+        )
+    }
+
+    fn header_td(&self, block_hash: &BlockHash) -> ProviderResult<Option<U256>> {
+        if let Some(num) = self.block_number(*block_hash)? {
+            self.header_td_by_number(num)
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn header_td_by_number(&self, number: BlockNumber) -> ProviderResult<Option<U256>> {
+        if self.chain_spec.is_paris_active_at_block(number) {
+            if let Some(td) = self.chain_spec.final_paris_total_difficulty() {
+                // if this block is higher than the final paris(merge) block, return the final paris
+                // difficulty
+                return Ok(Some(td));
+            }
+        }
+
+        self.static_file_provider.get_with_static_file_or_database(
+            StaticFileSegment::Headers,
+            number,
+            |static_file| static_file.header_td_by_number(number),
+            || Ok(self.tx.get::<tables::HeaderTerminalDifficulties>(number)?.map(|td| td.0)),
         )
     }
 

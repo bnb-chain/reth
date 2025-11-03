@@ -117,7 +117,9 @@ where
         evm_env: &mut EvmEnvFor<Eth::Evm>,
         tx_env: &TxEnvFor<Eth::Evm>,
     ) {
-        if tx_env.gas_limit() == u64::MAX / 2 && tx_env.caller() == evm_env.block_env.beneficiary {
+        if tx_env.gas_limit() == u64::MAX / 2 &&
+            tx_env.caller() == evm_env.block_env.beneficiary()
+        {
             evm_env.cfg_env.disable_block_gas_limit = true;
         }
     }
