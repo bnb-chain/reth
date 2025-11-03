@@ -522,6 +522,8 @@ where
             // (state_root, difflayer)
             let (state_root, difflayer) = handle.triedb_state_root().unwrap();
             if state_root != block.header().state_root() {
+                info!(target: "engine::tree", "state root mismatch, switch to sync commit");
+                info!(target: "engine::tree", "evm total hashed post state: {:?}", hashed_state_clone);
                 let (state_root, difflayer) = if let Ok(result) = self.get_triedb().commit_hashed_post_state(
                     parent_block.state_root(),
                     parent_difflayer.as_ref(),
@@ -530,7 +532,6 @@ where
                 } else {
                     panic!("TrieDB update failed");
                 };
-                info!(target: "engine::tree", "state root mismatch, switch to sync commit");
                 self.metrics.block_validation.payload_sync_validate_total.increment(1);
                 (state_root, difflayer)
             } else {
