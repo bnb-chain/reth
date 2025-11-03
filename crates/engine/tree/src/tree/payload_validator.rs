@@ -15,7 +15,7 @@ use crate::tree::{
 use alloy_consensus::transaction::Either;
 use alloy_eips::{eip1898::BlockWithParent, NumHash};
 use alloy_evm::Evm;
-use alloy_primitives::B256;
+use alloy_primitives::{keccak256, map::B256Map, Address, B256};
 use reth_chain_state::{
     CanonicalInMemoryState, ExecutedBlock, ExecutedBlockWithTrieUpdates, ExecutedTrieUpdates,
 };
@@ -32,13 +32,14 @@ use reth_payload_primitives::{
     BuiltPayload, InvalidPayloadAttributesError, NewPayloadError, PayloadTypes,
 };
 use reth_primitives_traits::{
-    AlloyBlockHeader, BlockTy, GotExpected, NodePrimitives, RecoveredBlock, SealedHeader,
+    Account, AlloyBlockHeader, BlockTy, GotExpected, NodePrimitives, RecoveredBlock, SealedHeader,
 };
 use reth_provider::{
     BlockExecutionOutput, BlockHashReader, BlockNumReader, BlockReader, DBProvider,
     DatabaseProviderFactory, ExecutionOutcome, HashedPostStateProvider, HeaderProvider,
     ProviderError, StateProvider, StateProviderFactory, StateReader, StateRootProvider,
 };
+use reth_revm::state::EvmState;
 use reth_revm::db::State;
 use reth_trie::{updates::TrieUpdates, HashedPostState, KeccakKeyHasher, TrieInput};
 use reth_trie_db::DatabaseHashedPostState;
@@ -49,6 +50,7 @@ use tracing::{debug, debug_span, error, info, trace, warn};
 use rust_eth_triedb_state_trie::node::DiffLayers;
 use rust_eth_triedb_pathdb::PathDB;
 use rust_eth_triedb::{TrieDB, get_global_triedb};
+use alloy_evm::{block::StateChangeSource};
 
 /// Context providing access to tree state during validation.
 ///
@@ -520,10 +522,22 @@ where
             //     panic!("TrieDB update failed");
             // };
             // (state_root, difflayer)
-            let (state_root, difflayer) = handle.triedb_state_root().unwrap();
+            let (state_root,
+                difflayer,
+                all_hashe_post_state,
+                all_state_change_sources,
+                all_evm_state,
+                total_hashe_post_state) = handle.triedb_state_root().unwrap();
+
             if state_root != block.header().state_root() {
                 info!(target: "engine::tree", "state root mismatch, switch to sync commit");
-                info!(target: "engine::tree", "evm total hashed post state: {:?}", hashed_state_clone);
+                self.parser_async_mismatch_state_root(
+                    all_hashe_post_state,
+                    all_state_change_sources,
+                    all_evm_state,
+                    total_hashe_post_state,
+                    hashed_state_clone.clone());
+                // info!(target: "engine::tree", "evm total hashed post state: {:?}", hashed_state_clone);
                 let (state_root, difflayer) = if let Ok(result) = self.get_triedb().commit_hashed_post_state(
                     parent_block.state_root(),
                     parent_difflayer.as_ref(),
@@ -542,7 +556,7 @@ where
         self.metrics.block_validation.record_state_root_duration(root_time.elapsed().as_secs_f64());
 
         if state_root != block.header().state_root() {
-            warn!("state root mismatch, block: {:?}, hashed_state: {:?} ", block.number(), hashed_state_clone);
+            // warn!("state root mismatch, block: {:?}, hashed_state: {:?} ", block.number(), hashed_state_clone);
             self.on_invalid_block(
                 &parent_block,
                 &block,
@@ -714,6 +728,99 @@ where
             trie: ExecutedTrieUpdates::Present(Arc::new(TrieUpdates::default())),
             difflayer: difflayer,
         })
+    }
+
+    fn parser_async_mismatch_state_root(
+        &self,
+        all_hashe_post_state: Vec<HashedPostState>,
+        all_state_change_sources: Vec<StateChangeSource>,
+        all_evm_state: Vec<EvmState>,
+        total_hashe_post_state: HashedPostState,
+        executer_hashe_post_state: HashedPostState
+    ) {
+
+        // Compute the difference between executer and total accounts
+        // Accounts only in executer (not in total)
+        let accounts_only_in_executer: B256Map<Option<Account>> = executer_hashe_post_state.accounts
+            .iter()
+            .filter(|(addr, _)| !total_hashe_post_state.accounts.contains_key(*addr))
+            .map(|(addr, account)| (*addr, account.clone()))
+            .collect();
+
+        // Accounts only in total (not in executer)
+        let accounts_only_in_total: B256Map<Option<Account>> = total_hashe_post_state.accounts
+            .iter()
+            .filter(|(addr, _)| !executer_hashe_post_state.accounts.contains_key(*addr))
+            .map(|(addr, account)| (*addr, account.clone()))
+            .collect();
+
+        // Accounts in both but with different values
+        let accounts_different: Vec<_> = executer_hashe_post_state.accounts
+            .iter()
+            .filter_map(|(addr, executer_account)| {
+                total_hashe_post_state.accounts
+                    .get(addr)
+                    .filter(|total_account| total_account != &executer_account)
+                    .map(|total_account| (addr, executer_account, total_account))
+            })
+            .collect();
+
+        if !accounts_only_in_executer.is_empty() {
+            warn!(target: "engine::tree",
+                count = accounts_only_in_executer.len(),
+                "Accounts only in executer (not in total): {:?}",
+                accounts_only_in_executer
+            );
+        }
+
+        if !accounts_only_in_total.is_empty() {
+            warn!(target: "engine::tree",
+                count = accounts_only_in_total.len(),
+                "Accounts only in total (not in executer): {:?}",
+                accounts_only_in_total
+            );
+        }
+
+        if !accounts_different.is_empty() {
+            for (addr, executer_account, total_account) in &accounts_different {
+                warn!(target: "engine::tree",
+                    ?addr,
+                    executer_account = ?executer_account,
+                    total_account = ?total_account,
+                    "Account with different values between executer and total"
+                );
+            }
+            warn!(target: "engine::tree",
+                count = accounts_different.len(),
+                "Found {} accounts with different values",
+                accounts_different.len()
+            );
+        }
+
+        // For each account in accounts_only_in_total, find the corresponding account in all_evm_state
+        for (hashed_addr, account_info) in &accounts_only_in_total {
+            for (idx, evm_state) in all_evm_state.iter().enumerate() {
+                for (addr, evm_account) in evm_state {
+                    let addr_hash = keccak256(addr);
+                    if addr_hash == *hashed_addr {
+                        let corresponding_hashed_post_state = all_hashe_post_state.get(idx);
+                        let corresponding_state_change_source = all_state_change_sources.get(idx);
+                        warn!(target: "engine::tree",
+                            ?hashed_addr,
+                            ?addr,
+                            evm_state_index = idx,
+                            account_in_total = ?account_info,
+                            evm_account_status = ?evm_account.status,
+                            evm_account_info = ?evm_account.info,
+                            corresponding_state_change_source = ?corresponding_state_change_source,
+                            corresponding_hashed_post_state = ?corresponding_hashed_post_state,
+                            "Found account in all_evm_state that matches accounts_only_in_total"
+                        );
+                    }
+                }
+            }
+        }
+
     }
 
     fn compute_difflayer(

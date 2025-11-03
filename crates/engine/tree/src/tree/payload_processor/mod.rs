@@ -550,7 +550,7 @@ pub struct PayloadHandle<Tx, Err> {
     /// Stream of block transactions
     transactions: mpsc::Receiver<Result<Tx, Err>>,
 
-    triedb_state_root: Option<mpsc::Receiver<Result<(B256, Option<Arc<DiffLayer>>), String>>>,
+    triedb_state_root: Option<mpsc::Receiver<Result<(B256, Option<Arc<DiffLayer>>, Vec<HashedPostState>, Vec<StateChangeSource>, Vec<EvmState>, HashedPostState), String>>>,
 }
 
 impl<Tx, Err> PayloadHandle<Tx, Err> {
@@ -568,7 +568,7 @@ impl<Tx, Err> PayloadHandle<Tx, Err> {
     }
 
     /// Returns the triedb state root
-    pub fn triedb_state_root(&mut self) -> Result<(B256, Option<Arc<DiffLayer>>), String> {
+    pub fn triedb_state_root(&mut self) -> Result<(B256, Option<Arc<DiffLayer>>, Vec<HashedPostState>, Vec<StateChangeSource>, Vec<EvmState>, HashedPostState), String> {
         self.triedb_state_root
             .take()
             .expect("triedb_state_root is None")
@@ -723,11 +723,15 @@ pub(crate) struct TriedbTask {
     parent_root: B256,
     difflayer: Option<DiffLayers>,
     hashe_post_state: HashedPostState,
-    total_hashe_post_state: HashedPostState,
     triedb: TrieDB<PathDB>,
 
     targets_rx: Receiver<MultiProofMessage>,
-    state_root_tx: mpsc::Sender<Result<(B256, Option<Arc<DiffLayer>>), String>>,
+    state_root_tx: mpsc::Sender<Result<(B256, Option<Arc<DiffLayer>>, Vec<HashedPostState>, Vec<StateChangeSource>, Vec<EvmState>, HashedPostState), String>>,
+
+    all_hashe_post_state: Vec<HashedPostState>,
+    all_state_change_sources: Vec<StateChangeSource>,
+    all_evm_state: Vec<EvmState>,
+    total_hashe_post_state: HashedPostState,
 }
 
 impl TriedbTask {
@@ -735,7 +739,7 @@ impl TriedbTask {
         parent_root: B256,
         difflayer: Option<DiffLayers>,
         targets_rx: Receiver<MultiProofMessage>,
-        state_root_tx: mpsc::Sender<Result<(B256, Option<Arc<DiffLayer>>), String>>,
+        state_root_tx: mpsc::Sender<Result<(B256, Option<Arc<DiffLayer>>, Vec<HashedPostState>, Vec<StateChangeSource>, Vec<EvmState>, HashedPostState), String>>,
     ) -> Self {
 
         let mut triedb = get_global_triedb();
@@ -745,10 +749,13 @@ impl TriedbTask {
             parent_root,
             difflayer,
             hashe_post_state: HashedPostState::default(),
-            total_hashe_post_state: HashedPostState::default(),
             triedb,
             targets_rx,
-            state_root_tx
+            state_root_tx,
+            all_hashe_post_state: Vec::new(),
+            all_state_change_sources: Vec::new(),
+            all_evm_state: Vec::new(),
+            total_hashe_post_state: HashedPostState::default(),
         }
     }
 
@@ -767,8 +774,11 @@ impl TriedbTask {
                 Ok(message) => match message {
                     MultiProofMessage::StateUpdate(source, state) => {
                         let hashed_state_update = evm_state_to_hashed_post_state_without_loss(state.clone());
-                        info!(target: "engine::tree", "source: {:?}, hashed state update: {:?}", source, hashed_state_update);
+                        // info!(target: "engine::tree", "source: {:?}, hashed state update: {:?}", source, hashed_state_update);
                         self.total_hashe_post_state.extend(hashed_state_update.clone());
+                        self.all_hashe_post_state.push(hashed_state_update.clone());
+                        self.all_state_change_sources.push(source);
+                        self.all_evm_state.push(state.clone());
                         self.hashe_post_state.extend(hashed_state_update);
                         total_tx += 1;
                         if self.is_update() {
@@ -787,9 +797,15 @@ impl TriedbTask {
                         let (root_hash, difflayer) = self.triedb.commit_all_hashed_post_state().unwrap();
 
                         info!(target: "engine::tree", "finish async triedb calc hash task finished, total_tx={}, update_tx={}", total_tx, update_tx);
-                        info!(target: "engine::tree", "total hashed post state: {:?}", self.total_hashe_post_state);
+                        // info!(target: "engine::tree", "total hashed post state: {:?}", self.total_hashe_post_state);
                         self.state_root_tx
-                            .send(Ok((root_hash, difflayer)))
+                            .send(Ok((
+                                root_hash,
+                                difflayer,
+                                self.all_hashe_post_state,
+                                self.all_state_change_sources,
+                                self.all_evm_state,
+                                self.total_hashe_post_state)))
                             .expect("failed to send state root result");
                         break;
                     }
