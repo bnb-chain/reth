@@ -9,7 +9,7 @@ use crate::{
 };
 use alloy_consensus::transaction::TransactionMeta;
 use alloy_eips::BlockHashOrNumber;
-use alloy_primitives::{Address, BlockHash, BlockNumber, TxHash, TxNumber, B256};
+use alloy_primitives::{Address, BlockHash, BlockNumber, TxHash, TxNumber, B256, U256};
 use core::fmt;
 use reth_chainspec::ChainInfo;
 use reth_db::{init_db, mdbx::DatabaseArguments, DatabaseEnv};
@@ -245,6 +245,14 @@ impl<N: ProviderNodeTypes> HeaderProvider for ProviderFactory<N> {
             |static_file| static_file.header_by_number(num),
             || self.provider()?.header_by_number(num),
         )
+    }
+
+    fn header_td(&self, hash: &BlockHash) -> ProviderResult<Option<U256>> {
+        self.provider()?.header_td(hash)
+    }
+
+    fn header_td_by_number(&self, number: BlockNumber) -> ProviderResult<Option<U256>> {
+        self.provider()?.header_td_by_number(number)
     }
 
     fn headers_range(

@@ -328,6 +328,14 @@ impl<T: EthPoolTransaction> TransactionPool for NoopTransactionPool<T> {
         Ok(None)
     }
 
+    fn insert_blob(
+        &self,
+        _tx_hash: TxHash,
+        _blob: BlobTransactionSidecarVariant,
+    ) -> Result<(), BlobStoreError> {
+        Ok(())
+    }
+
     fn get_all_blobs(
         &self,
         _tx_hashes: Vec<TxHash>,
