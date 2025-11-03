@@ -489,7 +489,6 @@ where
         full: bool,
     ) -> RpcResult<Option<RpcBlock<T::NetworkTypes>>> {
         trace!(target: "rpc::eth", ?number, ?full, "Serving eth_getBlockByNumber");
-        check_pending_tag(&number)?;
         Ok(EthBlocks::rpc_block(self, number.into(), full).await?)
     }
 
@@ -505,7 +504,6 @@ where
         number: BlockNumberOrTag,
     ) -> RpcResult<Option<U256>> {
         trace!(target: "rpc::eth", ?number, "Serving eth_getBlockTransactionCountByNumber");
-        check_pending_tag(&number)?;
         Ok(EthBlocks::block_transaction_count(self, number.into()).await?.map(U256::from))
     }
 
@@ -526,7 +524,6 @@ where
         number: BlockNumberOrTag,
     ) -> RpcResult<Option<U256>> {
         trace!(target: "rpc::eth", ?number, "Serving eth_getUncleCountByBlockNumber");
-        check_pending_tag(&number)?;
 
         if let Some(block) = self.block_by_number(number, false).await? {
             Ok(Some(U256::from(block.uncles.len())))
@@ -541,7 +538,6 @@ where
         block_id: BlockId,
     ) -> RpcResult<Option<Vec<RpcReceipt<T::NetworkTypes>>>> {
         trace!(target: "rpc::eth", ?block_id, "Serving eth_getBlockReceipts");
-        check_block_id_pending_tag(&block_id)?;
         Ok(EthBlocks::block_receipts(self, block_id).await?)
     }
 
@@ -562,7 +558,6 @@ where
         index: Index,
     ) -> RpcResult<Option<RpcBlock<T::NetworkTypes>>> {
         trace!(target: "rpc::eth", ?number, ?index, "Serving eth_getUncleByBlockNumberAndIndex");
-        check_pending_tag(&number)?;
         Ok(EthBlocks::ommer_by_block_and_index(self, number.into(), index).await?)
     }
 
@@ -621,7 +616,6 @@ where
         index: Index,
     ) -> RpcResult<Option<Bytes>> {
         trace!(target: "rpc::eth", ?number, ?index, "Serving eth_getRawTransactionByBlockNumberAndIndex");
-        check_pending_tag(&number)?;
         Ok(EthTransactions::raw_transaction_by_block_and_tx_index(
             self,
             number.into(),
@@ -637,7 +631,6 @@ where
         index: Index,
     ) -> RpcResult<Option<RpcTransaction<T::NetworkTypes>>> {
         trace!(target: "rpc::eth", ?number, ?index, "Serving eth_getTransactionByBlockNumberAndIndex");
-        check_pending_tag(&number)?;
         Ok(EthTransactions::transaction_by_block_and_tx_index(self, number.into(), index.into())
             .await?)
     }
@@ -657,7 +650,6 @@ where
         number: BlockNumberOrTag,
     ) -> RpcResult<Option<Vec<RpcTransaction<T::NetworkTypes>>>> {
         trace!(target: "rpc::eth", ?number, "Serving eth_getTransactionsByBlockNumber");
-        check_pending_tag(&number)?;
         Ok(EthTransactions::transactions_by_block_id(self, number.into()).await?)
     }
 
@@ -697,9 +689,6 @@ where
     /// Handler for: `eth_getBalance`
     async fn balance(&self, address: Address, block_number: Option<BlockId>) -> RpcResult<U256> {
         trace!(target: "rpc::eth", ?address, ?block_number, "Serving eth_getBalance");
-        if let Some(ref block_id) = block_number {
-            check_block_id_pending_tag(block_id)?;
-        }
         Ok(EthState::balance(self, address, block_number).await?)
     }
 
@@ -711,9 +700,6 @@ where
         block_number: Option<BlockId>,
     ) -> RpcResult<B256> {
         trace!(target: "rpc::eth", ?address, ?block_number, "Serving eth_getStorageAt");
-        if let Some(ref block_id) = block_number {
-            check_block_id_pending_tag(block_id)?;
-        }
         Ok(EthState::storage_at(self, address, index, block_number).await?)
     }
 
@@ -724,18 +710,12 @@ where
         block_number: Option<BlockId>,
     ) -> RpcResult<U256> {
         trace!(target: "rpc::eth", ?address, ?block_number, "Serving eth_getTransactionCount");
-        if let Some(ref block_id) = block_number {
-            check_block_id_pending_tag(block_id)?;
-        }
         Ok(EthState::transaction_count(self, address, block_number).await?)
     }
 
     /// Handler for: `eth_getCode`
     async fn get_code(&self, address: Address, block_number: Option<BlockId>) -> RpcResult<Bytes> {
         trace!(target: "rpc::eth", ?address, ?block_number, "Serving eth_getCode");
-        if let Some(ref block_id) = block_number {
-            check_block_id_pending_tag(block_id)?;
-        }
         Ok(EthState::get_code(self, address, block_number).await?)
     }
 
@@ -745,7 +725,6 @@ where
         block_number: BlockNumberOrTag,
     ) -> RpcResult<Option<RpcHeader<T::NetworkTypes>>> {
         trace!(target: "rpc::eth", ?block_number, "Serving eth_getHeaderByNumber");
-        check_pending_tag(&block_number)?;
         Ok(EthBlocks::rpc_block_header(self, block_number.into()).await?)
     }
 
@@ -774,9 +753,6 @@ where
         block_number: Option<BlockId>,
     ) -> RpcResult<Vec<SimulatedBlock<RpcBlock<T::NetworkTypes>>>> {
         trace!(target: "rpc::eth", ?block_number, "Serving eth_simulateV1");
-        if let Some(ref block_id) = block_number {
-            check_block_id_pending_tag(block_id)?;
-        }
         let _permit = self.tracing_task_guard().clone().acquire_owned().await;
         Ok(EthCall::simulate_v1(self, payload, block_number).await?)
     }
@@ -790,9 +766,6 @@ where
         block_overrides: Option<Box<BlockOverrides>>,
     ) -> RpcResult<Bytes> {
         trace!(target: "rpc::eth", ?request, ?block_number, ?state_overrides, ?block_overrides, "Serving eth_call");
-        if let Some(ref block_id) = block_number {
-            check_block_id_pending_tag(block_id)?;
-        }
         Ok(EthCall::call(
             self,
             request,
@@ -821,9 +794,6 @@ where
         state_override: Option<StateOverride>,
     ) -> RpcResult<AccessListResult> {
         trace!(target: "rpc::eth", ?request, ?block_number, ?state_override, "Serving eth_createAccessList");
-        if let Some(ref block_id) = block_number {
-            check_block_id_pending_tag(block_id)?;
-        }
         Ok(EthCall::create_access_list_at(self, request, block_number, state_override).await?)
     }
 
@@ -835,9 +805,6 @@ where
         state_override: Option<StateOverride>,
     ) -> RpcResult<U256> {
         trace!(target: "rpc::eth", ?request, ?block_number, "Serving eth_estimateGas");
-        if let Some(ref block_id) = block_number {
-            check_block_id_pending_tag(block_id)?;
-        }
         Ok(EthCall::estimate_gas_at(
             self,
             request,
@@ -860,7 +827,6 @@ where
         block: BlockId,
     ) -> RpcResult<Option<alloy_rpc_types_eth::Account>> {
         trace!(target: "rpc::eth", "Serving eth_getAccount");
-        check_block_id_pending_tag(&block)?;
         Ok(EthState::get_account(self, address, block).await?)
     }
 
@@ -892,7 +858,6 @@ where
         reward_percentiles: Option<Vec<f64>>,
     ) -> RpcResult<FeeHistory> {
         trace!(target: "rpc::eth", ?block_count, ?newest_block, ?reward_percentiles, "Serving eth_feeHistory");
-        check_pending_tag(&newest_block)?;
         Ok(EthFees::fee_history(self, block_count.to(), newest_block, reward_percentiles).await?)
     }
 
@@ -970,9 +935,6 @@ where
         block_number: Option<BlockId>,
     ) -> RpcResult<EIP1186AccountProofResponse> {
         trace!(target: "rpc::eth", ?address, ?keys, ?block_number, "Serving eth_getProof");
-        if let Some(ref block_id) = block_number {
-            check_block_id_pending_tag(block_id)?;
-        }
         Ok(EthState::get_proof(self, address, keys, block_number)?.await?)
     }
 
@@ -983,26 +945,7 @@ where
         block: BlockId,
     ) -> RpcResult<alloy_rpc_types_eth::AccountInfo> {
         trace!(target: "rpc::eth", "Serving eth_getAccountInfo");
-        check_block_id_pending_tag(&block)?;
         Ok(EthState::get_account_info(self, address, block).await?)
     }
 }
 
-/// Helper function to check if BlockNumberOrTag is pending and return error if so
-fn check_pending_tag(block_number: &BlockNumberOrTag) -> RpcResult<()> {
-    if matches!(block_number, BlockNumberOrTag::Pending) {
-        Err(internal_rpc_err("Unsupported pending tag"))
-    } else {
-        Ok(())
-    }
-}
-
-/// Helper function to check if BlockId contains pending tag and return error if so
-fn check_block_id_pending_tag(block_id: &BlockId) -> RpcResult<()> {
-    match block_id {
-        BlockId::Number(BlockNumberOrTag::Pending) => {
-            Err(internal_rpc_err("Unsupported pending tag"))
-        }
-        _ => Ok(()),
-    }
-}
