@@ -82,6 +82,9 @@ impl EngineApiMetrics {
                 let _enter = span.enter();
                 trace!(target: "engine::tree", "Executing transaction");
                 executor.execute_transaction(tx)?;
+                let db = executor.evm_mut().db_mut().borrow_mut();
+                db.merge_transitions(BundleRetention::Reverts);
+                let bundle_state = db.bundle_state.clone();
             }
             executor.finish().map(|(evm, result)| (evm.into_db(), result))
         };
@@ -95,7 +98,9 @@ impl EngineApiMetrics {
 
         // merge transitions into bundle state
         db.borrow_mut().merge_transitions(BundleRetention::Reverts);
-        let output = BlockExecutionOutput { result, state: db.borrow_mut().take_bundle() };
+        let bundle_state = db.borrow_mut().take_bundle();
+
+        let output = BlockExecutionOutput { result, state: bundle_state };
 
         // Update the metrics for the number of accounts, storage slots and bytecodes updated
         let accounts = output.state.state.len();

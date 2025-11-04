@@ -513,45 +513,45 @@ where
         let (state_root, difflayer) = if parent_block.state_root() == block.header().state_root() {
             (block.header().state_root(), None)
         } else {
-            // let (state_root, difflayer) = if let Ok(result) = self.get_triedb().commit_hashed_post_state(
-            //     parent_block.state_root(),
-            //     parent_difflayer.as_ref(),
-            //     &hashed_state_clone) {
-            //     result
-            // } else {
-            //     panic!("TrieDB update failed");
-            // };
-            // (state_root, difflayer)
-            let (state_root,
-                difflayer,
-                all_hashe_post_state,
-                all_state_change_sources,
-                all_evm_state,
-                total_hashe_post_state) = handle.triedb_state_root().unwrap();
-
-            if state_root != block.header().state_root() {
-                info!(target: "engine::tree", "state root mismatch, switch to sync commit");
-                self.parser_async_mismatch_state_root(
-                    all_hashe_post_state,
-                    all_state_change_sources,
-                    all_evm_state,
-                    total_hashe_post_state,
-                    hashed_state_clone.clone());
-                // info!(target: "engine::tree", "evm total hashed post state: {:?}", hashed_state_clone);
-                let (state_root, difflayer) = if let Ok(result) = self.get_triedb().commit_hashed_post_state(
-                    parent_block.state_root(),
-                    parent_difflayer.as_ref(),
-                    &hashed_state_clone) {
-                    result
-                } else {
-                    panic!("TrieDB update failed");
-                };
-                self.metrics.block_validation.payload_sync_validate_total.increment(1);
-                (state_root, difflayer)
+            let (state_root, difflayer) = if let Ok(result) = self.get_triedb().commit_hashed_post_state(
+                parent_block.state_root(),
+                parent_difflayer.as_ref(),
+                &hashed_state_clone) {
+                result
             } else {
-                self.metrics.block_validation.payload_async_validate_duration.increment(1);
-                (state_root, difflayer)
-            }
+                panic!("TrieDB update failed");
+            };
+            (state_root, difflayer)
+            // let (state_root,
+            //     difflayer,
+            //     all_hashe_post_state,
+            //     all_state_change_sources,
+            //     all_evm_state,
+            //     total_hashe_post_state) = handle.triedb_state_root().unwrap();
+
+            // if state_root != block.header().state_root() {
+            //     info!(target: "engine::tree", "state root mismatch, switch to sync commit");
+            //     self.parser_async_mismatch_state_root(
+            //         all_hashe_post_state,
+            //         all_state_change_sources,
+            //         all_evm_state,
+            //         total_hashe_post_state,
+            //         hashed_state_clone.clone());
+            //     // info!(target: "engine::tree", "evm total hashed post state: {:?}", hashed_state_clone);
+            //     let (state_root, difflayer) = if let Ok(result) = self.get_triedb().commit_hashed_post_state(
+            //         parent_block.state_root(),
+            //         parent_difflayer.as_ref(),
+            //         &hashed_state_clone) {
+            //         result
+            //     } else {
+            //         panic!("TrieDB update failed");
+            //     };
+            //     self.metrics.block_validation.payload_sync_validate_total.increment(1);
+            //     (state_root, difflayer)
+            // } else {
+            //     self.metrics.block_validation.payload_async_validate_duration.increment(1);
+            //     (state_root, difflayer)
+            // }
         };
         self.metrics.block_validation.record_state_root_duration(root_time.elapsed().as_secs_f64());
 

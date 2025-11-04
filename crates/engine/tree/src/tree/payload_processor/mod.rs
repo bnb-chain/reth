@@ -308,25 +308,27 @@ where
             difflayer.clone(),
         );
 
-        let (targets_tx, targets_rx) = channel();
-        let (state_root_tx, state_root_rx) = channel();
-        let triedb_task = TriedbTask::new(
-            parent_root,
-            difflayer,
-            targets_rx,
-            state_root_tx);
+        // let (targets_tx, targets_rx) = channel();
+        // let (state_root_tx, state_root_rx) = channel();
+        // let triedb_task = TriedbTask::new(
+        //     parent_root,
+        //     difflayer,
+        //     targets_rx,
+        //     state_root_tx);
 
-        // spawn multi-proof task
-        self.executor.spawn_blocking(move || {
-            triedb_task.run();
-        });
+        // // spawn multi-proof task
+        // self.executor.spawn_blocking(move || {
+        //     triedb_task.run();
+        // });
 
         PayloadHandle {
-            to_multi_proof: Some(targets_tx),
+            // to_multi_proof: Some(targets_tx),
+            to_multi_proof: None,
             prewarm_handle,
             state_root: None,
             transactions: execution_rx,
-            triedb_state_root: Some(state_root_rx),
+            // triedb_state_root: Some(state_root_rx),
+            triedb_state_root: None,
         }
     }
 
