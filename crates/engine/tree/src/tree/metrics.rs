@@ -83,7 +83,7 @@ impl EngineApiMetrics {
                 trace!(target: "engine::tree", "Executing transaction");
                 executor.execute_transaction(tx)?;
                 let db = executor.evm_mut().db_mut().borrow_mut();
-                db.merge_transitions(BundleRetention::Reverts);
+                db.merge_transitions(BundleRetention::PlainState);
                 let bundle_state = db.bundle_state.clone();
             }
             executor.finish().map(|(evm, result)| (evm.into_db(), result))
