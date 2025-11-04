@@ -193,6 +193,7 @@ where
                                 #[cfg(feature = "metrics")]
                                 self.metrics.storage_trie.clone(),
                             )
+                            .with_no_threshold()
                             .calculate(retain_updates)?
                         }
                     };
