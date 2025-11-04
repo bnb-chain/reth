@@ -901,13 +901,13 @@ where
         }
 
         let execution_start = Instant::now();
-        let to_multi_proof = handle.to_multi_proof.clone(); // Clone before borrowing handle
+        let hash_post_state_tx = handle.hash_post_state_tx.clone(); // Clone before borrowing handle
         let state_hook = Box::new(handle.state_hook());
         let output = self.metrics.execute_metered(
             executor,
             handle.iter_transactions().map(|res| res.map_err(BlockExecutionError::other)),
             state_hook,
-            to_multi_proof, // hash_post_state_tx
+            hash_post_state_tx, // hash_post_state_tx
         )?;
         let execution_finish = Instant::now();
         let execution_time = execution_finish.duration_since(execution_start);

@@ -256,6 +256,7 @@ where
             prewarm_handle,
             state_root: Some(state_root_rx),
             transactions: execution_rx,
+            hash_post_state_tx: None,
             triedb_state_root: None,
         }
     }
@@ -279,6 +280,7 @@ where
             prewarm_handle,
             state_root: None,
             transactions: execution_rx,
+            hash_post_state_tx: None,
             triedb_state_root: None,
         }
     }
@@ -322,10 +324,11 @@ where
         });
 
         PayloadHandle {
-            to_multi_proof: Some(targets_tx),
+            to_multi_proof: None,
             prewarm_handle,
             state_root: None,
             transactions: execution_rx,
+            hash_post_state_tx: Some(targets_tx),
             triedb_state_root: Some(state_root_rx),
         }
     }
@@ -542,7 +545,7 @@ where
 #[derive(Debug)]
 pub struct PayloadHandle<Tx, Err> {
     /// Channel for evm state updates
-    pub to_multi_proof: Option<Sender<MultiProofMessage>>,
+    to_multi_proof: Option<Sender<MultiProofMessage>>,
     // must include the receiver of the state root wired to the sparse trie
     prewarm_handle: CacheTaskHandle,
     /// Receiver for the state root
@@ -550,6 +553,7 @@ pub struct PayloadHandle<Tx, Err> {
     /// Stream of block transactions
     transactions: mpsc::Receiver<Result<Tx, Err>>,
 
+    pub hash_post_state_tx: Option<Sender<MultiProofMessage>>,
     triedb_state_root: Option<mpsc::Receiver<Result<(B256, Option<Arc<DiffLayer>>), String>>>,
 }
 
@@ -762,17 +766,6 @@ impl TriedbTask {
         loop {
             match self.targets_rx.recv() {
                 Ok(message) => match message {
-                    MultiProofMessage::StateUpdate(_source, _state) => {
-                        // let hashed_state_update = evm_state_to_hashed_post_state_without_loss(state.clone());
-                        // self.hashe_post_state.extend(hashed_state_update);
-                        // total_tx += 1;
-                        // if self.is_update() {
-                        //     update_tx += 1;
-                        //     self.triedb.update_hashed_post_state(&self.hashe_post_state).unwrap();
-                        //     self.triedb.calculate_hash().unwrap();
-                        //     self.hashe_post_state = HashedPostState::default();
-                        // }
-                    }
                     MultiProofMessage::HashedPostStateUpdate(hashed_post_state) => {
                         if !hashed_post_state.is_empty() {
                             update_count += 1;
@@ -790,6 +783,9 @@ impl TriedbTask {
                                 difflayer)))
                             .expect("failed to send state root result");
                         break;
+                    }
+                    MultiProofMessage::StateUpdate(_, _) => {
+                        panic!("triedb calc hash task receive exception state update message")
                     }
                     MultiProofMessage::PrefetchProofs(_) => {
                         panic!("triedb calc hash task receive exception prefetch proofs message")

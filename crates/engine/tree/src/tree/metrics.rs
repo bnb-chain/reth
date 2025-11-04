@@ -114,6 +114,8 @@ impl EngineApiMetrics {
         if let Some(hash_post_state_tx) = hash_post_state_tx {
             let hashed_post_state = HashedPostState::from_bundle_state::<KeccakKeyHasher>(&bundle_state.state);
             hash_post_state_tx.send(MultiProofMessage::HashedPostStateUpdate(hashed_post_state)).unwrap();
+            hash_post_state_tx.send(MultiProofMessage::FinishedStateUpdates).unwrap();
+            drop(hash_post_state_tx);
         }
         let output = BlockExecutionOutput { result, state: bundle_state };
 
