@@ -13,7 +13,7 @@ use reth_metrics::{
 };
 use reth_primitives_traits::SignedTransaction;
 use reth_trie::updates::TrieUpdates;
-use revm::database::{states::bundle_state::BundleRetention, State};
+use revm::database::{states::bundle_state::{BundleRetention, BundleState}, State};
 use std::time::Instant;
 use tracing::{debug_span, trace};
 
@@ -83,8 +83,15 @@ impl EngineApiMetrics {
                 trace!(target: "engine::tree", "Executing transaction");
                 executor.execute_transaction(tx)?;
                 let db = executor.evm_mut().db_mut().borrow_mut();
-                db.merge_transitions(BundleRetention::PlainState);
-                let bundle_state = db.bundle_state.clone();
+                // db.merge_transitions(BundleRetention::PlainState);
+                // let bundle_state = db.bundle_state.clone();
+                let mut bundle_state = BundleState::default();
+                if let Some(transition_state) = &db.transition_state {
+                    for (address, transition) in &transition_state.transitions {
+                        let present_bundle = transition.present_bundle_account();
+                        bundle_state.state.insert(*address, present_bundle);
+                    }
+                }
             }
             executor.finish().map(|(evm, result)| (evm.into_db(), result))
         };
