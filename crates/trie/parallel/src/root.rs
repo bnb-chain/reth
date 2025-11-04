@@ -135,6 +135,7 @@ where
                         #[cfg(feature = "metrics")]
                         metrics,
                     )
+                    .with_no_threshold()
                     .calculate(retain_updates)?)
                 })();
                 let _ = tx.send(result);
