@@ -12,10 +12,13 @@ use reth_metrics::{
     Metrics,
 };
 use reth_primitives_traits::SignedTransaction;
-use reth_trie::updates::TrieUpdates;
+use reth_trie::{updates::TrieUpdates, HashedPostState, KeccakKeyHasher};
 use revm::database::{states::bundle_state::{BundleRetention, BundleState}, State};
+use std::sync::mpsc::Sender;
 use std::time::Instant;
 use tracing::{debug_span, trace};
+
+use crate::tree::payload_processor::multiproof::MultiProofMessage;
 
 /// Metrics for the `EngineApi`.
 #[derive(Debug, Default)]
@@ -61,6 +64,7 @@ impl EngineApiMetrics {
         executor: E,
         transactions: impl Iterator<Item = Result<impl ExecutableTx<E>, BlockExecutionError>>,
         state_hook: Box<dyn OnStateHook>,
+        hash_post_state_tx: Option<Sender<MultiProofMessage>>,
     ) -> Result<BlockExecutionOutput<E::Receipt>, BlockExecutionError>
     where
         DB: alloy_evm::Database,
@@ -107,6 +111,10 @@ impl EngineApiMetrics {
         db.borrow_mut().merge_transitions(BundleRetention::Reverts);
         let bundle_state = db.borrow_mut().take_bundle();
 
+        if let Some(hash_post_state_tx) = hash_post_state_tx {
+            let hashed_post_state = HashedPostState::from_bundle_state::<KeccakKeyHasher>(&bundle_state.state);
+            hash_post_state_tx.send(MultiProofMessage::HashedPostStateUpdate(hashed_post_state)).unwrap();
+        }
         let output = BlockExecutionOutput { result, state: bundle_state };
 
         // Update the metrics for the number of accounts, storage slots and bytecodes updated
@@ -371,6 +379,7 @@ mod tests {
             executor,
             input.clone_transactions_recovered().map(Ok::<_, BlockExecutionError>),
             state_hook,
+            None, // hash_post_state_tx
         );
 
         // Check if hook was called (it might not be if finish() fails early)
@@ -427,6 +436,7 @@ mod tests {
             executor,
             input.clone_transactions_recovered().map(Ok::<_, BlockExecutionError>),
             state_hook,
+            None, // hash_post_state_tx
         );
 
         let snapshot = snapshotter.snapshot().into_vec();

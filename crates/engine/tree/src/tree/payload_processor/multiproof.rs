@@ -100,11 +100,13 @@ impl<Factory> MultiProofConfig<Factory> {
 
 /// Messages used internally by the multi proof task.
 #[derive(Debug)]
-pub(super) enum MultiProofMessage {
+pub(crate) enum MultiProofMessage {
     /// Prefetch proof targets
     PrefetchProofs(MultiProofTargets),
     /// New state update from transaction execution with its source
     StateUpdate(StateChangeSource, EvmState),
+    /// Hashed post state update
+    HashedPostStateUpdate(HashedPostState),
     /// State update that can be applied to the sparse trie without any new proofs.
     ///
     /// It can be the case when all accounts and storage slots from the state update were already
@@ -979,6 +981,9 @@ where
             trace!(target: "engine::root", "entering main channel receiving loop");
             match self.rx.recv() {
                 Ok(message) => match message {
+                    MultiProofMessage::HashedPostStateUpdate(hashed_post_state) => {
+                        panic!("HashedPostStateUpdate should not be received in the multiproof channel");
+                    }
                     MultiProofMessage::PrefetchProofs(targets) => {
                         trace!(target: "engine::root", "processing MultiProofMessage::PrefetchProofs");
                         if first_update_time.is_none() {
