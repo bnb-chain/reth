@@ -117,18 +117,16 @@ impl EngineApiMetrics {
             (gas_used, res)
         })?;
 
+        db.borrow_mut().merge_transitions(BundleRetention::Reverts);
+        let final_bundle_state = db.borrow_mut().take_bundle();
+
         if let Some(hash_post_state_tx) = hash_post_state_tx_clone {
-            let new_transition_state = db.borrow_mut().transition_state.clone();
-            if let Some(new_transition_state) = new_transition_state {
-                let (new_bundle_state, hashed_post_state) = parallel_diff_hashed_post_state(&bundle_state, &new_transition_state);
-                hash_post_state_tx.send(MultiProofMessage::HashedPostStateUpdate(hashed_post_state)).unwrap();
-                hash_post_state_tx.send(MultiProofMessage::FinishedStateUpdates).unwrap();
-                bundle_state = new_bundle_state;
-            }
+            let hashed_post_state = parallel_diff_hashed_post_state_by_bundle(&bundle_state, &final_bundle_state);
+            hash_post_state_tx.send(MultiProofMessage::HashedPostStateUpdate(hashed_post_state)).unwrap();
+            hash_post_state_tx.send(MultiProofMessage::FinishedStateUpdates).unwrap();
         }
 
-        db.borrow_mut().merge_transitions(BundleRetention::Reverts);
-        let output = BlockExecutionOutput { result, state: db.borrow_mut().take_bundle() };
+        let output = BlockExecutionOutput { result, state: final_bundle_state};
 
         // Update the metrics for the number of accounts, storage slots and bytecodes updated
         let accounts = output.state.state.len();
@@ -142,6 +140,52 @@ impl EngineApiMetrics {
 
         Ok(output)
     }
+}
+
+/// Parallel version of diff_hashed_post_state_by_bundle
+#[cfg(feature = "rayon")]
+pub(crate) fn parallel_diff_hashed_post_state_by_bundle(old_bundle_state: &BundleState, new_bundle_state: &BundleState) -> HashedPostState {
+    use rayon::prelude::*;
+
+    let results: Vec<_> = new_bundle_state.state.par_iter().filter_map(|(address, new_account)| {
+        if old_bundle_state.state.contains_key(address) {
+            let old_account = old_bundle_state.state.get(address).unwrap();
+            // Parallel process storage slots to find differences
+            let diff_storage: StorageWithOriginalValues = new_account.storage
+            .par_iter()
+            .filter_map(|(slot_key, present_slot)| {
+                let old_slot = old_account.storage.get(slot_key);
+                if old_slot.is_none() {
+                    Some((*slot_key, present_slot.clone()))
+                } else if old_slot.unwrap().present_value() != present_slot.present_value() {
+                    Some((*slot_key, present_slot.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+            if diff_storage.is_empty() &&
+                old_account.info == new_account.info &&
+                old_account.status == new_account.status {
+                return None;
+            }
+
+            let mut new_account_clone = new_account.clone();
+            new_account_clone.storage = diff_storage;
+            Some((*address, new_account_clone))
+        } else {
+            Some((*address, new_account.clone()))
+        }
+    })
+    .collect();
+
+    let mut diff_bundle_state = BundleState::default();
+    for (address, diff_account) in results {
+        diff_bundle_state.state.insert(address, diff_account);
+    }
+    let hashed_post_state = HashedPostState::from_bundle_state::<KeccakKeyHasher>(&diff_bundle_state.state);
+    return hashed_post_state;
 }
 
 /// Calculate the difference between two transition states and return the hashed post state
