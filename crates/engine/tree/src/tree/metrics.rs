@@ -123,13 +123,12 @@ impl EngineApiMetrics {
                 let (new_bundle_state, hashed_post_state) = parallel_diff_hashed_post_state(&bundle_state, &new_transition_state);
                 hash_post_state_tx.send(MultiProofMessage::HashedPostStateUpdate(hashed_post_state)).unwrap();
                 hash_post_state_tx.send(MultiProofMessage::FinishedStateUpdates).unwrap();
-                // drop(hash_post_state_tx);
                 bundle_state = new_bundle_state;
             }
         }
 
         db.borrow_mut().merge_transitions(BundleRetention::Reverts);
-        let output = BlockExecutionOutput { result, state: bundle_state };
+        let output = BlockExecutionOutput { result, state: db.borrow_mut().take_bundle() };
 
         // Update the metrics for the number of accounts, storage slots and bytecodes updated
         let accounts = output.state.state.len();

@@ -57,7 +57,7 @@ use rust_eth_triedb_state_trie::{DiffLayer, DiffLayers};
 use std::thread;
 
 use reth_trie::{HashedPostState};
-use tracing::info;
+use tracing::{info, warn};
 
 /// Entrypoint for executing the payload.
 #[derive(Debug)]
@@ -801,7 +801,8 @@ impl TriedbTask {
                     }
                 }
                 Err(err) => {
-                    panic!("triedb calc hash task receive error, {:?}", err)
+                    warn!("triedb calc hash task receive error, {:?}", err);
+                    break;
                 }
             }
         }
