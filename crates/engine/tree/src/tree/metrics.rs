@@ -86,6 +86,7 @@ impl EngineApiMetrics {
         let mut executor = executor.with_state_hook(Some(Box::new(wrapper)));
 
         let mut bundle_state = BundleState::default();
+        let mut total_hashed_post_state = HashedPostState::default();
         let hash_post_state_tx_clone = hash_post_state_tx.clone();
         let f = || {
             executor.apply_pre_execution_changes()?;
@@ -102,6 +103,7 @@ impl EngineApiMetrics {
                     let new_transition_state = executor.evm_mut().db_mut().borrow_mut().transition_state.clone();
                     if let Some(new_transition_state) = new_transition_state {
                         let (new_bundle_state, hashed_post_state) = parallel_diff_hashed_post_state(&bundle_state, &new_transition_state);
+                        total_hashed_post_state.extend(hashed_post_state.clone());
                         hash_post_state_tx.send(MultiProofMessage::HashedPostStateUpdate(hashed_post_state)).unwrap();
                         bundle_state = new_bundle_state;
                     }
@@ -122,9 +124,13 @@ impl EngineApiMetrics {
 
         if let Some(hash_post_state_tx) = hash_post_state_tx_clone {
             let hashed_post_state = parallel_diff_hashed_post_state_by_bundle(&bundle_state, &final_bundle_state);
+            total_hashed_post_state.extend(hashed_post_state.clone());
             hash_post_state_tx.send(MultiProofMessage::HashedPostStateUpdate(hashed_post_state)).unwrap();
             hash_post_state_tx.send(MultiProofMessage::FinishedStateUpdates).unwrap();
         }
+
+        let final_hashed_post_state = HashedPostState::from_bundle_state::<KeccakKeyHasher>(&final_bundle_state.state);
+        print_hashed_post_state_diff(&total_hashed_post_state, &final_hashed_post_state);
 
         let output = BlockExecutionOutput { result, state: final_bundle_state};
 
@@ -141,6 +147,535 @@ impl EngineApiMetrics {
         Ok(output)
     }
 }
+
+
+pub(crate) fn print_hashed_post_state_diff(total_hashed_post_state: &HashedPostState, final_hashed_post_state: &HashedPostState) {
+    use alloy_primitives::{B256, U256};
+    use reth_primitives_traits::Account;
+
+    // Structure to store differences
+    struct AccountDiff {
+        address: B256,
+        total: Account,
+        final_acc: Account,
+        differences: Vec<String>,
+    }
+
+    // Traverse total_hashed_post_state.accounts and compare with final_hashed_post_state.accounts
+    let mut missing_in_final: Vec<(B256, Account)> = Vec::new();
+    let mut different_in_final: Vec<AccountDiff> = Vec::new();
+
+    for (address, total_account) in total_hashed_post_state.accounts.iter() {
+        match final_hashed_post_state.accounts.get(address) {
+            None => {
+                // Account exists in total but not in final
+                if let Some(acc) = total_account {
+                    missing_in_final.push((*address, *acc));
+                }
+            }
+            Some(final_account) => {
+                // Account exists in both, compare fields
+                match (total_account, final_account) {
+                    (Some(total_acc), Some(final_acc)) => {
+                        let mut differences = Vec::new();
+
+                        if total_acc.nonce != final_acc.nonce {
+                            differences.push(format!("nonce: {} != {}", total_acc.nonce, final_acc.nonce));
+                        }
+                        if total_acc.balance != final_acc.balance {
+                            differences.push(format!("balance: {} != {}", total_acc.balance, final_acc.balance));
+                        }
+                        if total_acc.bytecode_hash != final_acc.bytecode_hash {
+                            differences.push(format!(
+                                "bytecode_hash: {:?} != {:?}",
+                                total_acc.bytecode_hash, final_acc.bytecode_hash
+                            ));
+                        }
+
+                        if !differences.is_empty() {
+                            different_in_final.push(AccountDiff {
+                                address: *address,
+                                total: *total_acc,
+                                final_acc: *final_acc,
+                                differences,
+                            });
+                        }
+                    }
+                    _ => {
+                        // One is Some, other is None - this is already handled as missing
+                    }
+                }
+            }
+        }
+    }
+
+    // Print results for total -> final comparison
+    if !missing_in_final.is_empty() {
+        info!(
+            target: "engine::tree",
+            "Accounts in total_hashed_post_state but missing in final_hashed_post_state (count={})",
+            missing_in_final.len()
+        );
+        for (address, account) in &missing_in_final {
+            info!(
+                target: "engine::tree",
+                "  Missing address={:?}, account={:?}",
+                address, account
+            );
+        }
+    }
+
+    if !different_in_final.is_empty() {
+        info!(
+            target: "engine::tree",
+            "Accounts in total_hashed_post_state with different values in final_hashed_post_state (count={})",
+            different_in_final.len()
+        );
+        for diff in &different_in_final {
+            info!(
+                target: "engine::tree",
+                "  Different address={:?}, differences: {}, total={:?}, final={:?}",
+                diff.address,
+                diff.differences.join(", "),
+                diff.total,
+                diff.final_acc
+            );
+        }
+    }
+
+    // Traverse final_hashed_post_state.accounts and compare with total_hashed_post_state.accounts
+    let mut missing_in_total: Vec<(B256, Account)> = Vec::new();
+    let mut different_in_total: Vec<AccountDiff> = Vec::new();
+
+    for (address, final_account) in final_hashed_post_state.accounts.iter() {
+        match total_hashed_post_state.accounts.get(address) {
+            None => {
+                // Account exists in final but not in total
+                if let Some(acc) = final_account {
+                    missing_in_total.push((*address, *acc));
+                }
+            }
+            Some(total_account) => {
+                // Account exists in both, compare fields
+                match (total_account, final_account) {
+                    (Some(total_acc), Some(final_acc)) => {
+                        let mut differences = Vec::new();
+
+                        if total_acc.nonce != final_acc.nonce {
+                            differences.push(format!("nonce: {} != {}", total_acc.nonce, final_acc.nonce));
+                        }
+                        if total_acc.balance != final_acc.balance {
+                            differences.push(format!("balance: {} != {}", total_acc.balance, final_acc.balance));
+                        }
+                        if total_acc.bytecode_hash != final_acc.bytecode_hash {
+                            differences.push(format!(
+                                "bytecode_hash: {:?} != {:?}",
+                                total_acc.bytecode_hash, final_acc.bytecode_hash
+                            ));
+                        }
+
+                        if !differences.is_empty() {
+                            different_in_total.push(AccountDiff {
+                                address: *address,
+                                total: *total_acc,
+                                final_acc: *final_acc,
+                                differences,
+                            });
+                        }
+                    }
+                    _ => {
+                        // One is Some, other is None - this is already handled as missing
+                    }
+                }
+            }
+        }
+    }
+
+    // Print results for final -> total comparison
+    if !missing_in_total.is_empty() {
+        info!(
+            target: "engine::tree",
+            "Accounts in final_hashed_post_state but missing in total_hashed_post_state (count={})",
+            missing_in_total.len()
+        );
+        for (address, account) in &missing_in_total {
+            info!(
+                target: "engine::tree",
+                "  Missing address={:?}, account={:?}",
+                address, account
+            );
+        }
+    }
+
+    if !different_in_total.is_empty() {
+        info!(
+            target: "engine::tree",
+            "Accounts in final_hashed_post_state with different values in total_hashed_post_state (count={})",
+            different_in_total.len()
+        );
+        for diff in &different_in_total {
+            info!(
+                target: "engine::tree",
+                "  Different address={:?}, differences: {}, total={:?}, final={:?}",
+                diff.address,
+                diff.differences.join(", "),
+                diff.total,
+                diff.final_acc
+            );
+        }
+    }
+
+    // Compare storages - similar logic to accounts
+    use reth_trie::HashedStorage;
+
+    // Structure to store storage differences
+    struct StorageDiff {
+        address: B256,
+        total: HashedStorage,
+        final_stor: HashedStorage,
+        differences: Vec<String>,
+        missing_slots_in_final: Vec<(B256, U256)>,
+        missing_slots_in_total: Vec<(B256, U256)>,
+        different_slot_values: Vec<(B256, U256, U256)>,
+    }
+
+    // Traverse total_hashed_post_state.storages and compare with final_hashed_post_state.storages
+    let mut missing_storage_in_final: Vec<(B256, HashedStorage)> = Vec::new();
+    let mut different_storage_in_final: Vec<StorageDiff> = Vec::new();
+
+    for (address, total_storage) in total_hashed_post_state.storages.iter() {
+        match final_hashed_post_state.storages.get(address) {
+            None => {
+                // Storage exists in total but not in final
+                missing_storage_in_final.push((*address, total_storage.clone()));
+            }
+            Some(final_storage) => {
+                // Storage exists in both, compare fields
+                let mut differences = Vec::new();
+                let mut missing_slots_in_final = Vec::new();
+                let mut missing_slots_in_total = Vec::new();
+                let mut different_slot_values = Vec::new();
+
+                // Compare wiped flag
+                if total_storage.wiped != final_storage.wiped {
+                    differences.push(format!(
+                        "wiped: {} != {}",
+                        total_storage.wiped, final_storage.wiped
+                    ));
+                }
+
+                // Compare storage slots
+                // Slots only in total
+                for (slot, value) in total_storage.storage.iter() {
+                    match final_storage.storage.get(slot) {
+                        None => {
+                            missing_slots_in_final.push((*slot, *value));
+                        }
+                        Some(final_value) => {
+                            if value != final_value {
+                                different_slot_values.push((*slot, *value, *final_value));
+                            }
+                        }
+                    }
+                }
+
+                // Slots only in final
+                for (slot, value) in final_storage.storage.iter() {
+                    if !total_storage.storage.contains_key(slot) {
+                        missing_slots_in_total.push((*slot, *value));
+                    }
+                }
+
+                if !differences.is_empty() || !missing_slots_in_final.is_empty() ||
+                    !missing_slots_in_total.is_empty() || !different_slot_values.is_empty() {
+                    different_storage_in_final.push(StorageDiff {
+                        address: *address,
+                        total: total_storage.clone(),
+                        final_stor: final_storage.clone(),
+                        differences,
+                        missing_slots_in_final,
+                        missing_slots_in_total,
+                        different_slot_values,
+                    });
+                }
+            }
+        }
+    }
+
+    // Print results for total -> final storage comparison
+    if !missing_storage_in_final.is_empty() {
+        info!(
+            target: "engine::tree",
+            "Storages in total_hashed_post_state but missing in final_hashed_post_state (count={})",
+            missing_storage_in_final.len()
+        );
+        for (address, storage) in &missing_storage_in_final {
+            info!(
+                target: "engine::tree",
+                "  Missing address={:?}, wiped={}, slots_count={}",
+                address,
+                storage.wiped,
+                storage.storage.len()
+            );
+        }
+    }
+
+    if !different_storage_in_final.is_empty() {
+        info!(
+            target: "engine::tree",
+            "Storages in total_hashed_post_state with different values in final_hashed_post_state (count={})",
+            different_storage_in_final.len()
+        );
+        for diff in &different_storage_in_final {
+            let mut details = Vec::new();
+            if !diff.differences.is_empty() {
+                details.push(format!("flags: {}", diff.differences.join(", ")));
+            }
+            if !diff.missing_slots_in_final.is_empty() {
+                details.push(format!("missing_slots_in_final: {} slots", diff.missing_slots_in_final.len()));
+            }
+            if !diff.missing_slots_in_total.is_empty() {
+                details.push(format!("missing_slots_in_total: {} slots", diff.missing_slots_in_total.len()));
+            }
+            if !diff.different_slot_values.is_empty() {
+                details.push(format!("different_slot_values: {} slots", diff.different_slot_values.len()));
+            }
+
+            info!(
+                target: "engine::tree",
+                "  Different address={:?}, {}",
+                diff.address,
+                details.join(", ")
+            );
+
+            // Print detailed slot differences
+            if !diff.missing_slots_in_final.is_empty() {
+                for (slot, value) in &diff.missing_slots_in_final[..std::cmp::min(10, diff.missing_slots_in_final.len())] {
+                    info!(
+                        target: "engine::tree",
+                        "    Slot only in total: slot={:?}, value={}",
+                        slot, value
+                    );
+                }
+                if diff.missing_slots_in_final.len() > 10 {
+                    info!(
+                        target: "engine::tree",
+                        "    ... and {} more slots only in total",
+                        diff.missing_slots_in_final.len() - 10
+                    );
+                }
+            }
+
+            if !diff.missing_slots_in_total.is_empty() {
+                for (slot, value) in &diff.missing_slots_in_total[..std::cmp::min(10, diff.missing_slots_in_total.len())] {
+                    info!(
+                        target: "engine::tree",
+                        "    Slot only in final: slot={:?}, value={}",
+                        slot, value
+                    );
+                }
+                if diff.missing_slots_in_total.len() > 10 {
+                    info!(
+                        target: "engine::tree",
+                        "    ... and {} more slots only in final",
+                        diff.missing_slots_in_total.len() - 10
+                    );
+                }
+            }
+
+            if !diff.different_slot_values.is_empty() {
+                for (slot, total_val, final_val) in &diff.different_slot_values[..std::cmp::min(10, diff.different_slot_values.len())] {
+                    info!(
+                        target: "engine::tree",
+                        "    Slot value differs: slot={:?}, total={}, final={}",
+                        slot, total_val, final_val
+                    );
+                }
+                if diff.different_slot_values.len() > 10 {
+                    info!(
+                        target: "engine::tree",
+                        "    ... and {} more slots with different values",
+                        diff.different_slot_values.len() - 10
+                    );
+                }
+            }
+        }
+    }
+
+    // Traverse final_hashed_post_state.storages and compare with total_hashed_post_state.storages
+    let mut missing_storage_in_total: Vec<(B256, HashedStorage)> = Vec::new();
+    let mut different_storage_in_total: Vec<StorageDiff> = Vec::new();
+
+    for (address, final_storage) in final_hashed_post_state.storages.iter() {
+        match total_hashed_post_state.storages.get(address) {
+            None => {
+                // Storage exists in final but not in total
+                missing_storage_in_total.push((*address, final_storage.clone()));
+            }
+            Some(total_storage) => {
+                // Storage exists in both, compare fields
+                let mut differences = Vec::new();
+                let mut missing_slots_in_final = Vec::new();
+                let mut missing_slots_in_total = Vec::new();
+                let mut different_slot_values = Vec::new();
+
+                // Compare wiped flag
+                if total_storage.wiped != final_storage.wiped {
+                    differences.push(format!(
+                        "wiped: {} != {}",
+                        total_storage.wiped, final_storage.wiped
+                    ));
+                }
+
+                // Compare storage slots
+                // Slots only in final
+                for (slot, value) in final_storage.storage.iter() {
+                    match total_storage.storage.get(slot) {
+                        None => {
+                            missing_slots_in_total.push((*slot, *value));
+                        }
+                        Some(total_value) => {
+                            if value != total_value {
+                                different_slot_values.push((*slot, *total_value, *value));
+                            }
+                        }
+                    }
+                }
+
+                // Slots only in total
+                for (slot, value) in total_storage.storage.iter() {
+                    if !final_storage.storage.contains_key(slot) {
+                        missing_slots_in_final.push((*slot, *value));
+                    }
+                }
+
+                if !differences.is_empty() || !missing_slots_in_final.is_empty() ||
+                    !missing_slots_in_total.is_empty() || !different_slot_values.is_empty() {
+                    different_storage_in_total.push(StorageDiff {
+                        address: *address,
+                        total: total_storage.clone(),
+                        final_stor: final_storage.clone(),
+                        differences,
+                        missing_slots_in_final,
+                        missing_slots_in_total,
+                        different_slot_values,
+                    });
+                }
+            }
+        }
+    }
+
+    // Print results for final -> total storage comparison
+    if !missing_storage_in_total.is_empty() {
+        info!(
+            target: "engine::tree",
+            "Storages in final_hashed_post_state but missing in total_hashed_post_state (count={})",
+            missing_storage_in_total.len()
+        );
+        for (address, storage) in &missing_storage_in_total {
+            info!(
+                target: "engine::tree",
+                "  Missing address={:?}, wiped={}, slots_count={}",
+                address,
+                storage.wiped,
+                storage.storage.len()
+            );
+        }
+    }
+
+    if !different_storage_in_total.is_empty() {
+        info!(
+            target: "engine::tree",
+            "Storages in final_hashed_post_state with different values in total_hashed_post_state (count={})",
+            different_storage_in_total.len()
+        );
+        for diff in &different_storage_in_total {
+            let mut details = Vec::new();
+            if !diff.differences.is_empty() {
+                details.push(format!("flags: {}", diff.differences.join(", ")));
+            }
+            if !diff.missing_slots_in_final.is_empty() {
+                details.push(format!("missing_slots_in_final: {} slots", diff.missing_slots_in_final.len()));
+            }
+            if !diff.missing_slots_in_total.is_empty() {
+                details.push(format!("missing_slots_in_total: {} slots", diff.missing_slots_in_total.len()));
+            }
+            if !diff.different_slot_values.is_empty() {
+                details.push(format!("different_slot_values: {} slots", diff.different_slot_values.len()));
+            }
+
+            info!(
+                target: "engine::tree",
+                "  Different address={:?}, {}",
+                diff.address,
+                details.join(", ")
+            );
+
+            // Print detailed slot differences
+            if !diff.missing_slots_in_final.is_empty() {
+                for (slot, value) in &diff.missing_slots_in_final[..std::cmp::min(10, diff.missing_slots_in_final.len())] {
+                    info!(
+                        target: "engine::tree",
+                        "    Slot only in total: slot={:?}, value={}",
+                        slot, value
+                    );
+                }
+                if diff.missing_slots_in_final.len() > 10 {
+                    info!(
+                        target: "engine::tree",
+                        "    ... and {} more slots only in total",
+                        diff.missing_slots_in_final.len() - 10
+                    );
+                }
+            }
+
+            if !diff.missing_slots_in_total.is_empty() {
+                for (slot, value) in &diff.missing_slots_in_total[..std::cmp::min(10, diff.missing_slots_in_total.len())] {
+                    info!(
+                        target: "engine::tree",
+                        "    Slot only in final: slot={:?}, value={}",
+                        slot, value
+                    );
+                }
+                if diff.missing_slots_in_total.len() > 10 {
+                    info!(
+                        target: "engine::tree",
+                        "    ... and {} more slots only in final",
+                        diff.missing_slots_in_total.len() - 10
+                    );
+                }
+            }
+
+            if !diff.different_slot_values.is_empty() {
+                for (slot, total_val, final_val) in &diff.different_slot_values[..std::cmp::min(10, diff.different_slot_values.len())] {
+                    info!(
+                        target: "engine::tree",
+                        "    Slot value differs: slot={:?}, total={}, final={}",
+                        slot, total_val, final_val
+                    );
+                }
+                if diff.different_slot_values.len() > 10 {
+                    info!(
+                        target: "engine::tree",
+                        "    ... and {} more slots with different values",
+                        diff.different_slot_values.len() - 10
+                    );
+                }
+            }
+        }
+    }
+
+    // Summary
+    info!(
+        target: "engine::tree",
+        "HashedPostState diff summary: total_accounts={}, final_accounts={}, total_storages={}, final_storages={}",
+        total_hashed_post_state.accounts.len(),
+        final_hashed_post_state.accounts.len(),
+        total_hashed_post_state.storages.len(),
+        final_hashed_post_state.storages.len()
+    );
+}
+
 
 /// Parallel version of diff_hashed_post_state_by_bundle
 #[cfg(feature = "rayon")]
