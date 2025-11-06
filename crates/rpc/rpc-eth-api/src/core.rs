@@ -8,6 +8,7 @@ use alloy_dyn_abi::TypedData;
 use alloy_eips::{eip2930::AccessListResult, BlockId, BlockNumberOrTag};
 use alloy_json_rpc::RpcObject;
 use alloy_primitives::{Address, Bytes, B256, B64, U256, U64};
+use tracing::info;
 use alloy_rpc_types_eth::{
     simulate::{SimulatePayload, SimulatedBlock},
     state::{EvmOverrides, StateOverride},
@@ -488,7 +489,7 @@ where
         number: BlockNumberOrTag,
         full: bool,
     ) -> RpcResult<Option<RpcBlock<T::NetworkTypes>>> {
-        trace!(target: "rpc::eth", ?number, ?full, "Serving eth_getBlockByNumber");
+        info!(target: "rpc::eth", ?number, ?full, "Serving eth_getBlockByNumber");
         Ok(EthBlocks::rpc_block(self, number.into(), full).await?)
     }
 

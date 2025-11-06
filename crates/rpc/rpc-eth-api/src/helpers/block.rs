@@ -8,6 +8,7 @@ use crate::{
 use alloy_consensus::TxReceipt;
 use alloy_eips::{BlockId, BlockNumberOrTag};
 use alloy_rlp::Encodable;
+use tracing::info;
 use alloy_rpc_types_eth::{Block, BlockTransactions, Index};
 use futures::Future;
 use reth_node_api::BlockBody;
@@ -59,6 +60,7 @@ pub trait EthBlocks:
         Self: FullEthApiTypes,
     {
         async move {
+            info!(target: "rpc::eth", ?block_id, ?full, "Try recovered block");
             let Some(block) = self.recovered_block(block_id).await? else { return Ok(None) };
 
             let block = block.clone_into_rpc_block(
