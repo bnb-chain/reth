@@ -8,7 +8,7 @@ use crate::{
 use alloy_consensus::TxReceipt;
 use alloy_eips::{BlockId, BlockNumberOrTag};
 use alloy_rlp::Encodable;
-use tracing::info;
+use tracing::{trace, warn};
 use alloy_rpc_types_eth::{Block, BlockTransactions, Index};
 use futures::Future;
 use reth_node_api::BlockBody;
@@ -60,38 +60,29 @@ pub trait EthBlocks:
         Self: FullEthApiTypes,
     {
         async move {
-            info!(target: "rpc::eth", ?block_id, ?full, "Try recovered block");
-            let Some(block) = self.recovered_block(block_id).await? else { 
-                info!(target: "rpc::eth", ?block_id, "recovered_block returned None");
-                return Ok(None) 
-            };
-            info!(target: "rpc::eth", ?block_id, ?full, "After recovered block, try clone into rpc block");
+            let Some(block) = self.recovered_block(block_id).await? else { return Ok(None) };
 
             let block = block.clone_into_rpc_block(
                 full.into(),
                 |tx, tx_info| self.tx_resp_builder().fill(tx, tx_info),
                 |header, size| {
                     let block_number = header.number();
-                    info!(target: "rpc::eth", ?block_id, block_number, "Calculating TD for block");
-                    
-                    // Try to get TD from database first (for already persisted blocks)
                     let td = match self.provider().header_td_by_number(block_number) {
                         Ok(Some(td)) => {
-                            info!(target: "rpc::eth", ?block_id, block_number, ?td, "Got TD from database");
                             Some(td)
                         }
                         Ok(None) | Err(_) => {
                             // Block not in database yet (e.g., pending block)
                             // Calculate TD = parent_td + current_difficulty
-                            info!(target: "rpc::eth", ?block_id, block_number, "Block not in DB, calculating TD from parent");
-                            
+                            trace!(target: "rpc::eth", ?block_id, block_number, "Block not in DB, calculating TD from parent");
+
                             let parent_number = block_number.saturating_sub(1);
                             match self.provider().header_td_by_number(parent_number) {
                                 Ok(Some(parent_td)) => {
                                     let current_difficulty = header.difficulty();
                                     let calculated_td = parent_td.saturating_add(current_difficulty);
-                                    
-                                    info!(
+
+                                    trace!(
                                         target: "rpc::eth", 
                                         ?block_id, 
                                         block_number, 
@@ -101,11 +92,11 @@ pub trait EthBlocks:
                                         ?calculated_td,
                                         "Calculated TD from parent"
                                     );
-                                    
+
                                     Some(calculated_td)
                                 }
                                 _ => {
-                                    info!(
+                                    warn!(
                                         target: "rpc::eth",
                                         ?block_id,
                                         block_number,
@@ -117,11 +108,9 @@ pub trait EthBlocks:
                             }
                         }
                     };
-                    
                     self.tx_resp_builder().convert_header(header, size, td)
                 },
             )?;
-            info!(target: "rpc::eth", ?block_id, ?full, "Successfully created rpc block, returning");
             Ok(Some(block))
         }
     }
