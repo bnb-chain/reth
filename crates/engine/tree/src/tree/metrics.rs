@@ -17,6 +17,8 @@ use revm::database::{
     states::{
         bundle_state::{BundleRetention, BundleState},
         transition_state::TransitionState,
+        AccountStatus,
+        BundleAccount,
         StorageWithOriginalValues,
         State
     },
@@ -682,42 +684,114 @@ pub(crate) fn print_hashed_post_state_diff(total_hashed_post_state: &HashedPostS
 pub(crate) fn parallel_diff_hashed_post_state_by_bundle(old_bundle_state: &BundleState, new_bundle_state: &BundleState) -> HashedPostState {
     use rayon::prelude::*;
 
-    let results: Vec<_> = new_bundle_state.state.par_iter().filter_map(|(address, new_account)| {
-        if old_bundle_state.state.contains_key(address) {
-            let old_account = old_bundle_state.state.get(address).unwrap();
-            // Parallel process storage slots to find differences
-            let diff_storage: StorageWithOriginalValues = new_account.storage
-            .par_iter()
-            .filter_map(|(slot_key, present_slot)| {
-                let old_slot = old_account.storage.get(slot_key);
-                if old_slot.is_none() {
-                    Some((*slot_key, present_slot.clone()))
-                } else if old_slot.unwrap().present_value() != present_slot.present_value() {
-                    Some((*slot_key, present_slot.clone()))
+    // Parallel execution: process both diff_accounts and rewrite_accounts simultaneously
+    let (diff_accounts, rewrite_accounts): (Vec<_>, Vec<_>) = rayon::join(
+        || {
+            // Task 1: Traverse new_bundle_state to find account differences
+            new_bundle_state.state.par_iter().filter_map(|(address, new_account)| {
+                if old_bundle_state.state.contains_key(address) {
+                    let old_account = old_bundle_state.state.get(address).unwrap();
+                    // Parallel execution: process both diff_storage and rewrite_storage simultaneously
+                    let (diff_storage, rewrite_storage): (StorageWithOriginalValues, StorageWithOriginalValues) = rayon::join(
+                        || {
+                            // Task 1.1: Parallel process storage slots to find differences
+                            new_account.storage
+                                .par_iter()
+                                .filter_map(|(slot_key, present_slot)| {
+                                    let old_slot = old_account.storage.get(slot_key);
+                                    if old_slot.is_none() {
+                                        Some((*slot_key, present_slot.clone()))
+                                    } else if old_slot.unwrap().present_value() != present_slot.present_value() {
+                                        Some((*slot_key, present_slot.clone()))
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect()
+                        },
+                        || {
+                            // Task 1.2: Parallel process old_account.storage to find slots that don't exist in new_account.storage
+                            use revm::database::states::StorageSlot;
+                            use alloy_primitives::U256;
+                            old_account.storage
+                                .par_iter()
+                                .filter_map(|(slot_key, old_slot)| {
+                                    // Check if slot exists in new_account.storage
+                                    if !new_account.storage.contains_key(slot_key) {
+                                        // Slot exists in old but not in new, collect previous_or_original_value
+                                        // Create a StorageSlot with previous_or_original_value as both previous and present
+                                        // Since the slot is deleted, present_value should be 0
+                                        Some((*slot_key, StorageSlot::new_changed(
+                                            U256::ZERO,
+                                            old_slot.previous_or_original_value,
+                                        )))
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect()
+                        },
+                    );
+
+                    // Merge the two storage results
+                    let mut merged_storage = diff_storage;
+                    merged_storage.extend(rewrite_storage);
+
+                    if merged_storage.is_empty() &&
+                        old_account.info == new_account.info &&
+                        old_account.status == new_account.status {
+                        return None;
+                    }
+
+                    let mut new_account_clone = new_account.clone();
+                    new_account_clone.storage = merged_storage;
+                    Some((*address, new_account_clone))
                 } else {
-                    None
+                    Some((*address, new_account.clone()))
                 }
             })
-            .collect();
-
-            if diff_storage.is_empty() &&
-                old_account.info == new_account.info &&
-                old_account.status == new_account.status {
-                return None;
-            }
-
-            let mut new_account_clone = new_account.clone();
-            new_account_clone.storage = diff_storage;
-            Some((*address, new_account_clone))
-        } else {
-            Some((*address, new_account.clone()))
-        }
-    })
-    .collect();
+            .collect()
+        },
+        || {
+            // Task 2: Traverse old_bundle_state in parallel to find accounts that don't exist in new_bundle_state
+            old_bundle_state.state.par_iter()
+                .filter_map(|(address, old_account)| {
+                    // Check if account exists in new_bundle_state
+                    if !new_bundle_state.state.contains_key(address) {
+                        // Account exists in old but not in new, collect original_info
+                        // If original_info is None, it means the account was newly created, return None
+                        if old_account.original_info.is_some() {
+                            // Account was deleted, create a BundleAccount with original_info
+                            Some((*address, BundleAccount {
+                                info: old_account.original_info.clone(), // Account is deleted
+                                original_info: None,
+                                storage: StorageWithOriginalValues::default(),
+                                status: AccountStatus::default(),
+                            }))
+                        } else {
+                            // Account was newly created (original_info is None), skip it
+                            Some((*address, BundleAccount {
+                                info: old_account.info.clone(), // Account is deleted
+                                original_info: None,
+                                storage: StorageWithOriginalValues::default(),
+                                status: AccountStatus::Destroyed,
+                            }))
+                        }
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        },
+    );
 
     let mut diff_bundle_state = BundleState::default();
-    for (address, diff_account) in results {
+    for (address, diff_account) in diff_accounts {
         diff_bundle_state.state.insert(address, diff_account);
+    }
+    // Add deleted accounts (accounts that exist in old but not in new)
+    for (address, rewrite_account) in rewrite_accounts {
+        diff_bundle_state.state.insert(address, rewrite_account);
     }
     let hashed_post_state = HashedPostState::from_bundle_state::<KeccakKeyHasher>(&diff_bundle_state.state);
     return hashed_post_state;
