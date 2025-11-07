@@ -2371,6 +2371,8 @@ where
 
         let executed = execute(&mut self.payload_validator, input, ctx)?;
 
+        let gas_used = executed.sealed_block().gas_used();
+
         // if the parent is the canonical head, we can insert the block as the pending block
         if self.state.tree_state.canonical_block_hash() == executed.recovered_block().parent_hash()
         {
@@ -2394,6 +2396,10 @@ where
             .engine
             .block_insert_total_duration
             .record(block_insert_start.elapsed().as_secs_f64());
+        self.metrics
+            .engine
+            .block_insert_gas_used
+            .set(gas_used as f64 / block_insert_start.elapsed().as_secs_f64());
         debug!(target: "engine::tree", block=?block_num_hash, "Finished inserting block");
         Ok(InsertPayloadOk::Inserted(BlockStatus::Valid))
     }
@@ -2816,9 +2822,9 @@ where
             let td = self.provider.header_td_by_number(block_number)?;
             return Ok((header, td))
         }
-        
+
         // query header td from last block number
-        tracing::debug!(target: "engine::tree", number=?number, hash=?hash, "querying TD from fork headers");  
+        tracing::debug!(target: "engine::tree", number=?number, hash=?hash, "querying TD from fork headers");
         let mut ret_td = U256::ZERO;
         let ret_header = self.state.tree_state.blocks_by_hash.get(&hash).
             map(|b| b.block.recovered_block().clone_header()).
@@ -2837,7 +2843,7 @@ where
                             return Ok((ret_header, Some(ret_td)))
                         }
                         None => {
-                            tracing::warn!(target: "engine::tree", current_number=?current_number, current_hash=?current_hash, 
+                            tracing::warn!(target: "engine::tree", current_number=?current_number, current_hash=?current_hash,
                                 "header td not found for block number, just return none");
                             return Ok((ret_header, None))
                         }
@@ -2854,7 +2860,7 @@ where
             }
             current_number -= 1;
         }
-        
+
         if current_number < last_block_number {
             tracing::warn!(target: "engine::tree", current_number=?current_number, current_hash=?current_hash, last_block_number=?last_block_number,
                  "cannot find header td for block number, query beyond last block number, just return none");
