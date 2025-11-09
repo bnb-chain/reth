@@ -88,7 +88,7 @@ impl EngineApiMetrics {
         let mut executor = executor.with_state_hook(Some(Box::new(wrapper)));
 
         let mut bundle_state = BundleState::default();
-        let mut total_hashed_post_state = HashedPostState::default();
+        // let mut total_hashed_post_state = HashedPostState::default();
         let hash_post_state_tx_clone = hash_post_state_tx.clone();
         let f = || {
             executor.apply_pre_execution_changes()?;
@@ -108,7 +108,7 @@ impl EngineApiMetrics {
                         let new_transition_state = executor.evm_mut().db_mut().borrow_mut().transition_state.clone();
                         if let Some(new_transition_state) = new_transition_state {
                             let (new_bundle_state, hashed_post_state) = parallel_diff_hashed_post_state(&bundle_state, &new_transition_state);
-                            total_hashed_post_state.extend(hashed_post_state.clone());
+                            // total_hashed_post_state.extend(hashed_post_state.clone());
                             hash_post_state_tx.send(MultiProofMessage::HashedPostStateUpdate(hashed_post_state)).unwrap();
                             bundle_state = new_bundle_state;
                         }
@@ -130,13 +130,13 @@ impl EngineApiMetrics {
 
         if let Some(hash_post_state_tx) = hash_post_state_tx_clone {
             let hashed_post_state = parallel_diff_hashed_post_state_by_bundle(&bundle_state, &final_bundle_state);
-            total_hashed_post_state.extend(hashed_post_state.clone());
+            // total_hashed_post_state.extend(hashed_post_state.clone());
             hash_post_state_tx.send(MultiProofMessage::HashedPostStateUpdate(hashed_post_state)).unwrap();
             hash_post_state_tx.send(MultiProofMessage::FinishedStateUpdates).unwrap();
         }
 
-        let final_hashed_post_state = HashedPostState::from_bundle_state::<KeccakKeyHasher>(&final_bundle_state.state);
-        print_hashed_post_state_diff(&total_hashed_post_state, &final_hashed_post_state);
+        // let final_hashed_post_state = HashedPostState::from_bundle_state::<KeccakKeyHasher>(&final_bundle_state.state);
+        // print_hashed_post_state_diff(&total_hashed_post_state, &final_hashed_post_state);
 
         let output = BlockExecutionOutput { result, state: final_bundle_state};
 
