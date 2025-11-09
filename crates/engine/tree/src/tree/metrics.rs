@@ -92,6 +92,7 @@ impl EngineApiMetrics {
         let hash_post_state_tx_clone = hash_post_state_tx.clone();
         let f = || {
             executor.apply_pre_execution_changes()?;
+            let mut index = 0;
             for tx in transactions {
                 let tx = tx?;
                 let span =
@@ -101,13 +102,16 @@ impl EngineApiMetrics {
                 executor.execute_transaction(tx)?;
 
 
-                if let Some(ref hash_post_state_tx) = hash_post_state_tx {
-                    let new_transition_state = executor.evm_mut().db_mut().borrow_mut().transition_state.clone();
-                    if let Some(new_transition_state) = new_transition_state {
-                        let (new_bundle_state, hashed_post_state) = parallel_diff_hashed_post_state(&bundle_state, &new_transition_state);
-                        total_hashed_post_state.extend(hashed_post_state.clone());
-                        hash_post_state_tx.send(MultiProofMessage::HashedPostStateUpdate(hashed_post_state)).unwrap();
-                        bundle_state = new_bundle_state;
+                index = index + 1;
+                if index % 50 == 0 && index != 0{
+                    if let Some(ref hash_post_state_tx) = hash_post_state_tx {
+                        let new_transition_state = executor.evm_mut().db_mut().borrow_mut().transition_state.clone();
+                        if let Some(new_transition_state) = new_transition_state {
+                            let (new_bundle_state, hashed_post_state) = parallel_diff_hashed_post_state(&bundle_state, &new_transition_state);
+                            total_hashed_post_state.extend(hashed_post_state.clone());
+                            hash_post_state_tx.send(MultiProofMessage::HashedPostStateUpdate(hashed_post_state)).unwrap();
+                            bundle_state = new_bundle_state;
+                        }
                     }
                 }
             }
