@@ -168,7 +168,7 @@ where
         for ExecutedBlockWithTrieUpdates {
             block: ExecutedBlock { recovered_block, execution_output, hashed_state },
             trie:_,
-            difflayer,
+            difflayer:_,
         } in blocks
         {
             let block_number = recovered_block.number();
@@ -192,10 +192,11 @@ where
             // self.database().write_trie_updates(
             //     trie.as_ref().ok_or(ProviderError::MissingTrieUpdates(block_hash))?,
             // )?;
-            let res = triedb.flush(
-                block_number,
-                state_root,
-                &difflayer);
+            // let res = triedb.flush(
+            //     block_number,
+            //     state_root,
+            //     &difflayer);
+            let res = triedb.flush_by_difflayer_maanager(block_number, state_root, block_hash);
             if let Err(e) = res {
                 error!("Failed to flush difflayer: {:?}", e);
             }

@@ -44,13 +44,36 @@ use reth_revm::db::State;
 use reth_trie::{updates::TrieUpdates, HashedPostState, KeccakKeyHasher, TrieInput};
 use reth_trie_db::DatabaseHashedPostState;
 use reth_trie_parallel::root::{ParallelStateRoot, ParallelStateRootError};
-use std::{collections::HashMap, sync::Arc, time::Instant};
+use std::{
+    collections::HashMap,
+    sync::{Arc, atomic::{AtomicBool, Ordering}},
+    time::Instant,
+    thread::{self, JoinHandle},
+};
+use std::sync::mpsc::{self, Receiver, Sender};
 use tracing::{debug, debug_span, error, info, trace, warn};
 
-use rust_eth_triedb_state_trie::node::DiffLayers;
+use rust_eth_triedb_state_trie::node::{DiffLayer, DiffLayers};
 use rust_eth_triedb_pathdb::PathDB;
 use rust_eth_triedb::{TrieDB, get_global_triedb};
 use alloy_evm::{block::StateChangeSource};
+
+/// Message type for background thread processing
+#[derive(Debug, Clone)]
+pub struct BackgroundMessage {
+    /// Validate state root
+    pub validate_state_root: B256,
+    /// Parent state root
+    pub parent_state_root: B256,
+    /// Parent hash
+    pub parent_hash: B256,
+    /// Block hash
+    pub block_hash: B256,
+    /// Hashed post state
+    pub hashed_post_state: HashedPostState,
+    /// Parent difflayer
+    pub parent_difflayer: Option<DiffLayers>,
+}
 
 /// Context providing access to tree state during validation.
 ///
@@ -169,6 +192,16 @@ where
     validator: V,
     /// TrieDB for the engine.
     triedb: TrieDB<PathDB>,
+    /// Channel sender for background thread messages.
+    #[debug(skip)]
+    background_tx: Option<Sender<BackgroundMessage>>,
+    /// Join handle for the background thread.
+    #[debug(skip)]
+    background_handle: Option<JoinHandle<()>>,
+
+    /// Thread-safe boolean flag for background thread done
+    #[debug(skip)]
+    background_done: Arc<AtomicBool>,
 }
 
 impl<N, P, Evm, V> BasicEngineValidator<P, Evm, V>
@@ -203,6 +236,16 @@ where
             precompile_cache_map.clone(),
             triedb.get_mut_db_ref().clone(),
         );
+        // Create channel for background thread
+        let (background_tx, background_rx) = mpsc::channel();
+        let background_done = Arc::new(AtomicBool::new(true));
+
+        // Spawn background thread
+        let background_done_clone = Arc::clone(&background_done);
+        let background_handle = thread::spawn(move || {
+            Self::background_thread_loop(background_rx, background_done_clone);
+        });
+
         Self {
             provider,
             consensus,
@@ -215,6 +258,40 @@ where
             metrics: EngineApiMetrics::default(),
             validator,
             triedb,
+            background_tx: Some(background_tx),
+            background_handle: Some(background_handle),
+            background_done,
+        }
+    }
+
+    /// Background thread loop that processes messages
+    fn background_thread_loop(rx: Receiver<BackgroundMessage>, background_done: Arc<AtomicBool>) {
+        loop {
+            match rx.try_recv() {
+                Ok(msg) => {
+                    // Process message - implementation logic at line 729
+                    Self::process_background_message(msg, &background_done);
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    // No message available, yield to avoid busy waiting
+                    thread::yield_now();
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    // Channel disconnected (background_tx was dropped), exit gracefully
+                    warn!(target: "engine::tree::validator", "Background thread channel disconnected, exiting");
+                    break;
+                }
+            }
+        }
+        debug!(target: "engine::tree::validator", "Background thread exiting");
+    }
+
+    /// Send a message to the background thread
+    pub fn send_background_message(&self, msg: BackgroundMessage) {
+        if let Some(ref tx) = self.background_tx {
+            if let Err(e) = tx.send(msg) {
+                warn!(target: "engine::tree::validator", ?e, "Failed to send message to background thread");
+            }
         }
     }
 
@@ -431,19 +508,25 @@ where
         //     self.payload_processor.spawn_cache_exclusive(env.clone(), txs, provider_builder)
         // };
 
-        let difflayer_start = Instant::now();
-        let parent_difflayer = self.compute_difflayer(
-            persisting_kind,
-            parent_hash,
-            ctx.state());
-        self.metrics.block_validation.record_payload_difflayer(difflayer_start.elapsed().as_secs_f64());
+        // let difflayer_start = Instant::now();
+        // let parent_difflayer = self.compute_difflayer(
+        //     persisting_kind,
+        //     parent_hash,
+        //     ctx.state());
+        // self.metrics.block_validation.record_payload_difflayer(difflayer_start.elapsed().as_secs_f64());
 
-        let mut handle = self.payload_processor.spawn_cache_exclusive_with_triedb(
+        // let mut handle = self.payload_processor.spawn_cache_exclusive_with_triedb(
+        //     env.clone(),
+        //     txs,
+        //     provider_builder,
+        //     parent_block.state_root(),
+        //     parent_difflayer.clone(),
+        // );
+
+        let mut handle = self.payload_processor.spawn_cache_exclusive(
             env.clone(),
             txs,
             provider_builder,
-            parent_block.state_root(),
-            parent_difflayer.clone(),
         );
 
         // Use cached state provider before executing, used in execution after prewarming threads
@@ -509,60 +592,60 @@ where
         }
 
         handle.stop_prewarming_execution();
-        let root_time = Instant::now();
-        let (state_root, difflayer) = if parent_block.state_root() == block.header().state_root() {
-            (block.header().state_root(), None)
-        } else {
-            // let (state_root, difflayer) = if let Ok(result) = self.get_triedb().commit_hashed_post_state(
-            //     parent_block.state_root(),
-            //     parent_difflayer.as_ref(),
-            //     &hashed_state_clone) {
-            //     result
-            // } else {
-            //     panic!("TrieDB update failed");
-            // };
-            // (state_root, difflayer)
-            let (state_root, difflayer) = handle.triedb_state_root().unwrap();
-            if state_root != block.header().state_root() {
-                info!(target: "engine::tree", "state root mismatch, switch to sync commit");
-                let triedb = self.get_triedb();
-                triedb.clean();
-                let (state_root, difflayer) = if let Ok(result) = self.get_triedb().commit_hashed_post_state(
-                    parent_block.state_root(),
-                    parent_difflayer.as_ref(),
-                    &hashed_state_clone) {
-                    result
-                } else {
-                    panic!("TrieDB update failed");
-                };
-                self.metrics.block_validation.payload_sync_validate_total.increment(1);
-                (state_root, difflayer)
-            } else {
-                self.metrics.block_validation.payload_async_validate_duration.increment(1);
-                (state_root, difflayer)
-            }
-        };
-        self.metrics.block_validation.record_state_root_duration(root_time.elapsed().as_secs_f64());
+        // let root_time = Instant::now();
+        // let (state_root, difflayer) = if parent_block.state_root() == block.header().state_root() {
+        //     (block.header().state_root(), None)
+        // } else {
+        //     // let (state_root, difflayer) = if let Ok(result) = self.get_triedb().commit_hashed_post_state(
+        //     //     parent_block.state_root(),
+        //     //     parent_difflayer.as_ref(),
+        //     //     &hashed_state_clone) {
+        //     //     result
+        //     // } else {
+        //     //     panic!("TrieDB update failed");
+        //     // };
+        //     // (state_root, difflayer)
+        //     let (state_root, difflayer) = handle.triedb_state_root().unwrap();
+        //     if state_root != block.header().state_root() {
+        //         info!(target: "engine::tree", "state root mismatch, switch to sync commit");
+        //         let triedb = self.get_triedb();
+        //         triedb.clean();
+        //         let (state_root, difflayer) = if let Ok(result) = self.get_triedb().commit_hashed_post_state(
+        //             parent_block.state_root(),
+        //             parent_difflayer.as_ref(),
+        //             &hashed_state_clone) {
+        //             result
+        //         } else {
+        //             panic!("TrieDB update failed");
+        //         };
+        //         self.metrics.block_validation.payload_sync_validate_total.increment(1);
+        //         (state_root, difflayer)
+        //     } else {
+        //         self.metrics.block_validation.payload_async_validate_duration.increment(1);
+        //         (state_root, difflayer)
+        //     }
+        // };
+        // self.metrics.block_validation.record_state_root_duration(root_time.elapsed().as_secs_f64());
 
-        if state_root != block.header().state_root() {
-            // warn!("state root mismatch, block: {:?}, hashed_state: {:?} ", block.number(), hashed_state_clone);
-            self.on_invalid_block(
-                &parent_block,
-                &block,
-                &output,
-                Some((&TrieUpdates::default(), state_root)),
-                ctx.state_mut(),
-            );
-            let block_state_root = block.header().state_root();
-            return Err(InsertBlockError::new(
-                block.into_sealed_block(),
-                ConsensusError::BodyStateRootDiff(
-                    GotExpected { got: state_root, expected: block_state_root }.into(),
-                )
-                .into(),
-            )
-            .into())
-        }
+        // if state_root != block.header().state_root() {
+        //     // warn!("state root mismatch, block: {:?}, hashed_state: {:?} ", block.number(), hashed_state_clone);
+        //     self.on_invalid_block(
+        //         &parent_block,
+        //         &block,
+        //         &output,
+        //         Some((&TrieUpdates::default(), state_root)),
+        //         ctx.state_mut(),
+        //     );
+        //     let block_state_root = block.header().state_root();
+        //     return Err(InsertBlockError::new(
+        //         block.into_sealed_block(),
+        //         ConsensusError::BodyStateRootDiff(
+        //             GotExpected { got: state_root, expected: block_state_root }.into(),
+        //         )
+        //         .into(),
+        //     )
+        //     .into())
+        // }
 
         // // Skip state root computation entirely in fastnode mode
         // let (state_root, trie_output, _root_elapsed) = if self.config.skip_state_root_validation() {
@@ -708,16 +791,75 @@ where
         //     ExecutedTrieUpdates::Present(Arc::new(trie_output))
         // };
 
-        Ok(ExecutedBlockWithTrieUpdates {
+
+        // Wait for background_done to become true
+        while !self.background_done.load(Ordering::Relaxed) {
+            thread::yield_now();
+        }
+        
+        let parent_difflayer = self.get_triedb().get_difflayers(parent_block.hash());
+
+        let validate_state_root = block.header().state_root();
+        let parent_hash = parent_block.hash();
+        let block_hash = block.hash();
+        let executed_block_with_trie_updates = ExecutedBlockWithTrieUpdates {
             block: ExecutedBlock {
                 recovered_block: Arc::new(block),
                 execution_output: Arc::new(ExecutionOutcome::from((output, block_num_hash.number))),
                 hashed_state: Arc::new(hashed_state),
             },
             trie: ExecutedTrieUpdates::Present(Arc::new(TrieUpdates::default())),
-            difflayer: difflayer,
-        })
+            // difflayer: difflayer,
+            difflayer: None,
+        };
+
+        self.background_done.store(false, Ordering::Relaxed);
+        self.send_background_message(BackgroundMessage {
+            validate_state_root: validate_state_root,
+            parent_state_root: parent_block.state_root(),
+            parent_hash: parent_hash,
+            block_hash: block_hash,
+            parent_difflayer: parent_difflayer,
+            hashed_post_state: hashed_state_clone,
+        });
+        Ok(executed_block_with_trie_updates)
     }
+
+    /// Process background message - implementation logic at line 729
+    fn process_background_message(msg: BackgroundMessage, background_done: &Arc<AtomicBool>) {
+        let validate_state_root = msg.validate_state_root;
+        let parent_state_root = msg.parent_state_root;
+        let parent_hash = msg.parent_hash;
+        let block_hash = msg.block_hash;
+        let parent_difflayer = msg.parent_difflayer;
+        let hashed_post_state = msg.hashed_post_state;
+
+        let mut triedb = get_global_triedb();
+
+        let (state_root, difflayer) = if let Ok(result) = triedb.commit_hashed_post_state(
+            parent_state_root,
+            parent_difflayer.as_ref(),
+            &hashed_post_state) {
+            result
+        } else {
+            panic!("TrieDB update failed");
+        };
+
+        if validate_state_root != state_root {
+            panic!("Validate state root mismatch");
+        }
+
+        if difflayer.is_some() {
+            triedb.add_difflayer(parent_hash, block_hash, difflayer.unwrap());
+        } else {
+            triedb.add_difflayer(parent_hash, block_hash, Arc::new(DiffLayer::default()));
+        }
+        
+        // Update background_done to true after processing is complete
+        background_done.store(true, Ordering::Relaxed);
+    }
+
+
 
     // fn parser_async_mismatch_state_root(
     //     &self,
@@ -902,13 +1044,13 @@ where
         }
 
         let execution_start = Instant::now();
-        let hash_post_state_tx = handle.hash_post_state_tx.clone(); // Clone before borrowing handle
+        // let hash_post_state_tx = handle.hash_post_state_tx.clone(); // Clone before borrowing handle
         let state_hook = Box::new(handle.state_hook());
         let output = self.metrics.execute_metered(
             executor,
             handle.iter_transactions().map(|res| res.map_err(BlockExecutionError::other)),
             state_hook,
-            hash_post_state_tx, // hash_post_state_tx
+            // hash_post_state_tx, // hash_post_state_tx
         )?;
         let execution_finish = Instant::now();
         let execution_time = execution_finish.duration_since(execution_start);
@@ -1160,6 +1302,28 @@ where
         );
 
         Ok(input)
+    }
+}
+
+impl<N, P, Evm, V> Drop for BasicEngineValidator<P, Evm, V>
+where
+    N: NodePrimitives,
+    Evm: ConfigureEvm<Primitives = N>,
+{
+    fn drop(&mut self) {
+        // Drop the sender to close the channel, which will cause the background thread
+        // to detect Disconnected and exit gracefully
+        drop(self.background_tx.take());
+
+        // Wait for background thread to finish
+        if let Some(handle) = self.background_handle.take() {
+            debug!(target: "engine::tree::validator", "Waiting for background thread to finish");
+            if let Err(e) = handle.join() {
+                warn!(target: "engine::tree::validator", ?e, "Background thread panicked during shutdown");
+            } else {
+                debug!(target: "engine::tree::validator", "Background thread finished successfully");
+            }
+        }
     }
 }
 

@@ -177,17 +177,17 @@ where
         while let Ok(event) = self.actions_rx.recv() {
             match event {
                 PrewarmTaskEvent::TerminateTransactionExecution => {
-                    self.triedb_prewarm_tx.as_ref().map(|tx| tx.send(PrewarmTaskEvent::TerminateTransactionExecution));
+                    // self.triedb_prewarm_tx.as_ref().map(|tx| tx.send(PrewarmTaskEvent::TerminateTransactionExecution));
                     // stop tx processing
                     self.ctx.terminate_execution.store(true, Ordering::Relaxed);
                 }
                 PrewarmTaskEvent::Outcome { proof_targets } => {
-                    self.triedb_prewarm_tx.as_ref().map(|tx| tx.send(PrewarmTaskEvent::Outcome { proof_targets }));
+                    // self.triedb_prewarm_tx.as_ref().map(|tx| tx.send(PrewarmTaskEvent::Outcome { proof_targets }));
                     // completed executing a set of transactions
                     // self.send_multi_proof_targets(proof_targets);
                 }
                 PrewarmTaskEvent::Terminate { block_output } => {
-                    self.triedb_prewarm_tx.as_ref().map(|tx| tx.send(PrewarmTaskEvent::Terminate { block_output: block_output.clone() }));
+                    // self.triedb_prewarm_tx.as_ref().map(|tx| tx.send(PrewarmTaskEvent::Terminate { block_output: block_output.clone() }));
                     trace!(target: "engine::tree::prewarm", "Received termination signal");
                     final_block_output = Some(block_output);
 
@@ -197,7 +197,7 @@ where
                     }
                 }
                 PrewarmTaskEvent::FinishedTxExecution { executed_transactions } => {
-                    self.triedb_prewarm_tx.as_ref().map(|tx| tx.send(PrewarmTaskEvent::FinishedTxExecution { executed_transactions }));
+                    // self.triedb_prewarm_tx.as_ref().map(|tx| tx.send(PrewarmTaskEvent::FinishedTxExecution { executed_transactions }));
 
                     trace!(target: "engine::tree::prewarm", "Finished prewarm execution signal");
                     self.ctx.metrics.transactions.set(executed_transactions as f64);
