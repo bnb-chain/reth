@@ -173,6 +173,13 @@ where
         {
             let block_number = recovered_block.number();
             let state_root = recovered_block.state_root();
+            let hashed_state_clone = hashed_state.clone();
+            let (latest_block_number, latest_state_root) = triedb.latest_persist_state()
+                .map_err(|e| ProviderError::other(e))?;
+
+            if latest_block_number != block_number - 1 {
+                panic!("latest_block_number != block_number - 1, latest_block_number={}, block_number={}", latest_block_number, block_number);
+            }
 
             let block_hash = recovered_block.hash();
             self.database()
@@ -196,10 +203,18 @@ where
             //     block_number,
             //     state_root,
             //     &difflayer);
-            let res = triedb.flush_by_difflayer_maanager(block_number, state_root, block_hash);
-            if let Err(e) = res {
-                error!("Failed to flush difflayer: {:?}", e);
+            // let res = triedb.flush_by_difflayer_maanager(block_number, state_root, block_hash);
+            // if let Err(e) = res {
+            //     error!("Failed to flush difflayer: {:?}", e);
+            // }
+
+            let (new_root, difflayer) = triedb.commit_hashed_post_state(latest_state_root, None, &hashed_state_clone)
+                .map_err(|e| ProviderError::other(e))?;
+            if new_root != state_root {
+                panic!("new_root != state_root, new_root={:?}, state_root={:?}", new_root, state_root);
             }
+            triedb.flush(block_number, new_root, &difflayer)
+                .map_err(|e| ProviderError::other(e))?;
         }
 
         // update history indices

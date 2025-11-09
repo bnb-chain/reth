@@ -192,16 +192,16 @@ where
     validator: V,
     /// TrieDB for the engine.
     triedb: TrieDB<PathDB>,
-    /// Channel sender for background thread messages.
-    #[debug(skip)]
-    background_tx: Option<Sender<BackgroundMessage>>,
-    /// Join handle for the background thread.
-    #[debug(skip)]
-    background_handle: Option<JoinHandle<()>>,
+    // /// Channel sender for background thread messages.
+    // #[debug(skip)]
+    // background_tx: Option<Sender<BackgroundMessage>>,
+    // /// Join handle for the background thread.
+    // #[debug(skip)]
+    // background_handle: Option<JoinHandle<()>>,
 
-    /// Thread-safe boolean flag for background thread done
-    #[debug(skip)]
-    background_done: Arc<AtomicBool>,
+    // /// Thread-safe boolean flag for background thread done
+    // #[debug(skip)]
+    // background_done: Arc<AtomicBool>,
 }
 
 impl<N, P, Evm, V> BasicEngineValidator<P, Evm, V>
@@ -237,14 +237,14 @@ where
             triedb.get_mut_db_ref().clone(),
         );
         // Create channel for background thread
-        let (background_tx, background_rx) = mpsc::channel();
-        let background_done = Arc::new(AtomicBool::new(true));
+        // let (background_tx, background_rx) = mpsc::channel();
+        // let background_done = Arc::new(AtomicBool::new(true));
 
-        // Spawn background thread
-        let background_done_clone = Arc::clone(&background_done);
-        let background_handle = thread::spawn(move || {
-            Self::background_thread_loop(background_rx, background_done_clone);
-        });
+        // // Spawn background thread
+        // let background_done_clone = Arc::clone(&background_done);
+        // let background_handle = thread::spawn(move || {
+        //     Self::background_thread_loop(background_rx, background_done_clone);
+        // });
 
         Self {
             provider,
@@ -258,42 +258,42 @@ where
             metrics: EngineApiMetrics::default(),
             validator,
             triedb,
-            background_tx: Some(background_tx),
-            background_handle: Some(background_handle),
-            background_done,
+            // background_tx: Some(background_tx),
+            // background_handle: Some(background_handle),
+            // background_done,
         }
     }
 
     /// Background thread loop that processes messages
-    fn background_thread_loop(rx: Receiver<BackgroundMessage>, background_done: Arc<AtomicBool>) {
-        loop {
-            match rx.try_recv() {
-                Ok(msg) => {
-                    // Process message - implementation logic at line 729
-                    Self::process_background_message(msg, &background_done);
-                }
-                Err(mpsc::TryRecvError::Empty) => {
-                    // No message available, yield to avoid busy waiting
-                    thread::yield_now();
-                }
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    // Channel disconnected (background_tx was dropped), exit gracefully
-                    warn!(target: "engine::tree::validator", "Background thread channel disconnected, exiting");
-                    break;
-                }
-            }
-        }
-        debug!(target: "engine::tree::validator", "Background thread exiting");
-    }
+    // fn background_thread_loop(rx: Receiver<BackgroundMessage>, background_done: Arc<AtomicBool>) {
+    //     loop {
+    //         match rx.try_recv() {
+    //             Ok(msg) => {
+    //                 // Process message - implementation logic at line 729
+    //                 Self::process_background_message(msg, &background_done);
+    //             }
+    //             Err(mpsc::TryRecvError::Empty) => {
+    //                 // No message available, yield to avoid busy waiting
+    //                 thread::yield_now();
+    //             }
+    //             Err(mpsc::TryRecvError::Disconnected) => {
+    //                 // Channel disconnected (background_tx was dropped), exit gracefully
+    //                 warn!(target: "engine::tree::validator", "Background thread channel disconnected, exiting");
+    //                 break;
+    //             }
+    //         }
+    //     }
+    //     debug!(target: "engine::tree::validator", "Background thread exiting");
+    // }
 
-    /// Send a message to the background thread
-    pub fn send_background_message(&self, msg: BackgroundMessage) {
-        if let Some(ref tx) = self.background_tx {
-            if let Err(e) = tx.send(msg) {
-                warn!(target: "engine::tree::validator", ?e, "Failed to send message to background thread");
-            }
-        }
-    }
+    // /// Send a message to the background thread
+    // pub fn send_background_message(&self, msg: BackgroundMessage) {
+    //     if let Some(ref tx) = self.background_tx {
+    //         if let Err(e) = tx.send(msg) {
+    //             warn!(target: "engine::tree::validator", ?e, "Failed to send message to background thread");
+    //         }
+    //     }
+    // }
 
     // Returns a mutable reference to the TrieDB.
     pub fn get_triedb(&mut self) -> &mut TrieDB<PathDB> {
@@ -793,16 +793,38 @@ where
 
 
         // Wait for background_done to become true
-        while !self.background_done.load(Ordering::Relaxed) {
-            thread::yield_now();
-        }
+        // while !self.background_done.load(Ordering::Relaxed) {
+        //     thread::yield_now();
+        // }
         
-        let parent_difflayer = self.get_triedb().get_difflayers(parent_block.hash());
+        // let parent_difflayer = self.get_triedb().get_difflayers(parent_block.hash());
 
-        let validate_state_root = block.header().state_root();
-        let parent_hash = parent_block.hash();
-        let block_hash = block.hash();
-        let executed_block_with_trie_updates = ExecutedBlockWithTrieUpdates {
+        // let validate_state_root = block.header().state_root();
+        // let parent_hash = parent_block.hash();
+        // let block_hash = block.hash();
+        // let executed_block_with_trie_updates = ExecutedBlockWithTrieUpdates {
+        //     block: ExecutedBlock {
+        //         recovered_block: Arc::new(block),
+        //         execution_output: Arc::new(ExecutionOutcome::from((output, block_num_hash.number))),
+        //         hashed_state: Arc::new(hashed_state),
+        //     },
+        //     trie: ExecutedTrieUpdates::Present(Arc::new(TrieUpdates::default())),
+        //     // difflayer: difflayer,
+        //     difflayer: None,
+        // };
+
+        // self.background_done.store(false, Ordering::Relaxed);
+        // self.send_background_message(BackgroundMessage {
+        //     validate_state_root: validate_state_root,
+        //     parent_state_root: parent_block.state_root(),
+        //     parent_hash: parent_hash,
+        //     block_hash: block_hash,
+        //     parent_difflayer: parent_difflayer,
+        //     hashed_post_state: hashed_state_clone,
+        // });
+        // Ok(executed_block_with_trie_updates)
+
+        Ok(ExecutedBlockWithTrieUpdates {
             block: ExecutedBlock {
                 recovered_block: Arc::new(block),
                 execution_output: Arc::new(ExecutionOutcome::from((output, block_num_hash.number))),
@@ -811,53 +833,42 @@ where
             trie: ExecutedTrieUpdates::Present(Arc::new(TrieUpdates::default())),
             // difflayer: difflayer,
             difflayer: None,
-        };
-
-        self.background_done.store(false, Ordering::Relaxed);
-        self.send_background_message(BackgroundMessage {
-            validate_state_root: validate_state_root,
-            parent_state_root: parent_block.state_root(),
-            parent_hash: parent_hash,
-            block_hash: block_hash,
-            parent_difflayer: parent_difflayer,
-            hashed_post_state: hashed_state_clone,
-        });
-        Ok(executed_block_with_trie_updates)
+        })
     }
 
     /// Process background message - implementation logic at line 729
-    fn process_background_message(msg: BackgroundMessage, background_done: &Arc<AtomicBool>) {
-        let validate_state_root = msg.validate_state_root;
-        let parent_state_root = msg.parent_state_root;
-        let parent_hash = msg.parent_hash;
-        let block_hash = msg.block_hash;
-        let parent_difflayer = msg.parent_difflayer;
-        let hashed_post_state = msg.hashed_post_state;
+    // fn process_background_message(msg: BackgroundMessage, background_done: &Arc<AtomicBool>) {
+    //     let validate_state_root = msg.validate_state_root;
+    //     let parent_state_root = msg.parent_state_root;
+    //     let parent_hash = msg.parent_hash;
+    //     let block_hash = msg.block_hash;
+    //     let parent_difflayer = msg.parent_difflayer;
+    //     let hashed_post_state = msg.hashed_post_state;
 
-        let mut triedb = get_global_triedb();
+    //     let mut triedb = get_global_triedb();
 
-        let (state_root, difflayer) = if let Ok(result) = triedb.commit_hashed_post_state(
-            parent_state_root,
-            parent_difflayer.as_ref(),
-            &hashed_post_state) {
-            result
-        } else {
-            panic!("TrieDB update failed");
-        };
+    //     let (state_root, difflayer) = if let Ok(result) = triedb.commit_hashed_post_state(
+    //         parent_state_root,
+    //         parent_difflayer.as_ref(),
+    //         &hashed_post_state) {
+    //         result
+    //     } else {
+    //         panic!("TrieDB update failed");
+    //     };
 
-        if validate_state_root != state_root {
-            panic!("Validate state root mismatch");
-        }
+    //     if validate_state_root != state_root {
+    //         panic!("Validate state root mismatch");
+    //     }
 
-        if difflayer.is_some() {
-            triedb.add_difflayer(parent_hash, block_hash, difflayer.unwrap());
-        } else {
-            triedb.add_difflayer(parent_hash, block_hash, Arc::new(DiffLayer::default()));
-        }
+    //     if difflayer.is_some() {
+    //         triedb.add_difflayer(parent_hash, block_hash, difflayer.unwrap());
+    //     } else {
+    //         triedb.add_difflayer(parent_hash, block_hash, Arc::new(DiffLayer::default()));
+    //     }
         
-        // Update background_done to true after processing is complete
-        background_done.store(true, Ordering::Relaxed);
-    }
+    //     // Update background_done to true after processing is complete
+    //     background_done.store(true, Ordering::Relaxed);
+    // }
 
 
 
@@ -1305,27 +1316,27 @@ where
     }
 }
 
-impl<N, P, Evm, V> Drop for BasicEngineValidator<P, Evm, V>
-where
-    N: NodePrimitives,
-    Evm: ConfigureEvm<Primitives = N>,
-{
-    fn drop(&mut self) {
-        // Drop the sender to close the channel, which will cause the background thread
-        // to detect Disconnected and exit gracefully
-        drop(self.background_tx.take());
+// impl<N, P, Evm, V> Drop for BasicEngineValidator<P, Evm, V>
+// where
+//     N: NodePrimitives,
+//     Evm: ConfigureEvm<Primitives = N>,
+// {
+//     fn drop(&mut self) {
+//         // Drop the sender to close the channel, which will cause the background thread
+//         // to detect Disconnected and exit gracefully
+//         // drop(self.background_tx.take());
 
-        // Wait for background thread to finish
-        if let Some(handle) = self.background_handle.take() {
-            debug!(target: "engine::tree::validator", "Waiting for background thread to finish");
-            if let Err(e) = handle.join() {
-                warn!(target: "engine::tree::validator", ?e, "Background thread panicked during shutdown");
-            } else {
-                debug!(target: "engine::tree::validator", "Background thread finished successfully");
-            }
-        }
-    }
-}
+//         // Wait for background thread to finish
+//         if let Some(handle) = self.background_handle.take() {
+//             debug!(target: "engine::tree::validator", "Waiting for background thread to finish");
+//             if let Err(e) = handle.join() {
+//                 warn!(target: "engine::tree::validator", ?e, "Background thread panicked during shutdown");
+//             } else {
+//                 debug!(target: "engine::tree::validator", "Background thread finished successfully");
+//             }
+//         }
+//     }
+// }
 
 /// Output of block or payload validation.
 pub type ValidationOutcome<N, E = InsertPayloadError<BlockTy<N>>> =
