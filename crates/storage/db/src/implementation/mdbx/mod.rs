@@ -144,16 +144,6 @@ impl DatabaseArguments {
         self
     }
 
-    /// Sets the page size for the database.
-    ///
-    /// Note: Page size can only be set when creating a new database and cannot be changed later.
-    pub const fn with_page_size(mut self, page_size: Option<usize>) -> Self {
-        if let Some(page_size) = page_size {
-            self.geometry.page_size = Some(PageSize::Set(page_size));
-        }
-        self
-    }
-
     /// Set the log level.
     pub const fn with_log_level(mut self, log_level: Option<LogLevel>) -> Self {
         self.log_level = log_level;
