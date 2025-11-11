@@ -41,6 +41,9 @@ use tracing::{debug, error, info, trace, warn};
 /// Maximum amount of time non-executable transaction are queued.
 pub const MAX_QUEUED_TRANSACTION_LIFETIME: Duration = Duration::from_secs(3 * 60 * 60);
 
+// The storage time of Sidecar is 19.2 days 19.2*86400/0.75 = 2211840
+const FINALIZED_BLOCK_OFFSET: u64 = 2211840;
+
 /// Additional settings for maintaining the transaction pool
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MaintainPoolConfig {
@@ -231,18 +234,22 @@ pub async fn maintain_transaction_pool<N, Client, P, St, Tasks>(
         if let Some(finalized) =
             last_finalized_block.update(client.finalized_block_number().ok().flatten())
         {
-            if let BlobStoreUpdates::Finalized(blobs) =
-                blob_store_tracker.on_finalized_block(finalized)
-            {
-                metrics.inc_deleted_tracked_blobs(blobs.len());
-                // remove all finalized blobs from the blob store
-                pool.delete_blobs(blobs);
-                // and also do periodic cleanup
-                let pool = pool.clone();
-                task_spawner.spawn_blocking(Box::pin(async move {
-                    debug!(target: "txpool", finalized_block = %finalized, "cleaning up blob store");
-                    pool.cleanup_blobs();
-                }));
+            if finalized > FINALIZED_BLOCK_OFFSET {
+                debug!(target: "txpool", finalized_block = %finalized, "finalized block");
+                if let BlobStoreUpdates::Finalized(blobs) =
+                    blob_store_tracker.on_finalized_block(finalized-FINALIZED_BLOCK_OFFSET)
+                {
+                    let num_blobs = blobs.len();
+                    metrics.inc_deleted_tracked_blobs(num_blobs);
+                    // remove all finalized blobs from the blob store
+                    pool.delete_blobs(blobs);
+                    // and also do periodic cleanup
+                    let pool = pool.clone();
+                    task_spawner.spawn_blocking(Box::pin(async move {
+                        debug!(target: "txpool", finalized_block = %finalized, num_blobs = %num_blobs, "cleaning up blob store");
+                        pool.cleanup_blobs();
+                    }));
+                }
             }
         }
 

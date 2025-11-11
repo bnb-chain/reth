@@ -748,6 +748,14 @@ where
         self.pool.blob_store().get(tx_hash)
     }
 
+    fn insert_blob(
+        &self,
+        tx_hash: TxHash,
+        blob: BlobTransactionSidecarVariant,
+    ) ->  Result<(), BlobStoreError> {
+        self.pool.blob_store().insert(tx_hash, blob)
+    }
+
     fn get_all_blobs(
         &self,
         tx_hashes: Vec<TxHash>,
