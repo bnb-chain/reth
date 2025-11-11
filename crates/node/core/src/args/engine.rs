@@ -8,6 +8,7 @@ use crate::node_config::{
     DEFAULT_CROSS_BLOCK_CACHE_SIZE_MB, DEFAULT_MEMORY_BLOCK_BUFFER_TARGET,
     DEFAULT_PERSISTENCE_THRESHOLD, DEFAULT_RESERVED_CPU_CORES,
 };
+use reth_engine_primitives::DEFAULT_MIN_BLOCKS_FOR_PIPELINE_RUN;
 
 /// Global static engine defaults
 static ENGINE_DEFAULTS: OnceLock<DefaultEngineValues> = OnceLock::new();
@@ -322,6 +323,12 @@ pub struct EngineArgs {
     #[arg(long = "engine.skip-state-root-validation", default_value = "false")]
     pub skip_state_root_validation: bool,
 
+    /// Configure the minimum number of blocks required to trigger a pipeline run for backfilling.
+    /// When the local head is behind the forkchoice head by more than this threshold,
+    /// the pipeline will be used to backfill blocks instead of downloading them individually.
+    #[arg(long = "engine.min-blocks-for-pipeline-run", default_value_t = DEFAULT_MIN_BLOCKS_FOR_PIPELINE_RUN)]
+    pub min_blocks_for_pipeline_run: u64,
+
     /// Enable V2 storage proofs for state root calculations
     #[arg(long = "engine.enable-proof-v2", default_value_t = DefaultEngineValues::get_global().enable_proof_v2)]
     pub enable_proof_v2: bool,
@@ -376,6 +383,7 @@ impl Default for EngineArgs {
             storage_worker_count,
             account_worker_count,
             skip_state_root_validation: false,
+            min_blocks_for_pipeline_run: DEFAULT_MIN_BLOCKS_FOR_PIPELINE_RUN,
             enable_proof_v2,
         }
     }
@@ -403,7 +411,8 @@ impl EngineArgs {
                 self.always_process_payload_attributes_on_canonical_head,
             )
             .with_unwind_canonical_header(self.allow_unwind_canonical_header)
-            .with_skip_state_root_validation(self.skip_state_root_validation);
+            .with_skip_state_root_validation(self.skip_state_root_validation)
+            .with_min_blocks_for_pipeline_run(self.min_blocks_for_pipeline_run);
 
         if let Some(count) = self.storage_worker_count {
             config = config.with_storage_worker_count(count);
@@ -465,6 +474,7 @@ mod tests {
             storage_worker_count: Some(16),
             account_worker_count: Some(8),
             skip_state_root_validation: false,
+            min_blocks_for_pipeline_run: DEFAULT_MIN_BLOCKS_FOR_PIPELINE_RUN,
             enable_proof_v2: false,
         };
 

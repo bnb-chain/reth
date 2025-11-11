@@ -47,6 +47,9 @@ const DEFAULT_MAX_INVALID_HEADER_CACHE_LENGTH: u32 = 256;
 const DEFAULT_MAX_EXECUTE_BLOCK_BATCH_SIZE: usize = 4;
 const DEFAULT_CROSS_BLOCK_CACHE_SIZE: u64 = 4 * 1024 * 1024 * 1024;
 
+/// Default minimum blocks for pipeline run (32 blocks = `EPOCH_SLOTS`)
+pub const DEFAULT_MIN_BLOCKS_FOR_PIPELINE_RUN: u64 = 32;
+
 /// Determines if the host has enough parallelism to run the payload processor.
 ///
 /// It requires at least 5 parallel threads:
@@ -140,6 +143,11 @@ pub struct TreeConfig {
     /// Skip state root validation for fastnode mode.
     /// This disables validation of state root hashes during live sync.
     skip_state_root_validation: bool,
+    /// The minimum number of blocks required to trigger a pipeline run for backfilling.
+    /// 
+    /// When the local head is behind the forkchoice head by more than this threshold,
+    /// the pipeline will be used to backfill blocks instead of downloading them individually.
+    min_blocks_for_pipeline_run: u64,
 }
 
 impl Default for TreeConfig {
@@ -170,6 +178,7 @@ impl Default for TreeConfig {
             account_worker_count: default_account_worker_count(),
             enable_proof_v2: false,
             skip_state_root_validation: false,
+            min_blocks_for_pipeline_run: DEFAULT_MIN_BLOCKS_FOR_PIPELINE_RUN,
         }
     }
 }
@@ -203,6 +212,7 @@ impl TreeConfig {
         account_worker_count: usize,
         enable_proof_v2: bool,
         skip_state_root_validation: bool,
+        min_blocks_for_pipeline_run: u64,
     ) -> Self {
         Self {
             persistence_threshold,
@@ -230,6 +240,7 @@ impl TreeConfig {
             account_worker_count,
             enable_proof_v2,
             skip_state_root_validation,
+            min_blocks_for_pipeline_run,
         }
     }
 
@@ -486,6 +497,20 @@ impl TreeConfig {
     /// Returns whether state root validation should be skipped.
     pub const fn skip_state_root_validation(&self) -> bool {
         self.skip_state_root_validation
+    }
+
+    /// Returns the minimum number of blocks required to trigger a pipeline run.
+    pub const fn min_blocks_for_pipeline_run(&self) -> u64 {
+        self.min_blocks_for_pipeline_run
+    }
+
+    /// Setter for minimum number of blocks required to trigger a pipeline run.
+    pub const fn with_min_blocks_for_pipeline_run(
+        mut self,
+        min_blocks_for_pipeline_run: u64,
+    ) -> Self {
+        self.min_blocks_for_pipeline_run = min_blocks_for_pipeline_run;
+        self
     }
 
     /// Whether or not to use state root task

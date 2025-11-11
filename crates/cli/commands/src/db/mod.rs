@@ -15,6 +15,7 @@ mod clear;
 mod diff;
 mod get;
 mod list;
+mod migrate;
 mod repair_trie;
 mod settings;
 mod static_file_header;
@@ -53,6 +54,8 @@ pub enum Subcommands {
     },
     /// Deletes all table entries
     Clear(clear::Command),
+    /// Migrate database to another location
+    Migrate(migrate::Command),
     /// Verifies trie consistency and outputs any inconsistencies
     RepairTrie(repair_trie::Command),
     /// Reads and displays the static file segment header
@@ -156,6 +159,13 @@ impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> Command<C>
             Subcommands::Clear(command) => {
                 db_exec!(self.env, tool, N, AccessRights::RW, {
                     command.execute(&tool)?;
+                });
+            }
+            Subcommands::Migrate(command) => {
+                // Get database arguments from system configuration
+                let db_args = self.env.db.database_args();
+                db_ro_exec!(self.env, tool, N, {
+                    command.execute(tool.provider_factory.db_ref(), &db_args)?;
                 });
             }
             Subcommands::RepairTrie(command) => {
