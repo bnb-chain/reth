@@ -7,7 +7,6 @@ use crate::node_config::{
     DEFAULT_CROSS_BLOCK_CACHE_SIZE_MB, DEFAULT_MAX_PROOF_TASK_CONCURRENCY,
     DEFAULT_MEMORY_BLOCK_BUFFER_TARGET, DEFAULT_PERSISTENCE_THRESHOLD, DEFAULT_RESERVED_CPU_CORES,
 };
-use reth_engine_primitives::DEFAULT_MIN_BLOCKS_FOR_PIPELINE_RUN;
 
 /// Parameters for configuring the engine driver.
 #[derive(Debug, Clone, Args, PartialEq, Eq)]
@@ -102,12 +101,6 @@ pub struct EngineArgs {
     /// disables hashing stages for maximum sync speed at the cost of reduced validation.
     #[arg(long = "engine.skip-state-root-validation", default_value = "false")]
     pub skip_state_root_validation: bool,
-
-    /// Configure the minimum number of blocks required to trigger a pipeline run for backfilling.
-    /// When the local head is behind the forkchoice head by more than this threshold,
-    /// the pipeline will be used to backfill blocks instead of downloading them individually.
-    #[arg(long = "engine.min-blocks-for-pipeline-run", default_value_t = DEFAULT_MIN_BLOCKS_FOR_PIPELINE_RUN)]
-    pub min_blocks_for_pipeline_run: u64,
 }
 
 #[allow(deprecated)]
@@ -132,7 +125,6 @@ impl Default for EngineArgs {
             state_root_fallback: false,
             always_process_payload_attributes_on_canonical_head: false,
             skip_state_root_validation: false,
-            min_blocks_for_pipeline_run: DEFAULT_MIN_BLOCKS_FOR_PIPELINE_RUN,
         }
     }
 }
@@ -157,7 +149,6 @@ impl EngineArgs {
                 self.always_process_payload_attributes_on_canonical_head,
             )
             .with_skip_state_root_validation(self.skip_state_root_validation)
-            .with_min_blocks_for_pipeline_run(self.min_blocks_for_pipeline_run)
     }
 }
 
