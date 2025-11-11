@@ -7,7 +7,8 @@ use crate::{
 };
 use alloy_consensus::BlockHeader;
 use alloy_eips::{eip1898::BlockWithParent, merge::EPOCH_SLOTS, BlockNumHash, NumHash};
-use alloy_primitives::{BlockHash, BlockNumber, B256};
+use alloy_evm::block::StateChangeSource;
+use alloy_primitives::{B256, BlockHash, BlockNumber};
 use alloy_rpc_types_engine::{
     ForkchoiceState, PayloadStatus, PayloadStatusEnum, PayloadValidationError,
 };
@@ -70,7 +71,7 @@ pub use metrics::EngineApiMetrics;
 pub use payload_processor::*;
 pub use payload_validator::{BasicEngineValidator, EngineValidator};
 pub use persistence_state::PersistenceState;
-pub use reth_engine_primitives::TreeConfig;
+pub use reth_engine_primitives::{TreeConfig, DEFAULT_MIN_BLOCKS_FOR_PIPELINE_RUN};
 pub use reth_execution_cache::{
     CachedStateMetrics, CachedStateProvider, ExecutionCache, PayloadExecutionCache, SavedCache,
 };
@@ -86,7 +87,11 @@ pub mod state;
 /// E.g.: Local head `block.number` is 100 and the forkchoice head `block.number` is 133 (more than
 /// an epoch has slots), then this exceeds the threshold at which the pipeline should be used to
 /// backfill this gap.
-pub(crate) const MIN_BLOCKS_FOR_PIPELINE_RUN: u64 = EPOCH_SLOTS;
+///
+/// This is kept for backwards compatibility with tests. Use `TreeConfig::min_blocks_for_pipeline_run()`
+/// for configurable threshold.
+#[cfg(test)]
+pub(crate) const MIN_BLOCKS_FOR_PIPELINE_RUN: u64 = DEFAULT_MIN_BLOCKS_FOR_PIPELINE_RUN;
 
 /// The minimum number of blocks to retain in the changeset cache after eviction.
 ///
@@ -2462,8 +2467,8 @@ where
     ///
     /// If the `local_tip` is greater than the `block`, then this will return false.
     #[inline]
-    const fn exceeds_backfill_run_threshold(&self, local_tip: u64, block: u64) -> bool {
-        block > local_tip && block - local_tip > MIN_BLOCKS_FOR_PIPELINE_RUN
+    fn exceeds_backfill_run_threshold(&self, local_tip: u64, block: u64) -> bool {
+        block > local_tip && block - local_tip > self.config.min_blocks_for_pipeline_run()
     }
 
     /// Returns how far the local tip is from the given block. If the local tip is at the same

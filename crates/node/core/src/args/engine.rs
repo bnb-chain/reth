@@ -13,6 +13,7 @@ use crate::node_config::{
     DEFAULT_CROSS_BLOCK_CACHE_SIZE_MB, DEFAULT_MEMORY_BLOCK_BUFFER_TARGET,
     DEFAULT_PERSISTENCE_THRESHOLD, DEFAULT_RESERVED_CPU_CORES,
 };
+use reth_engine_primitives::DEFAULT_MIN_BLOCKS_FOR_PIPELINE_RUN;
 
 /// Global static engine defaults
 static ENGINE_DEFAULTS: OnceLock<DefaultEngineValues> = OnceLock::new();
@@ -49,6 +50,8 @@ pub struct DefaultEngineValues {
     state_root_task_timeout: Option<String>,
     share_execution_cache_with_payload_builder: bool,
     share_sparse_trie_with_payload_builder: bool,
+    /// Whether to enable V2 storage proofs by default.
+    enable_proof_v2: bool,
 }
 
 impl DefaultEngineValues {
@@ -226,6 +229,12 @@ impl DefaultEngineValues {
         self.share_sparse_trie_with_payload_builder = v;
         self
     }
+
+    /// Set whether to enable V2 storage proofs by default
+    pub const fn with_enable_proof_v2(mut self, v: bool) -> Self {
+        self.enable_proof_v2 = v;
+        self
+    }
 }
 
 impl Default for DefaultEngineValues {
@@ -258,6 +267,7 @@ impl Default for DefaultEngineValues {
             state_root_task_timeout: Some("1s".to_string()),
             share_execution_cache_with_payload_builder: false,
             share_sparse_trie_with_payload_builder: false,
+            enable_proof_v2: false,
         }
     }
 }
@@ -471,6 +481,20 @@ pub struct EngineArgs {
         value_parser = humantime::parse_duration,
     )]
     pub proof_jitter: Option<Duration>,
+
+    /// Skip state root validation for fastnode mode.
+    #[arg(long = "engine.skip-state-root-validation", default_value_t = false)]
+    pub skip_state_root_validation: bool,
+
+    /// Configure the minimum number of blocks required to trigger a pipeline run for backfilling.
+    /// When the local head is behind the forkchoice head by more than this threshold,
+    /// the pipeline will be used to backfill blocks instead of downloading them individually.
+    #[arg(long = "engine.min-blocks-for-pipeline-run", default_value_t = DEFAULT_MIN_BLOCKS_FOR_PIPELINE_RUN)]
+    pub min_blocks_for_pipeline_run: u64,
+
+    /// Enable V2 storage proofs for state root calculations
+    #[arg(long = "engine.enable-proof-v2", default_value_t = DefaultEngineValues::get_global().enable_proof_v2)]
+    pub enable_proof_v2: bool,
 }
 
 #[allow(deprecated)]
@@ -504,6 +528,7 @@ impl Default for EngineArgs {
             state_root_task_timeout,
             share_execution_cache_with_payload_builder,
             share_sparse_trie_with_payload_builder,
+            enable_proof_v2,
         } = DefaultEngineValues::get_global().clone();
         Self {
             persistence_threshold,
@@ -541,6 +566,9 @@ impl Default for EngineArgs {
             share_sparse_trie_with_payload_builder,
             #[cfg(feature = "trie-debug")]
             proof_jitter: None,
+            skip_state_root_validation: false,
+            min_blocks_for_pipeline_run: DEFAULT_MIN_BLOCKS_FOR_PIPELINE_RUN,
+            enable_proof_v2,
         }
     }
 }
@@ -559,7 +587,7 @@ impl EngineArgs {
 
     /// Creates a [`TreeConfig`] from the engine arguments.
     pub fn tree_config(&self) -> TreeConfig {
-        let config = TreeConfig::default()
+        let mut config = TreeConfig::default()
             .with_persistence_threshold(self.persistence_threshold)
             .with_persistence_backpressure_threshold(self.persistence_backpressure_threshold)
             .with_memory_block_buffer_target(self.memory_block_buffer_target)
@@ -588,7 +616,16 @@ impl EngineArgs {
             )
             .with_share_sparse_trie_with_payload_builder(
                 self.share_sparse_trie_with_payload_builder,
-            );
+            )
+            .with_skip_state_root_validation(self.skip_state_root_validation)
+            .with_min_blocks_for_pipeline_run(self.min_blocks_for_pipeline_run)
+            .with_enable_proof_v2(self.enable_proof_v2);
+        if let Some(count) = self.storage_worker_count {
+            config = config.with_storage_worker_count(count);
+        }
+        if let Some(count) = self.account_worker_count {
+            config = config.with_account_worker_count(count);
+        }
         #[cfg(feature = "trie-debug")]
         let config = config.with_proof_jitter(self.proof_jitter);
         config
@@ -651,6 +688,9 @@ mod tests {
             share_sparse_trie_with_payload_builder: false,
             #[cfg(feature = "trie-debug")]
             proof_jitter: None,
+            skip_state_root_validation: false,
+            min_blocks_for_pipeline_run: DEFAULT_MIN_BLOCKS_FOR_PIPELINE_RUN,
+            enable_proof_v2: false,
         };
 
         let parsed_args = CommandParser::<EngineArgs>::parse_from([
