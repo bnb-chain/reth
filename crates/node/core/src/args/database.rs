@@ -84,6 +84,7 @@ impl DatabaseArgs {
             .with_log_level(self.log_level)
             .with_exclusive(self.exclusive)
             .with_max_read_transaction_duration(max_read_transaction_duration)
+            .with_page_size(self.page_size)
             .with_geometry_max_size(self.max_size)
             .with_geometry_page_size(self.page_size)
             .with_growth_step(self.growth_step)
@@ -199,7 +200,7 @@ impl fmt::Display for ByteSize {
 }
 
 /// Value parser function that supports various formats.
-fn parse_byte_size(s: &str) -> Result<usize, String> {
+pub fn parse_byte_size(s: &str) -> Result<usize, String> {
     s.parse::<ByteSize>().map(Into::into)
 }
 

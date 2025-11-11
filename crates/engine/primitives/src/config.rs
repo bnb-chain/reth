@@ -67,6 +67,31 @@ const fn default_cross_block_cache_size() -> usize {
     }
 }
 
+/// Minimum number of workers we allow configuring explicitly.
+pub const MIN_WORKER_COUNT: usize = 32;
+
+/// Returns the default number of storage worker threads based on available parallelism.
+fn default_storage_worker_count() -> usize {
+    #[cfg(feature = "std")]
+    {
+        std::thread::available_parallelism().map_or(8, |n| n.get() * 2).min(MIN_WORKER_COUNT)
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        8
+    }
+}
+
+/// Returns the default number of account worker threads.
+///
+/// Set to the same count as storage workers for simplicity.
+fn default_account_worker_count() -> usize {
+    default_storage_worker_count()
+}
+
+/// Default minimum blocks for pipeline run (32 blocks = `EPOCH_SLOTS`)
+pub const DEFAULT_MIN_BLOCKS_FOR_PIPELINE_RUN: u64 = 32;
+
 /// Determines if the host has enough parallelism to run the payload processor.
 ///
 /// It requires at least 5 parallel threads:
@@ -175,6 +200,20 @@ pub struct TreeConfig {
     /// before starting a proof calculation.
     #[cfg(feature = "trie-debug")]
     proof_jitter: Option<Duration>,
+    /// Number of storage proof worker threads.
+    storage_worker_count: usize,
+    /// Number of account proof worker threads.
+    account_worker_count: usize,
+    /// Whether to enable V2 storage proofs.
+    enable_proof_v2: bool,
+    /// Skip state root validation for fastnode mode.
+    /// This disables validation of state root hashes during live sync.
+    skip_state_root_validation: bool,
+    /// The minimum number of blocks required to trigger a pipeline run for backfilling.
+    ///
+    /// When the local head is behind the forkchoice head by more than this threshold,
+    /// the pipeline will be used to backfill blocks instead of downloading them individually.
+    min_blocks_for_pipeline_run: u64,
 }
 
 impl Default for TreeConfig {
@@ -214,6 +253,11 @@ impl Default for TreeConfig {
             share_sparse_trie_with_payload_builder: false,
             #[cfg(feature = "trie-debug")]
             proof_jitter: None,
+            storage_worker_count: default_storage_worker_count(),
+            account_worker_count: default_account_worker_count(),
+            enable_proof_v2: false,
+            skip_state_root_validation: false,
+            min_blocks_for_pipeline_run: DEFAULT_MIN_BLOCKS_FOR_PIPELINE_RUN,
         }
     }
 }
@@ -249,6 +293,11 @@ impl TreeConfig {
         state_root_task_timeout: Option<Duration>,
         share_execution_cache_with_payload_builder: bool,
         share_sparse_trie_with_payload_builder: bool,
+        storage_worker_count: usize,
+        account_worker_count: usize,
+        enable_proof_v2: bool,
+        skip_state_root_validation: bool,
+        min_blocks_for_pipeline_run: u64,
     ) -> Self {
         assert_backpressure_threshold_invariant(
             persistence_threshold,
@@ -285,6 +334,11 @@ impl TreeConfig {
             share_sparse_trie_with_payload_builder,
             #[cfg(feature = "trie-debug")]
             proof_jitter: None,
+            storage_worker_count,
+            account_worker_count,
+            enable_proof_v2,
+            skip_state_root_validation,
+            min_blocks_for_pipeline_run,
         }
     }
 
@@ -527,6 +581,69 @@ impl TreeConfig {
         self.allow_unwind_canonical_header = unwind_canonical_header;
         self
     }
+
+
+    /// Returns the number of storage proof worker threads.
+    pub const fn storage_worker_count(&self) -> usize {
+        self.storage_worker_count
+    }
+
+    /// Setter for the number of storage proof worker threads.
+    pub fn with_storage_worker_count(mut self, storage_worker_count: usize) -> Self {
+        self.storage_worker_count = storage_worker_count;
+        self
+    }
+
+    /// Returns the number of account proof worker threads.
+    pub const fn account_worker_count(&self) -> usize {
+        self.account_worker_count
+    }
+
+    /// Setter for the number of account proof worker threads.
+    pub fn with_account_worker_count(mut self, account_worker_count: usize) -> Self {
+        self.account_worker_count = account_worker_count;
+        self
+    }
+
+    /// Returns whether V2 storage proofs are enabled.
+    pub const fn enable_proof_v2(&self) -> bool {
+        self.enable_proof_v2
+    }
+
+    /// Setter for whether to enable V2 storage proofs.
+    pub const fn with_enable_proof_v2(mut self, enable_proof_v2: bool) -> Self {
+        self.enable_proof_v2 = enable_proof_v2;
+        self
+    }
+
+    /// Setter for whether to skip state root validation.
+    pub const fn with_skip_state_root_validation(
+        mut self,
+        skip_state_root_validation: bool,
+    ) -> Self {
+        self.skip_state_root_validation = skip_state_root_validation;
+        self
+    }
+
+    /// Returns whether state root validation should be skipped.
+    pub const fn skip_state_root_validation(&self) -> bool {
+        self.skip_state_root_validation
+    }
+
+    /// Returns the minimum number of blocks required to trigger a pipeline run.
+    pub const fn min_blocks_for_pipeline_run(&self) -> u64 {
+        self.min_blocks_for_pipeline_run
+    }
+
+    /// Setter for minimum number of blocks required to trigger a pipeline run.
+    pub const fn with_min_blocks_for_pipeline_run(
+        mut self,
+        min_blocks_for_pipeline_run: u64,
+    ) -> Self {
+        self.min_blocks_for_pipeline_run = min_blocks_for_pipeline_run;
+        self
+    }
+
 
     /// Whether or not to use state root task
     pub const fn use_state_root_task(&self) -> bool {
