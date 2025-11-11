@@ -22,10 +22,6 @@ pub struct DatabaseArgs {
     /// NFS volume.
     #[arg(long = "db.exclusive")]
     pub exclusive: Option<bool>,
-    /// Database page size (e.g., 4KB, 8KB, 16KB).
-    /// NOTE: Can only be set when creating a new database. Default: system default (typically 4KB).
-    #[arg(long = "db.page-size", value_parser = parse_byte_size, verbatim_doc_comment)]
-    pub page_size: Option<usize>,
     /// Maximum database size (e.g., 4TB, 8MB)
     #[arg(long = "db.max-size", value_parser = parse_byte_size)]
     pub max_size: Option<usize>,
@@ -62,7 +58,6 @@ impl DatabaseArgs {
             .with_log_level(self.log_level)
             .with_exclusive(self.exclusive)
             .with_max_read_transaction_duration(max_read_transaction_duration)
-            .with_page_size(self.page_size)
             .with_geometry_max_size(self.max_size)
             .with_growth_step(self.growth_step)
             .with_max_readers(self.max_readers)
@@ -176,7 +171,7 @@ impl fmt::Display for ByteSize {
 }
 
 /// Value parser function that supports various formats.
-pub fn parse_byte_size(s: &str) -> Result<usize, String> {
+fn parse_byte_size(s: &str) -> Result<usize, String> {
     s.parse::<ByteSize>().map(Into::into)
 }
 
