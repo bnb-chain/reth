@@ -55,6 +55,7 @@ impl Command {
     pub fn execute(
         &self,
         src_env: &DatabaseEnv,
+        src_path: &PathBuf,
         db_args: &reth_db::mdbx::DatabaseArguments,
     ) -> eyre::Result<()> {
         // Ensure destination doesn't exist
@@ -82,11 +83,14 @@ impl Command {
         if !self.quiet {
             info!(target: "reth::cli", "Copy completed in {:.2}s", elapsed.as_secs_f64());
             
-            // Display size comparison
-            let src_size = src_env.info()?.map_size();
-            if let Ok(dst_metadata) = std::fs::metadata(&self.to.join("mdbx.dat")) {
+            // Display size comparison - compare actual file sizes
+            if let (Ok(src_metadata), Ok(dst_metadata)) = (
+                std::fs::metadata(src_path.join("mdbx.dat")),
+                std::fs::metadata(self.to.join("mdbx.dat"))
+            ) {
+                let src_size = src_metadata.len() as usize;
                 let dst_size = dst_metadata.len() as usize;
-                info!(target: "reth::cli", "Source database map size: {}", format_byte_size(src_size));
+                info!(target: "reth::cli", "Source database file size: {}", format_byte_size(src_size));
                 info!(target: "reth::cli", "Destination file size: {}", format_byte_size(dst_size));
                 
                 if dst_size < src_size {
@@ -99,6 +103,14 @@ impl Command {
                           "  Note: This is normal. The copy process eliminates fragmentation,");
                     info!(target: "reth::cli", 
                           "  empty pages, and compacts the data structure.");
+                } else if dst_size > src_size {
+                    let increase = ((dst_size - src_size) as f64 / src_size as f64) * 100.0;
+                    info!(target: "reth::cli",
+                          "Size increase: {} ({:.2}% larger)",
+                          format_byte_size(dst_size - src_size),
+                          increase);
+                    info!(target: "reth::cli",
+                          "  Note: This may occur if page size or other database parameters differ.");
                 }
             }
         }
