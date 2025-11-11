@@ -22,7 +22,6 @@ reth-db = { workspace = true, features = ["mdbx"] }
 reth-db-api.workspace = true
 reth-db-common.workspace = true
 reth-downloaders = { workspace = true, features = ["file-client"] }
-reth-libmdbx.workspace = true
 reth-ecies.workspace = true
 reth-eth-wire.workspace = true
 reth-era.workspace = true
