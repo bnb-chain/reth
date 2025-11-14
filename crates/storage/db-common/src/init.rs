@@ -26,10 +26,12 @@ use reth_trie::{
 use reth_trie_db::DatabaseStateRoot;
 use serde::{Deserialize, Serialize};
 use std::io::BufRead;
+use std::sync::Arc;
 use tracing::{debug, error, info, trace};
 
 use std::collections::HashSet;
 use rust_eth_triedb_state_trie::account::StateAccount;
+use rust_eth_triedb_state_trie::node::DiffLayer;
 use rust_eth_triedb::get_global_triedb;
 
 /// Default soft limit for number of bytes to read from state dump file, before inserting into
@@ -297,7 +299,8 @@ where
         storage_states)
         .map_err(|_| ProviderError::Database(DatabaseError::Other("Failed to update and commit state".to_string())))?;
 
-    let difflayer = nodes.as_ref().map(|d| d.to_difflayer());
+    let diff_nodes = nodes.as_ref().map(|d| (*d.to_diff_nodes()).clone());
+    let difflayer = diff_nodes.map(|dn| Arc::new(DiffLayer::new(dn, HashMap::new())));
     triedb.flush(0, root, &difflayer).map_err(|_| ProviderError::Database(DatabaseError::Other("Failed to flush state".to_string())))?;
 
     info!(target: "reth::storage", "Triedb genesis state root computed: {:?}", root);

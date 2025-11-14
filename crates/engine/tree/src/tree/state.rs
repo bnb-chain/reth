@@ -118,12 +118,12 @@ impl<N: NodePrimitives> TreeState<N> {
         &self,
         hash: B256,
     ) -> Option<DiffLayers> {
-        let mut difflayers = DiffLayers::new();
+        let mut difflayers = DiffLayers::default();
         let mut parent_hash = hash;
         while let Some(executed) = self.blocks_by_hash.get(&parent_hash) {
             parent_hash = executed.recovered_block().parent_hash();
             if let Some(executed_difflayer) = &executed.difflayer {
-                difflayers.push(executed_difflayer.clone());
+                difflayers.insert_difflayer(executed_difflayer.clone());
             }
         }
 
