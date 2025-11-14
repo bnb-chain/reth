@@ -770,19 +770,19 @@ impl TriedbTask {
                     MultiProofMessage::HashedPostStateUpdate(hashed_post_state) => {
                         if !hashed_post_state.is_empty() {
                             update_count += 1;
-                            self.triedb.update_hashed_post_state(&hashed_post_state).unwrap();
+                            // self.triedb.update_hashed_post_state(&hashed_post_state).unwrap();
                             self.triedb.calculate_hash().unwrap();
                         }
                     }
                     MultiProofMessage::FinishedStateUpdates => {
-                        let (root_hash, difflayer) = self.triedb.commit_all_hashed_post_state().unwrap();
+                        // let (root_hash, difflayer) = self.triedb.commit_all_hashed_post_state().unwrap();
 
-                        info!(target: "engine::tree", "finish async triedb calc hash task finished, update_count={}", update_count);
-                        self.state_root_tx
-                            .send(Ok((
-                                root_hash,
-                                difflayer)))
-                            .expect("failed to send state root result");
+                        // info!(target: "engine::tree", "finish async triedb calc hash task finished, update_count={}", update_count);
+                        // self.state_root_tx
+                        //     .send(Ok((
+                        //         root_hash,
+                        //         difflayer)))
+                        //     .expect("failed to send state root result");
                         break;
                     }
                     MultiProofMessage::StateUpdate(_, _) => {

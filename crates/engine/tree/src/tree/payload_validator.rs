@@ -234,7 +234,7 @@ where
             evm_config.clone(),
             &config,
             precompile_cache_map.clone(),
-            triedb.get_mut_db_ref().clone(),
+            triedb.get_mut_path_db_ref().clone(),
         );
         // Create channel for background thread
         // let (background_tx, background_rx) = mpsc::channel();

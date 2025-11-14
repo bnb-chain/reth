@@ -257,58 +257,58 @@ impl TrieDBPrewarmTask {
         let difflayer_clone = self.difflayer.clone();
 
         self.executor.spawn_blocking(move || {
-            let mut handles = Vec::new();
+            // let mut handles = Vec::new();
             let mut executing = 0;
-            let filter = Arc::new(DashSet::<B256>::new());
+            // let filter = Arc::new(DashSet::<B256>::new());
 
             while let Ok(message) = prefetcher_rx.recv() {
                 if let MultiProofMessage::PrefetchProofs (milti_proofs) = message {
                     let task_idx = executing % max_concurrency;
-                    if handles.len() <= task_idx {
-                        let (tx, rx) = mpsc::channel::<MultiProofTargets>();
-                        let mut triedb_clone = TrieDB::new(pathdb_clone.clone());
-                        triedb_clone.state_at(parent_root, difflayer_clone.as_ref()).unwrap();
-                        let filter_clone = filter.clone();
+                    // if handles.len() <= task_idx {
+                    //     let (tx, rx) = mpsc::channel::<MultiProofTargets>();
+                    //     let mut triedb_clone = TrieDB::new(pathdb_clone.clone());
+                    //     triedb_clone.state_at(parent_root, difflayer_clone.as_ref()).unwrap();
+                    //     let filter_clone = filter.clone();
 
-                        executor.spawn_blocking(move || {
-                            while let Ok(proofs) = rx.recv() {
-                                let mut unfetched_proofs = MultiProofTargets::with_capacity(proofs.len());
-                                for (addr, storages) in proofs {
-                                    if !filter_clone.contains(&addr) {
-                                        unfetched_proofs.insert(addr, storages);
-                                        filter_clone.insert(addr);
-                                        continue
-                                    }
-                                    for storage in storages {
-                                        if !filter_clone.contains(&storage) {
-                                            unfetched_proofs.entry(addr).or_insert_with(B256Set::default).insert(storage);
-                                            filter_clone.insert(storage);
-                                        }
-                                    }
-                                }
-                                for (addr, storages) in unfetched_proofs {
-                                    if storages.is_empty() {
-                                        let _ = triedb_clone.get_account_with_hash_state(addr);
-                                    }
-                                    for key in storages {
-                                        let _ = triedb_clone.get_storage_with_hash_state(addr, key);
-                                    }
-                                }
-                            }
-                            drop(rx);
-                            drop(triedb_clone);
-                            drop(filter_clone);
-                        });
-                        handles.push(tx);
-                    }
-                    let _ = handles[task_idx].send(milti_proofs);
+                    //     executor.spawn_blocking(move || {
+                    //         while let Ok(proofs) = rx.recv() {
+                    //             let mut unfetched_proofs = MultiProofTargets::with_capacity(proofs.len());
+                    //             for (addr, storages) in proofs {
+                    //                 if !filter_clone.contains(&addr) {
+                    //                     unfetched_proofs.insert(addr, storages);
+                    //                     filter_clone.insert(addr);
+                    //                     continue
+                    //                 }
+                    //                 for storage in storages {
+                    //                     if !filter_clone.contains(&storage) {
+                    //                         unfetched_proofs.entry(addr).or_insert_with(B256Set::default).insert(storage);
+                    //                         filter_clone.insert(storage);
+                    //                     }
+                    //                 }
+                    //             }
+                    //             for (addr, storages) in unfetched_proofs {
+                    //                 if storages.is_empty() {
+                    //                     let _ = triedb_clone.get_account_with_hash_state(addr);
+                    //                 }
+                    //                 for key in storages {
+                    //                     let _ = triedb_clone.get_storage_with_hash_state(addr, key);
+                    //                 }
+                    //             }
+                    //         }
+                    //         drop(rx);
+                    //         drop(triedb_clone);
+                    //         drop(filter_clone);
+                    //     });
+                    //     handles.push(tx);
+                    // }
+                    // let _ = handles[task_idx].send(milti_proofs);
                     executing += 1;
                 }
             }
-            drop(handles);
+            // drop(handles);
             drop(pathdb_clone);
             drop(difflayer_clone);
-            drop(filter);
+            // drop(filter);
         });
     }
 

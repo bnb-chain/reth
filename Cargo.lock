@@ -11255,10 +11255,12 @@ dependencies = [
  "reth-trie-common",
  "rust-eth-triedb-common",
  "rust-eth-triedb-pathdb",
+ "rust-eth-triedb-snapshotdb",
  "rust-eth-triedb-state-trie",
  "schnellru",
  "serde",
  "thiserror 1.0.69",
+ "tracing",
 ]
 
 [[package]]
@@ -11271,18 +11273,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "rust-eth-triedb-memorydb"
+name = "rust-eth-triedb-pathdb"
 version = "0.1.0"
 dependencies = [
- "alloy-primitives",
- "auto_impl",
- "parking_lot",
+ "metrics",
+ "reth-metrics",
+ "rocksdb",
  "rust-eth-triedb-common",
+ "schnellru",
+ "tempfile",
  "thiserror 1.0.69",
+ "tracing",
 ]
 
 [[package]]
-name = "rust-eth-triedb-pathdb"
+name = "rust-eth-triedb-snapshotdb"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
@@ -11290,6 +11295,7 @@ dependencies = [
  "reth-metrics",
  "rocksdb",
  "rust-eth-triedb-common",
+ "rust-eth-triedb-state-trie",
  "schnellru",
  "tempfile",
  "thiserror 1.0.69",
@@ -11308,7 +11314,6 @@ dependencies = [
  "rand 0.8.5",
  "rayon",
  "rust-eth-triedb-common",
- "rust-eth-triedb-memorydb",
  "rust-eth-triedb-pathdb",
  "thiserror 1.0.69",
  "tracing",
