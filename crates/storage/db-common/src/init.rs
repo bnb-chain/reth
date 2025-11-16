@@ -291,7 +291,7 @@ where
     }
 
 
-    let (root, nodes) = triedb.update_and_commit(
+    let (root, nodes, diff_storage_roots) = triedb.update_and_commit(
         alloy_trie::EMPTY_ROOT_HASH,
         None,
         state_accounts,
@@ -299,8 +299,8 @@ where
         storage_states)
         .map_err(|_| ProviderError::Database(DatabaseError::Other("Failed to update and commit state".to_string())))?;
 
-    let diff_nodes = nodes.as_ref().map(|d| (*d.to_diff_nodes()).clone());
-    let difflayer = diff_nodes.map(|dn| Arc::new(DiffLayer::new(dn, HashMap::new())));
+    let diff_nodes = (*nodes.to_diff_nodes()).clone();
+    let difflayer = Some(Arc::new(DiffLayer::new(diff_nodes, diff_storage_roots)));
     triedb.flush(0, root, &difflayer).map_err(|_| ProviderError::Database(DatabaseError::Other("Failed to flush state".to_string())))?;
 
     info!(target: "reth::storage", "Triedb genesis state root computed: {:?}", root);
