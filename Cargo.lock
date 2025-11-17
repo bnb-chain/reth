@@ -11255,7 +11255,6 @@ dependencies = [
  "reth-trie-common",
  "rust-eth-triedb-common",
  "rust-eth-triedb-pathdb",
- "rust-eth-triedb-snapshotdb",
  "rust-eth-triedb-state-trie",
  "schnellru",
  "serde",
@@ -11282,22 +11281,6 @@ dependencies = [
  "reth-metrics",
  "rocksdb",
  "rust-eth-triedb-common",
- "schnellru",
- "tempfile",
- "thiserror 1.0.69",
- "tracing",
-]
-
-[[package]]
-name = "rust-eth-triedb-snapshotdb"
-version = "0.1.0"
-dependencies = [
- "alloy-primitives",
- "metrics",
- "reth-metrics",
- "rocksdb",
- "rust-eth-triedb-common",
- "rust-eth-triedb-state-trie",
  "schnellru",
  "tempfile",
  "thiserror 1.0.69",

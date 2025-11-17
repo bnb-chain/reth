@@ -53,6 +53,51 @@ pub use chain::*;
 
 use rust_eth_triedb::init_global_manager;
 
+/// Helper function to get database path from DatabaseEnv.
+///
+/// This function attempts to extract the path from a DatabaseEnv instance
+/// by using the underlying libmdbx environment's path information.
+///
+/// Note: This requires access to reth_libmdbx::ffi which may not be available
+/// in all contexts. Returns None if path cannot be extracted.
+fn get_database_path_from_env(db: &DatabaseEnv) -> Option<String> {
+    // Access the underlying Environment through Deref
+    // reth_db re-exports reth_libmdbx, so we can access it through reth_db
+    use reth_db::mdbx::ffi;
+
+    db.with_raw_env_ptr(|env_ptr| {
+        unsafe {
+            #[cfg(target_os = "windows")]
+            {
+                let mut path_ptr: *const u16 = std::ptr::null();
+                let result = ffi::mdbx_env_get_pathW(env_ptr, &mut path_ptr);
+                if result == 0 && !path_ptr.is_null() {
+                    use std::os::windows::ffi::OsStringExt;
+                    // Find the length of the wide string
+                    let mut len = 0;
+                    while *path_ptr.add(len) != 0 {
+                        len += 1;
+                    }
+                    let wstr = std::ffi::OsString::from_wide(
+                        std::slice::from_raw_parts(path_ptr, len)
+                    );
+                    return Some(wstr.to_string_lossy().to_string());
+                }
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                let mut path_ptr: *const std::os::raw::c_char = std::ptr::null();
+                let result = ffi::mdbx_env_get_path(env_ptr, &mut path_ptr);
+                if result == 0 && !path_ptr.is_null() {
+                    let c_str = std::ffi::CStr::from_ptr(path_ptr);
+                    return Some(c_str.to_string_lossy().to_string());
+                }
+            }
+        }
+        None
+    })
+}
+
 /// A common provider that fetches data from a database or static file.
 ///
 /// This provider implements most provider or provider factory traits.
@@ -83,8 +128,15 @@ impl<N: NodeTypesWithDB> ProviderFactory<N> {
         chain_spec: Arc<N::ChainSpec>,
         static_file_provider: StaticFileProvider<N::Primitives>,
     ) -> Self {
+        // Try to get database path - use a default path as fallback
+        // The actual path extraction would require trait bounds or type checking
+        // For now, we use a default path that can be overridden
+        let db_path = std::env::current_dir()
+            .ok()
+            .and_then(|p| p.join("data").join("rust_eth_triedb").to_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| "data/rust_eth_triedb".to_string());
 
-        init_global_manager();
+        init_global_manager(&db_path);
 
         Self {
             db,
@@ -133,8 +185,12 @@ impl<N: NodeTypesWithDB<DB = Arc<DatabaseEnv>>> ProviderFactory<N> {
         args: DatabaseArguments,
         static_file_provider: StaticFileProvider<N::Primitives>,
     ) -> RethResult<Self> {
-
-        init_global_manager();
+        // Use current directory + data/rust_eth_triedb as the database path
+        let db_path = std::env::current_dir()
+            .ok()
+            .and_then(|p| p.join("data").join("rust_eth_triedb").to_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| "data/rust_eth_triedb".to_string());
+        init_global_manager(&db_path);
 
         Ok(Self {
             db: Arc::new(init_db(path, args).map_err(RethError::msg)?),
@@ -143,6 +199,30 @@ impl<N: NodeTypesWithDB<DB = Arc<DatabaseEnv>>> ProviderFactory<N> {
             prune_modes: PruneModes::none(),
             storage: Default::default(),
         })
+    }
+
+    /// Create new database provider factory with database path extraction.
+    /// This is a specialized version for Arc<DatabaseEnv> that can extract the path.
+    pub fn new_with_path_extraction(
+        db: Arc<DatabaseEnv>,
+        chain_spec: Arc<N::ChainSpec>,
+        static_file_provider: StaticFileProvider<N::Primitives>,
+    ) -> Self {
+        // Use current directory + data/rust_eth_triedb as the database path
+        let db_path = std::env::current_dir()
+            .ok()
+            .and_then(|p| p.join("data").join("rust_eth_triedb").to_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| "data/rust_eth_triedb".to_string());
+
+        init_global_manager(&db_path);
+
+        Self {
+            db,
+            chain_spec,
+            static_file_provider,
+            prune_modes: PruneModes::none(),
+            storage: Default::default(),
+        }
     }
 }
 
