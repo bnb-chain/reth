@@ -8,12 +8,15 @@ use crate::{
 use alloy_consensus::{transaction::TxHashRef, TxReceipt};
 use alloy_eips::{BlockId, BlockNumberOrTag};
 use alloy_rlp::Encodable;
+use tracing::{trace, warn};
 use alloy_rpc_types_eth::{Block, BlockTransactions, Index};
 use futures::Future;
 use reth_node_api::BlockBody;
 use reth_primitives_traits::{AlloyBlockHeader, RecoveredBlock, SealedHeader, TransactionMeta};
 use reth_rpc_convert::{transaction::ConvertReceiptInput, RpcConvert, RpcHeader};
-use reth_storage_api::{BlockIdReader, BlockReader, ProviderHeader, ProviderReceipt, ProviderTx};
+use reth_storage_api::{
+    BlockIdReader, BlockReader, HeaderProvider, ProviderHeader, ProviderReceipt, ProviderTx,
+};
 use reth_transaction_pool::{PoolTransaction, TransactionPool};
 use std::sync::Arc;
 
@@ -68,7 +71,51 @@ pub trait EthBlocks: LoadBlock<RpcConvert: RpcConvert<Primitives = Self::Primiti
             let block = block.clone_into_rpc_block(
                 full.into(),
                 |tx, tx_info| self.converter().fill(tx, tx_info),
-                |header, size| self.converter().convert_header(header, size, None),
+                |header, size| {
+                    let block_number = header.number();
+                    let td = match self.provider().header_td_by_number(block_number) {
+                        Ok(Some(td)) => {
+                            Some(td)
+                        }
+                        Ok(None) | Err(_) => {
+                            // Block not in database yet (e.g., pending block)
+                            // Calculate TD = parent_td + current_difficulty
+                            trace!(target: "rpc::eth", ?block_id, block_number, "Block not in DB, calculating TD from parent");
+
+                            let parent_number = block_number.saturating_sub(1);
+                            match self.provider().header_td_by_number(parent_number) {
+                                Ok(Some(parent_td)) => {
+                                    let current_difficulty = header.difficulty();
+                                    let calculated_td = parent_td.saturating_add(current_difficulty);
+
+                                    trace!(
+                                        target: "rpc::eth", 
+                                        ?block_id, 
+                                        block_number, 
+                                        parent_number,
+                                        ?parent_td, 
+                                        ?current_difficulty,
+                                        ?calculated_td,
+                                        "Calculated TD from parent"
+                                    );
+
+                                    Some(calculated_td)
+                                }
+                                _ => {
+                                    warn!(
+                                        target: "rpc::eth",
+                                        ?block_id,
+                                        block_number,
+                                        parent_number,
+                                        "Parent TD not found, returning None"
+                                    );
+                                    None
+                                }
+                            }
+                        }
+                    };
+                    self.converter().convert_header(header, size, td)
+                },
             )?;
             Ok(Some(block))
         }
