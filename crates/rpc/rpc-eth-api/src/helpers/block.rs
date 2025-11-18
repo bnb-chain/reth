@@ -168,7 +168,41 @@ pub trait EthBlocks: LoadBlock<RpcConvert: RpcConvert<Primitives = Self::Primiti
         &self,
         block_id: BlockId,
     ) -> impl Future<Output = Result<Option<usize>, Self::Error>> + Send {
-        async move { Ok(self.recovered_block(block_id).await?.map(|b| b.body().transaction_count())) }
+        async move {
+            // If no pending block from provider, build the pending block locally.
+            if block_id.is_pending() {
+                if let Some(block) = self
+                    .provider()
+                    .pending_block()
+                    .map_err(Self::Error::from_eth_err)?
+                {
+                    return Ok(Some(block.body().transaction_count()));
+                }
+
+                // If no pending block from provider, try to get local pending block
+                if let Some(pending) = self.local_pending_block().await? {
+                    return Ok(Some(pending.block.body().transaction_count()));
+                }
+
+                return Ok(None);
+            }
+
+            let block_hash = match self
+                .provider()
+                .block_hash_for_id(block_id)
+                .map_err(Self::Error::from_eth_err)?
+            {
+                Some(block_hash) => block_hash,
+                None => return Ok(None),
+            };
+
+            Ok(self
+                .cache()
+                .get_recovered_block(block_hash)
+                .await
+                .map_err(Self::Error::from_eth_err)?
+                .map(|b| b.body().transaction_count()))
+        }
     }
 
     /// Helper function for `eth_getBlockReceipts`.
