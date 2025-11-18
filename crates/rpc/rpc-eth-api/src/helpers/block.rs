@@ -164,12 +164,20 @@ pub trait EthBlocks:
     ) -> impl Future<Output = Result<Option<usize>, Self::Error>> + Send {
         async move {
             if block_id.is_pending() {
-                // Pending block can be fetched directly without need for caching
-                return Ok(self
+                if let Some(block) = self
                     .provider()
                     .pending_block()
                     .map_err(Self::Error::from_eth_err)?
-                    .map(|block| block.body().transaction_count()));
+                {
+                    return Ok(Some(block.body().transaction_count()));
+                }
+                
+                // 2. local pending block
+                if let Some((block, _)) = self.local_pending_block().await? {
+                    return Ok(Some(block.body().transaction_count()));
+                }
+                
+                return Ok(None);
             }
 
             let block_hash = match self
