@@ -163,15 +163,20 @@ pub trait EthBlocks: LoadBlock<RpcConvert: RpcConvert<Primitives = Self::Primiti
         async move {
             // If no pending block from provider, build the pending block locally.
             if block_id.is_pending() {
-                if let Some(pending) = self.local_pending_block().await? {
-                    return Ok(Some(pending.block.body().transaction_count()));
-                }
-                // Pending block can be fetched directly without need for caching
-                return Ok(self
+                if let Some(block) = self
                     .provider()
                     .pending_block()
                     .map_err(Self::Error::from_eth_err)?
-                    .map(|block| block.body().transaction_count()));
+                {
+                    return Ok(Some(block.body().transaction_count()));
+                }
+
+                // If no pending block from provider, try to get local pending block
+                if let Some(pending) = self.local_pending_block().await? {
+                    return Ok(Some(pending.block.body().transaction_count()));
+                }
+
+                return Ok(None);
             }
 
             let block_hash = match self
