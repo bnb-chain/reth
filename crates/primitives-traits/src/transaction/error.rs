@@ -58,6 +58,9 @@ pub enum InvalidTransactionError {
     /// Thrown post London if the transaction's fee is less than the base fee of the block.
     #[error("max fee per gas less than block base fee")]
     FeeCapTooLow,
+    /// Thrown if the max priority fee per gas is 0.
+    #[error("max priority fee per gas is 0")]
+    TipZero,
     /// Thrown if the sender of a transaction is a contract.
     #[error("transaction signer has bytecode set")]
     SignerAccountHasBytecode,
