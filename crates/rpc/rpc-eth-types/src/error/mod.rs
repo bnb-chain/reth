@@ -651,6 +651,9 @@ pub enum RpcInvalidTransactionError {
     /// fee cap.
     #[error("max priority fee per gas higher than max fee per gas")]
     TipAboveFeeCap,
+    /// Thrown if the max priority fee per gas is 0 for an EIP-1559 transaction.
+    #[error("max priority fee per gas is 0")]
+    TipZero,
     /// A sanity error to avoid huge numbers specified in the tip field.
     #[error("max priority fee per gas higher than 2^256-1")]
     TipVeryHigh,
@@ -1095,6 +1098,9 @@ impl From<InvalidPoolTransactionError> for RpcPoolError {
                 Self::Invalid(RpcInvalidTransactionError::PriorityFeeBelowMinimum {
                     minimum_priority_fee,
                 })
+            }
+            InvalidPoolTransactionError::TipZero => {
+                Self::Invalid(RpcInvalidTransactionError::TipZero)
             }
         }
     }

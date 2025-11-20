@@ -293,6 +293,9 @@ pub enum InvalidPoolTransactionError {
         /// Minimum required priority fee.
         minimum_priority_fee: u128,
     },
+    /// Thrown if the max priority fee per gas is 0 for an EIP-1559 transaction.
+    #[error("max priority fee per gas is 0")]
+    TipZero,
 }
 
 // === impl InvalidPoolTransactionError ===
@@ -409,6 +412,7 @@ impl InvalidPoolTransactionError {
                 Eip7702PoolTransactionError::AuthorityReserved => false,
             },
             Self::PriorityFeeBelowMinimum { .. } => false,
+            Self::TipZero => false,
         }
     }
 

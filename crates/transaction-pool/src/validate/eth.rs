@@ -496,6 +496,10 @@ where
             return Err(InvalidTransactionError::TipAboveFeeCap.into())
         }
 
+        if transaction.is_eip1559() && transaction.max_priority_fee_per_gas().unwrap_or(0) == 0 {
+            return Err(InvalidPoolTransactionError::TipZero)
+        }
+
         // determine whether the transaction should be treated as local
         let is_local = self.local_transactions_config.is_local(origin, transaction.sender_ref());
 
