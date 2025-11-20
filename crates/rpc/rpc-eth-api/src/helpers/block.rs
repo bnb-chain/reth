@@ -173,8 +173,8 @@ pub trait EthBlocks:
                 }
                 
                 // 2. local pending block
-                if let Some((block, _)) = self.local_pending_block().await? {
-                    return Ok(Some(block.body().transaction_count()));
+                if let Some(pending) = self.local_pending_block().await? {
+                    return Ok(Some(pending.block.body().transaction_count()));
                 }
                 
                 return Ok(None);
