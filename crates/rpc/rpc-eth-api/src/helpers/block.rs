@@ -8,7 +8,6 @@ use crate::{
 use alloy_consensus::{transaction::TxHashRef, TxReceipt};
 use alloy_eips::{BlockId, BlockNumberOrTag};
 use alloy_rlp::Encodable;
-use tracing::{trace, warn};
 use alloy_rpc_types_eth::{Block, BlockTransactions, Index};
 use futures::Future;
 use reth_node_api::BlockBody;
@@ -19,6 +18,7 @@ use reth_storage_api::{
 };
 use reth_transaction_pool::{PoolTransaction, TransactionPool};
 use std::sync::Arc;
+use tracing::{trace, warn};
 
 /// Result type of the fetched block receipts.
 pub type BlockReceiptsResult<N, E> = Result<Option<Vec<RpcReceipt<N>>>, E>;
@@ -89,11 +89,11 @@ pub trait EthBlocks: LoadBlock<RpcConvert: RpcConvert<Primitives = Self::Primiti
                                     let calculated_td = parent_td.saturating_add(current_difficulty);
 
                                     trace!(
-                                        target: "rpc::eth", 
-                                        ?block_id, 
-                                        block_number, 
+                                        target: "rpc::eth",
+                                        ?block_id,
+                                        block_number,
                                         parent_number,
-                                        ?parent_td, 
+                                        ?parent_td,
                                         ?current_difficulty,
                                         ?calculated_td,
                                         "Calculated TD from parent"
@@ -171,10 +171,8 @@ pub trait EthBlocks: LoadBlock<RpcConvert: RpcConvert<Primitives = Self::Primiti
         async move {
             // If no pending block from provider, build the pending block locally.
             if block_id.is_pending() {
-                if let Some(block) = self
-                    .provider()
-                    .pending_block()
-                    .map_err(Self::Error::from_eth_err)?
+                if let Some(block) =
+                    self.provider().pending_block().map_err(Self::Error::from_eth_err)?
                 {
                     return Ok(Some(block.body().transaction_count()));
                 }
