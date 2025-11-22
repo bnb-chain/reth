@@ -1,4 +1,5 @@
 use revm::database::BundleState;
+use reth_trie_common::HashedPostState;
 
 pub use alloy_evm::block::BlockExecutionResult;
 

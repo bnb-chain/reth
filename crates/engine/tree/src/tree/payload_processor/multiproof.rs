@@ -13,6 +13,7 @@ use reth_errors::ProviderError;
 use reth_metrics::Metrics;
 use reth_provider::{providers::ConsistentDbView, BlockReader, DatabaseProviderFactory, FactoryTx};
 use reth_revm::state::EvmState;
+use revm::state::AccountStatus;
 use reth_trie::{
     added_removed_keys::MultiAddedRemovedKeys, prefix_set::TriePrefixSetsMut,
     updates::TrieUpdatesSorted, DecodedMultiProof, HashedPostState, HashedPostStateSorted,
@@ -99,11 +100,13 @@ impl<Factory> MultiProofConfig<Factory> {
 
 /// Messages used internally by the multi proof task.
 #[derive(Debug)]
-pub(super) enum MultiProofMessage {
+pub(crate) enum MultiProofMessage {
     /// Prefetch proof targets
     PrefetchProofs(MultiProofTargets),
     /// New state update from transaction execution with its source
     StateUpdate(StateChangeSource, EvmState),
+    /// Hashed post state update
+    HashedPostStateUpdate(HashedPostState),
     /// State update that can be applied to the sparse trie without any new proofs.
     ///
     /// It can be the case when all accounts and storage slots from the state update were already
@@ -211,6 +214,47 @@ impl Drop for StateHookSender {
         // Send completion signal when the sender is dropped
         let _ = self.0.send(MultiProofMessage::FinishedStateUpdates);
     }
+}
+
+
+pub(crate) fn evm_state_to_hashed_post_state_without_loss(update: EvmState) -> HashedPostState {
+    let mut hashed_state = HashedPostState::with_capacity(update.len());
+
+    for (address, account) in update {
+        if account.status.contains(AccountStatus::Touched)
+            && account.status.contains(AccountStatus::LoadedAsNotExisting)
+            && !account.status.contains(AccountStatus::Created)
+            && !account.status.contains(AccountStatus::SelfDestructed)
+            && !account.storage.iter().any(|(_, slot)| slot.is_changed()){
+            continue;
+        }
+
+        // Process all accounts, not just touched ones (consistent with from_bundle_state)
+        let hashed_address = keccak256(address);
+        trace!(target: "engine::root", ?address, ?hashed_address, "Adding account to state update");
+
+        let destroyed = account.is_selfdestructed();
+        let info = if destroyed { None } else { Some(account.info.into()) };
+        hashed_state.accounts.insert(hashed_address, info);
+
+        // Include only changed storage slots (consistent with the requirement)
+        let changed_storage_iter = account
+            .storage
+            .into_iter()
+            .filter(|(_slot, value)| value.is_changed())
+            .map(|(slot, value)| (keccak256(B256::from(slot)), value.present_value));
+
+        if destroyed {
+            hashed_state.storages.insert(hashed_address, HashedStorage::new(true));
+        } else {
+            let storage = HashedStorage::from_iter(false, changed_storage_iter);
+            if !storage.is_empty() {
+                hashed_state.storages.insert(hashed_address, storage);
+            }
+        }
+    }
+
+    hashed_state
 }
 
 pub(crate) fn evm_state_to_hashed_post_state(update: EvmState) -> HashedPostState {
@@ -937,6 +981,9 @@ where
             trace!(target: "engine::root", "entering main channel receiving loop");
             match self.rx.recv() {
                 Ok(message) => match message {
+                    MultiProofMessage::HashedPostStateUpdate(hashed_post_state) => {
+                        panic!("HashedPostStateUpdate should not be received in the multiproof channel");
+                    }
                     MultiProofMessage::PrefetchProofs(targets) => {
                         trace!(target: "engine::root", "processing MultiProofMessage::PrefetchProofs");
                         if first_update_time.is_none() {

@@ -44,6 +44,10 @@ pub trait DBProvider: Sized {
     /// Returns a reference to prune modes.
     fn prune_modes_ref(&self) -> &PruneModes;
 
+    /// Returns true if the database is active eth triedb
+    /// TODO:: active by cli flag and persist to database
+    fn is_active_eth_triedb(&self) -> bool;
+
     /// Return full table as Vec
     fn table<T: Table>(&self) -> Result<Vec<KeyValue<T>>, DatabaseError>
     where

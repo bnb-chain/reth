@@ -3,7 +3,7 @@
 use crate::tree::{
     cached_state::{CachedStateMetrics, ProviderCacheBuilder, ProviderCaches, SavedCache},
     payload_processor::{
-        prewarm::{PrewarmCacheTask, PrewarmContext, PrewarmTaskEvent},
+        prewarm::{PrewarmCacheTask, PrewarmContext, PrewarmTaskEvent, TrieDBPrewarmTask},
         sparse_trie::StateRootComputeOutcome,
     },
     sparse_trie::SparseTrieTask,
@@ -37,7 +37,7 @@ use reth_trie_sparse::{
 };
 use std::sync::{
     atomic::AtomicBool,
-    mpsc::{self, channel, Sender},
+    mpsc::{self, channel, Sender, Receiver},
     Arc,
 };
 
@@ -50,6 +50,14 @@ pub mod prewarm;
 pub mod sparse_trie;
 
 use configured_sparse_trie::ConfiguredSparseTrie;
+
+use rust_eth_triedb::{TrieDB, get_global_triedb};
+use rust_eth_triedb_pathdb::PathDB;
+use rust_eth_triedb_state_trie::{DiffLayer, DiffLayers};
+use std::thread;
+
+use reth_trie::{HashedPostState};
+use tracing::{info, warn};
 
 /// Entrypoint for executing the payload.
 #[derive(Debug)]
@@ -82,6 +90,10 @@ where
     disable_parallel_sparse_trie: bool,
     /// A cleared trie input, kept around to be reused so allocations can be minimized.
     trie_input: Option<TrieInput>,
+    /// PathDB for storing the state changes
+    path_db: PathDB,
+    /// Core count
+    core_count: usize,
 }
 
 impl<N, Evm> PayloadProcessor<Evm>
@@ -95,7 +107,16 @@ where
         evm_config: Evm,
         config: &TreeConfig,
         precompile_cache_map: PrecompileCacheMap<SpecFor<Evm>>,
+        path_db: PathDB,
     ) -> Self {
+        let mut path_db = path_db.clone();
+        path_db.with_new_metrics("prefetcher");
+
+
+        let core_count = thread::available_parallelism()
+                            .map(|n| n.get())
+                            .unwrap_or(1);
+
         Self {
             executor,
             execution_cache: Default::default(),
@@ -108,6 +129,8 @@ where
             sparse_state_trie: Arc::default(),
             trie_input: None,
             disable_parallel_sparse_trie: config.disable_parallel_sparse_trie(),
+            path_db,
+            core_count,
         }
     }
 }
@@ -233,6 +256,8 @@ where
             prewarm_handle,
             state_root: Some(state_root_rx),
             transactions: execution_rx,
+            hash_post_state_tx: None,
+            triedb_state_root: None,
         }
     }
 
@@ -255,7 +280,127 @@ where
             prewarm_handle,
             state_root: None,
             transactions: execution_rx,
+            hash_post_state_tx: None,
+            triedb_state_root: None,
         }
+    }
+
+    pub(super) fn spawn_cache_exclusive_with_triedb<P, I: ExecutableTxIterator<Evm>>(
+        &self,
+        env: ExecutionEnv<Evm>,
+        transactions: I,
+        provider_builder: StateProviderBuilder<N, P>,
+        parent_root: B256,
+        difflayer: Option<DiffLayers>,
+    ) -> PayloadHandle<WithTxEnv<TxEnvFor<Evm>, I::Tx>, I::Error>
+    where
+        P: BlockReader
+            + StateProviderFactory
+            + StateReader
+            + Clone
+            + 'static,
+    {
+        let (prewarm_rx, execution_rx) = self.spawn_tx_iterator(transactions);
+        let prewarm_handle = self.spawn_prefetcher(
+            env,
+            prewarm_rx,
+            provider_builder,
+            None,
+            parent_root,
+            difflayer.clone(),
+        );
+
+        let (targets_tx, targets_rx) = channel();
+        let (state_root_tx, state_root_rx) = channel();
+        let triedb_task = TriedbTask::new(
+            parent_root,
+            difflayer,
+            targets_rx,
+            state_root_tx);
+
+        // spawn multi-proof task
+        self.executor.spawn_blocking(move || {
+            triedb_task.run();
+        });
+
+        PayloadHandle {
+            to_multi_proof: None,
+            prewarm_handle,
+            state_root: None,
+            transactions: execution_rx,
+            hash_post_state_tx: Some(targets_tx),
+            triedb_state_root: Some(state_root_rx),
+        }
+    }
+
+    fn spawn_prefetcher<P>(
+        &self,
+        env: ExecutionEnv<Evm>,
+        mut transactions: mpsc::Receiver<impl ExecutableTxFor<Evm> + Send + 'static>,
+        provider_builder: StateProviderBuilder<N, P>,
+        to_multi_proof: Option<Sender<MultiProofMessage>>,
+        parent_root: B256,
+        difflayer: Option<DiffLayers>,
+    ) -> CacheTaskHandle
+    where
+        P: BlockReader
+            + StateProviderFactory
+            + StateReader
+            + Clone
+            + 'static,
+    {
+        if self.disable_transaction_prewarming {
+            // if no transactions should be executed we clear them but still spawn the task for
+            // caching updates
+            transactions = mpsc::channel().1;
+        }
+
+        let (cache, cache_metrics) = self.cache_for(env.parent_hash).split();
+
+        // let (triedb_prewarm_task, triedb_prewarm_tx) = TrieDBPrewarmTask::new(
+        //     self.executor.clone(),
+        //     self.path_db.clone(),
+        //     parent_root,
+        //     difflayer,
+        //     256,
+        // );
+
+        // self.executor.spawn_blocking(move || {
+        //     triedb_prewarm_task.run();
+        // });
+
+        // configure prewarming
+        let prewarm_ctx = PrewarmContext {
+            env,
+            evm_config: self.evm_config.clone(),
+            cache: cache.clone(),
+            cache_metrics: cache_metrics.clone(),
+            provider: provider_builder,
+            metrics: PrewarmMetrics::default(),
+            terminate_execution: Arc::new(AtomicBool::new(false)),
+            precompile_cache_disabled: self.precompile_cache_disabled,
+            precompile_cache_map: self.precompile_cache_map.clone(),
+        };
+
+        let (prewarm_task, to_prewarm_task) = PrewarmCacheTask::new(
+            self.executor.clone(),
+            self.execution_cache.clone(),
+            prewarm_ctx,
+            to_multi_proof,
+            // Some(triedb_prewarm_tx),
+            None,
+            64,
+        );
+
+        // spawn pre-warm task
+        {
+            let to_prewarm_task = to_prewarm_task.clone();
+            self.executor.spawn_blocking(move || {
+                prewarm_task.run(transactions, to_prewarm_task);
+            });
+        }
+
+        CacheTaskHandle { cache, to_prewarm_task: Some(to_prewarm_task), cache_metrics }
     }
 
     /// Spawns a task advancing transaction env iterator and streaming updates through a channel.
@@ -319,6 +464,8 @@ where
             self.execution_cache.clone(),
             prewarm_ctx,
             to_multi_proof,
+            None,
+            64,
         );
 
         // spawn pre-warm task
@@ -406,6 +553,9 @@ pub struct PayloadHandle<Tx, Err> {
     state_root: Option<mpsc::Receiver<Result<StateRootComputeOutcome, ParallelStateRootError>>>,
     /// Stream of block transactions
     transactions: mpsc::Receiver<Result<Tx, Err>>,
+
+    pub hash_post_state_tx: Option<Sender<MultiProofMessage>>,
+    triedb_state_root: Option<mpsc::Receiver<Result<(B256, Option<Arc<DiffLayer>>), String>>>,
 }
 
 impl<Tx, Err> PayloadHandle<Tx, Err> {
@@ -420,6 +570,16 @@ impl<Tx, Err> PayloadHandle<Tx, Err> {
             .expect("state_root is None")
             .recv()
             .map_err(|_| ParallelStateRootError::Other("sparse trie task dropped".to_string()))?
+    }
+
+    /// Returns the triedb state root
+    pub fn triedb_state_root(&mut self) -> Result<(B256, Option<Arc<DiffLayer>>), String> {
+        self.triedb_state_root
+            .take()
+            .expect("triedb_state_root is None")
+            .recv()
+            .map_err(|_| "triedb state root dropped".to_string())?
+            .map_err(|e| format!("triedb state root error: {}", e))
     }
 
     /// Returns a state hook to be used to send state updates to this task.
@@ -559,6 +719,93 @@ where
             evm_env: Default::default(),
             hash: Default::default(),
             parent_hash: Default::default(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct TriedbTask {
+    parent_root: B256,
+    difflayer: Option<DiffLayers>,
+    hashe_post_state: HashedPostState,
+    triedb: TrieDB<PathDB>,
+
+    targets_rx: Receiver<MultiProofMessage>,
+    state_root_tx: mpsc::Sender<Result<(B256, Option<Arc<DiffLayer>>), String>>,
+}
+
+impl TriedbTask {
+    fn new(
+        parent_root: B256,
+        difflayer: Option<DiffLayers>,
+        targets_rx: Receiver<MultiProofMessage>,
+        state_root_tx: mpsc::Sender<Result<(B256, Option<Arc<DiffLayer>>), String>>,
+    ) -> Self {
+
+        let mut triedb = get_global_triedb();
+        triedb.state_at(parent_root, difflayer.as_ref()).unwrap();
+
+        Self {
+            parent_root,
+            difflayer,
+            hashe_post_state: HashedPostState::default(),
+            triedb,
+            targets_rx,
+            state_root_tx,
+        }
+    }
+
+    pub(crate) fn is_update(&self) -> bool {
+        if self.hashe_post_state.accounts.len() > 100 || self.hashe_post_state.storages.len() > 10 {
+            return true;
+        }
+        return false;
+    }
+
+    pub(crate) fn run(mut self) {
+        let mut update_count = 0;
+        loop {
+            match self.targets_rx.recv() {
+                Ok(message) => match message {
+                    MultiProofMessage::HashedPostStateUpdate(hashed_post_state) => {
+                        if !hashed_post_state.is_empty() {
+                            update_count += 1;
+                            // self.triedb.update_hashed_post_state(&hashed_post_state).unwrap();
+                            self.triedb.calculate_hash().unwrap();
+                        }
+                    }
+                    MultiProofMessage::FinishedStateUpdates => {
+                        // let (root_hash, difflayer) = self.triedb.commit_all_hashed_post_state().unwrap();
+
+                        // info!(target: "engine::tree", "finish async triedb calc hash task finished, update_count={}", update_count);
+                        // self.state_root_tx
+                        //     .send(Ok((
+                        //         root_hash,
+                        //         difflayer)))
+                        //     .expect("failed to send state root result");
+                        break;
+                    }
+                    MultiProofMessage::StateUpdate(_, _) => {
+                        panic!("triedb calc hash task receive exception state update message")
+                    }
+                    MultiProofMessage::PrefetchProofs(_) => {
+                        panic!("triedb calc hash task receive exception prefetch proofs message")
+                    }
+                    MultiProofMessage::ProofCalculated(_) => {
+                        panic!("triedb calc hash task receive exception proof calculated message")
+                    }
+                    MultiProofMessage::ProofCalculationError(err) => {
+                        panic!("triedb calc hash task receive exception proof calculation error message, {:?}", err)
+                    }
+                    MultiProofMessage::EmptyProof { .. } => {
+                        panic!("triedb calc hash task receive exception empty proof message")
+                    }
+                }
+                Err(err) => {
+                    warn!("triedb calc hash task receive error, {:?}", err);
+                    break;
+                }
+            }
         }
     }
 }
