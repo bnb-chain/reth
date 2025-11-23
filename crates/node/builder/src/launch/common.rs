@@ -40,7 +40,7 @@ use alloy_primitives::{BlockNumber, B256};
 use eyre::Context;
 use rayon::ThreadPoolBuilder;
 use reth_chainspec::{Chain, EthChainSpec, EthereumHardfork, EthereumHardforks};
-use reth_config::{config::EtlConfig, PruneConfig};
+use reth_config::{config::EtlConfig, PruneConfig, StateDbConfig};
 use reth_consensus::noop::NoopConsensus;
 use reth_db_api::{database::Database, database_metrics::DatabaseMetrics};
 use reth_db_common::init::{init_genesis, InitStorageError};
@@ -161,12 +161,13 @@ impl LaunchContext {
             .wrap_err_with(|| format!("Could not load config file {config_path:?}"))?;
 
         Self::save_pruning_config_if_full_node(&mut toml_config, config, &config_path)?;
+        Self::save_statedb_config_if_triedb(&mut toml_config, config, &config_path, &self.data_dir)?;
 
         info!(target: "reth::cli", path = ?config_path, "Configuration loaded");
 
         // Update the config with the command line arguments
         toml_config.peers.trusted_nodes_only = config.network.trusted_only;
-        
+
         // Apply fastnode settings when skip_state_root_validation is enabled
         if config.engine.skip_state_root_validation {
             info!(target: "reth::cli", "Fastnode mode enabled via --engine.skip-state-root-validation - disabling hashing stages and state root validation");
@@ -193,6 +194,83 @@ impl LaunchContext {
             }
         } else if config.prune_config().is_none() {
             warn!(target: "reth::cli", "Prune configs present in config file but --full not provided. Running as a Full node");
+        }
+        Ok(())
+    }
+
+    /// Save state database config to the toml file.
+    fn save_statedb_config_if_triedb<ChainSpec>(
+        reth_config: &mut reth_config::Config,
+        config: &NodeConfig<ChainSpec>,
+        config_path: impl AsRef<std::path::Path>,
+        data_dir: &ChainPath<DataDirPath>,
+    ) -> eyre::Result<()>
+    where
+        ChainSpec: EthChainSpec + reth_chainspec::EthereumHardforks,
+    {
+        match &reth_config.statedb {
+            Some(existing_config) => {
+                // Config already exists in file, log current config
+                info!(
+                    target: "reth::cli",
+                    db_type = %existing_config.r#type,
+                    db_path = ?existing_config.path,
+                    "State database config found in toml file"
+                );
+
+                // Check for conflicts
+                if config.statedb.triedb && existing_config.r#type != "triedb" {
+                    warn!(
+                        target: "reth::cli",
+                        "Conflict: --statedb.triedb is set but config file specifies {} database. Using config file setting.",
+                        existing_config.r#type
+                    );
+                }
+
+                // Update path if it may have changed (e.g., datadir changed)
+                let expected_path = if existing_config.r#type == "triedb" {
+                    data_dir.data_dir().join("rust_eth_triedb")
+                } else {
+                    data_dir.data_dir().join("db")
+                };
+
+                if existing_config.path != expected_path.clone() {
+                    let new_path = expected_path.clone();
+                    let mut updated_config = existing_config.clone();
+                    updated_config.path = expected_path;
+                    reth_config.update_statedb_config(updated_config);
+                    info!(
+                        target: "reth::cli",
+                        new_path = ?new_path,
+                        "Updating state database path in config file"
+                    );
+                    reth_config.save(config_path.as_ref())?;
+                }
+            }
+            None => {
+                // No config in file, create and save based on command line argument
+                if config.statedb.triedb {
+                    // Use TrieDB
+                    let triedb_path = data_dir.data_dir().join("rust_eth_triedb");
+                    let statedb_config = StateDbConfig {
+                        r#type: "triedb".to_string(),
+                        path: triedb_path,
+                    };
+                    reth_config.update_statedb_config(statedb_config);
+                    info!(target: "reth::cli", "Saving state database config (triedb) to toml file");
+                    reth_config.save(config_path.as_ref())?;
+                } else {
+                    // Use default MDBX and save to file
+                    let db_path = data_dir.data_dir().join("db");
+                    let statedb_config = StateDbConfig {
+                        r#type: "mdbx".to_string(),
+                        path: db_path,
+                    };
+                    reth_config.update_statedb_config(statedb_config);
+                    info!(target: "reth::cli", "Saving state database config (mdbx) to toml file");
+                    reth_config.save(config_path.as_ref())?;
+                }
+            }
         }
         Ok(())
     }
