@@ -461,6 +461,8 @@ reth-ress-provider = { path = "crates/ress/provider" }
 
 # triedb
 rust-eth-triedb = { git = "https://github.com/joey0612/rust-eth-triedb.git", branch = "integrate_reth" }
+rust-eth-triedb-common = { git = "https://github.com/joey0612/rust-eth-triedb.git", branch = "integrate_reth", package = "rust-eth-triedb-common" }
+rust-eth-triedb-state-trie = { git = "https://github.com/joey0612/rust-eth-triedb.git", branch = "integrate_reth", package = "rust-eth-triedb-state-trie" }
 
 # revm
 revm = { version = "29.0.0", default-features = false }
