@@ -75,6 +75,39 @@ impl HashedPostState {
     /// Initialize [`HashedPostState`] from bundle state.
     /// Hashes all changed accounts and storage entries that are currently stored in the bundle
     /// state.
+    pub fn from_bundle_state_to_unwind<'a, KH: KeyHasher>(
+        state: impl IntoIterator<Item = (&'a Address, &'a BundleAccount)>,
+    ) -> Self {
+        let hashed = state
+            .into_iter()
+            .map(|(address, account)| {
+                let hashed_address = KH::hash_key(address);
+                let hashed_account = account.original_info.as_ref().map(Into::into);
+                let hashed_storage = match hashed_account {
+                    None => HashedStorage::new(false),
+                    Some(_) => HashedStorage::from_plain_storage(
+                        AccountStatus::Changed,
+                        account.storage.iter().map(|(slot, value)| (slot, &value.previous_or_original_value)),
+                    ),
+                };
+                (hashed_address, (hashed_account, hashed_storage))
+            })
+            .collect::<Vec<(B256, (Option<Account>, HashedStorage))>>();
+
+        let mut accounts = HashMap::with_capacity_and_hasher(hashed.len(), Default::default());
+        let mut storages = HashMap::with_capacity_and_hasher(hashed.len(), Default::default());
+        for (address, (account, storage)) in hashed {
+            accounts.insert(address, account);
+            if !storage.is_empty() {
+                storages.insert(address, storage);
+            }
+        }
+        Self { accounts, storages }
+    }
+
+    /// Initialize [`HashedPostState`] from bundle state.
+    /// Hashes all changed accounts and storage entries that are currently stored in the bundle
+    /// state.
     #[cfg(not(feature = "rayon"))]
     pub fn from_bundle_state<'a, KH: KeyHasher>(
         state: impl IntoIterator<Item = (&'a Address, &'a BundleAccount)>,

@@ -303,38 +303,42 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
         // Unwind storage history indices.
         self.unwind_storage_history_indices(changed_storages.iter().copied())?;
 
-        // Calculate the reverted merkle root.
-        // This is the same as `StateRoot::incremental_root_with_updates`, only the prefix sets
-        // are pre-loaded.
-        let prefix_sets = TriePrefixSets {
-            account_prefix_set: account_prefix_set.freeze(),
-            storage_prefix_sets,
-            destroyed_accounts,
-        };
-        let (new_state_root, trie_updates) = StateRoot::from_tx(&self.tx)
-            .with_prefix_sets(prefix_sets)
-            .root_with_updates()
-            .map_err(reth_db_api::DatabaseError::from)?;
+        if !rust_eth_triedb::triedb_manager::is_triedb_active() {
+            // Calculate the reverted merkle root.
+            // This is the same as `StateRoot::incremental_root_with_updates`, only the prefix sets
+            // are pre-loaded.
+            let prefix_sets = TriePrefixSets {
+                account_prefix_set: account_prefix_set.freeze(),
+                storage_prefix_sets,
+                destroyed_accounts,
+            };
+            let (new_state_root, trie_updates) = StateRoot::from_tx(&self.tx)
+                .with_prefix_sets(prefix_sets)
+                .root_with_updates()
+                .map_err(reth_db_api::DatabaseError::from)?;
 
-        let parent_number = range.start().saturating_sub(1);
-        let parent_state_root = self
-            .header_by_number(parent_number)?
-            .ok_or_else(|| ProviderError::HeaderNotFound(parent_number.into()))?
-            .state_root();
+            let parent_number = range.start().saturating_sub(1);
+            let parent_state_root = self
+                .header_by_number(parent_number)?
+                .ok_or_else(|| ProviderError::HeaderNotFound(parent_number.into()))?
+                .state_root();
 
-        // state root should be always correct as we are reverting state.
-        // but for sake of double verification we will check it again.
-        if new_state_root != parent_state_root {
-            let parent_hash = self
-                .block_hash(parent_number)?
-                .ok_or_else(|| ProviderError::HeaderNotFound(parent_number.into()))?;
-            return Err(ProviderError::UnwindStateRootMismatch(Box::new(RootMismatch {
-                root: GotExpected { got: new_state_root, expected: parent_state_root },
-                block_number: parent_number,
-                block_hash: parent_hash,
-            })))
+            // state root should be always correct as we are reverting state.
+            // but for sake of double verification we will check it again.
+            if new_state_root != parent_state_root {
+                let parent_hash = self
+                    .block_hash(parent_number)?
+                    .ok_or_else(|| ProviderError::HeaderNotFound(parent_number.into()))?;
+                return Err(ProviderError::UnwindStateRootMismatch(Box::new(RootMismatch {
+                    root: GotExpected { got: new_state_root, expected: parent_state_root },
+                    block_number: parent_number,
+                    block_hash: parent_hash,
+                })))
+            }
+            self.write_trie_updates(&trie_updates)?;
+        } else {
+            tracing::error!("unwind_trie_state_range is not supported triedb");
         }
-        self.write_trie_updates(&trie_updates)?;
 
         Ok(())
     }
@@ -2295,6 +2299,12 @@ impl<TX: DbTxMut + DbTx + 'static, N: NodeTypesForProvider> StateWriter
 impl<TX: DbTxMut + DbTx + 'static, N: NodeTypes> TrieWriter for DatabaseProvider<TX, N> {
     /// Writes trie updates. Returns the number of entries modified.
     fn write_trie_updates(&self, trie_updates: &TrieUpdates) -> ProviderResult<usize> {
+        if rust_eth_triedb::triedb_manager::is_triedb_active() {
+            tracing::error!("write_trie_updates is not supported triedb");
+            return Err(ProviderError::Database(DatabaseError::Other("write_trie_updates is not supported triedb".to_string())));
+        }
+
+
         if trie_updates.is_empty() {
             return Ok(0)
         }
@@ -2349,6 +2359,11 @@ impl<TX: DbTxMut + DbTx + 'static, N: NodeTypes> StorageTrieWriter for DatabaseP
         &self,
         storage_tries: &B256Map<StorageTrieUpdates>,
     ) -> ProviderResult<usize> {
+        if rust_eth_triedb::triedb_manager::is_triedb_active() {
+            tracing::error!("write_storage_trie_updates is not supported triedb");
+            return Err(ProviderError::Database(DatabaseError::Other("write_trie_updates is not supported triedb".to_string())));
+        }
+
         let mut num_entries = 0;
         let mut storage_tries = Vec::from_iter(storage_tries);
         storage_tries.sort_unstable_by(|a, b| a.0.cmp(b.0));

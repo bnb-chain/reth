@@ -67,8 +67,8 @@ use reth_node_metrics::{
 };
 use reth_provider::{
     providers::{NodeTypesForProvider, ProviderNodeTypes, StaticFileProvider},
-    BlockHashReader, BlockNumReader, BlockReaderIdExt, ChainSpecProvider, ProviderError,
-    ProviderFactory, ProviderResult, StageCheckpointReader, StateProviderFactory,
+    BlockHashReader, BlockNumReader, BlockReaderIdExt, ChainSpecProvider, HeaderProvider,
+    ProviderError, ProviderFactory, ProviderResult, StageCheckpointReader, StateProviderFactory,
     StaticFileProviderFactory,
 };
 use reth_prune::{PruneModes, PrunerBuilder};
@@ -91,7 +91,7 @@ use tokio::sync::{
 use futures::{future::Either, stream, Stream, StreamExt};
 use reth_node_ethstats::EthStatsService;
 use reth_node_events::{cl::ConsensusLayerHealthEvents, node::NodeEvent};
-use rust_eth_triedb::triedb_manager::{disable_triedb, init_global_manager};
+use rust_eth_triedb::triedb_manager::{init_global_triedb_manager, disable_triedb, is_triedb_active};
 
 /// Reusable setup for launching a node.
 ///
@@ -240,7 +240,7 @@ impl LaunchContext {
                 if existing_config.r#type == "triedb" {
                     // Initialize TrieDB with the configured path
                     let path_str = expected_path.to_string_lossy().to_string();
-                    init_global_manager(&path_str);
+                    init_global_triedb_manager(&path_str);
                 } else {
                     // Disable TrieDB if using MDBX
                     disable_triedb();
@@ -269,7 +269,7 @@ impl LaunchContext {
                     info!(target: "reth::cli", "Saving state database config (triedb) to toml file");
                     reth_config.save(config_path.as_ref())?;
                     // Initialize TrieDB
-                    init_global_manager(&path_str);
+                    init_global_triedb_manager(&path_str);
                     None
                 } else {
                     // Use default MDBX and save to file
@@ -1022,6 +1022,10 @@ where
     ///
     /// A target block hash if the pipeline is inconsistent, otherwise `None`.
     pub fn check_pipeline_consistency(&self) -> ProviderResult<Option<B256>> {
+        if is_triedb_active() {
+            return self.check_pipeline_consistency_under_triedb();
+        }
+
         // If no target was provided, check if the stages are congruent - check if the
         // checkpoint of the last stage matches the checkpoint of the first.
         let first_stage_checkpoint = self
@@ -1058,6 +1062,85 @@ where
         Ok(None)
     }
 
+    /// Check if the pipeline is consistent under TrieDB.
+    pub fn check_pipeline_consistency_under_triedb(&self) -> ProviderResult<Option<B256>> {
+        // If no target was provided, check if the stages are congruent - check if the
+        // checkpoint of the last stage matches the checkpoint of the first.
+        let mut first_stage_checkpoint = self
+            .blockchain_db()
+            .get_stage_checkpoint(*StageId::ALL.first().unwrap())?
+            .unwrap_or_default()
+            .block_number;
+
+        let triedb = rust_eth_triedb::get_global_triedb();
+        let (triedb_checkpoint_block_number, triedb_checkpoint_state_root) = triedb.latest_persist_state().unwrap();
+
+        // Skip the first stage as we've already retrieved it and comparing all other checkpoints
+        // against it.
+        for stage_id in StageId::ALL.iter() {
+            let stage_checkpoint = self
+                .blockchain_db()
+                .get_stage_checkpoint(*stage_id)?
+                .unwrap_or_default()
+                .block_number;
+
+            // If the checkpoint of any stage is less than the checkpoint of the first stage,
+            // retrieve and return the block hash of the latest header and use it as the target.
+            if stage_checkpoint < first_stage_checkpoint {
+                if triedb_checkpoint_block_number > first_stage_checkpoint {
+                    info!(
+                        target: "consensus::engine",
+                        triedb_checkpoint_block_number,
+                        first_stage_checkpoint,
+                        "TrieDB checkpoint is ahead of the first stage checkpoint, using TrieDB checkpoint as the target"
+                    );
+                    first_stage_checkpoint = triedb_checkpoint_block_number;
+                }
+                info!(
+                    target: "consensus::engine",
+                    first_stage_checkpoint,
+                    inconsistent_stage_id = %stage_id,
+                    inconsistent_stage_checkpoint = stage_checkpoint,
+                    "Pipeline sync progress is inconsistent"
+                );
+                return self.blockchain_db().block_hash(first_stage_checkpoint);
+            }
+        }
+
+        info!(target: "consensus::engine", "Pipeline sync progress is consistent, will check live sync progress");
+
+        let last_persisted_block_number = self.blockchain_db().last_block_number()?;
+        let last_persisted_header = self.blockchain_db().header_by_number(last_persisted_block_number)?
+            .ok_or_else(|| reth_provider::ProviderError::HeaderNotFound(alloy_eips::BlockHashOrNumber::Number(last_persisted_block_number)))?;
+        let last_persisted_state_root = last_persisted_header.state_root();
+
+        if last_persisted_block_number > triedb_checkpoint_block_number {
+            info!(target: "consensus::engine",
+            last_persisted_block_number,
+            last_persisted_state_root = ?last_persisted_state_root,
+            triedb_checkpoint_block_number,
+            triedb_checkpoint_state_root = ?triedb_checkpoint_state_root,
+            "Last persisted state is ahead of the TrieDB state, start pipeline sync to align");
+            return self.blockchain_db().block_hash(last_persisted_block_number);
+        } else if last_persisted_block_number < triedb_checkpoint_block_number {
+            info!(target: "consensus::engine",
+            last_persisted_block_number,
+            last_persisted_state_root = ?last_persisted_state_root,
+            triedb_checkpoint_block_number,
+            triedb_checkpoint_state_root = ?triedb_checkpoint_state_root,
+            "Last persisted state is behind of the TrieDB state, start pipeline sync to align");
+            return self.blockchain_db().block_hash(last_persisted_block_number);
+        } else {
+            info!(target: "consensus::engine",
+            last_persisted_block_number,
+            last_persisted_state_root = ?last_persisted_state_root,
+            triedb_checkpoint_block_number,
+            triedb_checkpoint_state_root = ?triedb_checkpoint_state_root,
+            "Last persisted state equal TrieDB state, start live sync");
+        }
+
+        Ok(None)
+    }
     /// Expire the pre-merge transactions if the node is configured to do so and the chain has a
     /// merge block.
     ///

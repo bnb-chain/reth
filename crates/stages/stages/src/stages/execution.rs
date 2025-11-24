@@ -5,6 +5,7 @@ use num_traits::Zero;
 use reth_config::config::ExecutionConfig;
 use reth_consensus::{ConsensusError, FullConsensus};
 use reth_db::{static_file::HeaderMask, tables};
+use reth_db_api::DatabaseError;
 use reth_evm::{execute::Executor, metrics::ExecutorMetrics, ConfigureEvm};
 use reth_execution_types::Chain;
 use reth_exex::{ExExManagerHandle, ExExNotification, ExExNotificationSource};
@@ -29,6 +30,9 @@ use std::{
     task::{ready, Context, Poll},
     time::{Duration, Instant},
 };
+use reth_trie_common::{HashedPostState, KeccakKeyHasher};
+use rust_eth_triedb::triedb_manager::is_triedb_active;
+use rust_eth_triedb::get_global_triedb;
 use tracing::*;
 
 use super::missing_static_data_error;
@@ -464,6 +468,67 @@ where
             "Execution time"
         );
 
+        if is_triedb_active() {
+            let merkle_time = Instant::now();
+
+            let mut triedb = get_global_triedb();
+            let (latest_block_number, latest_state_root) = triedb.latest_persist_state()
+                .map_err(|e| StageError::Fatal(Box::new(e)))?;
+
+            if latest_block_number < stage_progress {
+                let root_hash = if start_block == 0 {
+                    alloy_trie::EMPTY_ROOT_HASH
+                } else {
+                    // latest_block_number < start_block
+                    // use the latest state root, maybe empty block
+                    latest_state_root
+                };
+
+                let validate_root = if stage_progress == 0 {
+                    alloy_trie::EMPTY_ROOT_HASH
+                } else {
+                    let block_number = stage_progress;
+                    let block = provider
+                        .recovered_block(block_number.into(), TransactionVariant::NoHash)?
+                        .ok_or_else(|| ProviderError::HeaderNotFound(block_number.into()))?;
+                    block.header().state_root()
+                };
+
+                let hashed_post_state = HashedPostState::from_bundle_state::<KeccakKeyHasher>(
+                    state.bundle.state(),
+                );
+
+                info!(target: "sync::stages::execution",
+                    "Begin update triedb, start={}, end={}, parent_root={:?}, target_root={:?}, accounts={}, storages={}",
+                    start_block,
+                    stage_progress,
+                    root_hash,
+                    validate_root,
+                    hashed_post_state.accounts.len(),
+                    hashed_post_state.storages.len(),
+                );
+
+                let (new_root, difflayer) = triedb.commit_hashed_post_state(root_hash, None, &hashed_post_state)
+                    .map_err(|e| StageError::Fatal(Box::new(e)))?;
+
+                if new_root != validate_root {
+                    return Err(StageError::Fatal(Box::new(ProviderError::Database(DatabaseError::Other(format!("execution update triedb, start={}, end={}, new_root({:?}) != validate_root({:?})", start_block, stage_progress, new_root, validate_root))))));
+                }
+                triedb.flush(stage_progress, new_root, &difflayer)
+                    .map_err(|e| StageError::Fatal(Box::new(e)))?;
+
+                info!(target: "sync::stages::execution",
+                    "End update triedb, start={}, end={}, parent_root={:?}, validate_root={:?}, update_triedb_time={:?}",
+                    start_block,
+                    stage_progress,
+                    root_hash,
+                    validate_root,
+                    merkle_time.elapsed());
+            } else {
+                info!(target: "sync::stages::execution", "latest_block_number >= stage_progress skip update triedb, latest_block_number={}, stage_progress={}", latest_block_number, stage_progress);
+            }
+        }
+
         let done = stage_progress == max_block;
         Ok(ExecOutput {
             checkpoint: StageCheckpoint::new(stage_progress)
@@ -506,6 +571,39 @@ where
         // This also updates `PlainStorageState` and `PlainAccountState`.
         let bundle_state_with_receipts =
             provider.take_state_above(unwind_to, StorageLocation::Both)?;
+
+        if is_triedb_active() {
+            let mut triedb = get_global_triedb();
+            let (latest_block_number, latest_state_root) = triedb.latest_persist_state()
+                .map_err(|e| StageError::Fatal(Box::new(e)))?;
+
+            if latest_block_number > unwind_to {
+                let hashed_post_state = HashedPostState::from_bundle_state_to_unwind::<KeccakKeyHasher>(
+                    bundle_state_with_receipts.bundle.state()
+                );
+                let (new_root, difflayer) = triedb.commit_hashed_post_state(latest_state_root, None, &hashed_post_state)
+                    .map_err(|e| StageError::Fatal(Box::new(e)))?;
+
+                let validate_root = if unwind_to == 0 {
+                    alloy_trie::EMPTY_ROOT_HASH
+                } else {
+                    let block_number = unwind_to;
+                    let block = provider
+                        .recovered_block(block_number.into(), TransactionVariant::NoHash)?
+                        .ok_or_else(|| ProviderError::HeaderNotFound(block_number.into()))?;
+                    block.header().state_root()
+                };
+
+                if new_root != validate_root {
+                    return Err(StageError::Fatal(Box::new(ProviderError::Database(DatabaseError::Other(format!("unwind execution update triedb, unwind_to={}, new_root({:?}) != validate_root({:?}), hashed_post_state={:?}", unwind_to, new_root, validate_root, hashed_post_state))))));
+                }
+
+                triedb.flush(latest_block_number, new_root, &difflayer)
+                    .map_err(|e| StageError::Fatal(Box::new(e)))?;
+            } else {
+                warn!("latest_block_number <= unwind_to, latest_triedb_block_number={}, unwind_to={}", latest_block_number, unwind_to);
+            }
+        }
 
         // Prepare the input for post unwind commit hook, where an `ExExNotification` will be sent.
         if self.exex_manager_handle.has_exexs() {
