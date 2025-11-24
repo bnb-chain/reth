@@ -193,7 +193,7 @@ where
             )?;
 
             if is_triedb_active() {
-                let (new_root, difflayer) = triedb.commit_hashed_post_state(latest_state_root, None, &hashed_state_clone)
+                let (new_root, difflayer) = triedb.commit_hashed_post_state(latest_state_root, None, hashed_state_clone.as_ref())
                     .map_err(|e| ProviderError::other(e))?;
                 if new_root != state_root {
                     return Err(ProviderError::Database(DatabaseError::Other(format!("write hashed state to triedb, block_number={}, new_root({:?}) != state_root({:?})", block_number, new_root, state_root))));
