@@ -82,6 +82,9 @@ fdlimit.workspace = true
 rayon.workspace = true
 serde_json.workspace = true
 
+## triedb
+rust-eth-triedb.workspace = true
+
 # tracing
 tracing.workspace = true
 

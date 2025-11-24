@@ -82,7 +82,7 @@ use reth_static_file::StaticFileProducer;
 use reth_tasks::TaskExecutor;
 use reth_tracing::tracing::{debug, error, info, warn};
 use reth_transaction_pool::TransactionPool;
-use std::{sync::Arc, thread::available_parallelism};
+use std::{path::PathBuf, sync::Arc, thread::available_parallelism};
 use tokio::sync::{
     mpsc::{unbounded_channel, UnboundedSender},
     oneshot, watch,
@@ -91,6 +91,7 @@ use tokio::sync::{
 use futures::{future::Either, stream, Stream, StreamExt};
 use reth_node_ethstats::EthStatsService;
 use reth_node_events::{cl::ConsensusLayerHealthEvents, node::NodeEvent};
+use rust_eth_triedb::triedb_manager::{disable_triedb, init_global_manager};
 
 /// Reusable setup for launching a node.
 ///
@@ -208,7 +209,8 @@ impl LaunchContext {
     where
         ChainSpec: EthChainSpec + reth_chainspec::EthereumHardforks,
     {
-        match &reth_config.statedb {
+        // Collect information first to avoid borrow conflicts
+        let update_action: Option<(PathBuf, StateDbConfig)> = match &reth_config.statedb {
             Some(existing_config) => {
                 // Config already exists in file, log current config
                 info!(
@@ -234,17 +236,23 @@ impl LaunchContext {
                     data_dir.data_dir().join("db")
                 };
 
-                if existing_config.path != expected_path.clone() {
-                    let new_path = expected_path.clone();
+                // Initialize or disable TrieDB based on config type
+                if existing_config.r#type == "triedb" {
+                    // Initialize TrieDB with the configured path
+                    let path_str = expected_path.to_string_lossy().to_string();
+                    init_global_manager(&path_str);
+                } else {
+                    // Disable TrieDB if using MDBX
+                    disable_triedb();
+                }
+
+                // Check if path needs to be updated
+                if existing_config.path != expected_path {
                     let mut updated_config = existing_config.clone();
-                    updated_config.path = expected_path;
-                    reth_config.update_statedb_config(updated_config);
-                    info!(
-                        target: "reth::cli",
-                        new_path = ?new_path,
-                        "Updating state database path in config file"
-                    );
-                    reth_config.save(config_path.as_ref())?;
+                    updated_config.path = expected_path.clone();
+                    Some((expected_path, updated_config))
+                } else {
+                    None
                 }
             }
             None => {
@@ -252,13 +260,17 @@ impl LaunchContext {
                 if config.statedb.triedb {
                     // Use TrieDB
                     let triedb_path = data_dir.data_dir().join("rust_eth_triedb");
+                    let path_str = triedb_path.to_string_lossy().to_string();
                     let statedb_config = StateDbConfig {
                         r#type: "triedb".to_string(),
-                        path: triedb_path,
+                        path: triedb_path.clone(),
                     };
                     reth_config.update_statedb_config(statedb_config);
                     info!(target: "reth::cli", "Saving state database config (triedb) to toml file");
                     reth_config.save(config_path.as_ref())?;
+                    // Initialize TrieDB
+                    init_global_manager(&path_str);
+                    None
                 } else {
                     // Use default MDBX and save to file
                     let db_path = data_dir.data_dir().join("db");
@@ -269,9 +281,24 @@ impl LaunchContext {
                     reth_config.update_statedb_config(statedb_config);
                     info!(target: "reth::cli", "Saving state database config (mdbx) to toml file");
                     reth_config.save(config_path.as_ref())?;
+                    // Disable TrieDB
+                    disable_triedb();
+                    None
                 }
             }
+        };
+
+        // Perform update action outside the match block to avoid borrow conflicts
+        if let Some((new_path, updated_config)) = update_action {
+            reth_config.update_statedb_config(updated_config);
+            info!(
+                target: "reth::cli",
+                new_path = ?new_path,
+                "Updating state database path in config file"
+            );
+            reth_config.save(config_path.as_ref())?;
         }
+
         Ok(())
     }
 

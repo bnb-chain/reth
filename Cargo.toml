@@ -459,6 +459,9 @@ reth-zstd-compressors = { path = "crates/storage/zstd-compressors", default-feat
 reth-ress-protocol = { path = "crates/ress/protocol" }
 reth-ress-provider = { path = "crates/ress/provider" }
 
+# triedb
+rust-eth-triedb = { git = "https://github.com/joey0612/rust-eth-triedb.git", branch = "integrate_reth" }
+
 # revm
 revm = { version = "29.0.0", default-features = false }
 revm-bytecode = { version = "6.2.2", default-features = false }
