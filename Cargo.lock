@@ -11349,7 +11349,7 @@ checksum = "48fd7bd8a6377e15ad9d42a8ec25371b94ddc67abe7c8b9127bec79bebaaae18"
 [[package]]
 name = "rust-eth-triedb"
 version = "0.1.0"
-source = "git+https://github.com/joey0612/rust-eth-triedb.git?branch=integrate_reth#43f23f11548aa639469a6d8f663df97da3ed53cb"
+source = "git+https://github.com/joey0612/rust-eth-triedb.git?branch=integrate_reth#a8619400a6df110d5718d32160c955d6ad9ff0e7"
 dependencies = [
  "alloy-primitives",
  "alloy-trie",
@@ -11370,7 +11370,7 @@ dependencies = [
 [[package]]
 name = "rust-eth-triedb-common"
 version = "0.1.0"
-source = "git+https://github.com/joey0612/rust-eth-triedb.git?branch=integrate_reth#43f23f11548aa639469a6d8f663df97da3ed53cb"
+source = "git+https://github.com/joey0612/rust-eth-triedb.git?branch=integrate_reth#a8619400a6df110d5718d32160c955d6ad9ff0e7"
 dependencies = [
  "alloy-primitives",
  "auto_impl",
@@ -11380,7 +11380,7 @@ dependencies = [
 [[package]]
 name = "rust-eth-triedb-pathdb"
 version = "0.1.0"
-source = "git+https://github.com/joey0612/rust-eth-triedb.git?branch=integrate_reth#43f23f11548aa639469a6d8f663df97da3ed53cb"
+source = "git+https://github.com/joey0612/rust-eth-triedb.git?branch=integrate_reth#a8619400a6df110d5718d32160c955d6ad9ff0e7"
 dependencies = [
  "alloy-primitives",
  "alloy-trie",
@@ -11397,7 +11397,7 @@ dependencies = [
 [[package]]
 name = "rust-eth-triedb-state-trie"
 version = "0.1.0"
-source = "git+https://github.com/joey0612/rust-eth-triedb.git?branch=integrate_reth#43f23f11548aa639469a6d8f663df97da3ed53cb"
+source = "git+https://github.com/joey0612/rust-eth-triedb.git?branch=integrate_reth#a8619400a6df110d5718d32160c955d6ad9ff0e7"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",

@@ -581,8 +581,6 @@ where
                 let hashed_post_state = HashedPostState::from_bundle_state_to_unwind::<KeccakKeyHasher>(
                     bundle_state_with_receipts.bundle.state()
                 );
-                let (new_root, difflayer) = triedb.commit_hashed_post_state(latest_state_root, None, &hashed_post_state)
-                    .map_err(|e| StageError::Fatal(Box::new(e)))?;
 
                 let validate_root = if unwind_to == 0 {
                     alloy_trie::EMPTY_ROOT_HASH
@@ -593,6 +591,11 @@ where
                         .ok_or_else(|| ProviderError::HeaderNotFound(block_number.into()))?;
                     block.header().state_root()
                 };
+
+                info!(target: "sync::stages::execution", "Begin unwind execution update triedb, latest_block_number={}, unwind_to={}, latest_state_root={:?}, target_root={:?}, accounts={}, storages={}", latest_block_number, unwind_to, latest_state_root, validate_root, hashed_post_state.accounts.len(), hashed_post_state.storages.len());
+                let (new_root, difflayer) = triedb.commit_hashed_post_state(latest_state_root, None, &hashed_post_state)
+                    .map_err(|e| StageError::Fatal(Box::new(e)))?;
+                info!(target: "sync::stages::execution", "End unwind execution update triedb, new_root={:?}, target_root={:?}", new_root, validate_root);
 
                 if new_root != validate_root {
                     return Err(StageError::Fatal(Box::new(ProviderError::Database(DatabaseError::Other(format!("unwind execution update triedb, unwind_to={}, new_root({:?}) != validate_root({:?}), hashed_post_state={:?}", unwind_to, new_root, validate_root, hashed_post_state))))));
