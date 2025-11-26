@@ -1838,9 +1838,9 @@ dependencies = [
 
 [[package]]
 name = "borsh"
-version = "1.5.7"
+version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ad8646f98db542e39fc66e68a20b2144f6a732636df7c2354e74645faaa433ce"
+checksum = "d1da5ab77c1437701eeff7c88d968729e7766172279eab0676857b3d63af7a6f"
 dependencies = [
  "borsh-derive",
  "cfg_aliases",
@@ -1848,9 +1848,9 @@ dependencies = [
 
 [[package]]
 name = "borsh-derive"
-version = "1.5.7"
+version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fdd1d3c0c2f5833f22386f252fe8ed005c7f59fdcddeef025c01b4c3b9fd9ac3"
+checksum = "0686c856aa6aac0c4498f936d7d6a02df690f614c03e4d906d1018062b5c5e2c"
 dependencies = [
  "once_cell",
  "proc-macro-crate",
@@ -10757,6 +10757,8 @@ dependencies = [
  "reth-primitives-traits",
  "revm-database",
  "revm-state",
+ "rust-eth-triedb",
+ "rust-eth-triedb-state-trie",
  "serde",
  "serde_json",
  "serde_with",
@@ -11291,7 +11293,7 @@ checksum = "48fd7bd8a6377e15ad9d42a8ec25371b94ddc67abe7c8b9127bec79bebaaae18"
 [[package]]
 name = "rust-eth-triedb"
 version = "0.1.0"
-source = "git+https://github.com/joey0612/rust-eth-triedb.git?branch=integrate_reth#a8619400a6df110d5718d32160c955d6ad9ff0e7"
+source = "git+https://github.com/joey0612/rust-eth-triedb.git?branch=integrate_reth#5a86ec807f0bd0f0f29717ceff8b894ada9de955"
 dependencies = [
  "alloy-primitives",
  "alloy-trie",
@@ -11299,7 +11301,6 @@ dependencies = [
  "once_cell",
  "rayon",
  "reth-metrics",
- "reth-trie-common",
  "rust-eth-triedb-common",
  "rust-eth-triedb-pathdb",
  "rust-eth-triedb-state-trie",
@@ -11312,7 +11313,7 @@ dependencies = [
 [[package]]
 name = "rust-eth-triedb-common"
 version = "0.1.0"
-source = "git+https://github.com/joey0612/rust-eth-triedb.git?branch=integrate_reth#a8619400a6df110d5718d32160c955d6ad9ff0e7"
+source = "git+https://github.com/joey0612/rust-eth-triedb.git?branch=integrate_reth#5a86ec807f0bd0f0f29717ceff8b894ada9de955"
 dependencies = [
  "alloy-primitives",
  "auto_impl",
@@ -11322,7 +11323,7 @@ dependencies = [
 [[package]]
 name = "rust-eth-triedb-pathdb"
 version = "0.1.0"
-source = "git+https://github.com/joey0612/rust-eth-triedb.git?branch=integrate_reth#a8619400a6df110d5718d32160c955d6ad9ff0e7"
+source = "git+https://github.com/joey0612/rust-eth-triedb.git?branch=integrate_reth#5a86ec807f0bd0f0f29717ceff8b894ada9de955"
 dependencies = [
  "alloy-primitives",
  "alloy-trie",
@@ -11339,7 +11340,7 @@ dependencies = [
 [[package]]
 name = "rust-eth-triedb-state-trie"
 version = "0.1.0"
-source = "git+https://github.com/joey0612/rust-eth-triedb.git?branch=integrate_reth#a8619400a6df110d5718d32160c955d6ad9ff0e7"
+source = "git+https://github.com/joey0612/rust-eth-triedb.git?branch=integrate_reth#5a86ec807f0bd0f0f29717ceff8b894ada9de955"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",

@@ -21,6 +21,10 @@ use rayon::prelude::{IntoParallelIterator, ParallelIterator};
 
 use revm_database::{AccountStatus, BundleAccount};
 
+use alloy_consensus::constants::KECCAK_EMPTY;
+use rust_eth_triedb::TrieDBHashedPostState;
+use rust_eth_triedb_state_trie::account::StateAccount;
+
 /// Representation of in-memory hashed state.
 #[derive(PartialEq, Eq, Clone, Default, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -103,6 +107,55 @@ impl HashedPostState {
             }
         }
         Self { accounts, storages }
+    }
+
+    /// Convert [`HashedPostState`] to [`TrieDBHashedPostState`].
+    pub fn to_triedb_hashed_post_state(&self) -> TrieDBHashedPostState {
+        let mut triedb_hashed_post_state = TrieDBHashedPostState::default();
+
+        for (hashed_address, account) in self.accounts.iter() {
+            match account {
+                Some(account) => {
+                    let code_hash = match account.bytecode_hash {
+                        Some(code_hash) => code_hash,
+                        None => KECCAK_EMPTY
+                    };
+                    let acc = StateAccount::default()
+                        .with_nonce(account.nonce)
+                        .with_balance(account.balance)
+                        .with_code_hash(code_hash);
+                    triedb_hashed_post_state.states.insert(*hashed_address, Some(acc));
+
+                    // check if the account is being rebuilt
+                    if let Some(storages) = self.storages.get(hashed_address) {
+                        if storages.wiped {
+                            triedb_hashed_post_state.states_rebuild.insert(*hashed_address);
+                        }
+                    }
+                }
+                None => {
+                    triedb_hashed_post_state.states.insert(*hashed_address, None);
+                }
+            }
+        }
+
+        for (hashed_address, storages) in self.storages.iter() {
+            if storages.storage.is_empty() {
+                continue;
+            }
+            let mut kvs = HashMap::new();
+            for (hashed_key, value) in storages.storage.iter() {
+                if value.is_zero() {
+                    // if the value is zero, it means the storage is being deleted
+                    kvs.insert(*hashed_key, None);
+                } else {
+                    kvs.insert(*hashed_key, Some(*value));
+                }
+            }
+            triedb_hashed_post_state.storage_states.insert(*hashed_address, kvs);
+        }
+
+        triedb_hashed_post_state
     }
 
     /// Initialize [`HashedPostState`] from bundle state.

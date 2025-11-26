@@ -44,6 +44,10 @@ arbitrary = { workspace = true, features = ["derive"], optional = true }
 # misc
 rayon = { workspace = true, optional = true }
 
+# triedb dependencies (always available)
+rust-eth-triedb = { workspace = true }
+rust-eth-triedb-state-trie = { workspace = true }
+
 [dev-dependencies]
 reth-primitives-traits = { workspace = true, features = ["serde"] }
 reth-codecs.workspace = true
