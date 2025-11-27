@@ -49,6 +49,9 @@ serde_json.workspace = true
 # tracing
 tracing.workspace = true
 
+[features]
+io-uring = ["rust-eth-triedb/io-uring"]
+
 [dev-dependencies]
 reth-db = { workspace = true, features = ["mdbx"] }
 reth-provider = { workspace = true, features = ["test-utils"] }

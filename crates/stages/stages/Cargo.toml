@@ -98,6 +98,7 @@ tempfile.workspace = true
 criterion = { workspace = true, features = ["async_tokio"] }
 
 [features]
+io-uring = ["rust-eth-triedb/io-uring"]
 test-utils = [
     "dep:reth-chainspec",
     "reth-network-p2p/test-utils",

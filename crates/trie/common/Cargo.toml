@@ -70,6 +70,7 @@ revm-state.workspace = true
 
 [features]
 default = ["std"]
+io-uring = ["rust-eth-triedb/io-uring"]
 std = [
     "alloy-consensus/std",
     "alloy-genesis/std",

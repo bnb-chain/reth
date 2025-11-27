@@ -106,6 +106,7 @@ reth-ethereum-cli.workspace = true
 
 [features]
 default = []
+io-uring = ["rust-eth-triedb/io-uring"]
 arbitrary = [
     "dep:proptest",
     "dep:arbitrary",

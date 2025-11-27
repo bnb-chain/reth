@@ -61,6 +61,7 @@ dyn-clone.workspace = true
 tracing.workspace = true
 
 [features]
+io-uring = ["rust-eth-triedb/io-uring"]
 js-tracer = ["revm-inspectors/js-tracer", "reth-rpc-eth-types/js-tracer"]
 client = ["jsonrpsee/client", "jsonrpsee/async-client"]
 op = [
