@@ -11293,7 +11293,7 @@ checksum = "48fd7bd8a6377e15ad9d42a8ec25371b94ddc67abe7c8b9127bec79bebaaae18"
 [[package]]
 name = "rust-eth-triedb"
 version = "0.1.0"
-source = "git+https://github.com/joey0612/rust-eth-triedb.git?branch=main#01797e07eb1b018e5855cc1fccd31424ca6d65f5"
+source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?tag=v0.0.1#5df59c46efd662549e04b5f24ee7f04bda960082"
 dependencies = [
  "alloy-primitives",
  "alloy-trie",
@@ -11313,7 +11313,7 @@ dependencies = [
 [[package]]
 name = "rust-eth-triedb-common"
 version = "0.1.0"
-source = "git+https://github.com/joey0612/rust-eth-triedb.git?branch=main#01797e07eb1b018e5855cc1fccd31424ca6d65f5"
+source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?tag=v0.0.1#5df59c46efd662549e04b5f24ee7f04bda960082"
 dependencies = [
  "alloy-primitives",
  "auto_impl",
@@ -11323,7 +11323,7 @@ dependencies = [
 [[package]]
 name = "rust-eth-triedb-pathdb"
 version = "0.1.0"
-source = "git+https://github.com/joey0612/rust-eth-triedb.git?branch=main#01797e07eb1b018e5855cc1fccd31424ca6d65f5"
+source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?tag=v0.0.1#5df59c46efd662549e04b5f24ee7f04bda960082"
 dependencies = [
  "alloy-primitives",
  "alloy-trie",
@@ -11340,7 +11340,7 @@ dependencies = [
 [[package]]
 name = "rust-eth-triedb-state-trie"
 version = "0.1.0"
-source = "git+https://github.com/joey0612/rust-eth-triedb.git?branch=main#01797e07eb1b018e5855cc1fccd31424ca6d65f5"
+source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?tag=v0.0.1#5df59c46efd662549e04b5f24ee7f04bda960082"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
@@ -11802,9 +11802,9 @@ dependencies = [
 
 [[package]]
 name = "serde_with"
-version = "3.16.0"
+version = "3.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "10574371d41b0d9b2cff89418eda27da52bcaff2cc8741db26382a77c29131f1"
+checksum = "4fa237f2807440d238e0364a218270b98f767a00d3dada77b1c53ae88940e2e7"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -11821,9 +11821,9 @@ dependencies = [
 
 [[package]]
 name = "serde_with_macros"
-version = "3.16.0"
+version = "3.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08a72d8216842fdd57820dc78d840bef99248e35fb2554ff923319e60f2d686b"
+checksum = "52a8e3ca0ca629121f70ab50f95249e5a6f925cc0f6ffe8256c45b728875706c"
 dependencies = [
  "darling 0.21.3",
  "proc-macro2",

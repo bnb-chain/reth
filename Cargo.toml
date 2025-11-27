@@ -462,9 +462,9 @@ reth-ress-provider = { path = "crates/ress/provider" }
 # triedb
 # Note: To enable io-uring support, add `io-uring = ["rust-eth-triedb/io-uring"]` to the [features] section
 # of any crate that depends on rust-eth-triedb. Then enable the io-uring feature at the root (bin/reth).
-rust-eth-triedb = { git = "https://github.com/joey0612/rust-eth-triedb.git", branch = "main" }
-rust-eth-triedb-common = { git = "https://github.com/joey0612/rust-eth-triedb.git", branch = "main", package = "rust-eth-triedb-common" }
-rust-eth-triedb-state-trie = { git = "https://github.com/joey0612/rust-eth-triedb.git", branch = "main", package = "rust-eth-triedb-state-trie" }
+rust-eth-triedb = { git = "https://github.com/bnb-chain/reth-bsc-triedb.git", tag = "v0.0.1" }
+rust-eth-triedb-common = { git = "https://github.com/bnb-chain/reth-bsc-triedb.git", tag = "v0.0.1", package = "rust-eth-triedb-common" }
+rust-eth-triedb-state-trie = { git = "https://github.com/bnb-chain/reth-bsc-triedb.git", tag = "v0.0.1", package = "rust-eth-triedb-state-trie" }
 
 # revm
 revm = { version = "29.0.0", default-features = false }
@@ -721,7 +721,7 @@ walkdir = "2.3.3"
 vergen-git2 = "1.0.5"
 
 # Patch rust-eth-triedb's dependencies to use local reth crates
-[patch."https://github.com/joey0612/rust-eth-triedb.git"]
+[patch."https://github.com/bnb-chain/reth-bsc-triedb.git"]
 reth-metrics = { path = "crates/metrics" }
 
 # Patch bnb-chain/reth.git dependencies to use local reth crates
