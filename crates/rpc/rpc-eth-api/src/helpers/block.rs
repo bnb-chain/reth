@@ -8,6 +8,7 @@ use crate::{
 use alloy_consensus::TxReceipt;
 use alloy_eips::{BlockId, BlockNumberOrTag};
 use alloy_rlp::Encodable;
+use tracing::{trace, warn};
 use alloy_rpc_types_eth::{Block, BlockTransactions, Index};
 use futures::Future;
 use reth_node_api::BlockBody;
@@ -66,10 +67,47 @@ pub trait EthBlocks:
                 |tx, tx_info| self.tx_resp_builder().fill(tx, tx_info),
                 |header, size| {
                     let block_number = header.number();
-                    let td = self
-                        .provider()
-                        .header_td_by_number(block_number)
-                        .map_err(Self::Error::from_eth_err)?;
+                    let td = match self.provider().header_td_by_number(block_number) {
+                        Ok(Some(td)) => {
+                            Some(td)
+                        }
+                        Ok(None) | Err(_) => {
+                            // Block not in database yet (e.g., pending block)
+                            // Calculate TD = parent_td + current_difficulty
+                            trace!(target: "rpc::eth", ?block_id, block_number, "Block not in DB, calculating TD from parent");
+
+                            let parent_number = block_number.saturating_sub(1);
+                            match self.provider().header_td_by_number(parent_number) {
+                                Ok(Some(parent_td)) => {
+                                    let current_difficulty = header.difficulty();
+                                    let calculated_td = parent_td.saturating_add(current_difficulty);
+
+                                    trace!(
+                                        target: "rpc::eth", 
+                                        ?block_id, 
+                                        block_number, 
+                                        parent_number,
+                                        ?parent_td, 
+                                        ?current_difficulty,
+                                        ?calculated_td,
+                                        "Calculated TD from parent"
+                                    );
+
+                                    Some(calculated_td)
+                                }
+                                _ => {
+                                    warn!(
+                                        target: "rpc::eth",
+                                        ?block_id,
+                                        block_number,
+                                        parent_number,
+                                        "Parent TD not found, returning None"
+                                    );
+                                    None
+                                }
+                            }
+                        }
+                    };
                     self.tx_resp_builder().convert_header(header, size, td)
                 },
             )?;
@@ -126,12 +164,20 @@ pub trait EthBlocks:
     ) -> impl Future<Output = Result<Option<usize>, Self::Error>> + Send {
         async move {
             if block_id.is_pending() {
-                // Pending block can be fetched directly without need for caching
-                return Ok(self
+                if let Some(block) = self
                     .provider()
                     .pending_block()
                     .map_err(Self::Error::from_eth_err)?
-                    .map(|block| block.body().transaction_count()));
+                {
+                    return Ok(Some(block.body().transaction_count()));
+                }
+                
+                // 2. local pending block
+                if let Some((block, _)) = self.local_pending_block().await? {
+                    return Ok(Some(block.body().transaction_count()));
+                }
+                
+                return Ok(None);
             }
 
             let block_hash = match self

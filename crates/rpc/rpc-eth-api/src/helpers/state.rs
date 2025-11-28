@@ -19,6 +19,7 @@ use reth_storage_api::{
     BlockIdReader, BlockNumReader, StateProvider, StateProviderBox, StateProviderFactory,
 };
 use reth_transaction_pool::TransactionPool;
+use rust_eth_triedb::triedb_manager::is_triedb_active;
 
 /// Helper methods for `eth_` methods relating to state (accounts).
 pub trait EthState: LoadState + SpawnBlocking {
@@ -95,6 +96,11 @@ pub trait EthState: LoadState + SpawnBlocking {
         Self: EthApiSpec,
     {
         Ok(async move {
+            // Check if TrieDB is active, return error if so
+            if is_triedb_active() {
+                return Err(EthApiError::MissingTrieNode.into())
+            }
+
             let _permit = self
                 .acquire_owned()
                 .await
@@ -134,6 +140,11 @@ pub trait EthState: LoadState + SpawnBlocking {
         block_id: BlockId,
     ) -> impl Future<Output = Result<Option<Account>, Self::Error>> + Send {
         self.spawn_blocking_io_fut(move |this| async move {
+            // Check if TrieDB is active, return error if so
+            if is_triedb_active() {
+                return Err(EthApiError::MissingTrieNode.into())
+            }
+
             let state = this.state_at_block_id(block_id).await?;
             let account = state.basic_account(&address).map_err(Self::Error::from_eth_err)?;
             let Some(account) = account else { return Ok(None) };

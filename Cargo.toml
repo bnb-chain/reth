@@ -459,6 +459,13 @@ reth-zstd-compressors = { path = "crates/storage/zstd-compressors", default-feat
 reth-ress-protocol = { path = "crates/ress/protocol" }
 reth-ress-provider = { path = "crates/ress/provider" }
 
+# triedb
+# Note: To enable io-uring support, add `io-uring = ["rust-eth-triedb/io-uring"]` to the [features] section
+# of any crate that depends on rust-eth-triedb. Then enable the io-uring feature at the root (bin/reth).
+rust-eth-triedb = { git = "https://github.com/bnb-chain/reth-bsc-triedb.git", tag = "v0.0.1" }
+rust-eth-triedb-common = { git = "https://github.com/bnb-chain/reth-bsc-triedb.git", tag = "v0.0.1", package = "rust-eth-triedb-common" }
+rust-eth-triedb-state-trie = { git = "https://github.com/bnb-chain/reth-bsc-triedb.git", tag = "v0.0.1", package = "rust-eth-triedb-state-trie" }
+
 # revm
 revm = { version = "29.0.0", default-features = false }
 revm-bytecode = { version = "6.2.2", default-features = false }
@@ -712,6 +719,15 @@ vergen = "9.0.4"
 visibility = "0.1.1"
 walkdir = "2.3.3"
 vergen-git2 = "1.0.5"
+
+# Patch rust-eth-triedb's dependencies to use local reth crates
+[patch."https://github.com/bnb-chain/reth-bsc-triedb.git"]
+reth-metrics = { path = "crates/metrics" }
+
+# Patch bnb-chain/reth.git dependencies to use local reth crates
+# This is needed because rust-eth-triedb depends on bnb-chain/reth.git
+[patch."https://github.com/bnb-chain/reth.git"]
+reth-metrics = { path = "crates/metrics" }
 
 # [patch.crates-io]
 # alloy-consensus = { git = "https://github.com/alloy-rs/alloy", rev = "3049f232fbb44d1909883e154eb38ec5962f53a3" }
