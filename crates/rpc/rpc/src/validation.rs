@@ -34,10 +34,11 @@ use reth_primitives_traits::{
 };
 use reth_revm::{cached::CachedReads, database::StateProviderDatabase};
 use reth_rpc_api::BlockSubmissionValidationApiServer;
-use reth_rpc_server_types::result::{internal_rpc_err, invalid_params_rpc_err};
+use reth_rpc_server_types::result::{internal_rpc_err, invalid_params_rpc_err, rpc_error_with_code};
 use reth_storage_api::{BlockReaderIdExt, StateProviderFactory};
 use reth_tasks::TaskSpawner;
 use revm_primitives::{Address, B256, U256};
+use rust_eth_triedb::triedb_manager::is_triedb_active;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{collections::HashSet, sync::Arc};
@@ -204,6 +205,11 @@ where
         self.consensus.validate_block_post_execution(&block, &output)?;
 
         self.ensure_payment(&block, &output, &message)?;
+
+        // Check if TrieDB is active, return error if so
+        if is_triedb_active() {
+            return Err(ValidationApiError::MissingTrieNode.into())
+        }
 
         let state_root =
             state_provider.state_root(state_provider.hashed_post_state(&output.state))?;
@@ -647,6 +653,8 @@ pub enum ValidationApiError {
     InvalidBlobsBundle,
     #[error("block accesses blacklisted address: {_0}")]
     Blacklist(Address),
+    #[error("missing trie node")]
+    MissingTrieNode,
     #[error(transparent)]
     Blob(#[from] BlobTransactionValidationError),
     #[error(transparent)]
@@ -670,6 +678,8 @@ impl From<ValidationApiError> for ErrorObject<'static> {
             ValidationApiError::ProposerPayment |
             ValidationApiError::InvalidBlobsBundle |
             ValidationApiError::Blob(_) => invalid_params_rpc_err(error.to_string()),
+
+            ValidationApiError::MissingTrieNode => rpc_error_with_code(-32000, "missing trie node"),
 
             ValidationApiError::MissingLatestBlock |
             ValidationApiError::MissingParentBlock |

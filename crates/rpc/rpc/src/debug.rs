@@ -37,7 +37,8 @@ use reth_storage_api::{
 };
 use reth_tasks::pool::BlockingTaskGuard;
 use reth_trie_common::{updates::TrieUpdates, HashedPostState};
-use revm::{context::Block, context_interface::Transaction, state::EvmState, DatabaseCommit};
+use rust_eth_triedb::triedb_manager::is_triedb_active;
+use revm::{context_interface::Transaction, state::EvmState, DatabaseCommit};
 use revm_inspectors::tracing::{
     FourByteInspector, MuxInspector, TracingInspector, TracingInspectorConfig, TransactionContext,
 };
@@ -322,7 +323,7 @@ where
                             .eth_api()
                             .spawn_with_call_at(call, at, overrides, move |db, mut evm_env, tx_env| {
                                 Self::handle_bsc_system_transaction(&mut evm_env, &tx_env);
-                                
+
                                 let gas_limit = tx_env.gas_limit();
                                 let res =
                                     this.eth_api().inspect(db, evm_env, tx_env, &mut inspector)?;
@@ -424,7 +425,7 @@ where
                             .eth_api
                             .spawn_with_call_at(call, at, overrides, move |db, mut evm_env, tx_env| {
                                 Self::handle_bsc_system_transaction(&mut evm_env, &tx_env);
-                                
+
                                 let gas_limit = tx_env.gas_limit();
                                 this.eth_api().inspect(db, evm_env, tx_env, &mut inspector)?;
                                 let tx_info = TransactionInfo::default();
@@ -669,6 +670,11 @@ where
         let (mut exec_witness, lowest_block_number) = self
             .eth_api()
             .spawn_with_state_at_block(block.parent_hash().into(), move |state_provider| {
+                // Check if TrieDB is active, return error if so
+                if is_triedb_active() {
+                    return Err(EthApiError::MissingTrieNode.into())
+                }
+
                 let db = StateProviderDatabase::new(&state_provider);
                 let block_executor = this.eth_api().evm_config().executor(db);
 
@@ -793,7 +799,7 @@ where
                         });
 
                         Self::handle_bsc_system_transaction(&mut evm_env, &tx_env);
-                        
+
                         let gas_limit = tx_env.gas_limit();
                         let res = self.eth_api().inspect(db, evm_env, tx_env, &mut inspector)?;
 
@@ -816,9 +822,9 @@ where
                                 TracingInspectorConfig::from_geth_prestate_config(&prestate_config),
                             )
                         });
-                        
+
                         Self::handle_bsc_system_transaction(&mut evm_env, &tx_env);
-                        
+
                         let gas_limit = tx_env.gas_limit();
                         let res =
                             self.eth_api().inspect(&mut *db, evm_env, tx_env, &mut inspector)?;
@@ -936,6 +942,11 @@ where
         hashed_state: HashedPostState,
         block_id: Option<BlockId>,
     ) -> Result<(B256, TrieUpdates), Eth::Error> {
+        // Check if TrieDB is active, return error if so
+        if is_triedb_active() {
+            return Err(EthApiError::MissingTrieNode.into())
+        }
+
         self.inner
             .eth_api
             .spawn_blocking_io(move |this| {

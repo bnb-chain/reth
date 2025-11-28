@@ -3,7 +3,7 @@
 use crate::{
     args::{
         DatabaseArgs, DatadirArgs, DebugArgs, DevArgs, EngineArgs, NetworkArgs, PayloadBuilderArgs,
-        PruningArgs, RpcServerArgs, TxPoolArgs,
+        PruningArgs, RpcServerArgs, StateDbArgs, TxPoolArgs,
     },
     dirs::{ChainPath, DataDirPath},
     utils::get_single_header,
@@ -147,6 +147,9 @@ pub struct NodeConfig<ChainSpec> {
 
     /// All ERA import related arguments with --era prefix
     pub era: EraArgs,
+
+    /// All state database related arguments
+    pub statedb: StateDbArgs,
 }
 
 impl NodeConfig<ChainSpec> {
@@ -177,6 +180,7 @@ impl<ChainSpec> NodeConfig<ChainSpec> {
             datadir: DatadirArgs::default(),
             engine: EngineArgs::default(),
             era: EraArgs::default(),
+            statedb: StateDbArgs::default(),
         }
     }
 
@@ -499,6 +503,7 @@ impl<ChainSpec> NodeConfig<ChainSpec> {
             pruning: self.pruning,
             engine: self.engine,
             era: self.era,
+            statedb: self.statedb,
         }
     }
 
@@ -539,6 +544,7 @@ impl<ChainSpec> Clone for NodeConfig<ChainSpec> {
             datadir: self.datadir.clone(),
             engine: self.engine.clone(),
             era: self.era.clone(),
+            statedb: self.statedb.clone(),
         }
     }
 }

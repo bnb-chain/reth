@@ -18,6 +18,9 @@ reth-execution-errors.workspace = true
 reth-db-api.workspace = true
 reth-trie.workspace = true
 
+# triedb
+rust-eth-triedb.workspace = true
+
 # alloy
 alloy-primitives.workspace = true
 
@@ -48,6 +51,7 @@ serde_json.workspace = true
 similar-asserts.workspace = true
 
 [features]
+io-uring = ["rust-eth-triedb/io-uring"]
 metrics = ["reth-trie/metrics"]
 serde = [
     "similar-asserts/serde",
