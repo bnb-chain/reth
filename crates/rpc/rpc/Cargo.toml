@@ -43,6 +43,7 @@ reth-ethereum-primitives.workspace = true
 reth-ethereum-engine-primitives.workspace = true
 reth-node-api.workspace = true
 reth-trie-common.workspace = true
+rust-eth-triedb.workspace = true
 
 # ethereum
 alloy-eip7928.workspace = true
@@ -104,6 +105,7 @@ rand.workspace = true
 jsonrpsee = { workspace = true, features = ["client"] }
 
 [features]
+io-uring = ["rust-eth-triedb/io-uring"]
 js-tracer = [
     "revm-inspectors/js-tracer",
     "reth-rpc-eth-types/js-tracer",

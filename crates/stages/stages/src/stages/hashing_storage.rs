@@ -65,7 +65,7 @@ impl StorageHashingStage {
 impl Default for StorageHashingStage {
     fn default() -> Self {
         Self {
-            clean_threshold: 500_000,
+            clean_threshold: 5_000_000,
             commit_threshold: 100_000,
             commit_entries: 30_000_000,
             etl_config: EtlConfig::default(),

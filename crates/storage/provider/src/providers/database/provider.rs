@@ -3143,6 +3143,12 @@ impl<TX: DbTxMut + DbTx + 'static, N: NodeTypes> TrieWriter for DatabaseProvider
     /// Returns the number of entries modified.
     #[instrument(level = "debug", target = "providers::db", skip_all)]
     fn write_trie_updates_sorted(&self, trie_updates: &TrieUpdatesSorted) -> ProviderResult<usize> {
+        if rust_eth_triedb::triedb_manager::is_triedb_active() {
+            tracing::error!("write_trie_updates is not supported triedb");
+            return Err(ProviderError::Database(DatabaseError::Other(
+                "write_trie_updates is not supported triedb".to_string(),
+            )));
+        }
         if trie_updates.is_empty() {
             return Ok(0)
         }
@@ -3171,6 +3177,11 @@ impl<TX: DbTxMut + DbTx + 'static, N: NodeTypes> StorageTrieWriter for DatabaseP
         &self,
         storage_tries: impl Iterator<Item = (&'a B256, &'a StorageTrieUpdatesSorted)>,
     ) -> ProviderResult<usize> {
+        if rust_eth_triedb::triedb_manager::is_triedb_active() {
+            tracing::error!("write_storage_trie_updates is not supported triedb");
+            return Err(ProviderError::Database(DatabaseError::Other("write_trie_updates is not supported triedb".to_string())));
+        }
+
         let mut num_entries = 0;
         let mut storage_tries = storage_tries.collect::<Vec<_>>();
         storage_tries.sort_unstable_by(|a, b| a.0.cmp(b.0));

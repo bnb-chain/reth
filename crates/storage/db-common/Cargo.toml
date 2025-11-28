@@ -24,6 +24,14 @@ reth-node-types.workspace = true
 reth-static-file-types.workspace = true
 reth-execution-errors.workspace = true
 
+# triedb
+rust-eth-triedb.workspace = true
+rust-eth-triedb-common.workspace = true
+rust-eth-triedb-state-trie.workspace = true
+
+# alloy
+alloy-trie.workspace = true
+
 # eth
 alloy-consensus.workspace = true
 alloy-genesis.workspace = true
@@ -41,10 +49,13 @@ serde_json.workspace = true
 # tracing
 tracing.workspace = true
 
+[features]
+io-uring = ["rust-eth-triedb/io-uring"]
+edge = ["reth-db-api/edge", "reth-provider/rocksdb"]
+
 [dev-dependencies]
 reth-db = { workspace = true, features = ["mdbx"] }
 reth-provider = { workspace = true, features = ["test-utils"] }
-reth-tasks.workspace = true
 
 [lints]
 workspace = true

@@ -59,6 +59,9 @@ reth-primitives-traits.workspace = true
 reth-discv4.workspace = true
 reth-discv5.workspace = true
 
+# triedb
+rust-eth-triedb.workspace = true
+
 # ethereum
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
@@ -111,6 +114,8 @@ reth-provider = { workspace = true, features = ["test-utils"] }
 tempfile.workspace = true
 
 [features]
+default = []
+io-uring = ["rust-eth-triedb/io-uring"]
 arbitrary = [
     "dep:proptest",
     "dep:arbitrary",
