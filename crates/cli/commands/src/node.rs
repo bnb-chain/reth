@@ -11,7 +11,7 @@ use reth_node_builder::NodeBuilder;
 use reth_node_core::{
     args::{
         DatabaseArgs, DatadirArgs, DebugArgs, DevArgs, EngineArgs, EraArgs, NetworkArgs,
-        PayloadBuilderArgs, PruningArgs, RpcServerArgs, TxPoolArgs,
+        PayloadBuilderArgs, PruningArgs, RpcServerArgs, StateDbArgs, TxPoolArgs,
     },
     node_config::NodeConfig,
     version,
@@ -113,6 +113,10 @@ pub struct NodeCommand<C: ChainSpecParser, Ext: clap::Args + fmt::Debug = NoArgs
     #[command(flatten, next_help_heading = "ERA")]
     pub era: EraArgs,
 
+    /// All state database related arguments
+    #[command(flatten)]
+    pub statedb: StateDbArgs,
+
     /// Additional cli arguments
     #[command(flatten, next_help_heading = "Extension")]
     pub ext: Ext,
@@ -168,6 +172,7 @@ where
             ext,
             engine,
             era,
+            statedb,
         } = self;
 
         // set up node config
@@ -187,6 +192,7 @@ where
             pruning,
             engine,
             era,
+            statedb,
         };
 
         let data_dir = node_config.datadir();

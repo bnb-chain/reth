@@ -35,6 +35,9 @@ impl<TX: DbTx> TrieCursorFactory for DatabaseTrieCursorFactory<'_, TX> {
         DatabaseStorageTrieCursor<<TX as DbTx>::DupCursor<tables::StoragesTrie>>;
 
     fn account_trie_cursor(&self) -> Result<Self::AccountTrieCursor, DatabaseError> {
+        if rust_eth_triedb::triedb_manager::is_triedb_active() {
+            tracing::warn!("account_trie_cursor should be called under triedb");
+        }
         Ok(DatabaseAccountTrieCursor::new(self.0.cursor_read::<tables::AccountsTrie>()?))
     }
 
@@ -42,6 +45,9 @@ impl<TX: DbTx> TrieCursorFactory for DatabaseTrieCursorFactory<'_, TX> {
         &self,
         hashed_address: B256,
     ) -> Result<Self::StorageTrieCursor, DatabaseError> {
+        if rust_eth_triedb::triedb_manager::is_triedb_active() {
+            tracing::warn!("storage_trie_cursor should be called under triedb");
+        }
         Ok(DatabaseStorageTrieCursor::new(
             self.0.cursor_dup_read::<tables::StoragesTrie>()?,
             hashed_address,

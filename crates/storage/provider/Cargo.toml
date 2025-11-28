@@ -27,6 +27,9 @@ reth-prune-types.workspace = true
 reth-stages-types.workspace = true
 reth-trie = { workspace = true, features = ["metrics"] }
 reth-trie-db = { workspace = true, features = ["metrics"] }
+
+# triedb
+rust-eth-triedb.workspace = true
 reth-nippy-jar.workspace = true
 reth-codecs.workspace = true
 reth-evm.workspace = true
@@ -82,6 +85,7 @@ rand.workspace = true
 tokio = { workspace = true, features = ["sync", "macros", "rt-multi-thread"] }
 
 [features]
+io-uring = ["rust-eth-triedb/io-uring"]
 test-utils = [
     "reth-db/test-utils",
     "reth-nippy-jar/test-utils",

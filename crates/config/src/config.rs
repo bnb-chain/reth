@@ -29,12 +29,20 @@ pub struct Config {
     pub peers: PeersConfig,
     /// Configuration for peer sessions.
     pub sessions: SessionsConfig,
+    /// Configuration for state database.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub statedb: Option<StateDbConfig>,
 }
 
 impl Config {
     /// Sets the pruning configuration.
     pub fn update_prune_config(&mut self, prune_config: PruneConfig) {
         self.prune = Some(prune_config);
+    }
+
+    /// Sets the state database configuration.
+    pub fn update_statedb_config(&mut self, statedb_config: StateDbConfig) {
+        self.statedb = Some(statedb_config);
     }
 }
 
@@ -485,6 +493,32 @@ impl PruneConfig {
 
         if self.segments.receipts_log_filter.0.is_empty() && !receipts_log_filter.0.is_empty() {
             self.segments.receipts_log_filter = receipts_log_filter;
+        }
+    }
+}
+
+/// State database configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct StateDbConfig {
+    /// State database type: "triedb" or "mdbx"
+    #[cfg_attr(feature = "serde", serde(default = "default_statedb_type"))]
+    pub r#type: String,
+    /// Path to the state database
+    pub path: PathBuf,
+}
+
+fn default_statedb_type() -> String {
+    "mdbx".to_string()
+}
+
+impl Default for StateDbConfig {
+    fn default() -> Self {
+        Self {
+            r#type: "mdbx".to_string(),
+            // Default path will be set based on datadir when loading config
+            path: PathBuf::from("db"),
         }
     }
 }

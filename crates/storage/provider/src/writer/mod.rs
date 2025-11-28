@@ -7,6 +7,9 @@ use alloy_consensus::BlockHeader;
 use reth_chain_state::{ExecutedBlock, ExecutedBlockWithTrieUpdates};
 use reth_db_api::transaction::{DbTx, DbTxMut};
 use reth_errors::{ProviderError, ProviderResult};
+use reth_storage_errors::db::DatabaseError;
+use rust_eth_triedb::get_global_triedb;
+use rust_eth_triedb::triedb_manager::is_triedb_active;
 use reth_primitives_traits::{NodePrimitives, SignedTransaction};
 use reth_static_file_types::StaticFileSegment;
 use reth_storage_api::{DBProvider, StageCheckpointWriter, TransactionsProviderExt};
@@ -151,6 +154,8 @@ where
 
         debug!(target: "provider::storage_writer", block_count = %blocks.len(), "Writing blocks and execution data to storage");
 
+        let mut triedb = get_global_triedb();
+
         // TODO: Do performant / batched writes for each type of object
         // instead of a loop over all blocks,
         // meaning:
@@ -165,6 +170,16 @@ where
             trie,
         } in blocks
         {
+            let block_number = recovered_block.number();
+            let state_root = recovered_block.state_root();
+            let hashed_state_clone = hashed_state.clone();
+            let (latest_block_number, latest_state_root) = triedb.latest_persist_state()
+                .map_err(|e| ProviderError::other(e))?;
+
+            if latest_block_number != block_number - 1 {
+                return Err(ProviderError::Database(DatabaseError::Other(format!("latest_block_number != block_number - 1, latest_block_number={}, block_number={}", latest_block_number, block_number))));
+            }
+
             let block_hash = recovered_block.hash();
             self.database()
                 .insert_block(Arc::unwrap_or_clone(recovered_block), StorageLocation::Both)?;
@@ -177,12 +192,23 @@ where
                 StorageLocation::StaticFiles,
             )?;
 
-            // insert hashes and intermediate merkle nodes
-            self.database()
-                .write_hashed_state(&Arc::unwrap_or_clone(hashed_state).into_sorted())?;
-            self.database().write_trie_updates(
-                trie.as_ref().ok_or(ProviderError::MissingTrieUpdates(block_hash))?,
-            )?;
+            if is_triedb_active() {
+                let triedb_hashed_post_state = hashed_state_clone.as_ref().to_triedb_hashed_post_state();
+                let (new_root, difflayer) = triedb.commit_hashed_post_state(latest_state_root, None, &triedb_hashed_post_state)
+                    .map_err(|e| ProviderError::other(e))?;
+                if new_root != state_root {
+                    return Err(ProviderError::Database(DatabaseError::Other(format!("write hashed state to triedb, block_number={}, new_root({:?}) != state_root({:?})", block_number, new_root, state_root))));
+                }
+                triedb.flush(block_number, new_root, &difflayer)
+                    .map_err(|e| ProviderError::other(e))?;
+            } else {
+                // insert hashes and intermediate merkle nodes
+                self.database()
+                    .write_hashed_state(&Arc::unwrap_or_clone(hashed_state).into_sorted())?;
+                self.database().write_trie_updates(
+                    trie.as_ref().ok_or(ProviderError::MissingTrieUpdates(block_hash))?,
+                )?;
+            }
         }
 
         // update history indices

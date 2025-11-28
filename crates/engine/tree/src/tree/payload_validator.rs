@@ -270,6 +270,138 @@ where
         }
     }
 
+    /// Validates a block that has already been converted from a payload with triedb.
+    pub fn validate_block_with_state_with_triedb<T: PayloadTypes<BuiltPayload: BuiltPayload<Primitives = N>>>(
+        &mut self,
+        input: BlockOrPayload<T>,
+        mut ctx: TreeCtx<'_, N>,
+    ) -> ValidationOutcome<N, InsertPayloadError<N::Block>>
+    where
+        V: PayloadValidator<T, Block = N::Block>,
+        Evm: ConfigureEngineEvm<T::ExecutionData, Primitives = N>,
+    {
+         /// A helper macro that returns the block in case there was an error
+         macro_rules! ensure_ok {
+            ($expr:expr) => {
+                match $expr {
+                    Ok(val) => val,
+                    Err(e) => {
+                        let block = self.convert_to_block(input)?;
+                        return Err(InsertBlockError::new(block.into_sealed_block(), e.into()).into())
+                    }
+                }
+            };
+        }
+
+        let parent_hash = input.parent_hash();
+        let block_num_hash = input.num_hash();
+
+        trace!(target: "engine::tree", block=?block_num_hash, parent=?parent_hash, "Fetching block state provider");
+        let Some(provider_builder) =
+            ensure_ok!(self.state_provider_builder(parent_hash, ctx.state()))
+        else {
+            // this is pre-validated in the tree
+            return Err(InsertBlockError::new(
+                self.convert_to_block(input)?.into_sealed_block(),
+                ProviderError::HeaderNotFound(parent_hash.into()).into(),
+            )
+            .into())
+        };
+
+        let state_provider = ensure_ok!(provider_builder.build());
+
+        // fetch parent block
+        let Some(parent_block) = ensure_ok!(self.sealed_header_by_hash(parent_hash, ctx.state()))
+        else {
+            return Err(InsertBlockError::new(
+                self.convert_to_block(input)?.into_sealed_block(),
+                ProviderError::HeaderNotFound(parent_hash.into()).into(),
+            )
+            .into())
+        };
+
+        let evm_env = self.evm_env_for(&input);
+
+        let env = ExecutionEnv { evm_env, hash: input.hash(), parent_hash: input.parent_hash() };
+
+        let txs = self.tx_iterator_for(&input)?;
+        let mut handle = self.payload_processor.spawn_cache_exclusive(
+            env.clone(),
+            txs,
+            provider_builder,
+        );
+
+        // Use cached state provider before executing, used in execution after prewarming threads
+        // complete
+        let state_provider = CachedStateProvider::new_with_caches(
+            state_provider,
+            handle.caches(),
+            handle.cache_metrics(),
+        );
+
+        let output = if self.config.state_provider_metrics() {
+            let state_provider = InstrumentedStateProvider::from_state_provider(&state_provider);
+            let output = ensure_ok!(self.execute_block(&state_provider, env, &input, &mut handle));
+            state_provider.record_total_latency();
+            output
+        } else {
+            ensure_ok!(self.execute_block(&state_provider, env, &input, &mut handle))
+        };
+        // after executing the block we can stop executing transactions
+        handle.stop_prewarming_execution();
+
+        let block = self.convert_to_block(input)?;
+
+        // A helper macro that returns the block in case there was an error
+        macro_rules! ensure_ok {
+            ($expr:expr) => {
+                match $expr {
+                    Ok(val) => val,
+                    Err(e) => return Err(InsertBlockError::new(block.into_sealed_block(), e.into()).into()),
+                }
+            };
+        }
+
+        trace!(target: "engine::tree", block=?block_num_hash, "Validating block consensus");
+        // validate block consensus rules
+        ensure_ok!(self.validate_block_inner(&block));
+
+        // now validate against the parent
+        if let Err(e) =
+            self.consensus.validate_header_against_parent(block.sealed_header(), &parent_block)
+        {
+            warn!(target: "engine::tree", ?block, "Failed to validate header {} against parent: {e}", block.hash());
+            return Err(InsertBlockError::new(block.into_sealed_block(), e.into()).into())
+        }
+
+        if let Err(err) = self.consensus.validate_block_post_execution(&block, &output) {
+            // call post-block hook
+            self.on_invalid_block(&parent_block, &block, &output, None, ctx.state_mut());
+            return Err(InsertBlockError::new(block.into_sealed_block(), err.into()).into())
+        }
+
+        let hashed_state = self.provider.hashed_post_state(&output.state);
+
+        if let Err(err) =
+            self.validator.validate_block_post_execution_with_hashed_state(&hashed_state, &block)
+        {
+            // call post-block hook
+            self.on_invalid_block(&parent_block, &block, &output, None, ctx.state_mut());
+            return Err(InsertBlockError::new(block.into_sealed_block(), err.into()).into())
+        }
+        // terminate prewarming task with good state output
+        handle.terminate_caching(Some(output.state.clone()));
+
+        Ok(ExecutedBlockWithTrieUpdates {
+            block: ExecutedBlock {
+                recovered_block: Arc::new(block),
+                execution_output: Arc::new(ExecutionOutcome::from((output, block_num_hash.number))),
+                hashed_state: Arc::new(hashed_state),
+            },
+            trie: ExecutedTrieUpdates::Present(Arc::new(TrieUpdates::default())),
+        })
+    }
+
     /// Validates a block that has already been converted from a payload.
     ///
     /// This method performs:
@@ -286,6 +418,10 @@ where
         V: PayloadValidator<T, Block = N::Block>,
         Evm: ConfigureEngineEvm<T::ExecutionData, Primitives = N>,
     {
+        if rust_eth_triedb::triedb_manager::is_triedb_active() {
+            return self.validate_block_with_state_with_triedb(input, ctx);
+        }
+
         /// A helper macro that returns the block in case there was an error
         macro_rules! ensure_ok {
             ($expr:expr) => {

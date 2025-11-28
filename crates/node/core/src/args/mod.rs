@@ -68,5 +68,9 @@ pub use ress_args::RessArgs;
 mod era;
 pub use era::{DefaultEraHost, EraArgs, EraSourceArgs};
 
+/// `StateDbArgs` for configuring state database.
+mod statedb;
+pub use statedb::StateDbArgs;
+
 mod error;
 pub mod types;

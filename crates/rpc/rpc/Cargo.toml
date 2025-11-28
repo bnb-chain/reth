@@ -40,6 +40,7 @@ reth-consensus.workspace = true
 reth-consensus-common.workspace = true
 reth-node-api.workspace = true
 reth-trie-common.workspace = true
+rust-eth-triedb.workspace = true
 
 # ethereum
 alloy-evm = { workspace = true, features = ["overrides"] }
@@ -105,4 +106,5 @@ rand.workspace = true
 jsonrpsee = { workspace = true, features = ["client"] }
 
 [features]
+io-uring = ["rust-eth-triedb/io-uring"]
 js-tracer = ["revm-inspectors/js-tracer", "reth-rpc-eth-types/js-tracer"]
