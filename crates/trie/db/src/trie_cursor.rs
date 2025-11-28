@@ -181,13 +181,15 @@ where
         = DatabaseAccountTrieCursor<<TX as DbTx>::Cursor<A::AccountTrieTable>, A>
     where
         Self: 'a;
-
     type StorageTrieCursor<'a>
         = DatabaseStorageTrieCursor<<TX as DbTx>::DupCursor<A::StorageTrieTable>, A>
     where
         Self: 'a;
 
     fn account_trie_cursor(&self) -> Result<Self::AccountTrieCursor<'_>, DatabaseError> {
+        if rust_eth_triedb::triedb_manager::is_triedb_active() {
+            tracing::warn!("account_trie_cursor should be called under triedb");
+        }
         Ok(DatabaseAccountTrieCursor::new(self.tx.cursor_read::<A::AccountTrieTable>()?))
     }
 
@@ -195,6 +197,9 @@ where
         &self,
         hashed_address: B256,
     ) -> Result<Self::StorageTrieCursor<'_>, DatabaseError> {
+        if rust_eth_triedb::triedb_manager::is_triedb_active() {
+            tracing::warn!("storage_trie_cursor should be called under triedb");
+        }
         Ok(DatabaseStorageTrieCursor::new(
             self.tx.cursor_dup_read::<A::StorageTrieTable>()?,
             hashed_address,

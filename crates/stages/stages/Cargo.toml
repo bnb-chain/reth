@@ -42,13 +42,17 @@ reth-static-file-types.workspace = true
 reth-tasks.workspace = true
 reth-trie = { workspace = true, features = ["metrics"] }
 reth-trie-db = { workspace = true, features = ["metrics"] }
+reth-trie-common.workspace = true
+
+# triedb
+rust-eth-triedb.workspace = true
 
 reth-testing-utils = { workspace = true, optional = true }
 
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
 alloy-consensus.workspace = true
-alloy-rlp.workspace = true
+alloy-trie.workspace = true
 
 # async
 tokio = { workspace = true, features = ["sync"] }
@@ -97,6 +101,7 @@ paste.workspace = true
 tempfile.workspace = true
 
 [features]
+io-uring = ["rust-eth-triedb/io-uring"]
 test-utils = [
     "reth-network-p2p/test-utils",
     "reth-db/test-utils",

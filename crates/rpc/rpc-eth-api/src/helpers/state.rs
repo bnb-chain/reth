@@ -21,6 +21,7 @@ use reth_storage_api::{
     BlockIdReader, BlockReaderIdExt, StateProvider, StateProviderBox, StateProviderFactory,
 };
 use reth_transaction_pool::TransactionPool;
+use rust_eth_triedb::triedb_manager::is_triedb_active;
 use std::collections::HashMap;
 
 /// Helper methods for `eth_` methods relating to state (accounts).
@@ -159,6 +160,11 @@ pub trait EthState: LoadState + SpawnBlocking {
         Self: EthApiSpec,
     {
         Ok(async move {
+            // Check if TrieDB is active, return error if so
+            if is_triedb_active() {
+                return Err(EthApiError::MissingTrieNode.into())
+            }
+
             let _permit = self
                 .acquire_owned_tracing()
                 .await
@@ -185,32 +191,29 @@ pub trait EthState: LoadState + SpawnBlocking {
         &self,
         address: Address,
         block_id: BlockId,
-    ) -> impl Future<Output = Result<Option<Account>, Self::Error>> + Send
-    where
-        Self: EthApiSpec,
-    {
-        async move {
-            self.ensure_within_proof_window(block_id)?;
+    ) -> impl Future<Output = Result<Option<Account>, Self::Error>> + Send {
+        self.spawn_blocking_io_fut(move |this| async move {
+            // Check if TrieDB is active, return error if so
+            if is_triedb_active() {
+                return Err(EthApiError::MissingTrieNode.into())
+            }
 
-            self.spawn_blocking_io_fut(async move |this| {
-                let state = this.state_at_block_id(block_id).await?;
-                let account = state.basic_account(&address).map_err(Self::Error::from_eth_err)?;
-                let Some(account) = account else { return Ok(None) };
+            let state = this.state_at_block_id(block_id).await?;
+            let account = state.basic_account(&address).map_err(Self::Error::from_eth_err)?;
+            let Some(account) = account else { return Ok(None) };
 
-                let balance = account.balance;
-                let nonce = account.nonce;
-                let code_hash = account.bytecode_hash.unwrap_or(KECCAK_EMPTY);
+            let balance = account.balance;
+            let nonce = account.nonce;
+            let code_hash = account.bytecode_hash.unwrap_or(KECCAK_EMPTY);
 
-                // Provide a default `HashedStorage` value in order to
-                // get the storage root hash of the current state.
-                let storage_root = state
-                    .storage_root(address, Default::default())
-                    .map_err(Self::Error::from_eth_err)?;
+            // Provide a default `HashedStorage` value in order to
+            // get the storage root hash of the current state.
+            let storage_root = state
+                .storage_root(address, Default::default())
+                .map_err(Self::Error::from_eth_err)?;
 
-                Ok(Some(Account { balance, nonce, code_hash, storage_root }))
-            })
-            .await
-        }
+            Ok(Some(Account { balance, nonce, code_hash, storage_root }))
+        })
     }
 
     /// Retrieves the account's balance, nonce, and code for a given address.

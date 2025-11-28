@@ -119,6 +119,14 @@ keccak-cache-global = [
     "reth-node-ethereum/keccak-cache-global",
     "alloy-primitives/keccak-cache-global",
 ]
+
+# io-uring feature enables io-uring support for rust-eth-triedb
+# This feature is automatically propagated to all crates that depend on rust-eth-triedb
+# Each crate using rust-eth-triedb should add: io-uring = ["rust-eth-triedb/io-uring"]
+io-uring = [
+    "reth-provider/io-uring",
+    "reth-node-builder/io-uring",
+]
 jemalloc = [
     "reth-cli-util/jemalloc",
     "reth-node-core/jemalloc",
