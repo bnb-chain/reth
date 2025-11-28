@@ -38,6 +38,7 @@ use reth_tasks::TaskExecutor;
 use reth_tokio_util::EventSender;
 use reth_tracing::tracing::{debug, error, info};
 use reth_trie_db::ChangesetCache;
+use rust_eth_triedb::triedb_manager::is_triedb_active;
 use std::{future::Future, pin::Pin, sync::Arc};
 use tokio::sync::{mpsc::unbounded_channel, oneshot};
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -139,6 +140,15 @@ impl EngineNodeLauncher {
             })?
             .with_components(components_builder, on_component_initialized).await?;
 
+        let engine_tree_config = if is_triedb_active() && engine_tree_config.memory_block_buffer_target() < 256 {
+            info!(target: "reth::cli", "TrieDB is active, setting memory block buffer target to 256, old target={}", engine_tree_config.memory_block_buffer_target());
+            engine_tree_config.with_memory_block_buffer_target(256)
+        } else {
+            engine_tree_config.clone()
+        };
+
+        // Try to expire pre-merge transaction history if configured
+        ctx.expire_pre_merge_transactions()?;
         // spawn exexs if any
         let maybe_exex_manager_handle = ctx.launch_exex(installed_exex).await?;
 
