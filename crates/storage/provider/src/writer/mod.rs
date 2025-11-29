@@ -154,7 +154,12 @@ where
 
         debug!(target: "provider::storage_writer", block_count = %blocks.len(), "Writing blocks and execution data to storage");
 
-        let mut triedb = get_global_triedb();
+        // Only get TrieDB instance if TrieDB is active
+        let mut triedb_opt = if is_triedb_active() {
+            Some(get_global_triedb())
+        } else {
+            None
+        };
 
         // TODO: Do performant / batched writes for each type of object
         // instead of a loop over all blocks,
@@ -173,12 +178,19 @@ where
             let block_number = recovered_block.number();
             let state_root = recovered_block.state_root();
             let hashed_state_clone = hashed_state.clone();
-            let (latest_block_number, latest_state_root) = triedb.latest_persist_state()
-                .map_err(|e| ProviderError::other(e))?;
 
-            if latest_block_number != block_number - 1 {
-                return Err(ProviderError::Database(DatabaseError::Other(format!("latest_block_number != block_number - 1, latest_block_number={}, block_number={}", latest_block_number, block_number))));
-            }
+            // Only check latest_persist_state if TrieDB is active
+            let latest_state_root_opt = if let Some(ref mut triedb) = triedb_opt {
+                let (latest_block_number, latest_state_root) = triedb.latest_persist_state()
+                    .map_err(|e| ProviderError::other(e))?;
+
+                if latest_block_number != block_number - 1 {
+                    return Err(ProviderError::Database(DatabaseError::Other(format!("latest_block_number != block_number - 1, latest_block_number={}, block_number={}", latest_block_number, block_number))));
+                }
+                Some(latest_state_root)
+            } else {
+                None
+            };
 
             let block_hash = recovered_block.hash();
             self.database()
@@ -192,7 +204,7 @@ where
                 StorageLocation::StaticFiles,
             )?;
 
-            if is_triedb_active() {
+            if let (Some(ref mut triedb), Some(latest_state_root)) = (triedb_opt.as_mut(), latest_state_root_opt) {
                 let triedb_hashed_post_state = hashed_state_clone.as_ref().to_triedb_hashed_post_state();
                 let (new_root, difflayer) = triedb.commit_hashed_post_state(latest_state_root, None, &triedb_hashed_post_state)
                     .map_err(|e| ProviderError::other(e))?;
