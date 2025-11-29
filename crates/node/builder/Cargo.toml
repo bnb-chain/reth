@@ -99,6 +99,8 @@ reth-evm-ethereum = { workspace = true, features = ["test-utils"] }
 [features]
 default = []
 io-uring = ["rust-eth-triedb/io-uring"]
+jemalloc = ["rust-eth-triedb/jemalloc"]
+asm-keccak = ["rust-eth-triedb/asm-keccak"]
 js-tracer = ["reth-rpc/js-tracer"]
 test-utils = [
     "dep:reth-db",
