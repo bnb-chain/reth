@@ -9,7 +9,7 @@ use crate::{
     session::BlockRangeInfo,
     FetchClient,
 };
-use alloy_consensus::BlockHeader;
+use alloy_consensus::{BlockHeader, Sealable};
 use alloy_primitives::B256;
 use rand::seq::SliceRandom;
 use reth_eth_wire::{
@@ -198,8 +198,10 @@ impl<N: NetworkPrimitives> NetworkState<N> {
         // number of peers)
         let num_propagate = (self.active_peers.len() as f64).sqrt() as u64 + 1;
 
+        let hash = msg.block.block().header().hash_slow();
         let number = msg.block.block().header().number();
         let mut count = 0;
+        let mut proxyed_peer_count = 0;
 
         // Shuffle to propagate to a random sample of peers on every block announcement
         let mut peers: Vec<_> = self.active_peers.iter_mut().collect();
@@ -208,7 +210,7 @@ impl<N: NetworkPrimitives> NetworkState<N> {
         for (peer_id, peer) in peers {
             if peer.blocks.contains(&msg.hash) {
                 // skip peers which already reported the block
-                continue
+                continue;
             }
 
             // Queue a `NewBlock` message for the peer
@@ -227,10 +229,27 @@ impl<N: NetworkPrimitives> NetworkState<N> {
                 count += 1;
             }
 
-            if count >= num_propagate {
-                break
+            if count > num_propagate && self.peers_manager.is_proxyed_peer(peer_id) {
+                debug!("peer:{} is proxyed, sending new block:{}", peer_id, number);
+                self.queued_messages
+                    .push_back(StateAction::NewBlock { peer_id: *peer_id, block: msg.clone() });
+
+                // update peer block info
+                if self.state_fetcher.update_peer_block(peer_id, msg.hash, number) {
+                    peer.best_hash = msg.hash;
+                }
+
+                // mark the block as seen by the peer
+                peer.blocks.insert(msg.hash);
+                proxyed_peer_count += 1;
             }
+            // todo: evn
         }
+
+        debug!(
+            "Propagated block hash:{}, count:{}, proxyed_peer_count:{}",
+            hash, count, proxyed_peer_count,
+        );
     }
 
     /// Completes the block propagation process started in [`NetworkState::announce_new_block()`]
@@ -241,7 +260,7 @@ impl<N: NetworkPrimitives> NetworkState<N> {
         for (peer_id, peer) in &mut self.active_peers {
             if peer.blocks.contains(&msg.hash) {
                 // skip peers which already reported the block
-                continue
+                continue;
             }
 
             if self.state_fetcher.update_peer_block(peer_id, msg.hash, number) {
@@ -348,8 +367,8 @@ impl<N: NetworkPrimitives> NetworkState<N> {
                 self.state_fetcher.on_pending_disconnect(&peer_id);
                 self.queued_messages.push_back(StateAction::Disconnect { peer_id, reason });
             }
-            PeerAction::DisconnectBannedIncoming { peer_id } |
-            PeerAction::DisconnectUntrustedIncoming { peer_id } => {
+            PeerAction::DisconnectBannedIncoming { peer_id }
+            | PeerAction::DisconnectUntrustedIncoming { peer_id } => {
                 self.state_fetcher.on_pending_disconnect(&peer_id);
                 self.queued_messages.push_back(StateAction::Disconnect { peer_id, reason: None });
             }
@@ -430,7 +449,7 @@ impl<N: NetworkPrimitives> NetworkState<N> {
         loop {
             // drain buffered messages
             if let Some(message) = self.queued_messages.pop_front() {
-                return Poll::Ready(message)
+                return Poll::Ready(message);
             }
 
             while let Poll::Ready(discovery) = self.discovery.poll(cx) {
@@ -500,7 +519,7 @@ impl<N: NetworkPrimitives> NetworkState<N> {
             // We need to poll again in case we have received any responses because they may have
             // triggered follow-up requests.
             if self.queued_messages.is_empty() {
-                return Poll::Pending
+                return Poll::Pending;
             }
         }
     }
