@@ -4,7 +4,7 @@ use crate::{EthMessage, EthVersion, NetworkPrimitives};
 use alloc::{sync::Arc, vec::Vec};
 use alloy_primitives::{
     map::{HashMap, HashSet},
-    Bytes, TxHash, B256, U128,
+    Bytes, TxHash, B256, U128, U256,
 };
 use alloy_rlp::{
     Decodable, Encodable, RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper,
@@ -73,6 +73,9 @@ pub trait NewBlockPayload:
 
     /// Returns a reference to the block.
     fn block(&self) -> &Self::Block;
+    
+    /// Returns the total difficulty if available
+    fn td(&self) -> Option<U256>;
 }
 
 /// A new block with the current total difficulty, which includes the difficulty of the returned
@@ -92,6 +95,10 @@ impl<B: Block + 'static> NewBlockPayload for NewBlock<B> {
 
     fn block(&self) -> &Self::Block {
         &self.block
+    }
+    
+    fn td(&self) -> Option<U256> {
+        Some(U256::from(self.td))
     }
 }
 

@@ -169,6 +169,7 @@ impl<N: NetworkPrimitives> NetworkState<N> {
             peer,
             ActivePeer {
                 best_hash: status.blockhash,
+                best_td: status.total_difficulty,
                 capabilities,
                 request_tx,
                 pending_response: None,
@@ -282,18 +283,37 @@ impl<N: NetworkPrimitives> NetworkState<N> {
         self.state_fetcher.update_peer_block(peer_id, hash, number);
     }
 
+    /// Gets the peer's real-time best block information
+    /// Returns (best_hash, best_number, best_td)
+    pub(crate) fn get_peer_best_block(
+        &self,
+        peer_id: &PeerId,
+    ) -> Option<(B256, Option<u64>, Option<alloy_primitives::U256>)> {
+        let active_peer = self.active_peers.get(peer_id)?;
+        let best_number = self.state_fetcher.get_peer_best_number(peer_id);
+        Some((active_peer.best_hash, best_number, active_peer.best_td))
+    }
+
     /// Invoked when a new [`ForkId`] is activated.
     pub(crate) fn update_fork_id(&self, fork_id: ForkId) {
         self.discovery.update_fork_id(fork_id)
     }
 
-    /// Invoked after a `NewBlock` message was received by the peer.
+    /// Invoked after a `NewBlock` message was received by the peer with TD info.
     ///
-    /// This will keep track of blocks we know a peer has
-    pub(crate) fn on_new_block(&mut self, peer_id: PeerId, hash: B256) {
-        // Mark the blocks as seen
+    /// This will keep track of blocks we know a peer has and update the TD
+    pub(crate) fn on_new_block_with_td(
+        &mut self,
+        peer_id: PeerId,
+        hash: B256,
+        td: Option<alloy_primitives::U256>,
+    ) {
+        // Mark the blocks as seen and update TD
         if let Some(peer) = self.active_peers.get_mut(&peer_id) {
             peer.blocks.insert(hash);
+            if td.is_some() {
+                peer.best_td = td;
+            }
         }
     }
 
@@ -532,6 +552,8 @@ impl<N: NetworkPrimitives> NetworkState<N> {
 pub(crate) struct ActivePeer<N: NetworkPrimitives> {
     /// Best block of the peer.
     pub(crate) best_hash: B256,
+    /// Total difficulty of the peer (None in PoS)
+    pub(crate) best_td: Option<alloy_primitives::U256>,
     /// The capabilities of the remote peer.
     #[expect(dead_code)]
     pub(crate) capabilities: Arc<Capabilities>,
