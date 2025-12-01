@@ -99,6 +99,8 @@ criterion = { workspace = true, features = ["async_tokio"] }
 
 [features]
 io-uring = ["rust-eth-triedb/io-uring"]
+jemalloc = ["rust-eth-triedb/jemalloc"]
+asm-keccak = ["rust-eth-triedb/asm-keccak"]
 test-utils = [
     "dep:reth-chainspec",
     "reth-network-p2p/test-utils",

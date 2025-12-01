@@ -60,6 +60,7 @@ use reth_storage_api::{
     BlockBodyIndicesProvider, BlockBodyReader, NodePrimitivesProvider, StateProvider,
     StorageChangeSetReader, TryIntoHistoricalStateProvider,
 };
+use reth_storage_errors::db::DatabaseError;
 use reth_storage_errors::provider::ProviderResult;
 use reth_trie::{
     trie_cursor::{
