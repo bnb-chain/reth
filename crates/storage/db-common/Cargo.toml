@@ -51,6 +51,8 @@ tracing.workspace = true
 
 [features]
 io-uring = ["rust-eth-triedb/io-uring"]
+jemalloc = ["rust-eth-triedb/jemalloc"]
+asm-keccak = ["rust-eth-triedb/asm-keccak"]
 
 [dev-dependencies]
 reth-db = { workspace = true, features = ["mdbx"] }

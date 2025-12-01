@@ -462,9 +462,9 @@ reth-ress-provider = { path = "crates/ress/provider" }
 # triedb
 # Note: To enable io-uring support, add `io-uring = ["rust-eth-triedb/io-uring"]` to the [features] section
 # of any crate that depends on rust-eth-triedb. Then enable the io-uring feature at the root (bin/reth).
-rust-eth-triedb = { git = "https://github.com/bnb-chain/reth-bsc-triedb.git", tag = "v0.0.1" }
-rust-eth-triedb-common = { git = "https://github.com/bnb-chain/reth-bsc-triedb.git", tag = "v0.0.1", package = "rust-eth-triedb-common" }
-rust-eth-triedb-state-trie = { git = "https://github.com/bnb-chain/reth-bsc-triedb.git", tag = "v0.0.1", package = "rust-eth-triedb-state-trie" }
+rust-eth-triedb = { git = "https://github.com/bnb-chain/reth-bsc-triedb.git", branch = "complie_feature" }
+rust-eth-triedb-common = { git = "https://github.com/bnb-chain/reth-bsc-triedb.git", branch = "complie_feature", package = "rust-eth-triedb-common" }
+rust-eth-triedb-state-trie = { git = "https://github.com/bnb-chain/reth-bsc-triedb.git", branch = "complie_feature", package = "rust-eth-triedb-state-trie" }
 
 # revm
 revm = { version = "29.0.0", default-features = false }
