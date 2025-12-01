@@ -71,6 +71,8 @@ revm-state.workspace = true
 [features]
 default = ["std"]
 io-uring = ["rust-eth-triedb/io-uring"]
+jemalloc = ["rust-eth-triedb/jemalloc"]
+asm-keccak = ["rust-eth-triedb/asm-keccak"]
 std = [
     "alloy-consensus/std",
     "alloy-genesis/std",

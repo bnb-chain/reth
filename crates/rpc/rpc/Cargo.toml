@@ -107,4 +107,6 @@ jsonrpsee = { workspace = true, features = ["client"] }
 
 [features]
 io-uring = ["rust-eth-triedb/io-uring"]
+jemalloc = ["rust-eth-triedb/jemalloc"]
+asm-keccak = ["rust-eth-triedb/asm-keccak"]
 js-tracer = ["revm-inspectors/js-tracer", "reth-rpc-eth-types/js-tracer"]

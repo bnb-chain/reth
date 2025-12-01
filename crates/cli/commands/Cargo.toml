@@ -107,6 +107,8 @@ reth-ethereum-cli.workspace = true
 [features]
 default = []
 io-uring = ["rust-eth-triedb/io-uring"]
+jemalloc = ["rust-eth-triedb/jemalloc"]
+asm-keccak = ["rust-eth-triedb/asm-keccak"]
 arbitrary = [
     "dep:proptest",
     "dep:arbitrary",
