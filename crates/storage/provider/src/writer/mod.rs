@@ -1,19 +1,18 @@
 use crate::{
-    providers::{StaticFileProvider, StaticFileWriter as SfWriter},
+    providers::{StaticFileProvider, StaticFileWriter},
     BlockExecutionWriter, BlockWriter, HistoryWriter, StateWriter, StaticFileProviderFactory,
-    StorageLocation, TrieWriter,
+    TrieWriter,
 };
-use alloy_consensus::BlockHeader;
-use reth_chain_state::{ExecutedBlock, ExecutedBlockWithTrieUpdates};
+use reth_chain_state::ExecutedBlock;
 use reth_db_api::transaction::{DbTx, DbTxMut};
 use reth_errors::{ProviderError, ProviderResult};
+use reth_primitives_traits::AlloyBlockHeader;
 use reth_storage_errors::db::DatabaseError;
 use rust_eth_triedb::get_global_triedb;
 use rust_eth_triedb::triedb_manager::is_triedb_active;
 use reth_primitives_traits::{NodePrimitives, SignedTransaction};
 use reth_static_file_types::StaticFileSegment;
 use reth_storage_api::{DBProvider, StageCheckpointWriter, TransactionsProviderExt};
-use reth_storage_errors::writer::UnifiedStorageWriterError;
 use revm_database::OriginalValuesKnown;
 use std::sync::Arc;
 use tracing::debug;
@@ -69,18 +68,6 @@ impl<'a, ProviderDB, ProviderSF> UnifiedStorageWriter<'a, ProviderDB, ProviderSF
         self.static_file.as_ref().expect("should exist")
     }
 
-    /// Ensures that the static file instance is set.
-    ///
-    /// # Returns
-    /// - `Ok(())` if the static file instance is set.
-    /// - `Err(StorageWriterError::MissingStaticFileWriter)` if the static file instance is not set.
-    #[expect(unused)]
-    const fn ensure_static_file(&self) -> Result<(), UnifiedStorageWriterError> {
-        if self.static_file.is_none() {
-            return Err(UnifiedStorageWriterError::MissingStaticFileWriter)
-        }
-        Ok(())
-    }
 }
 
 impl UnifiedStorageWriter<'_, (), ()> {
@@ -135,7 +122,7 @@ where
         + StaticFileProviderFactory,
 {
     /// Writes executed blocks and receipts to storage.
-    pub fn save_blocks<N>(&self, blocks: Vec<ExecutedBlockWithTrieUpdates<N>>) -> ProviderResult<()>
+    pub fn save_blocks<N>(&self, blocks: Vec<ExecutedBlock<N>>) -> ProviderResult<()>
     where
         N: NodePrimitives<SignedTx: SignedTransaction>,
         ProviderDB: BlockWriter<Block = N::Block> + StateWriter<Receipt = N::Receipt>,
@@ -154,7 +141,12 @@ where
 
         debug!(target: "provider::storage_writer", block_count = %blocks.len(), "Writing blocks and execution data to storage");
 
-        let mut triedb = get_global_triedb();
+        // Only get TrieDB instance if TrieDB is active
+        let mut triedb_opt = if is_triedb_active() {
+            Some(get_global_triedb())
+        } else {
+            None
+        };
 
         // TODO: Do performant / batched writes for each type of object
         // instead of a loop over all blocks,
@@ -165,34 +157,36 @@ where
         //  * trie updates (cannot naively extend, need helper)
         //  * indices (already done basically)
         // Insert the blocks
-        for ExecutedBlockWithTrieUpdates {
-            block: ExecutedBlock { recovered_block, execution_output, hashed_state },
-            trie,
-        } in blocks
+        for ExecutedBlock { recovered_block, execution_output, hashed_state, trie_updates } in
+            blocks
         {
             let block_number = recovered_block.number();
             let state_root = recovered_block.state_root();
             let hashed_state_clone = hashed_state.clone();
-            let (latest_block_number, latest_state_root) = triedb.latest_persist_state()
-                .map_err(|e| ProviderError::other(e))?;
 
-            if latest_block_number != block_number - 1 {
-                return Err(ProviderError::Database(DatabaseError::Other(format!("latest_block_number != block_number - 1, latest_block_number={}, block_number={}", latest_block_number, block_number))));
-            }
+            // Only check latest_persist_state if TrieDB is active
+            let latest_state_root_opt = if let Some(ref mut triedb) = triedb_opt {
+                let (latest_block_number, latest_state_root) = triedb.latest_persist_state()
+                    .map_err(|e| ProviderError::other(e))?;
 
-            let block_hash = recovered_block.hash();
-            self.database()
-                .insert_block(Arc::unwrap_or_clone(recovered_block), StorageLocation::Both)?;
+                if latest_block_number != block_number - 1 {
+                    return Err(ProviderError::Database(DatabaseError::Other(format!("latest_block_number != block_number - 1, latest_block_number={}, block_number={}", latest_block_number, block_number))));
+                }
+                Some(latest_state_root)
+            } else {
+                None
+            };
+
+            self.database().insert_block(Arc::unwrap_or_clone(recovered_block))?;
 
             // Write state and changesets to the database.
             // Must be written after blocks because of the receipt lookup.
             self.database().write_state(
                 &execution_output,
                 OriginalValuesKnown::No,
-                StorageLocation::StaticFiles,
             )?;
 
-            if is_triedb_active() {
+            if let (Some(ref mut triedb), Some(latest_state_root)) = (triedb_opt.as_mut(), latest_state_root_opt) {
                 let triedb_hashed_post_state = hashed_state_clone.as_ref().to_triedb_hashed_post_state();
                 let (new_root, difflayer) = triedb.commit_hashed_post_state(latest_state_root, None, &triedb_hashed_post_state)
                     .map_err(|e| ProviderError::other(e))?;
@@ -205,9 +199,9 @@ where
                 // insert hashes and intermediate merkle nodes
                 self.database()
                     .write_hashed_state(&Arc::unwrap_or_clone(hashed_state).into_sorted())?;
-                self.database().write_trie_updates(
-                    trie.as_ref().ok_or(ProviderError::MissingTrieUpdates(block_hash))?,
-                )?;
+                let trie_updates_sorted = (*trie_updates).clone().into_sorted();
+                self.database().write_trie_changesets(block_number, &trie_updates_sorted, None)?;
+                self.database().write_trie_updates_sorted(&trie_updates_sorted)?;
             }
         }
 
@@ -228,7 +222,7 @@ where
     pub fn remove_blocks_above(&self, block_number: u64) -> ProviderResult<()> {
         // IMPORTANT: we use `block_number+1` to make sure we remove only what is ABOVE the block
         debug!(target: "provider::storage_writer", ?block_number, "Removing blocks from database above block_number");
-        self.database().remove_block_and_execution_above(block_number, StorageLocation::Both)?;
+        self.database().remove_block_and_execution_above(block_number)?;
 
         // Get highest static file block for the total block range
         let highest_static_file_block = self

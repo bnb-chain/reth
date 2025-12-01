@@ -105,6 +105,8 @@ asm-keccak = [
     "reth-primitives/asm-keccak",
     "reth-ethereum-cli/asm-keccak",
     "reth-node-ethereum/asm-keccak",
+    "reth-provider/asm-keccak",
+    "reth-node-builder/asm-keccak",
 ]
 keccak-cache-global = [
     "reth-node-core/keccak-cache-global",
@@ -123,6 +125,8 @@ jemalloc = [
     "reth-node-core/jemalloc",
     "reth-node-metrics/jemalloc",
     "reth-ethereum-cli/jemalloc",
+    "reth-provider/jemalloc",
+    "reth-node-builder/jemalloc",
 ]
 jemalloc-prof = [
     "reth-cli-util/jemalloc",

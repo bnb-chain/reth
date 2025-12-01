@@ -46,7 +46,6 @@ where
         &self,
         hashed_address: B256,
     ) -> Result<Self::StorageTrieCursor<'_>, DatabaseError> {
-    ) -> Result<Self::StorageTrieCursor<'_>, DatabaseError> {
         if rust_eth_triedb::triedb_manager::is_triedb_active() {
             tracing::warn!("storage_trie_cursor should be called under triedb");
         }

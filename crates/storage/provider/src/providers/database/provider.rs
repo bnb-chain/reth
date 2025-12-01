@@ -62,6 +62,7 @@ use reth_storage_api::{
     NodePrimitivesProvider, StateProvider, StateWriteConfig, StorageChangeSetReader,
     StorageSettingsCache, TryIntoHistoricalStateProvider, WriteStateInput,
 };
+use reth_storage_errors::db::DatabaseError;
 use reth_storage_errors::provider::{ProviderResult, StaticFileWriterError};
 use reth_trie::{
     changesets::storage_trie_wiped_changeset_iter,

@@ -11762,6 +11762,7 @@ dependencies = [
  "schnellru",
  "serde",
  "thiserror 1.0.69",
+ "tikv-jemallocator",
  "tracing",
 ]
 
@@ -11773,6 +11774,7 @@ dependencies = [
  "alloy-primitives",
  "auto_impl",
  "thiserror 1.0.69",
+ "tikv-jemallocator",
 ]
 
 [[package]]
@@ -11789,6 +11791,7 @@ dependencies = [
  "schnellru",
  "tempfile",
  "thiserror 1.0.69",
+ "tikv-jemallocator",
  "tracing",
 ]
 
@@ -11807,6 +11810,7 @@ dependencies = [
  "rust-eth-triedb-common",
  "rust-eth-triedb-pathdb",
  "thiserror 1.0.69",
+ "tikv-jemallocator",
  "tracing",
 ]
 

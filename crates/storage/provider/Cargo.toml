@@ -90,6 +90,8 @@ tokio = { workspace = true, features = ["sync", "macros", "rt-multi-thread"] }
 [features]
 rocksdb = ["dep:rocksdb"]
 io-uring = ["rust-eth-triedb/io-uring"]
+jemalloc = ["rust-eth-triedb/jemalloc"]
+asm-keccak = ["rust-eth-triedb/asm-keccak"]
 test-utils = [
     "reth-db/test-utils",
     "reth-nippy-jar/test-utils",

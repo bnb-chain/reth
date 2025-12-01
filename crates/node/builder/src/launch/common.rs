@@ -34,6 +34,7 @@ use crate::{
     hooks::OnComponentInitializedHook,
     BuilderContext, ExExLauncher, NodeAdapter, PrimitivesTy,
 };
+use alloy_consensus::BlockHeader as _;
 use alloy_eips::eip2124::Head;
 use alloy_primitives::{BlockNumber, B256};
 use eyre::Context;
@@ -78,7 +79,7 @@ use reth_stages::{
     sets::DefaultStages, stages::EraImportSource, MetricEvent, PipelineBuilder, PipelineTarget,
     StageId,
 };
-use reth_static_file::StaticFileProducer;
+use reth_static_file::{StaticFileProducer, StaticFileSegment};
 use reth_tasks::TaskExecutor;
 use reth_tracing::{
     throttle,
@@ -1241,7 +1242,10 @@ where
                         .is_some_and(|lowest| lowest < merge_block)
                     {
                         info!(target: "reth::cli", merge_block, "Expiring pre-merge transactions");
-                        provider.delete_transactions_below(merge_block)?;
+                        provider.delete_segment_below_block(
+                            StaticFileSegment::Transactions,
+                            merge_block,
+                        )?;
                     } else {
                         debug!(target: "reth::cli", merge_block, "No pre-merge transactions to expire");
                     }
