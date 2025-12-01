@@ -329,7 +329,7 @@ where
             .into())
         };
 
-        let evm_env = self.evm_env_for(&input);
+        let evm_env = self.evm_env_for(&input).map_err(NewPayloadError::other)?;
 
         let env = ExecutionEnv { evm_env, hash: input.hash(), parent_hash: input.parent_hash() };
 
@@ -399,15 +399,13 @@ where
             return Err(InsertBlockError::new(block.into_sealed_block(), err.into()).into())
         }
         // terminate prewarming task with good state output
-        handle.terminate_caching(Some(output.state.clone()));
+        handle.terminate_caching(Some(&output.state));
 
-        Ok(ExecutedBlockWithTrieUpdates {
-            block: ExecutedBlock {
-                recovered_block: Arc::new(block),
-                execution_output: Arc::new(ExecutionOutcome::from((output, block_num_hash.number))),
-                hashed_state: Arc::new(hashed_state),
-            },
-            trie: ExecutedTrieUpdates::Present(Arc::new(TrieUpdates::default())),
+        Ok(ExecutedBlock {
+            recovered_block: Arc::new(block),
+            execution_output: Arc::new(ExecutionOutcome::from((output, block_num_hash.number))),
+            hashed_state: Arc::new(hashed_state),
+            trie_updates: Arc::new(TrieUpdates::default()),
         })
     }
 

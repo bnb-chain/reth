@@ -52,6 +52,8 @@ similar-asserts.workspace = true
 
 [features]
 io-uring = ["rust-eth-triedb/io-uring"]
+jemalloc = ["rust-eth-triedb/jemalloc"]
+asm-keccak = ["rust-eth-triedb/asm-keccak"]
 metrics = ["reth-trie/metrics"]
 serde = [
     "similar-asserts/serde",
