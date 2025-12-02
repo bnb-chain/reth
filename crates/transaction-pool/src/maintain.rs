@@ -794,15 +794,18 @@ mod tests {
     async fn test_save_local_txs_backup() {
         let temp_dir = tempfile::tempdir().unwrap();
         let transactions_path = temp_dir.path().join(FILENAME).with_extension(EXTENSION);
+        // Updated transaction with non-zero tip (max_priority_fee_per_gas = 0x01)
+        // Original had tip=0x80 (RLP encoding for 0) at byte position 7-8, now changed to 0x01
         let tx_bytes = hex!(
-            "02f87201830655c2808505ef61f08482565f94388c818ca8b9251b393131c08a736a67ccb192978801049e39c4b5b1f580c001a01764ace353514e8abdfb92446de356b260e3c1225b73fc4c8876a6258d12a129a04f02294aa61ca7676061cd99f29275491218b4754b46a0248e5e42bc5091f507"
+            "02f87201830655c2018505ef61f08482565f94388c818ca8b9251b393131c08a736a67ccb192978801049e39c4b5b1f580c001a01764ace353514e8abdfb92446de356b260e3c1225b73fc4c8876a6258d12a129a04f02294aa61ca7676061cd99f29275491218b4754b46a0248e5e42bc5091f507"
         );
         let tx = PooledTransactionVariant::decode_2718(&mut &tx_bytes[..]).unwrap();
         let provider = MockEthProvider::default();
         let transaction = EthPooledTransaction::from_pooled(tx.try_into_recovered().unwrap());
         let tx_to_cmp = transaction.clone();
-        let sender = hex!("1f9090aaE28b8a3dCeaDf281B0F12828e676c326").into();
-        provider.add_account(sender, ExtendedAccount::new(42, U256::MAX));
+        // Set sender with enough balance to cover transaction cost
+        let sender = transaction.sender();
+        provider.add_account(sender, ExtendedAccount::new(0, U256::MAX));
         let blob_store = InMemoryBlobStore::default();
         let validator = EthTransactionValidatorBuilder::new(provider).build(blob_store.clone());
 
