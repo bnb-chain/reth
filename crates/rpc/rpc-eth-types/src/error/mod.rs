@@ -137,9 +137,9 @@ pub enum EthApiError {
     /// When the percentile array is invalid
     #[error("invalid reward percentiles")]
     InvalidRewardPercentiles,
-    /// Missing trie node error (used when TrieDB is active)
-    #[error("missing trie node")]
-    MissingTrieNode,
+    /// Method not available error (used when TrieDB is active)
+    #[error("The method {0} does not exist/is not available")]
+    MethodNotAvailable(String),
     /// Error thrown when a spawned blocking task failed to deliver an anticipated response.
     ///
     /// This only happens if the blocking task panics and is aborted before it can return a
@@ -269,7 +269,9 @@ impl From<EthApiError> for jsonrpsee_types::error::ErrorObject<'static> {
             | EthApiError::InvalidBlockData(_)
             | EthApiError::Internal(_)
             | EthApiError::EvmCustom(_) => internal_rpc_err(error.to_string()),
-            EthApiError::MissingTrieNode => rpc_error_with_code(-32000, "missing trie node"),
+            EthApiError::MethodNotAvailable(method) => {
+                rpc_error_with_code(-32601, format!("The method {method} does not exist/is not available"))
+            }
             EthApiError::UnknownBlockOrTxIndex | EthApiError::TransactionNotFound => {
                 rpc_error_with_code(EthRpcErrorCode::ResourceNotFound.code(), error.to_string())
             }
