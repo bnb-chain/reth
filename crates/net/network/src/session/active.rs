@@ -217,9 +217,13 @@ impl<N: NetworkPrimitives> ActiveSession<N> {
                 self.try_emit_broadcast(PeerMessage::NewBlockHashes(msg)).into()
             }
             EthMessage::NewBlock(msg) => {
+                // Extract TD from NewBlock message (BSC and other chains need this)
+                let td = msg.td();
+                
                 let block = NewBlockMessage {
                     hash: msg.block().header().hash_slow(),
                     block: Arc::new(*msg),
+                    td,
                 };
                 self.try_emit_broadcast(PeerMessage::NewBlock(block)).into()
             }

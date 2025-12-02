@@ -23,6 +23,7 @@ pub mod noop;
 pub mod test_utils;
 use test_utils::PeersHandleProvider;
 
+use alloy_primitives::{B256, U256};
 pub use alloy_rpc_types_admin::EthProtocolInfo;
 pub use reth_network_p2p::{BlockClient, HeadersClient};
 pub use reth_network_types::{PeerKind, Reputation, ReputationChangeKind};
@@ -238,12 +239,18 @@ pub struct PeerInfo {
     pub direction: Direction,
     /// The negotiated eth version.
     pub eth_version: EthVersion,
-    /// The Status message the peer sent for the `eth` handshake
+    /// The Status message the peer sent for the `eth` handshake (snapshot at connection time)
     pub status: Arc<UnifiedStatus>,
     /// The timestamp when the session to that peer has been established.
     pub session_established: Instant,
     /// The peer's connection kind
     pub kind: PeerKind,
+    /// Real-time tracked best block hash of the peer
+    pub best_hash: B256,
+    /// Real-time tracked best block number of the peer
+    pub best_number: Option<u64>,
+    /// Real-time tracked total difficulty of the peer (None in PoS)
+    pub best_td: Option<U256>,
 }
 
 /// The direction of the connection.

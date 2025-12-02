@@ -8,7 +8,7 @@ use std::{
 };
 
 use reth_net_banlist::BanList;
-use reth_network_peers::{NodeRecord, TrustedPeer};
+use reth_network_peers::{NodeRecord, PeerId, TrustedPeer};
 use tracing::info;
 
 use crate::{BackoffKind, ReputationChangeWeights};
@@ -166,6 +166,9 @@ pub struct PeersConfig {
     /// This acts as an IP based rate limit.
     #[cfg_attr(feature = "serde", serde(default, with = "humantime_serde"))]
     pub incoming_ip_throttle_duration: Duration,
+
+    /// The node ids of the proxyed nodes.
+    pub proxyed_node_ids: Vec<PeerId>,
 }
 
 impl Default for PeersConfig {
@@ -184,6 +187,7 @@ impl Default for PeersConfig {
             basic_nodes: Default::default(),
             max_backoff_count: 5,
             incoming_ip_throttle_duration: INBOUND_IP_THROTTLE_DURATION,
+            proxyed_node_ids: Vec::new(),
         }
     }
 }
