@@ -11,7 +11,7 @@ use alloy_eips::{eip1898::BlockWithParent, BlockNumHash};
 use alloy_primitives::{Address, BlockHash, Sealable, Sealed, B256};
 use alloy_rlp::{Decodable, Encodable};
 use bytes::BufMut;
-use core::ops::Deref;
+use core::{hash::Hash, ops::Deref};
 
 /// Sealed full block composed of the block's header and body.
 ///
@@ -27,6 +27,12 @@ pub struct SealedBlock<B: Block> {
 }
 
 impl<B: Block> SealedBlock<B> {
+    /// Replaces the header and recomputes the hash, returning the modified sealed block.
+    pub fn set_header(mut self, header: B::Header) -> Self {
+        self.header = SealedHeader::new(header.clone(), header.hash_slow());
+        self
+    }
+
     /// Hashes the header and creates a sealed block.
     ///
     /// This calculates the header hash. To create a [`SealedBlock`] without calculating the hash
@@ -266,7 +272,7 @@ impl<B: Block> SealedBlock<B> {
             return Err(GotExpected {
                 got: calculated_root,
                 expected: self.header().transactions_root(),
-            })
+            });
         }
 
         Ok(())
