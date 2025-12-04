@@ -290,7 +290,7 @@ where
     }
 
 
-    let (root, nodes, diff_storage_roots) = triedb.batch_update_and_commit(
+    let (root, nodes, diff_storage_roots) = triedb.finalise(
         alloy_trie::EMPTY_ROOT_HASH,
         None,
         state_accounts,
