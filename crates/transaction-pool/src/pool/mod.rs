@@ -394,7 +394,7 @@ where
             new_tip, changed_accounts, mined_transactions, update_kind, ..
         } = update;
         self.validator.on_new_head_block(new_tip);
-        debug!(target: "txpool", "changed_accounts: {:?}", changed_accounts);
+        debug!(target: "txpool", "changed_accounts: {:?} mined_transactions: {:?}", changed_accounts, mined_transactions);
         let changed_senders = self.changed_senders(changed_accounts.into_iter());
 
         // update the pool
