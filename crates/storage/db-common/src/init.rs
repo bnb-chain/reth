@@ -298,8 +298,7 @@ where
         storage_states)
         .map_err(|_| ProviderError::Database(DatabaseError::Other("Failed to update and commit state".to_string())))?;
 
-    let diff_nodes = (*nodes.to_diff_nodes()).clone();
-    let difflayer = Some(Arc::new(DiffLayer::new(diff_nodes, diff_storage_roots)));
+    let difflayer = Some(Arc::new(DiffLayer::new(nodes.to_diff_nodes(), diff_storage_roots)));
     triedb.flush(0, root, &difflayer).map_err(|_| ProviderError::Database(DatabaseError::Other("Failed to flush state".to_string())))?;
 
     info!(target: "reth::storage", "Triedb genesis state root computed: {:?}", root);
