@@ -31,6 +31,7 @@ use alloy_eips::{
     Typed2718,
 };
 use alloy_primitives::{Address, TxHash, B256};
+use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 use std::{
@@ -680,6 +681,17 @@ impl<T: TransactionOrdering> TxPool<T> {
         let sender_id = tx.sender_id();
         let current_nonce = self.sender_info.get(&sender_id).map(|i| i.state_nonce).unwrap_or(0);
         trace!(target: "txpool", "add_transaction: txhash: {}, sender: {}, on_chain_nonce: {}, current_nonce: {}, tx_nonce: {}", tx.hash(), tx.sender(), on_chain_nonce, current_nonce, tx.nonce());
+        // TODO: temporarily add a nonce double check to prevent the transaction from being added to the pool if the nonce is lower than the current nonce
+        if tx.nonce() < current_nonce {
+            return Err(PoolError::new(*tx.hash(), PoolErrorKind::InvalidTransaction(
+                InvalidPoolTransactionError::Consensus(
+                    InvalidTransactionError::NonceNotConsistent {
+                         tx: tx.nonce(), 
+                         state: current_nonce 
+                    }
+                )
+            )))
+        }
         self.validate_auth(&tx, on_chain_nonce, on_chain_code_hash)?;
 
         // Update sender info with balance and nonce
