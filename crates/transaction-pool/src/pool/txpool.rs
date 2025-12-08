@@ -41,7 +41,7 @@ use std::{
     ops::Bound::{Excluded, Unbounded},
     sync::Arc,
 };
-use tracing::{trace, warn};
+use tracing::{debug, trace, warn};
 
 #[cfg_attr(doc, aquamarine::aquamarine)]
 // TODO: Inlined diagram due to a bug in aquamarine library, should become an include when it's
@@ -680,9 +680,11 @@ impl<T: TransactionOrdering> TxPool<T> {
         
         let sender_id = tx.sender_id();
         let current_nonce = self.sender_info.get(&sender_id).map(|i| i.state_nonce).unwrap_or(0);
-        trace!(target: "txpool", "add_transaction: txhash: {}, sender: {}, on_chain_nonce: {}, current_nonce: {}, tx_nonce: {}", tx.hash(), tx.sender(), on_chain_nonce, current_nonce, tx.nonce());
+        trace!(target: "txpool", "add transaction: txhash: {}, sender: {}, on_chain_nonce: {}, current_nonce: {}, tx_nonce: {}", tx.hash(), tx.sender(), on_chain_nonce, current_nonce, tx.nonce());
         // TODO: temporarily add a nonce double check to prevent the transaction from being added to the pool if the nonce is lower than the current nonce
         if tx.nonce() < current_nonce {
+            debug!(target: "txpool", "double check nonce failed when adding transaction: txhash: {}, sender: {}, nonce: {}, current_nonce: {}, tx_nonce: {}", 
+                tx.hash(), tx.sender(), tx.nonce(), current_nonce, tx.nonce());
             return Err(PoolError::new(*tx.hash(), PoolErrorKind::InvalidTransaction(
                 InvalidPoolTransactionError::Consensus(
                     InvalidTransactionError::NonceNotConsistent {
