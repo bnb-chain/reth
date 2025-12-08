@@ -2,9 +2,8 @@ use clap::{Parser, Subcommand};
 use reth_db::static_file::iter_static_files;
 use reth_db_api::{
     database::Database,
-    table::Table,
     transaction::{DbTx, DbTxMut},
-    TableViewer, Tables,
+    AccountsTrie, StoragesTrie,
 };
 use reth_node_builder::NodeTypesWithDB;
 use reth_provider::{ProviderFactory, StaticFileProviderFactory};
@@ -24,8 +23,20 @@ impl Command {
         provider_factory: ProviderFactory<N>,
     ) -> eyre::Result<()> {
         match self.subcommand {
-            Subcommands::Mdbx { table } => {
-                table.view(&ClearViewer { db: provider_factory.db_ref() })?
+            Subcommands::Mdbx => {
+                let db = provider_factory.db_ref();
+                let tx = db.tx_mut()?;
+
+                // Clear AccountsTrie table
+                tx.clear::<AccountsTrie>()?;
+                println!("Cleared AccountsTrie table");
+
+                // Clear StoragesTrie table
+                tx.clear::<StoragesTrie>()?;
+                println!("Cleared StoragesTrie table");
+
+                tx.commit()?;
+                println!("Successfully cleared AccountsTrie and StoragesTrie tables");
             }
             Subcommands::StaticFile { segment } => {
                 let static_file_provider = provider_factory.static_file_provider();
@@ -45,23 +56,8 @@ impl Command {
 
 #[derive(Subcommand, Debug)]
 enum Subcommands {
-    /// Deletes all database table entries
-    Mdbx { table: Tables },
+    /// Deletes AccountsTrie and StoragesTrie table entries
+    Mdbx,
     /// Deletes all static file segment entries
     StaticFile { segment: StaticFileSegment },
-}
-
-struct ClearViewer<'a, DB: Database> {
-    db: &'a DB,
-}
-
-impl<DB: Database> TableViewer<()> for ClearViewer<'_, DB> {
-    type Error = eyre::Report;
-
-    fn view<T: Table>(&self) -> Result<(), Self::Error> {
-        let tx = self.db.tx_mut()?;
-        tx.clear::<T>()?;
-        tx.commit()?;
-        Ok(())
-    }
 }
