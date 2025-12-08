@@ -57,7 +57,7 @@ pub struct PendingPool<T: TransactionOrdering> {
 impl<T: TransactionOrdering> PendingPool<T> {
     /// Create a new pending pool instance.
     pub fn new(ordering: T) -> Self {
-        Self::with_buffer(ordering, 2000)
+        Self::with_buffer(ordering, 200)
     }
 
     /// Create a new pool instance with the given buffer capacity.
