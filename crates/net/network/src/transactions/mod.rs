@@ -13,9 +13,24 @@ pub use self::constants::{
     tx_fetcher::DEFAULT_SOFT_LIMIT_BYTE_SIZE_POOLED_TRANSACTIONS_RESP_ON_PACK_GET_POOLED_TRANSACTIONS_REQ,
     SOFT_LIMIT_BYTE_SIZE_POOLED_TRANSACTIONS_RESPONSE,
 };
-// Cache sizing/logging for recovered tx reuse.
-const RECOVERED_TX_CACHE_SIZE: u32 = 16_384;
-const RECOVERED_TX_LOG_INTERVAL: u64 = 10_000;
+// Cache sizing/logging for recovered tx reuse (defaults).
+const DEFAULT_RECOVERED_TX_CACHE_SIZE: u32 = 32_768;
+const DEFAULT_RECOVERED_TX_LOG_INTERVAL: u64 = 10_000;
+/// Configurable knobs for recovered tx cache behaviour.
+#[derive(Debug, Clone, Copy)]
+pub struct RecoveredCacheConfig {
+    pub size: u32,
+    pub log_interval: u64,
+}
+
+impl Default for RecoveredCacheConfig {
+    fn default() -> Self {
+        Self {
+            size: DEFAULT_RECOVERED_TX_CACHE_SIZE,
+            log_interval: DEFAULT_RECOVERED_TX_LOG_INTERVAL,
+        }
+    }
+}
 use config::{AnnouncementAcceptance, StrictEthAnnouncementFilter, TransactionPropagationKind};
 pub use config::{
     AnnouncementFilteringPolicy, TransactionFetcherConfig, TransactionPropagationMode,
@@ -353,6 +368,10 @@ pub struct TransactionsManager<
     config: TransactionsManagerConfig,
     /// Network Policies
     policies: PBundle,
+    /// Cache config for recovered txs.
+    recovered_cache_config: RecoveredCacheConfig,
+    /// Cache config for recovered txs.
+    recovered_cache_config: RecoveredCacheConfig,
     /// `TransactionsManager` metrics
     metrics: TransactionsManagerMetrics,
     /// `AnnouncedTxTypes` metrics
@@ -399,6 +418,7 @@ impl<Pool: TransactionPool, N: NetworkPrimitives, PBundle: TransactionPolicies>
         policies: PBundle,
     ) -> Self {
         let network_events = network.event_listener();
+        let recovered_cache_config = RecoveredCacheConfig::default();
 
         let (command_tx, command_rx) = mpsc::unbounded_channel();
 
@@ -426,7 +446,7 @@ impl<Pool: TransactionPool, N: NetworkPrimitives, PBundle: TransactionPolicies>
                 DEFAULT_MAX_COUNT_PENDING_POOL_IMPORTS,
             ),
             bad_imports: LruCache::new(DEFAULT_MAX_COUNT_BAD_IMPORTS),
-            recovered_txs: LruMap::new(RECOVERED_TX_CACHE_SIZE),
+            recovered_txs: LruMap::new(recovered_cache_config.size),
             recovered_cache_hits: AtomicU64::new(0),
             recovered_cache_misses: AtomicU64::new(0),
             recovered_cache_evictions: AtomicU64::new(0),
@@ -440,6 +460,7 @@ impl<Pool: TransactionPool, N: NetworkPrimitives, PBundle: TransactionPolicies>
             ),
             config: transactions_manager_config,
             policies,
+            recovered_cache_config,
             metrics,
             announced_tx_types_metrics: AnnouncedTxTypesMetrics::default(),
         }
@@ -1391,7 +1412,7 @@ where
                     Ok(tx) => {
                         let len_before = self.recovered_txs.len();
                         _ = self.recovered_txs.insert(tx_hash, tx.clone());
-                        if len_before >= RECOVERED_TX_CACHE_SIZE as usize {
+                        if len_before >= self.recovered_cache_config.size as usize {
                             self.recovered_cache_evictions.fetch_add(1, Ordering::Relaxed);
                         }
                         tx
@@ -1411,7 +1432,9 @@ where
 
             let total_recover_ops = self.recovered_cache_hits.load(Ordering::Relaxed)
                 + self.recovered_cache_misses.load(Ordering::Relaxed);
-            if total_recover_ops != 0 && total_recover_ops % RECOVERED_TX_LOG_INTERVAL == 0 {
+            if total_recover_ops != 0
+                && total_recover_ops % self.recovered_cache_config.log_interval == 0
+            {
                 error!(
                     target: "net::tx",
                     hits = self.recovered_cache_hits.load(Ordering::Relaxed),
