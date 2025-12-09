@@ -29,13 +29,14 @@ use crate::{
         DEFAULT_BUDGET_TRY_DRAIN_PENDING_POOL_IMPORTS, DEFAULT_BUDGET_TRY_DRAIN_POOL_IMPORTS,
         DEFAULT_BUDGET_TRY_DRAIN_STREAM,
     },
-    cache::LruCache,
+    cache::{LruCache, LruMap},
     duration_metered_exec, metered_poll_nested_stream_with_budget,
     metrics::{
         AnnouncedTxTypesMetrics, TransactionsManagerMetrics, NETWORK_POOL_TRANSACTIONS_SCOPE,
     },
     NetworkHandle, TxTypesCounter,
 };
+use alloy_consensus::transaction::Recovered;
 use alloy_primitives::{TxHash, B256};
 use constants::SOFT_LIMIT_COUNT_HASHES_IN_NEW_POOLED_TRANSACTIONS_BROADCAST_MESSAGE;
 use futures::{stream::FuturesUnordered, Future, StreamExt};
@@ -68,7 +69,7 @@ use std::{
     collections::{hash_map::Entry, HashMap, HashSet},
     pin::Pin,
     sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
         Arc,
     },
     task::{Context, Poll},
@@ -76,7 +77,7 @@ use std::{
 };
 use tokio::sync::{mpsc, oneshot, oneshot::error::RecvError};
 use tokio_stream::wrappers::{ReceiverStream, UnboundedReceiverStream};
-use tracing::{debug, trace};
+use tracing::{debug, error, trace};
 
 /// The future for importing transactions into the pool.
 ///
@@ -318,6 +319,11 @@ pub struct TransactionsManager<
     pending_pool_imports_info: PendingPoolImportsInfo,
     /// Bad imports.
     bad_imports: LruCache<TxHash>,
+    /// Cache recovered transactions to avoid repeated signature recovery for duplicates.
+    recovered_txs: LruMap<TxHash, Recovered<N::PooledTransaction>>,
+    recovered_cache_hits: AtomicU64,
+    recovered_cache_misses: AtomicU64,
+    recovered_cache_evictions: AtomicU64,
     /// All the connected peers.
     peers: HashMap<PeerId, PeerMetadata<N>>,
     /// Send half for the command channel.
@@ -389,6 +395,10 @@ impl<Pool: TransactionPool, N: NetworkPrimitives, PBundle: TransactionPolicies>
         transactions_manager_config: TransactionsManagerConfig,
         policies: PBundle,
     ) -> Self {
+        // Cache size tuned to cover typical pending imports without excessive memory.
+        const RECOVERED_TX_CACHE_SIZE: u32 = 16_384;
+        const RECOVERED_TX_LOG_INTERVAL: u64 = 10_000;
+
         let network_events = network.event_listener();
 
         let (command_tx, command_rx) = mpsc::unbounded_channel();
@@ -417,6 +427,10 @@ impl<Pool: TransactionPool, N: NetworkPrimitives, PBundle: TransactionPolicies>
                 DEFAULT_MAX_COUNT_PENDING_POOL_IMPORTS,
             ),
             bad_imports: LruCache::new(DEFAULT_MAX_COUNT_BAD_IMPORTS),
+            recovered_txs: LruMap::new(RECOVERED_TX_CACHE_SIZE),
+            recovered_cache_hits: AtomicU64::new(0),
+            recovered_cache_misses: AtomicU64::new(0),
+            recovered_cache_evictions: AtomicU64::new(0),
             peers: Default::default(),
             command_tx,
             command_rx: UnboundedReceiverStream::new(command_rx),
@@ -1368,19 +1382,45 @@ where
         let mut new_txs = Vec::with_capacity(transactions.len());
         for tx in transactions {
             // recover transaction
-            let tx = match tx.try_into_recovered() {
-                Ok(tx) => tx,
-                Err(badtx) => {
-                    trace!(target: "net::tx",
-                        peer_id=format!("{peer_id:#}"),
-                        hash=%badtx.tx_hash(),
-                        client_version=%peer.client_version,
-                        "failed ecrecovery for transaction"
-                    );
-                    has_bad_transactions = true;
-                    continue
+            let tx_hash = *tx.tx_hash();
+            let tx = if let Some(cached) = self.recovered_txs.get(&tx_hash) {
+                self.recovered_cache_hits.fetch_add(1, Ordering::Relaxed);
+                cached.clone()
+            } else {
+                self.recovered_cache_misses.fetch_add(1, Ordering::Relaxed);
+                match tx.try_into_recovered() {
+                    Ok(tx) => {
+                        let len_before = self.recovered_txs.len();
+                        _ = self.recovered_txs.insert(tx_hash, tx.clone());
+                        if len_before >= RECOVERED_TX_CACHE_SIZE as usize {
+                            self.recovered_cache_evictions.fetch_add(1, Ordering::Relaxed);
+                        }
+                        tx
+                    }
+                    Err(badtx) => {
+                        trace!(target: "net::tx",
+                            peer_id=format!("{peer_id:#}"),
+                            hash=%badtx.tx_hash(),
+                            client_version=%peer.client_version,
+                            "failed ecrecovery for transaction"
+                        );
+                        has_bad_transactions = true;
+                        continue
+                    }
                 }
             };
+
+            let total_recover_ops = self.recovered_cache_hits.load(Ordering::Relaxed)
+                + self.recovered_cache_misses.load(Ordering::Relaxed);
+            if total_recover_ops != 0 && total_recover_ops % RECOVERED_TX_LOG_INTERVAL == 0 {
+                error!(
+                    target: "net::tx",
+                    hits = self.recovered_cache_hits.load(Ordering::Relaxed),
+                    misses = self.recovered_cache_misses.load(Ordering::Relaxed),
+                    evictions = self.recovered_cache_evictions.load(Ordering::Relaxed),
+                    "tx recover cache stats"
+                );
+            }
 
             match self.transactions_by_peers.entry(*tx.tx_hash()) {
                 Entry::Occupied(mut entry) => {
