@@ -13,6 +13,9 @@ pub use self::constants::{
     tx_fetcher::DEFAULT_SOFT_LIMIT_BYTE_SIZE_POOLED_TRANSACTIONS_RESP_ON_PACK_GET_POOLED_TRANSACTIONS_REQ,
     SOFT_LIMIT_BYTE_SIZE_POOLED_TRANSACTIONS_RESPONSE,
 };
+// Cache sizing/logging for recovered tx reuse.
+const RECOVERED_TX_CACHE_SIZE: u32 = 16_384;
+const RECOVERED_TX_LOG_INTERVAL: u64 = 10_000;
 use config::{AnnouncementAcceptance, StrictEthAnnouncementFilter, TransactionPropagationKind};
 pub use config::{
     AnnouncementFilteringPolicy, TransactionFetcherConfig, TransactionPropagationMode,
@@ -395,10 +398,6 @@ impl<Pool: TransactionPool, N: NetworkPrimitives, PBundle: TransactionPolicies>
         transactions_manager_config: TransactionsManagerConfig,
         policies: PBundle,
     ) -> Self {
-        // Cache size tuned to cover typical pending imports without excessive memory.
-        const RECOVERED_TX_CACHE_SIZE: u32 = 16_384;
-        const RECOVERED_TX_LOG_INTERVAL: u64 = 10_000;
-
         let network_events = network.event_listener();
 
         let (command_tx, command_rx) = mpsc::unbounded_channel();
