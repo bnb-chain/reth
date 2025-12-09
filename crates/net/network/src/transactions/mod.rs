@@ -370,8 +370,6 @@ pub struct TransactionsManager<
     policies: PBundle,
     /// Cache config for recovered txs.
     recovered_cache_config: RecoveredCacheConfig,
-    /// Cache config for recovered txs.
-    recovered_cache_config: RecoveredCacheConfig,
     /// `TransactionsManager` metrics
     metrics: TransactionsManagerMetrics,
     /// `AnnouncedTxTypes` metrics
