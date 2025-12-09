@@ -641,9 +641,11 @@ where
 
     /// Notify all listeners about a new pending transaction.
     fn on_new_pending_transaction(&self, pending: &AddedPendingTransaction<T::Transaction>) {
+        let start = std::time::Instant::now();
         let propagate_allowed = pending.is_propagate_allowed();
 
         let mut transaction_listeners = self.pending_transaction_listener.lock();
+        let listener_count_before = transaction_listeners.len();
         transaction_listeners.retain_mut(|listener| {
             if listener.kind.is_propagate_only() && !propagate_allowed {
                 // only emit this hash to listeners that are only allowed to receive propagate only
@@ -654,6 +656,17 @@ where
             // broadcast all pending transactions to the listener
             listener.send_all(pending.pending_transactions(listener.kind))
         });
+        let listener_count_after = transaction_listeners.len();
+        let elapsed = start.elapsed();
+        trace!(
+            target: "txpool",
+            tx_hash = %pending.transaction.hash(),
+            listener_count_before,
+            listener_count_after,
+            removed = listener_count_before - listener_count_after,
+            elapsed_us = elapsed.as_micros(),
+            "on_new_pending_transaction completed"
+        );
     }
 
     /// Notify all listeners about a newly inserted pending transaction.
