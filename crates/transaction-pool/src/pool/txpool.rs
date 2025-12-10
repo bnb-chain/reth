@@ -31,6 +31,7 @@ use alloy_eips::{
     Typed2718,
 };
 use alloy_primitives::{Address, TxHash, B256};
+use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 use std::{
@@ -40,7 +41,7 @@ use std::{
     ops::Bound::{Excluded, Unbounded},
     sync::Arc,
 };
-use tracing::{trace, warn};
+use tracing::{debug, trace, warn};
 
 #[cfg_attr(doc, aquamarine::aquamarine)]
 // TODO: Inlined diagram due to a bug in aquamarine library, should become an include when it's
@@ -676,7 +677,23 @@ impl<T: TransactionOrdering> TxPool<T> {
         if self.contains(tx.hash()) {
             return Err(PoolError::new(*tx.hash(), PoolErrorKind::AlreadyImported))
         }
-
+        
+        let sender_id = tx.sender_id();
+        let current_nonce = self.sender_info.get(&sender_id).map(|i| i.state_nonce).unwrap_or(0);
+        trace!(target: "txpool", "add transaction: txhash: {}, sender: {}, on_chain_nonce: {}, current_nonce: {}, tx_nonce: {}", tx.hash(), tx.sender(), on_chain_nonce, current_nonce, tx.nonce());
+        // TODO: temporarily add a nonce double check to prevent the transaction from being added to the pool if the nonce is lower than the current nonce
+        if tx.nonce() < current_nonce {
+            debug!(target: "txpool", "double check nonce failed when adding transaction: txhash: {}, sender: {}, nonce: {}, current_nonce: {}, tx_nonce: {}", 
+                tx.hash(), tx.sender(), tx.nonce(), current_nonce, tx.nonce());
+            return Err(PoolError::new(*tx.hash(), PoolErrorKind::InvalidTransaction(
+                InvalidPoolTransactionError::Consensus(
+                    InvalidTransactionError::NonceNotConsistent {
+                         tx: tx.nonce(), 
+                         state: current_nonce 
+                    }
+                )
+            )))
+        }
         self.validate_auth(&tx, on_chain_nonce, on_chain_code_hash)?;
 
         // Update sender info with balance and nonce
@@ -1022,7 +1039,9 @@ impl<T: TransactionOrdering> TxPool<T> {
             // We trace here instead of in subpool structs directly, because the `ParkedPool` type
             // is generic and it would not be possible to distinguish whether a transaction is
             // being removed from the `BaseFee` pool, or the `Queued` pool.
-            trace!(target: "txpool", hash=%tx.transaction.hash(), ?pool, "Removed transaction from a subpool");
+            let sender_id = tx.sender_id();
+            let current_nonce = self.sender_info.get(&sender_id).map(|i| i.state_nonce).unwrap_or(0);
+            trace!(target: "txpool", hash=%tx.transaction.hash(), ?pool, "Removed transaction from a subpool, sender: {}, current_nonce: {}, tx_nonce: {}", tx.sender(), current_nonce, tx.nonce());
         }
 
         tx
