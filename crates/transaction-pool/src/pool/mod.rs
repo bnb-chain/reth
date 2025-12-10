@@ -364,7 +364,7 @@ where
             elements.push(pooled.into_inner());
 
             if limit.exceeds(size) {
-                break
+                break;
             }
         }
 
@@ -388,13 +388,13 @@ where
         B: Block,
     {
         trace!(target: "txpool", ?update, "updating pool on canonical state change");
-
         let block_info = update.block_info();
         let CanonicalStateUpdate {
             new_tip, changed_accounts, mined_transactions, update_kind, ..
         } = update;
         self.validator.on_new_head_block(new_tip);
 
+        trace!(target: "txpool", "changed_accounts: {:?} mined_transactions: {:?}", changed_accounts, mined_transactions);
         let changed_senders = self.changed_senders(changed_accounts.into_iter());
 
         // update the pool
@@ -641,19 +641,32 @@ where
 
     /// Notify all listeners about a new pending transaction.
     fn on_new_pending_transaction(&self, pending: &AddedPendingTransaction<T::Transaction>) {
+        let start = std::time::Instant::now();
         let propagate_allowed = pending.is_propagate_allowed();
 
         let mut transaction_listeners = self.pending_transaction_listener.lock();
+        let listener_count_before = transaction_listeners.len();
         transaction_listeners.retain_mut(|listener| {
             if listener.kind.is_propagate_only() && !propagate_allowed {
                 // only emit this hash to listeners that are only allowed to receive propagate only
                 // transactions, such as network
-                return !listener.sender.is_closed()
+                return !listener.sender.is_closed();
             }
 
             // broadcast all pending transactions to the listener
             listener.send_all(pending.pending_transactions(listener.kind))
         });
+        let listener_count_after = transaction_listeners.len();
+        let elapsed = start.elapsed();
+        trace!(
+            target: "txpool",
+            tx_hash = %pending.transaction.hash(),
+            listener_count_before,
+            listener_count_after,
+            removed = listener_count_before - listener_count_after,
+            elapsed_us = elapsed.as_micros(),
+            "on_new_pending_transaction completed"
+        );
     }
 
     /// Notify all listeners about a newly inserted pending transaction.
@@ -663,7 +676,7 @@ where
             if listener.kind.is_propagate_only() && !event.transaction.propagate {
                 // only emit this hash to listeners that are only allowed to receive propagate only
                 // transactions, such as network
-                return !listener.sender.is_closed()
+                return !listener.sender.is_closed();
             }
 
             listener.send(event.clone())
@@ -674,7 +687,7 @@ where
     fn on_new_blob_sidecar(&self, tx_hash: &TxHash, sidecar: &BlobTransactionSidecarVariant) {
         let mut sidecar_listeners = self.blob_transaction_sidecar_listener.lock();
         if sidecar_listeners.is_empty() {
-            return
+            return;
         }
         let sidecar = Arc::new(sidecar.clone());
         sidecar_listeners.retain_mut(|listener| {
@@ -735,7 +748,7 @@ where
         let mut listener = self.event_listener.write();
         if listener.is_empty() {
             // nothing to notify
-            return
+            return;
         }
 
         match tx {
@@ -815,7 +828,7 @@ where
         hashes: Vec<TxHash>,
     ) -> Vec<Arc<ValidPoolTransaction<T::Transaction>>> {
         if hashes.is_empty() {
-            return Vec::new()
+            return Vec::new();
         }
         let removed = self.pool.write().remove_transactions(hashes);
 
@@ -831,7 +844,7 @@ where
         hashes: Vec<TxHash>,
     ) -> Vec<Arc<ValidPoolTransaction<T::Transaction>>> {
         if hashes.is_empty() {
-            return Vec::new()
+            return Vec::new();
         }
         let removed = self.pool.write().remove_transactions_and_descendants(hashes);
 
@@ -863,7 +876,7 @@ where
         A: HandleMempoolData,
     {
         if announcement.is_empty() {
-            return
+            return;
         }
         let pool = self.get_pool_data();
         announcement.retain_by_hash(|tx| !pool.contains(tx))
@@ -964,7 +977,7 @@ where
     /// If no transaction exists, it is skipped.
     pub fn get_all(&self, txs: Vec<TxHash>) -> Vec<Arc<ValidPoolTransaction<T::Transaction>>> {
         if txs.is_empty() {
-            return Vec::new()
+            return Vec::new();
         }
         self.get_pool_data().get_all(txs).collect()
     }
@@ -977,7 +990,7 @@ where
         txs: Vec<TxHash>,
     ) -> Vec<Arc<ValidPoolTransaction<T::Transaction>>> {
         if txs.is_empty() {
-            return Vec::new()
+            return Vec::new();
         }
         self.get_pool_data().get_all(txs).filter(|tx| tx.propagate).collect()
     }
@@ -985,7 +998,7 @@ where
     /// Notify about propagated transactions.
     pub fn on_propagated(&self, txs: PropagatedTransactions) {
         if txs.0.is_empty() {
-            return
+            return;
         }
         let mut listener = self.event_listener.write();
 
@@ -1112,9 +1125,9 @@ where
         loop {
             let next = self.iter.next()?;
             if self.kind.is_propagate_only() && !next.propagate {
-                continue
+                continue;
             }
-            return Some(*next.hash())
+            return Some(*next.hash());
         }
     }
 }
@@ -1136,12 +1149,12 @@ where
         loop {
             let next = self.iter.next()?;
             if self.kind.is_propagate_only() && !next.propagate {
-                continue
+                continue;
             }
             return Some(NewTransactionEvent {
                 subpool: SubPool::Pending,
                 transaction: next.clone(),
-            })
+            });
         }
     }
 }
