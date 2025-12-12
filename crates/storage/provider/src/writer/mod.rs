@@ -157,12 +157,15 @@ where
         //  * trie updates (cannot naively extend, need helper)
         //  * indices (already done basically)
         // Insert the blocks
-        for ExecutedBlock { recovered_block, execution_output, hashed_state, trie_updates } in
-            blocks
-        {
-            let block_number = recovered_block.number();
-            let state_root = recovered_block.state_root();
-            let hashed_state_clone = hashed_state.clone();
+        for block in blocks {
+            let block_number = block.recovered_block.number();
+            let state_root = block.recovered_block.state_root();
+            let trie_data = block.trie_data();
+            let hashed_state = trie_data.hashed_state.clone();
+            let trie_updates = trie_data.trie_updates.clone();
+            let difflayer = block.difflayer.clone();
+            let recovered_block = block.recovered_block.clone();
+            let execution_output = block.execution_output.clone();
 
             if triedb_opt.is_none() && is_triedb_active() {
                 // TrieDB became active mid-call; switch to TrieDB path for remaining blocks.
@@ -192,21 +195,27 @@ where
             )?;
 
             if let (Some(ref mut triedb), Some(latest_state_root)) = (triedb_opt.as_mut(), latest_state_root_opt) {
-                let triedb_hashed_post_state = hashed_state_clone.as_ref().to_triedb_hashed_post_state();
-                let (new_root, difflayer) = triedb.commit_hashed_post_state(latest_state_root, None, &triedb_hashed_post_state)
-                    .map_err(|e| ProviderError::other(e))?;
-                if new_root != state_root {
-                    return Err(ProviderError::Database(DatabaseError::Other(format!("write hashed state to triedb, block_number={}, new_root({:?}) != state_root({:?}), triedb_hashed_post_state={:?}, hashed_state={:?}, diff_storage_roots={:?}", block_number, new_root, state_root, triedb_hashed_post_state, hashed_state_clone, difflayer.as_ref().unwrap().debug_diff_storage_roots()))));
+                if difflayer.is_some() {
+                    // Fast path: use precomputed difflayer from mining
+                    triedb.flush(block_number, state_root, &difflayer)
+                        .map_err(|e| ProviderError::other(e))?;
+                } else {
+                    // Slow path: compute difflayer from hashed state
+                    let triedb_hashed_post_state = hashed_state.as_ref().to_triedb_hashed_post_state();
+                    let (new_root, computed_difflayer) = triedb.commit_hashed_post_state(latest_state_root, None, &triedb_hashed_post_state)
+                        .map_err(|e| ProviderError::other(e))?;
+                    if new_root != state_root {
+                        return Err(ProviderError::Database(DatabaseError::Other(format!("write hashed state to triedb, block_number={}, new_root({:?}) != state_root({:?})", block_number, new_root, state_root))));
+                    }
+                    triedb.flush(block_number, new_root, &computed_difflayer)
+                        .map_err(|e| ProviderError::other(e))?;
                 }
-                triedb.flush(block_number, new_root, &difflayer)
-                    .map_err(|e| ProviderError::other(e))?;
             } else {
                 // insert hashes and intermediate merkle nodes
                 self.database()
-                    .write_hashed_state(&Arc::unwrap_or_clone(hashed_state).into_sorted())?;
-                let trie_updates_sorted = (*trie_updates).clone().into_sorted();
-                self.database().write_trie_changesets(block_number, &trie_updates_sorted, None)?;
-                self.database().write_trie_updates_sorted(&trie_updates_sorted)?;
+                    .write_hashed_state(&hashed_state)?;
+                self.database().write_trie_changesets(block_number, &trie_updates, None)?;
+                self.database().write_trie_updates_sorted(&trie_updates)?;
             }
         }
 
