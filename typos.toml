@@ -42,3 +42,4 @@ BA = "BA" # Part of BAL - Block Access List (EIP-7928)
 consts = "consts" # std::env::consts is a valid Rust module
 Consts = "Consts" # Valid identifier suffix (e.g., RethCliVersionConsts)
 writeable = "writeable"
+evn = "evn" # Abbreviation used in TODO comments

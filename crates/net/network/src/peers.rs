@@ -38,6 +38,7 @@ use tokio::{
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{trace, warn};
 
+use std::sync::{Arc, RwLock};
 /// Maintains the state of _all_ the peers known to the network.
 ///
 /// This is supposed to be owned by the network itself, but can be reached via the [`PeersHandle`].
@@ -95,6 +96,8 @@ pub struct PeersManager {
     /// If true, discovered peers without a confirmed ENR fork ID will not be added until their
     /// fork ID is verified via EIP-868.
     enforce_enr_fork_id: bool,
+    /// The map of proxied node ids.
+    proxied_node_ids_map: Arc<RwLock<HashSet<PeerId>>>,
 }
 
 impl PeersManager {
@@ -116,6 +119,7 @@ impl PeersManager {
             incoming_ip_throttle_duration,
             ip_filter,
             enforce_enr_fork_id,
+            proxied_node_ids,
         } = config;
         let (manager_tx, handle_rx) = mpsc::unbounded_channel();
         let now = Instant::now();
@@ -166,6 +170,15 @@ impl PeersManager {
             });
         }
 
+        let proxied_node_ids_map =
+            Arc::new(RwLock::new(HashSet::with_capacity(proxied_node_ids.len())));
+        {
+            let mut proxied_node_ids_map_guard = proxied_node_ids_map.write().unwrap();
+            for proxied_node_id in proxied_node_ids {
+                proxied_node_ids_map_guard.insert(proxied_node_id);
+            }
+        }
+
         trace!(target: "net::peers", trusted_peers=?trusted_peer_ids, "Initialized peers manager");
 
         Self {
@@ -193,6 +206,7 @@ impl PeersManager {
             incoming_ip_throttle_duration,
             ip_filter,
             enforce_enr_fork_id,
+            proxied_node_ids_map,
         }
     }
 
@@ -314,7 +328,7 @@ impl PeersManager {
         }
 
         if self.ban_list.is_banned_ip(&addr) {
-            return Err(InboundConnectionError::IpBanned)
+            return Err(InboundConnectionError::IpBanned);
         }
 
         // check if we even have slots for a new incoming connection
@@ -322,7 +336,7 @@ impl PeersManager {
             if self.trusted_peer_ids.is_empty() {
                 // if we don't have any incoming slots and no trusted peers, we don't accept any new
                 // connections
-                return Err(InboundConnectionError::ExceedsCapacity)
+                return Err(InboundConnectionError::ExceedsCapacity);
             }
 
             // there's an edge case here where no incoming connections besides from trusted peers
@@ -335,17 +349,17 @@ impl PeersManager {
                     self.trusted_peer_ids.len().max(self.connection_info.config.max_inbound);
                 if self.connection_info.num_pending_in < max_inbound {
                     self.connection_info.inc_pending_in();
-                    return Ok(())
+                    return Ok(());
                 }
             }
 
             // all trusted peers are either connected or connecting
-            return Err(InboundConnectionError::ExceedsCapacity)
+            return Err(InboundConnectionError::ExceedsCapacity);
         }
 
         // also cap the incoming connections we can process at once
         if !self.connection_info.has_in_pending_capacity() {
-            return Err(InboundConnectionError::ExceedsCapacity)
+            return Err(InboundConnectionError::ExceedsCapacity);
         }
 
         // apply the rate limit
@@ -397,14 +411,14 @@ impl PeersManager {
         // on_incoming_pending_session. We also check if the peer is in the backoff list here.
         if self.ban_list.is_banned_peer(&peer_id) {
             self.queued_actions.push_back(PeerAction::DisconnectBannedIncoming { peer_id });
-            return
+            return;
         }
 
         // check if the peer is trustable or not
         let mut is_trusted = self.trusted_peer_ids.contains(&peer_id);
         if self.trusted_nodes_only && !is_trusted {
             self.queued_actions.push_back(PeerAction::DisconnectUntrustedIncoming { peer_id });
-            return
+            return;
         }
 
         // start a new tick, so the peer is not immediately rewarded for the time since last tick
@@ -415,7 +429,7 @@ impl PeersManager {
                 let peer = entry.get_mut();
                 if peer.is_banned() {
                     self.queued_actions.push_back(PeerAction::DisconnectBannedIncoming { peer_id });
-                    return
+                    return;
                 }
                 // it might be the case that we're also trying to connect to this peer at the same
                 // time, so we need to adjust the state here
@@ -544,7 +558,7 @@ impl PeersManager {
                             ReputationChangeKind::Timeout |
                             ReputationChangeKind::AlreadySeenTransaction
                     ) {
-                        return
+                        return;
                     }
 
                     // also be less strict with the reputation slashing for trusted peers
@@ -556,7 +570,7 @@ impl PeersManager {
                 peer.apply_reputation(reputation_change, rep)
             }
         } else {
-            return
+            return;
         };
 
         match outcome {
@@ -668,7 +682,7 @@ impl PeersManager {
         if let Some(peer) = self.peers.get(peer_id) {
             if peer.state.is_incoming() {
                 // we already have an active connection to the peer, so we can ignore this error
-                return
+                return;
             }
 
             if peer.is_trusted() && is_connection_failed_reputation(peer.reputation) {
@@ -878,7 +892,7 @@ impl PeersManager {
     pub(crate) fn remove_peer(&mut self, peer_id: PeerId) {
         let Entry::Occupied(entry) = self.peers.entry(peer_id) else { return };
         if entry.get().is_trusted() {
-            return
+            return;
         }
         let mut peer = entry.remove();
 
@@ -971,7 +985,7 @@ impl PeersManager {
     pub(crate) fn remove_peer_from_trusted_set(&mut self, peer_id: PeerId) {
         let Entry::Occupied(mut entry) = self.peers.entry(peer_id) else { return };
         if !entry.get().is_trusted() {
-            return
+            return;
         }
 
         let peer = entry.get_mut();
@@ -1004,13 +1018,13 @@ impl PeersManager {
         let mut best_peer = unconnected.next()?;
 
         if best_peer.1.is_trusted() || best_peer.1.is_static() {
-            return Some((*best_peer.0, best_peer.1))
+            return Some((*best_peer.0, best_peer.1));
         }
 
         for maybe_better in unconnected {
             // if the peer is trusted or static, return it immediately
             if maybe_better.1.is_trusted() || maybe_better.1.is_static() {
-                return Some((*maybe_better.0, maybe_better.1))
+                return Some((*maybe_better.0, maybe_better.1));
             }
 
             // prefer higher reputation, break ties by fork_id presence
@@ -1037,7 +1051,7 @@ impl PeersManager {
 
         if !self.net_connection_state.is_active() {
             // nothing to fill
-            return
+            return;
         }
 
         // as long as there are slots available fill them with the best peers
@@ -1098,7 +1112,7 @@ impl PeersManager {
         loop {
             // drain buffered actions
             if let Some(action) = self.queued_actions.pop_front() {
-                return Poll::Ready(action)
+                return Poll::Ready(action);
             }
 
             while let Poll::Ready(Some(cmd)) = self.handle_rx.poll_next_unpin(cx) {
@@ -1137,7 +1151,7 @@ impl PeersManager {
                         if let Some(peer) = self.peers.get_mut(peer_id) {
                             peer.backed_off = false;
                         }
-                        return false
+                        return false;
                     }
                     true
                 })
@@ -1152,9 +1166,14 @@ impl PeersManager {
             }
 
             if self.queued_actions.is_empty() {
-                return Poll::Pending
+                return Poll::Pending;
             }
         }
+    }
+
+    /// Checks if the given peer ID belongs to a proxied node.
+    pub fn is_proxied_peer(&self, peer_id: &PeerId) -> bool {
+        self.proxied_node_ids_map.read().unwrap().contains(peer_id)
     }
 }
 
@@ -2190,7 +2209,7 @@ mod tests {
 
             let p = peers.peers.get(&peer).unwrap();
             if p.is_banned() {
-                break
+                break;
             }
         }
 

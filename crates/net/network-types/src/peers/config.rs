@@ -3,7 +3,7 @@
 use std::{collections::HashSet, time::Duration};
 
 use reth_net_banlist::{BanList, IpFilter};
-use reth_network_peers::{NodeRecord, TrustedPeer};
+use reth_network_peers::{NodeRecord, PeerId, TrustedPeer};
 
 use crate::{peers::PersistedPeerInfo, BackoffKind, ReputationChangeWeights};
 
@@ -174,6 +174,8 @@ pub struct PeersConfig {
     ///
     /// This filters out peers from other networks that pollute the discovery table.
     pub enforce_enr_fork_id: bool,
+    /// The node ids of the proxied nodes.
+    pub proxied_node_ids: Vec<PeerId>,
 }
 
 impl Default for PeersConfig {
@@ -195,6 +197,7 @@ impl Default for PeersConfig {
             incoming_ip_throttle_duration: INBOUND_IP_THROTTLE_DURATION,
             ip_filter: IpFilter::default(),
             enforce_enr_fork_id: false,
+            proxied_node_ids: Vec::new(),
         }
     }
 }
