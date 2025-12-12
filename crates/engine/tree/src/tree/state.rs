@@ -9,6 +9,7 @@ use alloy_primitives::{
 use reth_chain_state::{EthPrimitives, ExecutedBlockWithTrieUpdates};
 use reth_primitives_traits::{AlloyBlockHeader, NodePrimitives, SealedHeader};
 use reth_trie::updates::TrieUpdates;
+use rust_eth_triedb_common::DiffLayers;
 use std::{
     collections::{btree_map, hash_map, BTreeMap, VecDeque},
     ops::Bound,
@@ -110,6 +111,27 @@ impl<N: NodePrimitives> TreeState<N> {
         }
 
         Some((parent_hash, blocks))
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn merged_difflayer_by_hash(
+        &self,
+        parent_block_hash: B256,
+    ) -> Option<DiffLayers> {
+        let mut difflayers = DiffLayers::default();
+        let mut parent_hash = parent_block_hash;
+        while let Some(executed) = self.blocks_by_hash.get(&parent_hash) {
+            parent_hash = executed.recovered_block().parent_hash();
+            if let Some(executed_difflayer) = &executed.difflayer {
+                difflayers.insert_difflayer(executed_difflayer.clone());
+            }
+        }
+
+        if difflayers.is_empty() {
+            return None;
+        }
+
+        Some(difflayers)
     }
 
     /// Insert executed block into the state.

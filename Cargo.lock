@@ -7443,6 +7443,7 @@ dependencies = [
  "reth-trie",
  "revm-database",
  "revm-state",
+ "rust-eth-triedb-common",
  "serde",
  "tokio",
  "tokio-stream",

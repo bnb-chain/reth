@@ -399,6 +399,7 @@ where
                 hashed_state: Arc::new(hashed_state),
             },
             trie: ExecutedTrieUpdates::Present(Arc::new(TrieUpdates::default())),
+            difflayer: None,
         })
     }
 
@@ -761,6 +762,7 @@ where
                 hashed_state: Arc::new(hashed_state),
             },
             trie: trie_updates,
+            difflayer: None,
         })
     }
 

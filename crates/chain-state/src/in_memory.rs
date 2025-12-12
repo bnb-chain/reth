@@ -18,6 +18,7 @@ use reth_primitives_traits::{
 };
 use reth_storage_api::StateProviderBox;
 use reth_trie::{updates::TrieUpdates, HashedPostState};
+use rust_eth_triedb_common::DiffLayer;
 use std::{collections::BTreeMap, sync::Arc, time::Instant};
 use tokio::sync::{broadcast, watch};
 
@@ -851,17 +852,23 @@ pub struct ExecutedBlockWithTrieUpdates<N: NodePrimitives = EthPrimitives> {
     /// If [`ExecutedTrieUpdates::Missing`], the trie updates should be computed when persisting
     /// the block **on top of the canonical parent**.
     pub trie: ExecutedTrieUpdates,
+    /// Difflayer that result from triedb commit.
+    pub difflayer: Option<Arc<DiffLayer>>,
 }
 
 impl<N: NodePrimitives> ExecutedBlockWithTrieUpdates<N> {
     /// [`ExecutedBlock`] constructor.
-    pub const fn new(
+    pub fn new(
         recovered_block: Arc<RecoveredBlock<N::Block>>,
         execution_output: Arc<ExecutionOutcome<N::Receipt>>,
         hashed_state: Arc<HashedPostState>,
         trie: ExecutedTrieUpdates,
     ) -> Self {
-        Self { block: ExecutedBlock { recovered_block, execution_output, hashed_state }, trie }
+        Self {
+            block: ExecutedBlock { recovered_block, execution_output, hashed_state },
+            trie,
+            difflayer: None,
+        }
     }
 
     /// Returns a reference to the trie updates for the block, if present.

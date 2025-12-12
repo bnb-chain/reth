@@ -682,6 +682,7 @@ fn test_tree_state_on_new_head_deep_fork() {
                 hashed_state: Arc::new(HashedPostState::default()),
             },
             trie: ExecutedTrieUpdates::empty(),
+            difflayer: None,
         });
     }
     test_harness.tree.state.tree_state.set_canonical_head(chain_a.last().unwrap().num_hash());
@@ -694,6 +695,7 @@ fn test_tree_state_on_new_head_deep_fork() {
                 hashed_state: Arc::new(HashedPostState::default()),
             },
             trie: ExecutedTrieUpdates::empty(),
+            difflayer: None,
         });
     }
 

@@ -1082,6 +1082,7 @@ mod tests {
                 hashed_state: Default::default(),
             },
             trie: ExecutedTrieUpdates::empty(),
+            difflayer: None,
         });
 
         // Now the last block should be found in memory
@@ -1196,6 +1197,7 @@ mod tests {
                 hashed_state: Default::default(),
             },
             trie: ExecutedTrieUpdates::empty(),
+            difflayer: None,
         });
 
         // Assertions related to the pending block
@@ -1860,6 +1862,7 @@ mod tests {
                     hashed_state: Default::default(),
                 },
                 trie: ExecutedTrieUpdates::empty(),
+                difflayer: None,
             },
         );
 
@@ -1957,6 +1960,7 @@ mod tests {
                 hashed_state: Default::default(),
             },
             trie: ExecutedTrieUpdates::empty(),
+            difflayer: None,
         });
 
         // Set the safe block in memory

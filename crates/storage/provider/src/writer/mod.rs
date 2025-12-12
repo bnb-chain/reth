@@ -173,6 +173,7 @@ where
         for ExecutedBlockWithTrieUpdates {
             block: ExecutedBlock { recovered_block, execution_output, hashed_state },
             trie,
+            difflayer,
         } in blocks
         {
             let block_number = recovered_block.number();
@@ -205,14 +206,19 @@ where
             )?;
 
             if let (Some(ref mut triedb), Some(latest_state_root)) = (triedb_opt.as_mut(), latest_state_root_opt) {
-                let triedb_hashed_post_state = hashed_state_clone.as_ref().to_triedb_hashed_post_state();
-                let (new_root, difflayer) = triedb.commit_hashed_post_state(latest_state_root, None, &triedb_hashed_post_state)
-                    .map_err(|e| ProviderError::other(e))?;
-                if new_root != state_root {
-                    return Err(ProviderError::Database(DatabaseError::Other(format!("write hashed state to triedb, block_number={}, new_root({:?}) != state_root({:?}), triedb_hashed_post_state={:?}, hashed_state={:?}, diff_storage_roots={:?}", block_number, new_root, state_root, triedb_hashed_post_state, hashed_state_clone, difflayer.as_ref().unwrap().debug_diff_storage_roots()))));
+                if difflayer.is_some() {
+                    triedb.flush(block_number, state_root, &difflayer)
+                        .map_err(|e| ProviderError::other(e))?;
+                } else {
+                    let triedb_hashed_post_state = hashed_state_clone.as_ref().to_triedb_hashed_post_state();
+                    let (new_root, difflayer) = triedb.commit_hashed_post_state(latest_state_root, None, &triedb_hashed_post_state)
+                        .map_err(|e| ProviderError::other(e))?;
+                    if new_root != state_root {
+                        return Err(ProviderError::Database(DatabaseError::Other(format!("write hashed state to triedb, block_number={}, new_root({:?}) != state_root({:?}), triedb_hashed_post_state={:?}, hashed_state={:?}, diff_storage_roots={:?}", block_number, new_root, state_root, triedb_hashed_post_state, hashed_state_clone, difflayer.as_ref().unwrap().debug_diff_storage_roots()))));
+                    }
+                    triedb.flush(block_number, new_root, &difflayer)
+                        .map_err(|e| ProviderError::other(e))?;
                 }
-                triedb.flush(block_number, new_root, &difflayer)
-                    .map_err(|e| ProviderError::other(e))?;
             } else {
                 // insert hashes and intermediate merkle nodes
                 self.database()

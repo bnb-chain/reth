@@ -844,6 +844,7 @@ where
                 let block_with_trie = ExecutedBlockWithTrieUpdates {
                     block: executed_block,
                     trie: ExecutedTrieUpdates::Missing,
+                    difflayer: None,
                 };
 
                 // Perform the reorg to properly handle the unwind
@@ -904,6 +905,7 @@ where
             let block_with_trie = ExecutedBlockWithTrieUpdates {
                 block: executed_block,
                 trie: ExecutedTrieUpdates::Missing,
+                difflayer: None,
             };
 
             self.canonical_in_memory_state
@@ -2126,6 +2128,7 @@ where
                     Some(ExecutedBlockWithTrieUpdates {
                         block: block.clone(),
                         trie: ExecutedTrieUpdates::Present(trie),
+                        difflayer: None,
                     })
                 })
                 .collect::<Vec<_>>();

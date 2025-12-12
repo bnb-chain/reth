@@ -386,6 +386,7 @@ impl<Txs> OpBuilder<'_, Txs> {
                 hashed_state: Arc::new(hashed_state),
             },
             trie: ExecutedTrieUpdates::Present(Arc::new(trie_updates)),
+            difflayer: None,
         };
 
         let no_tx_pool = ctx.attributes().no_tx_pool();
