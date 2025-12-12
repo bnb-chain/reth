@@ -54,6 +54,9 @@ use std::{
     },
     time::Instant,
 };
+use rust_eth_triedb::TrieDBPrefetchState;
+use rust_eth_triedb_pathdb::PathDB;
+use rust_eth_triedb_common::DiffLayers;
 use tracing::{debug, debug_span, instrument, warn, Span};
 
 pub mod bal;
@@ -69,6 +72,7 @@ pub mod triedb_prefetcher;
 mod triedb_prefetcher_test;
 
 use configured_sparse_trie::ConfiguredSparseTrie;
+use triedb_prefetcher::TrieDBPrefetchHandle;
 
 /// Default parallelism thresholds to use with the [`ParallelSparseTrie`].
 ///
@@ -324,6 +328,7 @@ where
             prewarm_handle,
             state_root: Some(state_root_rx),
             transactions: execution_rx,
+            trie_db_prefetch_result_rx: None,
             _span: span,
         }
     }
@@ -350,6 +355,54 @@ where
             prewarm_handle,
             state_root: None,
             transactions: execution_rx,
+            trie_db_prefetch_result_rx: None,
+            _span: Span::current(),
+        }
+    }
+
+    /// Spawn cache prewarming with triedb prefetcher.
+    ///
+    /// Returns a [`PayloadHandle`] to communicate with the task.
+    #[allow(dead_code)]
+    pub(super) fn spawn_cache_with_triedb_prefetcher<P, I: ExecutableTxIterator<Evm>>(
+        &self,
+        root_hash: B256,
+        path_db: PathDB,
+        difflayers: Option<DiffLayers>,
+        env: ExecutionEnv<Evm>,
+        transactions: I,
+        provider_builder: StateProviderBuilder<N, P>,
+    ) -> PayloadHandle<WithTxEnv<TxEnvFor<Evm>, I::Tx>, I::Error, N::Receipt>
+    where
+        P: BlockReader + StateProviderFactory + StateReader + Clone + 'static,
+    {
+        let (prewarm_rx, execution_rx, size_hint) = self.spawn_tx_iterator(transactions);
+
+        let (to_multi_proof, rev_multi_proof) = channel();
+
+        let prewarm_handle = self.spawn_caching_with(
+            env,
+            prewarm_rx,
+            size_hint,
+            provider_builder,
+            Some(to_multi_proof.clone()),
+            None,
+        );
+
+        let (prefetch_handle, prefetch_result_rx) = TrieDBPrefetchHandle::new(
+            root_hash, path_db, difflayers, self.executor.clone(), rev_multi_proof)
+            .expect("Failed to create TrieDBPrefetchHandle");
+
+        self.executor.spawn_blocking(move || {
+            prefetch_handle.run();
+        });
+
+        PayloadHandle {
+            to_multi_proof: Some(to_multi_proof),
+            prewarm_handle,
+            state_root: None,
+            transactions: execution_rx,
+            trie_db_prefetch_result_rx: Some(prefetch_result_rx),
             _span: Span::current(),
         }
     }
@@ -613,11 +666,33 @@ pub struct PayloadHandle<Tx, Err, R> {
     transactions: mpsc::Receiver<Result<Tx, Err>>,
     /// Receiver for the state root
     state_root: Option<mpsc::Receiver<Result<StateRootComputeOutcome, ParallelStateRootError>>>,
+    /// Receiver for the trie db prefetch results
+    trie_db_prefetch_result_rx: Option<mpsc::Receiver<triedb_prefetcher::TrieDBPrefetchResult>>,
     /// Span for tracing
     _span: Span,
 }
 
 impl<Tx, Err, R: Send + Sync + 'static> PayloadHandle<Tx, Err, R> {
+    /// Receives the trie db prefetch result
+    ///
+    /// # Panics
+    ///
+    /// If payload processing was started without background prefetch task.
+    pub fn triedb_preftch_result(&mut self) -> Result<Option<Arc<TrieDBPrefetchState<PathDB>>>, ParallelStateRootError> {
+        let result = self.trie_db_prefetch_result_rx
+            .take()
+            .expect("trie_db_prefetch_result_rx is None")
+            .recv()
+            .map_err(|_| ParallelStateRootError::Other("trie db prefetch result receiver dropped".to_string()))?;
+
+        match result {
+            triedb_prefetcher::TrieDBPrefetchResult::PrefetchAccountResult(state) => Ok(Some(state)),
+            triedb_prefetcher::TrieDBPrefetchResult::PrefetchStorageResult((_, _, _)) => {
+                panic!("received prefetch storage result, but expected prefetch account result");
+            }
+        }
+    }
+
     /// Awaits the state root
     ///
     /// # Panics
