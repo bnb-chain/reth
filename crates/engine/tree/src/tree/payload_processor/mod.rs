@@ -50,6 +50,9 @@ pub mod prewarm;
 pub mod sparse_trie;
 pub mod triedb_prefetcher;
 
+#[cfg(test)]
+mod triedb_prefetcher_test;
+
 use configured_sparse_trie::ConfiguredSparseTrie;
 
 /// Entrypoint for executing the payload.
