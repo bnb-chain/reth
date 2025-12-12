@@ -126,6 +126,11 @@ impl<N: NetworkPrimitives> StateFetcher<N> {
         false
     }
 
+    /// Gets the peer's best block number
+    pub(crate) fn get_peer_best_number(&self, peer_id: &PeerId) -> Option<u64> {
+        self.peers.get(peer_id).map(|peer| peer.best_number)
+    }
+
     /// Invoked when an active session is about to be disconnected.
     pub(crate) fn on_pending_disconnect(&mut self, peer_id: &PeerId) {
         if let Some(peer) = self.peers.get_mut(peer_id) {
