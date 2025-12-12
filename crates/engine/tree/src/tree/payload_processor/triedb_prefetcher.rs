@@ -11,7 +11,7 @@ use rust_eth_triedb_state_trie::{SecureTrieId, SecureTrieBuilder, SecureTrieErro
 use rust_eth_triedb::{triedb_reth::TrieDBPrefetchState};
 use reth_revm::state::EvmState;
 use reth_trie::MultiProofTargets;
-use tracing::{error, warn};
+use tracing::{error, warn, info};
 use rayon::prelude::*;
 
 use crate::tree::payload_processor::executor::WorkloadExecutor;
@@ -38,8 +38,9 @@ pub(super) enum TrieDBPrefetchMessage {
 
 /// Result type for TrieDB prefetch operations.
 pub(super) enum TrieDBPrefetchResult {
+    #[allow(dead_code)]
     PrefetchAccountResult(Arc<TrieDBPrefetchState<PathDB>>),
-    PrefetchStorageResult((B256, StateTrie<PathDB>)),
+    PrefetchStorageResult((B256, StateTrie<PathDB>, usize)),
 }
 
 /// Convert EVM state to TrieDB prefetch state.
@@ -66,8 +67,6 @@ pub(super) struct TrieDBPrefetchHandle {
     message_rx: Receiver<MultiProofMessage>,
     /// Sender for the trie db prefetch messages to account task.
     state_message_tx: Sender<TrieDBPrefetchMessage>,
-    /// Receiver for the trie db prefetch results from account task.
-    prefetch_result_rx: Receiver<TrieDBPrefetchResult>,
 }
 
 impl TrieDBPrefetchHandle {
@@ -78,7 +77,7 @@ impl TrieDBPrefetchHandle {
         difflayers: Option<DiffLayers>,
         executor: WorkloadExecutor,
         message_rx: Receiver<MultiProofMessage>) ->
-        Result<Self, TrieDBPrefetchError> {
+        Result<(Self, Receiver<TrieDBPrefetchResult>), TrieDBPrefetchError> {
 
         // Create the channel for the trie db prefetch messages to account task.
         let (state_message_tx, state_message_rx) = mpsc::channel();
@@ -97,7 +96,6 @@ impl TrieDBPrefetchHandle {
             executor,
             message_rx,
             state_message_tx,
-            prefetch_result_rx,
         };
 
         // Spawn the account task.
@@ -105,62 +103,48 @@ impl TrieDBPrefetchHandle {
             account_task.run();
         });
 
-        return Ok(handle);
-    }
-
-    /// Get the prefetch result.
-    #[allow(dead_code)]
-    pub(super) fn prefetch_result(self) -> Option<Arc<TrieDBPrefetchState<PathDB>>> {
-        let result = self.prefetch_result_rx.recv().unwrap();
-        match result {
-            TrieDBPrefetchResult::PrefetchAccountResult(result) => Some(result),
-            _ => {
-                error!(
-                    target: "engine::trie_db_prefetch",
-                    "Triedb prefetch task received unexpected result, prefetch storageresult"
-                );
-                None
-            }
-        }
+        return Ok((handle, prefetch_result_rx));
     }
 
     #[allow(dead_code)]
     pub(super) fn run(self) {
         loop {
             match self.message_rx.recv() {
-                Ok(message) => match message {
-                    MultiProofMessage::PrefetchProofs(targets) => {
-                        if let Err(e) = self.state_message_tx.send(TrieDBPrefetchMessage::PrefetchState(targets)) {
-                            error!(
+                Ok(message) => {
+                    match message {
+                        MultiProofMessage::PrefetchProofs(targets) => {
+                            if let Err(e) = self.state_message_tx.send(TrieDBPrefetchMessage::PrefetchState(targets)) {
+                                error!(
+                                    target: "engine::trie_db_prefetch",
+                                    "Triedb prefetch han failed to send prefetch state message(prefetch proofs) to account task: {:?}", e.to_string()
+                                );
+                            }
+                        }
+                        MultiProofMessage::StateUpdate(_, update) => {
+                            let state = evm_state_to_trie_db_prefetch_state(&update);
+                            if let Err(e) = self.state_message_tx.send(TrieDBPrefetchMessage::PrefetchState(state)) {
+                                error!(
+                                    target: "engine::trie_db_prefetch",
+                                    "Triedb prefetch handle failed to send prefetch state message(state update) to account task: {:?}", e.to_string()
+                                );
+                            }
+                        }
+                        MultiProofMessage::FinishedStateUpdates => {
+                            if let Err(e) = self.state_message_tx.send(TrieDBPrefetchMessage::PrefetchFinished()) {
+                                error!(
+                                    target: "engine::trie_db_prefetch",
+                                    "Triedb prefetch handle failed to send prefetch state finished message to account task: {:?}", e.to_string()
+                                );
+                            }
+                            break;
+                        }
+                        _ => {
+                            warn!(
                                 target: "engine::trie_db_prefetch",
-                                "Triedb prefetch han failed to send prefetch state message(prefetch proofs) to account task: {:?}", e.to_string()
+                                "Triedb prefetch task received unexpected message type: {:?}",
+                                std::any::type_name_of_val(&message)
                             );
                         }
-                    }
-                    MultiProofMessage::StateUpdate(_, update) => {
-                        let state = evm_state_to_trie_db_prefetch_state(&update);
-                        if let Err(e) = self.state_message_tx.send(TrieDBPrefetchMessage::PrefetchState(state)) {
-                            error!(
-                                target: "engine::trie_db_prefetch",
-                                "Triedb prefetch handle failed to send prefetch state message(state update) to account task: {:?}", e.to_string()
-                            );
-                        }
-                    }
-                    MultiProofMessage::FinishedStateUpdates => {
-                        if let Err(e) = self.state_message_tx.send(TrieDBPrefetchMessage::PrefetchFinished()) {
-                            error!(
-                                target: "engine::trie_db_prefetch",
-                                "Triedb prefetch handle failed to send prefetch state finished message to account task: {:?}", e.to_string()
-                            );
-                        }
-                        break;
-                    }
-                    _ => {
-                        warn!(
-                            target: "engine::trie_db_prefetch",
-                            "Triedb prefetch task received unexpected message type: {:?}",
-                            std::any::type_name_of_val(&message)
-                        );
                     }
                 }
                 Err(RecvError) => {
@@ -170,6 +154,7 @@ impl TrieDBPrefetchHandle {
                         target: "engine::trie_db_prefetch",
                         "Triedb prefetch task message channel closed, ending task"
                     );
+                    break;
                 }
             }
         }
@@ -264,17 +249,19 @@ impl TrieDBPrefetchAccountTask {
 
     /// Wait for all storage_results and write them to storage_tries.
     /// Returns (successful_count, failed_addresses).
-    pub(super) fn receive_prefetch_storage_results(&mut self)  {
+    pub(super) fn receive_prefetch_storage_results(&mut self) -> usize {
         if self.storage_results.is_empty() {
-            return;
+            return 0;
         }
 
         // Iterate over all storage_results and receive results serially
         let receivers: Vec<(B256, Receiver<TrieDBPrefetchResult>)> = self.storage_results.drain().collect();
+        let mut slot_count = 0;
         for (hashed_address, receiver) in receivers {
             match receiver.recv() {
-                Ok(TrieDBPrefetchResult::PrefetchStorageResult((addr, storage_trie))) => {
+                Ok(TrieDBPrefetchResult::PrefetchStorageResult((addr, storage_trie, touched_slot_count))) => {
                     if addr == hashed_address {
+                        slot_count += touched_slot_count;
                         self.prefetch_state.storage_tries.insert(hashed_address, storage_trie);
                     } else {
                         warn!(
@@ -297,48 +284,62 @@ impl TrieDBPrefetchAccountTask {
                 }
             }
         }
+        slot_count
     }
 
     pub(super) fn run(mut self) {
         loop {
             match self.state_message_rx.recv() {
-                Ok(message) => match message {
-                    TrieDBPrefetchMessage::PrefetchState(targets) => {
-                        for (address, slots) in targets.iter() {
-                            if let Some(storage_root) = self.get_storage_root(*address) {
-                                if !slots.is_empty() {
-                                    self.prefetch_slots(storage_root, *address, slots.clone());
-                                }
-                                if !self.prefetch_state.storage_roots.contains_key(address) {
-                                    self.prefetch_state.storage_roots.insert(*address, storage_root);
-                                    if let Err(e) = self.prefetch_state.account_trie.touch_account_with_hash_state(*address) {
-                                        warn!(
-                                            target: "engine::trie_db_prefetch",
-                                            "Failed to get account trie for address 0x{:x}: {:?}", address, e
-                                        );
+                Ok(message) => {
+                    match message {
+                        TrieDBPrefetchMessage::PrefetchState(targets) => {
+                            for (address, slots) in targets.iter() {
+                                if let Some(storage_root) = self.get_storage_root(*address) {
+                                    if !slots.is_empty() {
+                                        self.prefetch_slots(storage_root, *address, slots.clone());
+                                    }
+                                    if !self.prefetch_state.storage_roots.contains_key(address) {
+                                        self.prefetch_state.storage_roots.insert(*address, storage_root);
+                                        if let Err(e) = self.prefetch_state.account_trie.touch_account_with_hash_state(*address) {
+                                            warn!(
+                                                target: "engine::trie_db_prefetch",
+                                                "Failed to get account trie for address 0x{:x}: {:?}", address, e
+                                            );
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
-                    TrieDBPrefetchMessage::PrefetchSlots(_) => {
-                        error!(
-                            target: "engine::trie_db_prefetch",
-                            "Triedb prefetch account task received unexpected message, prefetch slots"
-                        );
-                    }
-                    TrieDBPrefetchMessage::PrefetchFinished() => {
-                        self.send_prefetch_finished_to_all_storage_tasks();
-                        self.receive_prefetch_storage_results();
-                        if let Err(e) = self.prefetch_result_tx.send(TrieDBPrefetchResult::PrefetchAccountResult(
-                            Arc::from(self.prefetch_state)
-                        )) {
+                        TrieDBPrefetchMessage::PrefetchSlots(_) => {
                             error!(
                                 target: "engine::trie_db_prefetch",
-                                "Failed to send prefetch account result: {:?}", e
+                                "Triedb prefetch account task received unexpected message, prefetch slots"
                             );
                         }
-                        break;
+                        TrieDBPrefetchMessage::PrefetchFinished() => {
+                            let start = std::time::Instant::now();
+                            self.send_prefetch_finished_to_all_storage_tasks();
+                            let slot_count = self.receive_prefetch_storage_results();
+                            let duration = start.elapsed();
+                            
+                            info!(
+                                target: "engine::trie_db_prefetch",
+                                "Completed prefetch, accounts: {}, storage tries: {}, slots: {}, finished duration: {:?}",
+                                self.prefetch_state.storage_roots.len(),
+                                self.prefetch_state.storage_tries.len(),
+                                slot_count,
+                                duration
+                            );
+                            if let Err(e) = self.prefetch_result_tx.send(TrieDBPrefetchResult::PrefetchAccountResult(
+                                Arc::from(self.prefetch_state)
+                            )) {
+                                error!(
+                                    target: "engine::trie_db_prefetch",
+                                    "Failed to send prefetch account result: {:?}", e
+                                );
+                            }
+                            break;
+                        }
                     }
                 }
                 Err(RecvError) => {
@@ -348,6 +349,7 @@ impl TrieDBPrefetchAccountTask {
                         target: "engine::trie_db_prefetch",
                         "Triedb prefetch account task message channel closed, ending task"
                     );
+                    break;
                 }
             }
         }
@@ -452,31 +454,38 @@ impl TrieDBPrefetchStorageTask {
     pub(super) fn run(mut self) {
         loop {
             match self.state_message_rx.recv() {
-                Ok(message) => match message {
-                    TrieDBPrefetchMessage::PrefetchSlots(slots) => {
-                        for slot in slots.iter() {
-                            if self.touched_slots.contains(slot) {
-                                continue;
-                            }
-                            if let Err(e) = self.storage_trie.touch_storage_with_hash_state(*slot) {
-                                error!(
-                                    target: "engine::trie_db_prefetch",
-                                    "Failed to touch storage trie for slot 0x{:x}: {:?}", slot, e
-                                );
-                            } else {
-                                self.touched_slots.insert(*slot);
+                Ok(message) => {
+                    match message {
+                        TrieDBPrefetchMessage::PrefetchSlots(slots) => {
+                            for slot in slots.iter() {
+                                if self.touched_slots.contains(slot) {
+                                    continue;
+                                }
+                                if let Err(e) = self.storage_trie.touch_storage_with_hash_state(*slot) {
+                                    error!(
+                                        target: "engine::trie_db_prefetch",
+                                        "Failed to touch storage trie for slot 0x{:x}: {:?}", slot, e
+                                    );
+                                } else {
+                                    self.touched_slots.insert(*slot);
+                                }
                             }
                         }
-                    }
-                    TrieDBPrefetchMessage::PrefetchFinished() => {
-                        self.prefetch_result_tx.send(TrieDBPrefetchResult::PrefetchStorageResult((self.hashed_address, self.storage_trie))).unwrap();
-                        break;
-                    }
-                    _ => {
-                        error!(
-                            target: "engine::trie_db_prefetch",
-                            "Triedb prefetch storage task received unexpected message, prefetch account"
-                        );
+                        TrieDBPrefetchMessage::PrefetchFinished() => {
+                            if let Err(e) = self.prefetch_result_tx.send(TrieDBPrefetchResult::PrefetchStorageResult((self.hashed_address, self.storage_trie, self.touched_slots.len()))) {
+                                error!(
+                                    target: "engine::trie_db_prefetch",
+                                    "Failed to send PrefetchStorageResult for address 0x{:x}: {:?}", self.hashed_address, e
+                                );
+                            }
+                            break;
+                        }
+                        _ => {
+                            error!(
+                                target: "engine::trie_db_prefetch",
+                                "Triedb prefetch storage task received unexpected message, prefetch account"
+                            );
+                        }
                     }
                 }
                 Err(RecvError) => {
@@ -484,7 +493,8 @@ impl TrieDBPrefetchStorageTask {
                     // This is expected when the sender is closed intentionally
                     error!(
                         target: "engine::trie_db_prefetch",
-                        "Triedb prefetch storage task message channel closed, ending task"
+                        "Triedb prefetch storage task message channel closed, ending task (address: 0x{:x})",
+                        self.hashed_address
                     );
                     break;
                 }

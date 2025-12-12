@@ -65,6 +65,9 @@ pub mod receipt_root_task;
 pub mod sparse_trie;
 pub mod triedb_prefetcher;
 
+#[cfg(test)]
+mod triedb_prefetcher_test;
+
 use configured_sparse_trie::ConfiguredSparseTrie;
 
 /// Default parallelism thresholds to use with the [`ParallelSparseTrie`].
