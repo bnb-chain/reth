@@ -40,6 +40,9 @@ use std::sync::{
     mpsc::{self, channel, Sender},
     Arc,
 };
+use rust_eth_triedb::TrieDBPrefetchState;
+use rust_eth_triedb_pathdb::PathDB;
+use rust_eth_triedb_common::DiffLayers;
 
 use super::precompile_cache::PrecompileCacheMap;
 
@@ -54,6 +57,7 @@ pub mod triedb_prefetcher;
 mod triedb_prefetcher_test;
 
 use configured_sparse_trie::ConfiguredSparseTrie;
+use triedb_prefetcher::TrieDBPrefetchHandle;
 
 /// Entrypoint for executing the payload.
 #[derive(Debug)]
@@ -237,6 +241,7 @@ where
             prewarm_handle,
             state_root: Some(state_root_rx),
             transactions: execution_rx,
+            trie_db_prefetch_result_rx: None,
         }
     }
 
@@ -259,6 +264,46 @@ where
             prewarm_handle,
             state_root: None,
             transactions: execution_rx,
+            trie_db_prefetch_result_rx: None,
+        }
+    }
+
+    /// Spawn cache prewarming with triedb prefetcher.
+    ///
+    /// Returns a [`PayloadHandle`] to communicate with the task.
+    #[allow(dead_code)]
+    pub(super) fn spawn_cache_with_triedb_prefetcher<P, I: ExecutableTxIterator<Evm>>(
+        &self,
+        root_hash: B256,
+        path_db: PathDB,
+        difflayers: Option<DiffLayers>,
+        env: ExecutionEnv<Evm>,
+        transactions: I,
+        provider_builder: StateProviderBuilder<N, P>,
+    ) -> PayloadHandle<WithTxEnv<TxEnvFor<Evm>, I::Tx>, I::Error>
+    where
+        P: BlockReader + StateProviderFactory + StateReader + Clone + 'static,
+    {
+        let (prewarm_rx, execution_rx) = self.spawn_tx_iterator(transactions);
+        
+        let (to_multi_proof, rev_multi_proof) = channel();
+
+        let prewarm_handle = self.spawn_caching_with(env, prewarm_rx, provider_builder, Some(to_multi_proof.clone()));
+        
+        let (prefetch_handle, prefetch_result_rx) = TrieDBPrefetchHandle::new(
+            root_hash, path_db, difflayers, self.executor.clone(), rev_multi_proof)
+            .expect("Failed to create TrieDBPrefetchHandle");
+        
+        self.executor.spawn_blocking(move || {
+            prefetch_handle.run();
+        });
+
+        PayloadHandle {
+            to_multi_proof: Some(to_multi_proof),
+            prewarm_handle,
+            state_root: None,
+            transactions: execution_rx,
+            trie_db_prefetch_result_rx: Some(prefetch_result_rx),
         }
     }
 
@@ -410,9 +455,31 @@ pub struct PayloadHandle<Tx, Err> {
     state_root: Option<mpsc::Receiver<Result<StateRootComputeOutcome, ParallelStateRootError>>>,
     /// Stream of block transactions
     transactions: mpsc::Receiver<Result<Tx, Err>>,
+    /// Receiver for the trie db prefetch results
+    trie_db_prefetch_result_rx: Option<mpsc::Receiver<triedb_prefetcher::TrieDBPrefetchResult>>,
 }
 
 impl<Tx, Err> PayloadHandle<Tx, Err> {
+    /// Receives the trie db prefetch result
+    /// 
+    /// # Panics
+    /// 
+    /// If payload processing was started without background prefetch task.
+    pub fn triedb_preftch_result(&mut self) -> Result<Option<Arc<TrieDBPrefetchState<PathDB>>>, ParallelStateRootError> {
+        let result = self.trie_db_prefetch_result_rx
+            .take()
+            .expect("trie_db_prefetch_result_rx is None")
+            .recv()
+            .map_err(|_| ParallelStateRootError::Other("trie db prefetch result receiver dropped".to_string()))?;
+
+        match result {
+            triedb_prefetcher::TrieDBPrefetchResult::PrefetchAccountResult(state) => Ok(Some(state)),
+            triedb_prefetcher::TrieDBPrefetchResult::PrefetchStorageResult((_, _, _)) => {
+                panic!("received prefetch storage result, but expected prefetch account result");
+            }
+        }
+    }
+
     /// Awaits the state root
     ///
     /// # Panics

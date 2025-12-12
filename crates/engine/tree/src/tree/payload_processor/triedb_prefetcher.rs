@@ -37,7 +37,7 @@ pub(super) enum TrieDBPrefetchMessage {
 }
 
 /// Result type for TrieDB prefetch operations.
-pub(super) enum TrieDBPrefetchResult {
+pub(crate) enum TrieDBPrefetchResult {
     #[allow(dead_code)]
     PrefetchAccountResult(Arc<TrieDBPrefetchState<PathDB>>),
     PrefetchStorageResult((B256, StateTrie<PathDB>, usize)),
