@@ -124,8 +124,8 @@ where
             })?
             .with_components(components_builder, on_component_initialized).await?;
 
-        let engine_tree_config = if is_triedb_active() && engine_tree_config.memory_block_buffer_target() < 16 {
-            info!(target: "reth::cli", "TrieDB is active, setting memory block buffer target to 256, old target={}", engine_tree_config.memory_block_buffer_target());
+        let engine_tree_config = if is_triedb_active() && engine_tree_config.memory_block_buffer_target() !=16 {
+            info!(target: "reth::cli", "TrieDB is active, setting memory block buffer target to 16, old target={}", engine_tree_config.memory_block_buffer_target());
             engine_tree_config.with_memory_block_buffer_target(16)
         } else {
             engine_tree_config.clone()
