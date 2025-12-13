@@ -51,6 +51,7 @@ use std::{
     collections::HashMap,
     panic::{self, AssertUnwindSafe},
     sync::Arc,
+    thread,
     time::Instant,
 };
 use tracing::{debug, debug_span, error, info, instrument, trace, warn};
@@ -512,6 +513,16 @@ where
             )
             .into())
         }
+
+        // Asynchronously drop large resources that may block the main thread
+        // This allows the function to return immediately while cleanup happens in background
+        thread::spawn(move || {
+            // Drop resources in background thread to avoid blocking main thread
+            drop(handle);
+            drop(trie_hashed_state);
+            drop(difflayers);
+            drop(state_provider);
+        });
 
         Ok(ExecutedBlockWithTrieUpdates {
             block: ExecutedBlock {
