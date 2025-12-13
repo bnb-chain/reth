@@ -131,14 +131,14 @@ impl TrieDBPrefetchHandle {
                                 );
                             }
                         }
-                        MultiProofMessage::StateUpdate(_, _) => {
-                            // let state = evm_state_to_trie_db_prefetch_state(&update);
-                            // if let Err(e) = self.state_message_tx.send(TrieDBPrefetchMessage::PrefetchState(state)) {
-                            //     error!(
-                            //         target: "engine::trie_db_prefetch",
-                            //         "Triedb prefetch handle failed to send prefetch state message(state update) to account task: {:?}", e.to_string()
-                            //     );
-                            // }
+                        MultiProofMessage::StateUpdate(_, update) => {
+                            let state = evm_state_to_trie_db_prefetch_state(&update);
+                            if let Err(e) = self.state_message_tx.send(TrieDBPrefetchMessage::PrefetchState(state)) {
+                                error!(
+                                    target: "engine::trie_db_prefetch",
+                                    "Triedb prefetch handle failed to send prefetch state message(state update) to account task: {:?}", e.to_string()
+                                );
+                            }
                         }
                         MultiProofMessage::FinishedStateUpdates => {
                             // Set cancellation flag to immediately stop all tasks
@@ -273,6 +273,7 @@ impl TrieDBPrefetchAccountTask {
             return 0;
         }
 
+        let start = std::time::Instant::now();
         // Iterate over all storage_results and receive results serially
         let receivers: Vec<(B256, Receiver<TrieDBPrefetchResult>)> = self.storage_results.drain().collect();
         let mut slot_count = 0;
@@ -303,6 +304,11 @@ impl TrieDBPrefetchAccountTask {
                 }
             }
         }
+        let duration = start.elapsed();
+        info!(
+            target: "engine::trie_db_prefetch",
+            "Completed prefetch storage results, accounts: {}, storage tries: {}, slots: {}, finished duration: {:?}", self.prefetch_state.storage_roots.len(), self.prefetch_state.storage_tries.len(), slot_count, duration
+        );
         slot_count
     }
 
@@ -341,6 +347,19 @@ impl TrieDBPrefetchAccountTask {
         }
     }
 
+    pub(super) fn terminate_all_tasks(&mut self) {
+        self.send_prefetch_finished_to_all_storage_tasks();
+        self.receive_prefetch_storage_results();
+        if let Err(e) = self.prefetch_result_tx.send(TrieDBPrefetchResult::PrefetchAccountResult(
+            Arc::from(self.prefetch_state.clone())
+        )) {
+            error!(
+                target: "engine::trie_db_prefetch",
+                "Failed to send prefetch account result: {:?}", e
+            );
+        }
+    }
+
     pub(super) fn run(mut self) {
         loop {
             match self.state_message_rx.recv() {
@@ -349,30 +368,14 @@ impl TrieDBPrefetchAccountTask {
                         TrieDBPrefetchMessage::PrefetchState(targets) => {
                             // Check cancellation before processing
                             if self.cancel_flag.load(Ordering::Relaxed) {
-                                let start = std::time::Instant::now();
-                                self.send_prefetch_finished_to_all_storage_tasks();
-                                let slot_count = self.receive_prefetch_storage_results();
-                                let duration = start.elapsed();
-                                
-                                info!(
-                                    target: "engine::trie_db_prefetch",
-                                    "Completed prefetch, accounts: {}, storage tries: {}, slots: {}, finished duration: {:?}",
-                                    self.prefetch_state.storage_roots.len(),
-                                    self.prefetch_state.storage_tries.len(),
-                                    slot_count,
-                                    duration
-                                );
-                                if let Err(e) = self.prefetch_result_tx.send(TrieDBPrefetchResult::PrefetchAccountResult(
-                                    Arc::from(self.prefetch_state)
-                                )) {
-                                    error!(
-                                        target: "engine::trie_db_prefetch",
-                                        "Failed to send prefetch account result: {:?}", e
-                                    );
-                                }
-                                break;
+                                self.terminate_all_tasks();
+                                return;
                             }
                             for (address, slots) in targets.iter() {
+                                if self.cancel_flag.load(Ordering::Relaxed) {
+                                    self.terminate_all_tasks();
+                                    return;
+                                }
                                 if let Some(storage_root) = self.get_storage_root(*address) {
                                     if !slots.is_empty() {
                                         self.prefetch_slots(storage_root, *address, slots.clone());
@@ -396,28 +399,8 @@ impl TrieDBPrefetchAccountTask {
                             );
                         }
                         TrieDBPrefetchMessage::PrefetchFinished() => {
-                            let start = std::time::Instant::now();
-                            self.send_prefetch_finished_to_all_storage_tasks();
-                            let slot_count = self.receive_prefetch_storage_results();
-                            let duration = start.elapsed();
-                            
-                            info!(
-                                target: "engine::trie_db_prefetch",
-                                "Completed prefetch, accounts: {}, storage tries: {}, slots: {}, finished duration: {:?}",
-                                self.prefetch_state.storage_roots.len(),
-                                self.prefetch_state.storage_tries.len(),
-                                slot_count,
-                                duration
-                            );
-                            if let Err(e) = self.prefetch_result_tx.send(TrieDBPrefetchResult::PrefetchAccountResult(
-                                Arc::from(self.prefetch_state)
-                            )) {
-                                error!(
-                                    target: "engine::trie_db_prefetch",
-                                    "Failed to send prefetch account result: {:?}", e
-                                );
-                            }
-                            break;
+                            self.terminate_all_tasks();
+                            return;
                         }
                     }
                 }
@@ -540,6 +523,20 @@ impl TrieDBPrefetchStorageTask {
         (task, prefetch_result_rx)
     }
 
+    pub(super) fn terminate(&mut self) {
+        if let Err(e) = self.prefetch_result_tx.send(TrieDBPrefetchResult::PrefetchStorageResult((
+            self.hashed_address, 
+            self.storage_trie.clone(), 
+            self.touched_slots.len()
+        ))) {
+            error!(
+                target: "engine::trie_db_prefetch",
+                "Failed to send PrefetchStorageResult for address 0x{:x}: {:?}", 
+                self.hashed_address, e
+            );
+        }
+    }
+
     pub(super) fn run(mut self) {
         loop {
             match self.state_message_rx.recv() {
@@ -548,20 +545,14 @@ impl TrieDBPrefetchStorageTask {
                         TrieDBPrefetchMessage::PrefetchSlots(slots) => {
                             // Check cancellation before processing
                             if self.cancel_flag.load(Ordering::Relaxed) {
-                                if let Err(e) = self.prefetch_result_tx.send(TrieDBPrefetchResult::PrefetchStorageResult((
-                                    self.hashed_address, 
-                                    self.storage_trie, 
-                                    self.touched_slots.len()
-                                ))) {
-                                    error!(
-                                        target: "engine::trie_db_prefetch",
-                                        "Failed to send PrefetchStorageResult for address 0x{:x}: {:?}", 
-                                        self.hashed_address, e
-                                    );
-                                }
-                                break;
+                                self.terminate();
+                                return;
                             }
                             for slot in slots.iter() {
+                                if self.cancel_flag.load(Ordering::Relaxed) {
+                                    self.terminate();
+                                    return;
+                                }
                                 if self.touched_slots.contains(slot) {
                                     continue;
                                 }
@@ -576,18 +567,8 @@ impl TrieDBPrefetchStorageTask {
                             }
                         }
                         TrieDBPrefetchMessage::PrefetchFinished() => {
-                            if let Err(e) = self.prefetch_result_tx.send(TrieDBPrefetchResult::PrefetchStorageResult((
-                                self.hashed_address, 
-                                self.storage_trie, 
-                                self.touched_slots.len()
-                            ))) {
-                                error!(
-                                    target: "engine::trie_db_prefetch",
-                                    "Failed to send PrefetchStorageResult for address 0x{:x}: {:?}", 
-                                    self.hashed_address, e
-                                );
-                            }
-                            break;
+                            self.terminate();
+                            return;
                         }
                         _ => {
                             error!(
