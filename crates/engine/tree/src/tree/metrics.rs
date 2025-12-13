@@ -383,6 +383,10 @@ pub(crate) struct BlockValidationMetrics {
     pub(crate) anchored_overlay_trie_updates_size: Histogram,
     /// Size of `AnchoredTrieInput` overlay `HashedPostStateSorted` (`total_len`)
     pub(crate) anchored_overlay_hashed_state_size: Histogram,
+    /// triedb prefetch duration
+    pub(crate) triedb_prefetch_duration: Histogram,
+    /// triedb validate duration
+    pub(crate) triedb_validate_duration: Histogram,
 }
 
 impl BlockValidationMetrics {
