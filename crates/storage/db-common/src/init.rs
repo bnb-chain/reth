@@ -295,7 +295,8 @@ where
         None,
         state_accounts,
         HashSet::new(),
-        storage_states)
+        storage_states,
+        None)
         .map_err(|_| ProviderError::Database(DatabaseError::Other("Failed to update and commit state".to_string())))?;
 
     let difflayer = Some(Arc::new(DiffLayer::new(nodes.to_diff_nodes(), diff_storage_roots)));

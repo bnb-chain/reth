@@ -41,6 +41,7 @@ use reth_trie::{HashedPostState, TrieInput};
 use reth_trie_db::DatabaseHashedPostState;
 use revm::state::EvmState;
 use revm_primitives::U256;
+use rust_eth_triedb_common::DiffLayers;
 use state::TreeState;
 use std::{
     fmt::Debug,
@@ -164,6 +165,11 @@ impl<N: NodePrimitives> EngineApiTreeState<N> {
             tree_state: TreeState::new(canonical_block, engine_kind),
             forkchoice_state_tracker: ForkchoiceStateTracker::default(),
         }
+    }
+
+    /// Returns merged difflayers by parent block hash
+    pub(crate) fn merged_difflayer_by_hash(&self, parent_block_hash: B256) -> Option<DiffLayers> {
+        self.tree_state.merged_difflayer_by_hash(parent_block_hash)
     }
 }
 

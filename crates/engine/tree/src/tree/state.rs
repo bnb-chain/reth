@@ -113,7 +113,6 @@ impl<N: NodePrimitives> TreeState<N> {
         Some((parent_hash, blocks))
     }
 
-    #[allow(dead_code)]
     pub(crate) fn merged_difflayer_by_hash(
         &self,
         parent_block_hash: B256,

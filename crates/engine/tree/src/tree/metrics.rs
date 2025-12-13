@@ -175,6 +175,10 @@ pub(crate) struct BlockValidationMetrics {
     pub(crate) payload_validation_duration: Gauge,
     /// Histogram of payload validation latency
     pub(crate) payload_validation_histogram: Histogram,
+    /// triedb prefetch duration
+    pub(crate) triedb_prefetch_duration: Histogram,
+    /// triedb validate duration
+    pub(crate) triedb_validate_duration: Histogram,
 }
 
 impl BlockValidationMetrics {

@@ -85,7 +85,7 @@ fn test_triedb_prefetch_handle() {
     // Step 5: Commit the hashed post state
     let initial_root = EMPTY_ROOT_HASH;
     let (new_root, difflayer) = triedb
-        .commit_hashed_post_state(initial_root, None, &hashed_post_state)
+        .commit_hashed_post_state(initial_root, None, &hashed_post_state, None)
         .expect("Failed to commit hashed post state");
 
     // Step 6: Flush to disk

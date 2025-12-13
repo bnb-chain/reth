@@ -211,7 +211,8 @@ where
                         .map_err(|e| ProviderError::other(e))?;
                 } else {
                     let triedb_hashed_post_state = hashed_state_clone.as_ref().to_triedb_hashed_post_state();
-                    let (new_root, difflayer) = triedb.commit_hashed_post_state(latest_state_root, None, &triedb_hashed_post_state)
+                    let (new_root, difflayer) = triedb.commit_hashed_post_state(
+                        latest_state_root, None, &triedb_hashed_post_state, None)
                         .map_err(|e| ProviderError::other(e))?;
                     if new_root != state_root {
                         return Err(ProviderError::Database(DatabaseError::Other(format!("write hashed state to triedb, block_number={}, new_root({:?}) != state_root({:?}), triedb_hashed_post_state={:?}, hashed_state={:?}, diff_storage_roots={:?}", block_number, new_root, state_root, triedb_hashed_post_state, hashed_state_clone, difflayer.as_ref().unwrap().debug_diff_storage_roots()))));
