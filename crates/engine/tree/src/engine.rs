@@ -3,7 +3,7 @@
 use crate::{
     backfill::BackfillAction,
     chain::{ChainHandler, FromOrchestrator, HandlerEvent},
-    download::{BlockDownloader, DownloadAction, DownloadOutcome},
+    download::{BlockDownloader, DownloadAction, DownloadOutcome}, tree::CustomRequestMessage,
 };
 use alloy_primitives::B256;
 use futures::{Stream, StreamExt};
@@ -242,17 +242,20 @@ impl EngineApiKind {
 
 /// The request variants that the engine API handler can receive.
 #[derive(Debug)]
-pub enum EngineApiRequest<T: PayloadTypes, N: NodePrimitives> {
+pub enum EngineApiRequest<T: PayloadTypes, N: NodePrimitives, P> {
     /// A request received from the consensus engine.
     Beacon(BeaconEngineMessage<T>),
+    /// A custom request received from the engine.
+    Custom(CustomRequestMessage<P>),
     /// Request to insert an already executed block, e.g. via payload building.
     InsertExecutedBlock(ExecutedBlockWithTrieUpdates<N>),
 }
 
-impl<T: PayloadTypes, N: NodePrimitives> Display for EngineApiRequest<T, N> {
+impl<T: PayloadTypes, N: NodePrimitives, P> Display for EngineApiRequest<T, N, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Beacon(msg) => msg.fmt(f),
+            Self::Custom(msg) => msg.fmt(f),
             Self::InsertExecutedBlock(block) => {
                 write!(f, "InsertExecutedBlock({:?})", block.recovered_block().num_hash())
             }
@@ -260,16 +263,18 @@ impl<T: PayloadTypes, N: NodePrimitives> Display for EngineApiRequest<T, N> {
     }
 }
 
-impl<T: PayloadTypes, N: NodePrimitives> From<BeaconEngineMessage<T>> for EngineApiRequest<T, N> {
+impl<T: PayloadTypes, N: NodePrimitives, P> From<BeaconEngineMessage<T>>
+    for EngineApiRequest<T, N, P>
+{
     fn from(msg: BeaconEngineMessage<T>) -> Self {
         Self::Beacon(msg)
     }
 }
 
-impl<T: PayloadTypes, N: NodePrimitives> From<EngineApiRequest<T, N>>
-    for FromEngine<EngineApiRequest<T, N>, N::Block>
+impl<T: PayloadTypes, N: NodePrimitives, P> From<EngineApiRequest<T, N, P>>
+    for FromEngine<EngineApiRequest<T, N, P>, N::Block>
 {
-    fn from(req: EngineApiRequest<T, N>) -> Self {
+    fn from(req: EngineApiRequest<T, N, P>) -> Self {
         Self::Request(req)
     }
 }

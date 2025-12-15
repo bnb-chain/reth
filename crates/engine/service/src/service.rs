@@ -39,7 +39,11 @@ pub type EngineMessageStream<T> = Pin<Box<dyn Stream<Item = BeaconEngineMessage<
 type EngineServiceType<N, Client> = ChainOrchestrator<
     EngineHandler<
         EngineApiRequestHandler<
-            EngineApiRequest<<N as NodeTypes>::Payload, <N as NodeTypes>::Primitives>,
+            EngineApiRequest<
+                <N as NodeTypes>::Payload,
+                <N as NodeTypes>::Primitives,
+                BlockchainProvider<N>
+            >,
             <N as NodeTypes>::Primitives,
         >,
         EngineMessageStream<<N as NodeTypes>::Payload>,
