@@ -22,7 +22,7 @@ use reth_engine_primitives::{
     BeaconEngineMessage, BeaconOnNewPayloadError, ConsensusEngineEvent, ExecutionPayload,
     ForkchoiceStateTracker, OnForkChoiceUpdated,
 };
-use reth_errors::{ConsensusError, ProviderResult};
+use reth_errors::{ConsensusError, ProviderResult, RethResult};
 use reth_evm::{ConfigureEvm, OnStateHook};
 use reth_payload_builder::PayloadBuilderHandle;
 use reth_payload_primitives::{
@@ -36,12 +36,14 @@ use reth_provider::{
 };
 use reth_revm::database::StateProviderDatabase;
 use reth_stages_api::ControlFlow;
-use reth_trie_db::ChangesetCache;
+use reth_trie::{HashedPostState, TrieInput};
+use reth_trie_db::{ChangesetCache, DatabaseHashedPostState};
+use reth_trie_parallel::root::ParallelStateRoot;
 use revm::state::EvmState;
 use revm_primitives::U256;
 use rust_eth_triedb_common::DiffLayers;
 use state::TreeState;
-use std::{fmt::Debug, ops, sync::Arc, time::Instant};
+use std::{fmt::{Debug, Display}, ops, sync::Arc, time::Instant};
 
 use crossbeam_channel::{Receiver, Sender};
 use tokio::sync::{
@@ -259,9 +261,9 @@ where
     /// them one by one so that we can handle incoming engine API in between and don't become
     /// unresponsive. This can happen during live sync transition where we're trying to close the
     /// gap (up to 3 epochs of blocks in the worst case).
-    incoming_tx: Sender<FromEngine<EngineApiRequest<T, N>, N::Block>>,
+    incoming_tx: Sender<FromEngine<EngineApiRequest<T, N, P>, N::Block>>,
     /// Incoming engine API requests.
-    incoming: Receiver<FromEngine<EngineApiRequest<T, N>, N::Block>>,
+    incoming: Receiver<FromEngine<EngineApiRequest<T, N, P>, N::Block>>,
     /// Outgoing events that are emitted to the handler.
     outgoing: UnboundedSender<EngineApiEvent<N>>,
     /// Channels to the persistence layer.
@@ -390,7 +392,7 @@ where
         kind: EngineApiKind,
         evm_config: C,
         changeset_cache: ChangesetCache,
-    ) -> (Sender<FromEngine<EngineApiRequest<T, N>, N::Block>>, UnboundedReceiver<EngineApiEvent<N>>)
+    ) -> (Sender<FromEngine<EngineApiRequest<T, N, P>, N::Block>>, UnboundedReceiver<EngineApiEvent<N>>)
     {
         let best_block_number = provider.best_block_number().unwrap_or(0);
         let header = provider.sealed_header(best_block_number).ok().flatten().unwrap_or_default();
@@ -429,7 +431,7 @@ where
     }
 
     /// Returns a new [`Sender`] to send messages to this type.
-    pub fn sender(&self) -> Sender<FromEngine<EngineApiRequest<T, N>, N::Block>> {
+    pub fn sender(&self) -> Sender<FromEngine<EngineApiRequest<T, N, P>, N::Block>> {
         self.incoming_tx.clone()
     }
 
@@ -1410,7 +1412,7 @@ where
     /// Returns `ControlFlow::Break(())` if the engine should terminate.
     fn on_engine_message(
         &mut self,
-        msg: FromEngine<EngineApiRequest<T, N>, N::Block>,
+        msg: FromEngine<EngineApiRequest<T, N, P>, N::Block>,
     ) -> Result<ops::ControlFlow<()>, InsertBlockFatalError> {
         match msg {
             FromEngine::Event(event) => match event {
@@ -1541,6 +1543,16 @@ where
                                     tx.send(output.map(|o| o.1).map_err(Into::into))
                                 {
                                     error!(target: "engine::tree", "Failed to send event: {err:?}");
+                                }
+                            }
+                        }
+                    }
+                    EngineApiRequest::Custom(request) => {
+                        match request {
+                            CustomRequestMessage::RequestParallelStateRoot { parent_hash, tx } => {
+                                let output = self.request_parallel_state_root(parent_hash);
+                                if tx.send(output.map_err(Into::into)).is_err() {
+                                    error!(target: "engine::tree", "Failed to send event");
                                 }
                             }
                         }
@@ -3044,6 +3056,23 @@ where
         }
         Ok((ret_header, Some(ret_td)))
     }
+    
+    fn request_parallel_state_root(&self, parent_hash: BlockHash) -> ProviderResult<ParallelStateRoot<P>> {
+        let consistent_view = ConsistentDbView::new_with_latest_tip(self.provider.clone())?;
+
+        let input = self.compute_trie_input(
+            PersistingKind::PersistingDescendant,
+            consistent_view.provider_ro()?,
+            parent_hash,
+            None,
+        )?;
+
+        // Extend with block we are validating root for.
+        // TODO: this needs to be extended with caller.
+        // input.append_ref(hashed_state);
+
+        Ok(ParallelStateRoot::new(consistent_view, input))
+    }
 }
 
 /// Events received in the main engine loop.
@@ -3103,4 +3132,26 @@ enum PersistTarget {
     Threshold,
     /// Persist all blocks up to and including the canonical head.
     Head,
+}
+
+/// A custom request message for the engine.
+#[derive(Debug)]
+pub enum CustomRequestMessage<Factory> {
+    /// Request to calculate the parallel state root for a given parent hash.
+    RequestParallelStateRoot {
+        /// The parent hash to calculate the parallel state root for.
+        parent_hash: BlockHash,
+        /// The sender for returning the parallel state root.
+        tx: oneshot::Sender<RethResult<ParallelStateRoot<Factory>>>,
+    },
+}
+
+impl<Factory> Display for CustomRequestMessage<Factory> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RequestParallelStateRoot { parent_hash, .. } => {
+                write!(f, "RequestParallelStateRoot(parent_hash: {:?})", parent_hash)
+            }
+        }
+    }
 }
