@@ -18,7 +18,7 @@ use alloy_primitives::{Address, BlockHash, BlockNumber, Sealable, TxHash, TxNumb
 use alloy_rpc_types_engine::ForkchoiceState;
 use reth_chain_state::{
     BlockState, CanonicalInMemoryState, ForkChoiceNotifications, ForkChoiceSubscriptions,
-    MemoryOverlayStateProvider,
+    MemoryOverlayStateProvider, NewCanonicalChainNotifications, NewCanonicalChainSubscriptions,
 };
 use reth_chainspec::{ChainInfo, EthereumHardforks};
 use reth_db_api::{
@@ -679,6 +679,12 @@ where
 impl<N: ProviderNodeTypes> CanonStateSubscriptions for BlockchainProvider<N> {
     fn subscribe_to_canonical_state(&self) -> CanonStateNotifications<Self::Primitives> {
         self.canonical_in_memory_state.subscribe_canon_state()
+    }
+}
+
+impl<N: ProviderNodeTypes> NewCanonicalChainSubscriptions for BlockchainProvider<N> {
+    fn subscribe_to_new_canonical_chain(&self) -> NewCanonicalChainNotifications<Self::Primitives> {
+        self.canonical_in_memory_state.subscribe_new_canonical_chain()
     }
 }
 

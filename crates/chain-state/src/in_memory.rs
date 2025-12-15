@@ -2,6 +2,7 @@
 
 use crate::{
     CanonStateNotification, CanonStateNotificationSender, CanonStateNotifications,
+    NewCanonicalChainNotificationSender, NewCanonicalChainNotifications,
     ChainInfoTracker, MemoryOverlayStateProvider,
 };
 use alloy_consensus::{transaction::TransactionMeta, BlockHeader};
@@ -141,6 +142,8 @@ pub(crate) struct CanonicalInMemoryStateInner<N: NodePrimitives> {
     pub(crate) in_memory_state: InMemoryState<N>,
     /// A broadcast stream that emits events when the canonical chain is updated.
     pub(crate) canon_state_notification_sender: CanonStateNotificationSender<N>,
+    /// A broadcast stream that emits raw canonical chain updates ([`NewCanonicalChain`]).
+    pub(crate) new_canonical_chain_notification_sender: NewCanonicalChainNotificationSender<N>,
 }
 
 impl<N: NodePrimitives> CanonicalInMemoryStateInner<N> {
@@ -188,12 +191,15 @@ impl<N: NodePrimitives> CanonicalInMemoryState<N> {
         let chain_info_tracker = ChainInfoTracker::new(header, finalized, safe);
         let (canon_state_notification_sender, _) =
             broadcast::channel(CANON_STATE_NOTIFICATION_CHANNEL_SIZE);
+        let (new_canonical_chain_notification_sender, _) =
+            broadcast::channel(CANON_STATE_NOTIFICATION_CHANNEL_SIZE);
 
         Self {
             inner: Arc::new(CanonicalInMemoryStateInner {
                 chain_info_tracker,
                 in_memory_state,
                 canon_state_notification_sender,
+                new_canonical_chain_notification_sender,
             }),
         }
     }
@@ -214,10 +220,13 @@ impl<N: NodePrimitives> CanonicalInMemoryState<N> {
         let in_memory_state = InMemoryState::default();
         let (canon_state_notification_sender, _) =
             broadcast::channel(CANON_STATE_NOTIFICATION_CHANNEL_SIZE);
+        let (new_canonical_chain_notification_sender, _) =
+            broadcast::channel(CANON_STATE_NOTIFICATION_CHANNEL_SIZE);
         let inner = CanonicalInMemoryStateInner {
             chain_info_tracker,
             in_memory_state,
             canon_state_notification_sender,
+            new_canonical_chain_notification_sender,
         };
 
         Self { inner: Arc::new(inner) }
@@ -493,6 +502,11 @@ impl<N: NodePrimitives> CanonicalInMemoryState<N> {
         self.inner.canon_state_notification_sender.subscribe()
     }
 
+    /// Subscribe to raw canonical chain updates.
+    pub fn subscribe_new_canonical_chain(&self) -> NewCanonicalChainNotifications<N> {
+        self.inner.new_canonical_chain_notification_sender.subscribe()
+    }
+
     /// Subscribe to new safe block events.
     pub fn subscribe_safe_block(&self) -> watch::Receiver<Option<SealedHeader<N::BlockHeader>>> {
         self.inner.chain_info_tracker.subscribe_safe_block()
@@ -508,6 +522,11 @@ impl<N: NodePrimitives> CanonicalInMemoryState<N> {
     /// Attempts to send a new [`CanonStateNotification`] to all active Receiver handles.
     pub fn notify_canon_state(&self, event: CanonStateNotification<N>) {
         self.inner.canon_state_notification_sender.send(event).ok();
+    }
+
+    /// Attempts to send a new [`NewCanonicalChain`] to all active Receiver handles.
+    pub fn notify_new_canonical_chain(&self, event: NewCanonicalChain<N>) {
+        self.inner.new_canonical_chain_notification_sender.send(event).ok();
     }
 
     /// Return state provider with reference to in-memory blocks that overlay database state.
@@ -878,7 +897,7 @@ impl<N: NodePrimitives> ExecutedBlockWithTrieUpdates<N> {
 }
 
 /// Non-empty chain of blocks.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum NewCanonicalChain<N: NodePrimitives = EthPrimitives> {
     /// A simple append to the current canonical head
     Commit {

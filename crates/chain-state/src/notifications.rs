@@ -25,6 +25,14 @@ pub type CanonStateNotifications<N = reth_ethereum_primitives::EthPrimitives> =
 pub type CanonStateNotificationSender<N = reth_ethereum_primitives::EthPrimitives> =
     broadcast::Sender<CanonStateNotification<N>>;
 
+/// Type alias for a receiver that receives [`crate::NewCanonicalChain`]
+pub type NewCanonicalChainNotifications<N = reth_ethereum_primitives::EthPrimitives> =
+    broadcast::Receiver<crate::NewCanonicalChain<N>>;
+
+/// Type alias for a sender that sends [`crate::NewCanonicalChain`]
+pub type NewCanonicalChainNotificationSender<N = reth_ethereum_primitives::EthPrimitives> =
+    broadcast::Sender<crate::NewCanonicalChain<N>>;
+
 /// A type that allows to register chain related event subscriptions.
 pub trait CanonStateSubscriptions: NodePrimitivesProvider + Send + Sync {
     /// Get notified when a new canonical chain was imported.
@@ -50,6 +58,36 @@ impl<T: CanonStateSubscriptions> CanonStateSubscriptions for &T {
     }
 }
 
+/// A type that allows subscribing to raw canonical chain updates ([`crate::NewCanonicalChain`]).
+///
+/// This is useful for consumers that need access to per-block [`crate::ExecutedTrieUpdates`] /
+/// trie node updates that are not present in [`CanonStateNotification`].
+pub trait NewCanonicalChainSubscriptions: NodePrimitivesProvider + Send + Sync {
+    /// Subscribe to canonical chain updates as [`crate::NewCanonicalChain`].
+    fn subscribe_to_new_canonical_chain(&self) -> NewCanonicalChainNotifications<Self::Primitives>;
+
+    /// Convenience method to get a stream of [`crate::NewCanonicalChain`].
+    fn new_canonical_chain_stream(
+        &self,
+    ) -> NewCanonicalChainNotificationStream<Self::Primitives> {
+        NewCanonicalChainNotificationStream {
+            st: BroadcastStream::new(self.subscribe_to_new_canonical_chain()),
+        }
+    }
+}
+
+impl<T: NewCanonicalChainSubscriptions> NewCanonicalChainSubscriptions for &T {
+    fn subscribe_to_new_canonical_chain(&self) -> NewCanonicalChainNotifications<Self::Primitives> {
+        (*self).subscribe_to_new_canonical_chain()
+    }
+
+    fn new_canonical_chain_stream(
+        &self,
+    ) -> NewCanonicalChainNotificationStream<Self::Primitives> {
+        (*self).new_canonical_chain_stream()
+    }
+}
+
 /// A Stream of [`CanonStateNotification`].
 #[derive(Debug)]
 #[pin_project::pin_project]
@@ -68,6 +106,33 @@ impl<N: NodePrimitives> Stream for CanonStateNotificationStream<N> {
                 Some(Ok(notification)) => Poll::Ready(Some(notification)),
                 Some(Err(err)) => {
                     debug!(%err, "canonical state notification stream lagging behind");
+                    continue
+                }
+                None => Poll::Ready(None),
+            }
+        }
+    }
+}
+
+/// A Stream of [`crate::NewCanonicalChain`].
+#[derive(Debug)]
+#[pin_project::pin_project]
+pub struct NewCanonicalChainNotificationStream<
+    N: NodePrimitives = reth_ethereum_primitives::EthPrimitives,
+> {
+    #[pin]
+    st: BroadcastStream<crate::NewCanonicalChain<N>>,
+}
+
+impl<N: NodePrimitives> Stream for NewCanonicalChainNotificationStream<N> {
+    type Item = crate::NewCanonicalChain<N>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        loop {
+            return match ready!(self.as_mut().project().st.poll_next(cx)) {
+                Some(Ok(notification)) => Poll::Ready(Some(notification)),
+                Some(Err(err)) => {
+                    debug!(%err, "new canonical chain notification stream lagging behind");
                     continue
                 }
                 None => Poll::Ready(None),

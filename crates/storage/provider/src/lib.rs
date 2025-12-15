@@ -46,6 +46,8 @@ pub mod writer;
 pub use reth_chain_state::{
     CanonStateNotification, CanonStateNotificationSender, CanonStateNotificationStream,
     CanonStateNotifications, CanonStateSubscriptions,
+    NewCanonicalChainNotificationSender, NewCanonicalChainNotificationStream,
+    NewCanonicalChainNotifications, NewCanonicalChainSubscriptions,
 };
 
 // reexport traits to avoid breaking changes

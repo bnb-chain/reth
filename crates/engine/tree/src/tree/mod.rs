@@ -2133,11 +2133,15 @@ where
         }
 
         // update the tracked in-memory state with the new chain
+        let new_chain_update = chain_update.clone();
         self.canonical_in_memory_state.update_chain(chain_update);
         self.canonical_in_memory_state.set_canonical_head(tip.clone());
 
         // Update metrics based on new tip
         self.metrics.tree.canonical_chain_height.set(tip.number() as f64);
+
+        // Sends raw canonical chain update (includes trie updates when available).
+        self.canonical_in_memory_state.notify_new_canonical_chain(new_chain_update);
 
         // sends an event to all active listeners about the new canonical chain
         self.canonical_in_memory_state.notify_canon_state(notification);
