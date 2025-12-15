@@ -419,7 +419,7 @@ where
         let validate_start = Instant::now();
         let trie_hashed_state = hashed_state.to_triedb_hashed_post_state();
         let block_state_root = block.state_root();
-        let (new_root, difflayer) = triedb.commit_hashed_post_state(
+        let (new_root, difflayer) = triedb.intermediate_and_commit_hashed_post_state(
             parent_block.state_root(),
             difflayers.as_ref(),
             &trie_hashed_state,
@@ -471,7 +471,7 @@ where
                 hashed_state: Arc::new(hashed_state),
             },
             trie: ExecutedTrieUpdates::Present(Arc::new(TrieUpdates::default())),
-            difflayer: difflayer,
+            difflayer: Some(difflayer),
         })
     }
 
@@ -607,7 +607,7 @@ where
             difflayer: None,
         })
     }
-    
+
     /// Validates a block that has already been converted from a payload.
     ///
     /// This method performs:

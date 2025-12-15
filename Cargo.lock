@@ -1991,9 +1991,9 @@ dependencies = [
 
 [[package]]
 name = "camino"
-version = "1.2.1"
+version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "276a59bf2b2c967788139340c9f0c5b12d7fd6630315c15c217e559de85d2609"
+checksum = "e629a66d692cb9ff1a1c664e41771b3dcaf961985a9774c0eb0bd1b51cf60a48"
 dependencies = [
  "serde_core",
 ]
@@ -11307,7 +11307,7 @@ checksum = "48fd7bd8a6377e15ad9d42a8ec25371b94ddc67abe7c8b9127bec79bebaaae18"
 [[package]]
 name = "rust-eth-triedb"
 version = "0.1.0"
-source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?branch=triedb_opt#47d0381f5b8f2e3197c4932ef53541552cf41ed2"
+source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?branch=triedb_opt#3a0a095a01e1a2ebd8f85085d98af8382c00f4bc"
 dependencies = [
  "alloy-primitives",
  "alloy-trie",
@@ -11328,7 +11328,7 @@ dependencies = [
 [[package]]
 name = "rust-eth-triedb-common"
 version = "0.1.0"
-source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?branch=triedb_opt#47d0381f5b8f2e3197c4932ef53541552cf41ed2"
+source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?branch=triedb_opt#3a0a095a01e1a2ebd8f85085d98af8382c00f4bc"
 dependencies = [
  "alloy-primitives",
  "auto_impl",
@@ -11339,7 +11339,7 @@ dependencies = [
 [[package]]
 name = "rust-eth-triedb-pathdb"
 version = "0.1.0"
-source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?branch=triedb_opt#47d0381f5b8f2e3197c4932ef53541552cf41ed2"
+source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?branch=triedb_opt#3a0a095a01e1a2ebd8f85085d98af8382c00f4bc"
 dependencies = [
  "alloy-primitives",
  "alloy-trie",
@@ -11358,7 +11358,7 @@ dependencies = [
 [[package]]
 name = "rust-eth-triedb-state-trie"
 version = "0.1.0"
-source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?branch=triedb_opt#47d0381f5b8f2e3197c4932ef53541552cf41ed2"
+source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?branch=triedb_opt#3a0a095a01e1a2ebd8f85085d98af8382c00f4bc"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
