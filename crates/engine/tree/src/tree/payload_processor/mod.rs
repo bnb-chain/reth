@@ -117,6 +117,103 @@ where
     N: NodePrimitives,
     Evm: ConfigureEvm<Primitives = N> + 'static,
 {
+    /// Spawns all background tasks required for sparse state root computation, **without** starting
+    /// any caching / prewarming work.
+    ///
+    /// This is intended for callers that already execute transactions elsewhere (e.g. a validator
+    /// payload builder) and only want to stream state updates via [`PayloadHandle::state_hook`].
+    ///
+    /// Note: `transactions` is accepted for type compatibility with [`PayloadHandle`], but is not
+    /// consumed because caching+prewarming is disabled by design.
+    pub fn spawn_without_caching_and_prewarming<P, I: ExecutableTxIterator<Evm>>(
+        &mut self,
+        env: ExecutionEnv<Evm>,
+        _transactions: I,
+        consistent_view: ConsistentDbView<P>,
+        trie_input: TrieInput,
+        config: &TreeConfig,
+    ) -> PayloadHandle<WithTxEnv<TxEnvFor<Evm>, I::Tx>, I::Error>
+    where
+        P: DatabaseProviderFactory<Provider: BlockReader> + Clone + 'static,
+    {
+        debug_assert!(
+            config.disable_caching_and_prewarming(),
+            "spawn_without_caching_and_prewarming requires TreeConfig::without_caching_and_prewarming(true)"
+        );
+
+        let (to_sparse_trie, sparse_trie_rx) = channel();
+        // spawn multiproof task, save the trie input
+        let (trie_input, state_root_config) =
+            MultiProofConfig::new_from_input(consistent_view, trie_input);
+        self.trie_input = Some(trie_input);
+
+        // Create and spawn the storage proof task
+        let task_ctx = ProofTaskCtx::new(
+            state_root_config.nodes_sorted.clone(),
+            state_root_config.state_sorted.clone(),
+            state_root_config.prefix_sets.clone(),
+        );
+        let max_proof_task_concurrency = config.max_proof_task_concurrency() as usize;
+        let proof_task = ProofTaskManager::new(
+            self.executor.handle().clone(),
+            state_root_config.consistent_view.clone(),
+            task_ctx,
+            max_proof_task_concurrency,
+        );
+
+        // We set it to half of the proof task concurrency, because often for each multiproof we
+        // spawn one Tokio task for the account proof, and one Tokio task for the storage proof.
+        let max_multi_proof_task_concurrency = max_proof_task_concurrency / 2;
+        let multi_proof_task = MultiProofTask::new(
+            state_root_config,
+            self.executor.clone(),
+            proof_task.handle(),
+            to_sparse_trie,
+            max_multi_proof_task_concurrency,
+        );
+
+        // wire the multiproof task to external state updates
+        let to_multi_proof = Some(multi_proof_task.state_root_message_sender());
+
+        // spawn multi-proof task
+        self.executor.spawn_blocking(move || {
+            multi_proof_task.run();
+        });
+
+        // wire the sparse trie to the state root response receiver
+        let (state_root_tx, state_root_rx) = channel();
+
+        // Spawn the sparse trie task using any stored trie and parallel trie configuration.
+        self.spawn_sparse_trie_task(sparse_trie_rx, proof_task.handle(), state_root_tx);
+
+        // spawn the proof task
+        self.executor.spawn_blocking(move || {
+            if let Err(err) = proof_task.run() {
+                // At least log if there is an error at any point
+                tracing::error!(
+                    target: "engine::root",
+                    ?err,
+                    "Storage proof task returned an error"
+                );
+            }
+        });
+
+        // Provide a minimal cache handle (no spawned prewarm task).
+        let (cache, cache_metrics) = self.cache_for(env.parent_hash).split();
+        let prewarm_handle = CacheTaskHandle { cache, cache_metrics, to_prewarm_task: None };
+
+        // Provide an empty tx receiver (caller does not use iter_transactions).
+        let (_tx, execution_rx) =
+            mpsc::channel::<Result<WithTxEnv<TxEnvFor<Evm>, I::Tx>, I::Error>>();
+
+        PayloadHandle {
+            to_multi_proof,
+            prewarm_handle,
+            state_root: Some(state_root_rx),
+            transactions: execution_rx,
+        }
+    }
+
     /// Spawns all background tasks and returns a handle connected to the tasks.
     ///
     /// - Transaction prewarming task
