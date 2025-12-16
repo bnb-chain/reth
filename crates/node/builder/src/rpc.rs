@@ -45,7 +45,10 @@ use std::{
     ops::{Deref, DerefMut},
     sync::Arc,
 };
-use tokio::sync::oneshot;
+use reth_engine_tree::engine::EngineApiRequest;
+use reth_node_api::NodeTypesWithDBAdapter;
+use reth_provider::providers::BlockchainProvider;
+use tokio::sync::{mpsc::UnboundedSender, oneshot};
 
 /// Contains the handles to the spawned RPC servers.
 ///
@@ -323,6 +326,15 @@ where
     }
 }
 
+/// Internal alias for the Engine API sender type tied to a node.
+type EngineApiTx<Node> = UnboundedSender<
+    EngineApiRequest<
+        <<Node as FullNodeTypes>::Types as NodeTypes>::Payload,
+        <<Node as FullNodeTypes>::Types as NodeTypes>::Primitives,
+        BlockchainProvider<NodeTypesWithDBAdapter<<Node as FullNodeTypes>::Types, <Node as FullNodeTypes>::DB>>,
+    >
+>;
+
 /// Handle to the launched RPC servers.
 pub struct RpcHandle<Node: FullNodeComponents, EthApi: EthApiTypes> {
     /// Handles to launched servers.
@@ -338,6 +350,11 @@ pub struct RpcHandle<Node: FullNodeComponents, EthApi: EthApiTypes> {
     pub beacon_engine_handle: ConsensusEngineHandle<<Node::Types as NodeTypes>::Payload>,
     /// Handle to trigger engine shutdown.
     pub engine_shutdown: EngineShutdown,
+    /// Sender for engine API requests flowing from RPC to engine service.
+    ///
+    /// Factory requirement (for clarity): ProviderFactory implements
+    /// `DatabaseProviderFactory<Provider: BlockReader> + Clone + Send + Sync + 'static`.
+    pub engine_api_tx: Option<EngineApiTx<Node>>,
 }
 
 impl<Node: FullNodeComponents, EthApi: EthApiTypes> Clone for RpcHandle<Node, EthApi> {
@@ -348,6 +365,7 @@ impl<Node: FullNodeComponents, EthApi: EthApiTypes> Clone for RpcHandle<Node, Et
             engine_events: self.engine_events.clone(),
             beacon_engine_handle: self.beacon_engine_handle.clone(),
             engine_shutdown: self.engine_shutdown.clone(),
+            engine_api_tx: self.engine_api_tx.clone(),
         }
     }
 }
@@ -965,6 +983,7 @@ where
             engine_events,
             beacon_engine_handle: engine_handle,
             engine_shutdown: EngineShutdown::default(),
+            engine_api_tx: None,
         })
     }
 

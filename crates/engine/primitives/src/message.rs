@@ -213,7 +213,7 @@ pub struct ConsensusEngineHandle<Payload>
 where
     Payload: PayloadTypes,
 {
-    pub to_engine: UnboundedSender<BeaconEngineMessage<Payload>>,
+    to_engine: UnboundedSender<BeaconEngineMessage<Payload>>,
 }
 
 impl<Payload> ConsensusEngineHandle<Payload>
