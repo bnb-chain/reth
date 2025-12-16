@@ -321,7 +321,7 @@ where
 }
 
 /// Internal alias for the Engine API sender type tied to a node.
-type EngineApiTx<Node> = UnboundedSender<
+pub type EngineApiTx<Node> = UnboundedSender<
     EngineApiRequest<
         <<Node as FullNodeTypes>::Types as NodeTypes>::Payload,
         <<Node as FullNodeTypes>::Types as NodeTypes>::Primitives,
