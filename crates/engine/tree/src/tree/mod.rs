@@ -480,7 +480,7 @@ where
     ///
     /// Uses biased selection to prioritize persistence completion to update in-memory state and
     /// unblock further writes.
-    fn wait_for_event(&mut self) -> LoopEvent<T, N> {
+    fn wait_for_event(&mut self) -> LoopEvent<T, N, P, C> {
         // Take ownership of persistence rx if present
         let maybe_persistence = self.persistence_state.rx.take();
 
@@ -1578,6 +1578,18 @@ where
                         match request {
                             CustomRequestMessage::RequestParallelStateRoot { parent_hash, tx } => {
                                 let output = self.request_parallel_state_root(parent_hash);
+                                if tx.send(output.map_err(Into::into)).is_err() {
+                                    error!(target: "engine::tree", "Failed to send event");
+                                }
+                            }
+                            CustomRequestMessage::RequestPayloadProcessor { tx } => {
+                                let output = self.request_payload_processor();
+                                if tx.send(output.map_err(Into::into)).is_err() {
+                                    error!(target: "engine::tree", "Failed to send event");
+                                }
+                            }
+                            CustomRequestMessage::RequestParallelCtx { parent_hash, allocated_trie_input, tx } => {
+                                let output = self.request_parallel_ctx(parent_hash, allocated_trie_input);
                                 if tx.send(output.map_err(Into::into)).is_err() {
                                     error!(target: "engine::tree", "Failed to send event");
                                 }
@@ -3102,24 +3114,32 @@ where
     }
 }
 
-/// Events received in the main engine loop.
-#[derive(Debug)]
-enum LoopEvent<T, N>
-where
-    N: NodePrimitives,
-    T: PayloadTypes,
-{
-    /// An engine API message was received.
-    EngineMessage(FromEngine<EngineApiRequest<T, N>, N::Block>),
-    /// A persistence task completed.
-    PersistenceComplete {
-        /// The result of the persistence operation.
-        result: Option<BlockNumHash>,
-        /// When the persistence operation started.
-        start_time: Instant,
-    },
-    /// A channel was disconnected.
-    Disconnected,
+    fn request_payload_processor(&self) -> ProviderResult<PayloadProcessor<C>> {
+        let precompile_cache_map = precompile_cache::PrecompileCacheMap::default();
+        Ok(PayloadProcessor::new(
+            payload_processor::executor::WorkloadExecutor::default(),
+            self.evm_config.clone(),
+            &self.config,
+            precompile_cache_map,
+        ))
+    }
+
+    fn request_parallel_ctx(&self, parent_hash: BlockHash, allocated_trie_input: Option<TrieInput>) -> ProviderResult<CustomParallelCtx<P, N>> {
+        let consistent_view = ConsistentDbView::new_with_latest_tip(self.provider.clone())?;
+        let state_provider_builder = self.state_provider_builder(parent_hash)?;
+        let trie_input = self.compute_trie_input(
+            PersistingKind::PersistingDescendant,
+            consistent_view.provider_ro()?,
+            parent_hash,
+            allocated_trie_input,
+        )?;
+        Ok(CustomParallelCtx {
+            trie_input,
+            consistent_view,
+            state_provider_builder: state_provider_builder,
+            persisting_kind: PersistingKind::PersistingDescendant,
+        })
+    }
 }
 
 /// Block inclusion can be valid, accepted, or invalid. Invalid blocks are returned as an error
@@ -3152,6 +3172,27 @@ pub enum InsertPayloadOk {
     Inserted(BlockStatus),
 }
 
+/// Events received in the main engine loop.
+#[derive(Debug)]
+enum LoopEvent<T, N, P, C>
+where
+    N: NodePrimitives,
+    T: PayloadTypes,
+    C: ConfigureEvm<Primitives = N>,
+{
+    /// An engine API message was received.
+    EngineMessage(FromEngine<EngineApiRequest<T, N, P, C>, N::Block>),
+    /// A persistence task completed.
+    PersistenceComplete {
+        /// The result of the persistence operation.
+        result: Option<BlockNumHash>,
+        /// When the persistence operation started.
+        start_time: Instant,
+    },
+    /// A channel was disconnected.
+    Disconnected,
+}
+
 /// Target for block persistence.
 #[derive(Debug, Clone, Copy)]
 enum PersistTarget {
@@ -3161,6 +3202,34 @@ enum PersistTarget {
     Head,
 }
 
+/// A custom parallel context for parallel state computation.
+pub struct CustomParallelCtx<P, N>
+where
+    N: NodePrimitives,
+{
+    /// The trie input to use for the parallel state computation.
+    pub trie_input: TrieInput,
+    /// The consistent view to use for the parallel state computation.
+    pub consistent_view: ConsistentDbView<P>,
+    /// The state provider builder to use for the parallel state computation.
+    pub state_provider_builder: Option<StateProviderBuilder<N, P>>,
+    /// The persisting kind to use for the parallel state computation.
+    pub persisting_kind: PersistingKind,
+}
+
+impl<P, N> std::fmt::Debug for CustomParallelCtx<P, N>
+where
+    N: NodePrimitives,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CustomParallelCtx")
+            .field("trie_input", &"...")
+            .field("consistent_view", &"...")
+            .field("state_provider_builder", &"...")
+            .field("persisting_kind", &self.persisting_kind)
+            .finish()
+    }
+}
 /// A custom request message for the engine.
 #[derive(Debug)]
 pub enum CustomRequestMessage<P, Evm, N>
@@ -3187,7 +3256,7 @@ where
         /// The allocated trie input to use.
         allocated_trie_input: Option<TrieInput>,
         /// The sender for returning the parallel state root.
-        tx: oneshot::Sender<RethResult<(TrieInput, ConsistentDbView<P>, Option<StateProviderBuilder<N, P>>, PersistingKind)>>,
+        tx: oneshot::Sender<RethResult<CustomParallelCtx<P, N>>>,
     },
 }
 
