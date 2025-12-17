@@ -246,7 +246,7 @@ pub enum EngineApiRequest<T: PayloadTypes, N: NodePrimitives, Factory> {
     /// A request received from the consensus engine.
     Beacon(BeaconEngineMessage<T>),
     /// A custom request received from the engine.
-    Custom(CustomRequestMessage<Factory>),
+    Custom(CustomRequestMessage<Factory, ()>),
     /// Request to insert an already executed block, e.g. via payload building.
     InsertExecutedBlock(ExecutedBlockWithTrieUpdates<N>),
 }

@@ -1372,6 +1372,18 @@ where
                                     error!(target: "engine::tree", "Failed to send event");
                                 }
                             }
+                            CustomRequestMessage::RequestPayloadProcessor { tx } => {
+                                let output = self.request_payload_processor();
+                                if tx.send(output.map_err(Into::into)).is_err() {
+                                    error!(target: "engine::tree", "Failed to send event");
+                                }
+                            }
+                            CustomRequestMessage::RequestParallelCtx { parent_hash, allocated_trie_input, tx } => {
+                                let output = self.request_parallel_ctx(parent_hash, allocated_trie_input);
+                                if tx.send(output.map_err(Into::into)).is_err() {
+                                    error!(target: "engine::tree", "Failed to send event");
+                                }
+                            }
                         }
                     }
                 }
@@ -2899,6 +2911,33 @@ where
 
         Ok(ParallelStateRoot::new(consistent_view, input))
     }
+
+    fn request_payload_processor(&self) -> ProviderResult<PayloadProcessor<C>> {
+        let precompile_cache_map = precompile_cache::PrecompileCacheMap::default();
+        Ok(PayloadProcessor::new(
+            payload_processor::executor::WorkloadExecutor::default(),
+            self.evm_config.clone(),
+            &self.config,
+            precompile_cache_map,
+        ))
+    }
+
+    fn request_parallel_ctx(&self, parent_hash: BlockHash, allocated_trie_input: Option<TrieInput>) -> ProviderResult<(TrieInput, ConsistentDbView<P>, Option<StateProviderBuilder<N, P>>, PersistingKind)> {
+        let consistent_view = ConsistentDbView::new_with_latest_tip(self.provider.clone())?;
+        let state_provider_builder = self.state_provider_builder(parent_hash)?;
+        let trie_input = self.compute_trie_input(
+            PersistingKind::PersistingDescendant,
+            consistent_view.provider_ro()?,
+            parent_hash,
+            allocated_trie_input,
+        )?;
+        Ok((
+            trie_input,
+            consistent_view,
+            state_provider_builder,
+            PersistingKind::PersistingDescendant,
+        ))
+    }
 }
 
 /// Block inclusion can be valid, accepted, or invalid. Invalid blocks are returned as an error
@@ -2960,7 +2999,7 @@ impl PersistingKind {
 
 /// A custom request message for the engine.
 #[derive(Debug)]
-pub enum CustomRequestMessage<Factory> {
+pub enum CustomRequestMessage<Factory, Evm = (), N = (), P = ()> {
     /// Request to calculate the parallel state root for a given parent hash.
     RequestParallelStateRoot {
         /// The parent hash to calculate the parallel state root for.
@@ -2968,13 +3007,33 @@ pub enum CustomRequestMessage<Factory> {
         /// The sender for returning the parallel state root.
         tx: oneshot::Sender<RethResult<ParallelStateRoot<Factory>>>,
     },
+    /// Request to calculate the parallel state root for a given parent hash.
+    RequestPayloadProcessor {
+        /// The sender for returning the parallel state root.
+        tx: oneshot::Sender<RethResult<PayloadProcessor<Evm>>>,
+    },
+    /// Request context for parallel state computation.
+    RequestParallelCtx {
+        /// The parent hash to calculate the parallel state root for.
+        parent_hash: BlockHash,
+        /// The allocated trie input to use.
+        allocated_trie_input: Option<TrieInput>,
+        /// The sender for returning the parallel state root.
+        tx: oneshot::Sender<RethResult<(TrieInput, ConsistentDbView<Factory>, Option<StateProviderBuilder<N, P>>, PersistingKind)>>,
+    },
 }
 
-impl<Factory> Display for CustomRequestMessage<Factory> {
+impl<Factory, Evm, N, P> Display for CustomRequestMessage<Factory, Evm, N, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::RequestParallelStateRoot { parent_hash, .. } => {
                 write!(f, "RequestParallelStateRoot(parent_hash: {:?})", parent_hash)
+            }
+            Self::RequestPayloadProcessor { .. } => {
+                write!(f, "RequestPayloadProcessor")
+            }
+            Self::RequestParallelCtx { .. } => {
+                write!(f, "RequestParallelCtx")
             }
         }
     }
