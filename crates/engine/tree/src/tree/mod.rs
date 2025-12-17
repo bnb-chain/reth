@@ -261,9 +261,9 @@ where
     /// them one by one so that we can handle incoming engine API in between and don't become
     /// unresponsive. This can happen during live sync transition where we're trying to close the
     /// gap (up to 3 epochs of blocks in the worst case).
-    incoming_tx: Sender<FromEngine<EngineApiRequest<T, N, P>, N::Block>>,
+    incoming_tx: Sender<FromEngine<EngineApiRequest<T, N, P, C>, N::Block>>,
     /// Incoming engine API requests.
-    incoming: Receiver<FromEngine<EngineApiRequest<T, N, P>, N::Block>>,
+    incoming: Receiver<FromEngine<EngineApiRequest<T, N, P, C>, N::Block>>,
     /// Outgoing events that are emitted to the handler.
     outgoing: UnboundedSender<EngineApiEvent<N>>,
     /// Channels to the persistence layer.
@@ -392,7 +392,7 @@ where
         kind: EngineApiKind,
         evm_config: C,
         changeset_cache: ChangesetCache,
-    ) -> (Sender<FromEngine<EngineApiRequest<T, N, P>, N::Block>>, UnboundedReceiver<EngineApiEvent<N>>)
+    ) -> (Sender<FromEngine<EngineApiRequest<T, N, P, C>, N::Block>>, UnboundedReceiver<EngineApiEvent<N>>)
     {
         let best_block_number = provider.best_block_number().unwrap_or(0);
         let header = provider.sealed_header(best_block_number).ok().flatten().unwrap_or_default();
@@ -431,7 +431,7 @@ where
     }
 
     /// Returns a new [`Sender`] to send messages to this type.
-    pub fn sender(&self) -> Sender<FromEngine<EngineApiRequest<T, N, P>, N::Block>> {
+    pub fn sender(&self) -> Sender<FromEngine<EngineApiRequest<T, N, P, C>, N::Block>> {
         self.incoming_tx.clone()
     }
 
@@ -1256,6 +1256,33 @@ where
         .with_event(TreeEvent::Download(DownloadRequest::single_block(target))))
     }
 
+    /// Attempts to receive the next engine request.
+    ///
+    /// If there's currently no persistence action in progress, this will block until a new request
+    /// is received. If there's a persistence action in progress, this will try to receive the
+    /// next request with a timeout to not block indefinitely and return `Ok(None)` if no request is
+    /// received in time.
+    ///
+    /// Returns an error if the engine channel is disconnected.
+    #[expect(clippy::type_complexity)]
+    fn try_recv_engine_message(
+        &self,
+    ) -> Result<Option<FromEngine<EngineApiRequest<T, N, P, C>, N::Block>>, RecvError> {
+        if self.persistence_state.in_progress() {
+            // try to receive the next request with a timeout to not block indefinitely
+            match self.incoming.recv_timeout(std::time::Duration::from_millis(500)) {
+                Ok(msg) => Ok(Some(msg)),
+                Err(err) => match err {
+                    RecvTimeoutError::Timeout => Ok(None),
+                    RecvTimeoutError::Disconnected => Err(RecvError),
+                },
+            }
+        } else {
+            self.incoming.recv().map(Some)
+        }
+    }
+
+
     /// Helper method to remove blocks and set the persistence state. This ensures we keep track of
     /// the current persistence action while we're removing blocks.
     fn remove_blocks(&mut self, new_tip_num: u64) {
@@ -1412,7 +1439,7 @@ where
     /// Returns `ControlFlow::Break(())` if the engine should terminate.
     fn on_engine_message(
         &mut self,
-        msg: FromEngine<EngineApiRequest<T, N, P>, N::Block>,
+        msg: FromEngine<EngineApiRequest<T, N, P, C>, N::Block>,
     ) -> Result<ops::ControlFlow<()>, InsertBlockFatalError> {
         match msg {
             FromEngine::Event(event) => match event {
@@ -3136,21 +3163,49 @@ enum PersistTarget {
 
 /// A custom request message for the engine.
 #[derive(Debug)]
-pub enum CustomRequestMessage<Factory> {
+pub enum CustomRequestMessage<P, Evm, N>
+where
+    Evm: ConfigureEvm<Primitives = N>,
+    N: NodePrimitives,
+{
     /// Request to calculate the parallel state root for a given parent hash.
     RequestParallelStateRoot {
         /// The parent hash to calculate the parallel state root for.
         parent_hash: BlockHash,
         /// The sender for returning the parallel state root.
-        tx: oneshot::Sender<RethResult<ParallelStateRoot<Factory>>>,
+        tx: oneshot::Sender<RethResult<ParallelStateRoot<P>>>,
+    },
+    /// Request to calculate the parallel state root for a given parent hash.
+    RequestPayloadProcessor {
+        /// The sender for returning the parallel state root.
+        tx: oneshot::Sender<RethResult<PayloadProcessor<Evm>>>,
+    },
+    /// Request context for parallel state computation.
+    RequestParallelCtx {
+        /// The parent hash to calculate the parallel state root for.
+        parent_hash: BlockHash,
+        /// The allocated trie input to use.
+        allocated_trie_input: Option<TrieInput>,
+        /// The sender for returning the parallel state root.
+        tx: oneshot::Sender<RethResult<(TrieInput, ConsistentDbView<P>, Option<StateProviderBuilder<N, P>>, PersistingKind)>>,
     },
 }
 
-impl<Factory> Display for CustomRequestMessage<Factory> {
+impl<P, Evm, N> Display for CustomRequestMessage<P, Evm, N>
+where
+    Evm: ConfigureEvm<Primitives = N>,
+    N: NodePrimitives,
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::RequestParallelStateRoot { parent_hash, .. } => {
                 write!(f, "RequestParallelStateRoot(parent_hash: {:?})", parent_hash)
+            }
+            Self::RequestPayloadProcessor { .. } => {
+                write!(f, "RequestPayloadProcessor")
+            }
+            Self::RequestParallelCtx { parent_hash, .. } => {
+                write!(f, "RequestParallelCtx(parent_hash: {:?})", parent_hash)
             }
         }
     }
