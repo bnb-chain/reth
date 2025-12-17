@@ -187,11 +187,7 @@ where
         let event_sender = EventSender::default();
 
         let beacon_engine_handle = ConsensusEngineHandle::new(consensus_engine_tx.clone());
-        let (engine_api_tx, mut engine_api_rx) = unbounded_channel::<EngineApiRequest<
-            <Types as NodeTypes>::Payload,
-            <Types as NodeTypes>::Primitives,
-            BlockchainProvider<NodeTypesWithDBAdapter<Types, DB>>
-        >> ();
+        let (engine_api_tx, mut engine_api_rx) = unbounded_channel();
 
         // extract the jwt secret from the args if possible
         let jwt_secret = ctx.auth_jwt_secret()?;

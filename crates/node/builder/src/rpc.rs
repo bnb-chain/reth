@@ -326,6 +326,7 @@ pub type EngineApiTx<Node> = UnboundedSender<
         <<Node as FullNodeTypes>::Types as NodeTypes>::Payload,
         <<Node as FullNodeTypes>::Types as NodeTypes>::Primitives,
         BlockchainProvider<NodeTypesWithDBAdapter<<Node as FullNodeTypes>::Types, <Node as FullNodeTypes>::DB>>,
+        <Node as FullNodeComponents>::Evm
     >
 >;
 

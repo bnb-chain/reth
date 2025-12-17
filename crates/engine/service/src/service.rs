@@ -42,7 +42,8 @@ type EngineServiceType<N, Client> = ChainOrchestrator<
             EngineApiRequest<
                 <N as NodeTypes>::Payload,
                 <N as NodeTypes>::Primitives,
-                BlockchainProvider<N>
+                BlockchainProvider<N>,
+                C
             >,
             <N as NodeTypes>::Primitives,
         >,
@@ -58,18 +59,19 @@ type EngineServiceType<N, Client> = ChainOrchestrator<
 // TODO(mattsse): remove hidden once fixed : <https://github.com/rust-lang/rust/issues/135363>
 //  otherwise rustdoc fails to resolve the alias
 #[doc(hidden)]
-pub struct EngineService<N, Client>
+pub struct EngineService<N, Client, Evm>
 where
     N: ProviderNodeTypes,
     Client: BlockClient<Block = BlockTy<N>> + 'static,
 {
-    orchestrator: EngineServiceType<N, Client>,
+    orchestrator: EngineServiceType<N, Client, Evm>,
 }
 
-impl<N, Client> EngineService<N, Client>
+impl<N, Client, Evm> EngineService<N, Client, Evm>
 where
     N: ProviderNodeTypes,
     Client: BlockClient<Block = BlockTy<N>> + 'static,
+    Evm: ConfigureEvm<Primitives = N::Primitives> + 'static,
 {
     /// Constructor for `EngineService`.
     #[expect(clippy::too_many_arguments)]
@@ -124,12 +126,12 @@ where
     }
 
     /// Returns a mutable reference to the orchestrator.
-    pub fn orchestrator_mut(&mut self) -> &mut EngineServiceType<N, Client> {
+    pub fn orchestrator_mut(&mut self) -> &mut EngineServiceType<N, Client, Evm> {
         &mut self.orchestrator
     }
 }
 
-impl<N, Client> Stream for EngineService<N, Client>
+impl<N, Client, Evm> Stream for EngineService<N, Client, Evm>
 where
     N: ProviderNodeTypes,
     Client: BlockClient<Block = BlockTy<N>> + 'static,

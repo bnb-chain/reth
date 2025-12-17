@@ -134,7 +134,7 @@ struct TestHarness {
         MockEvmConfig,
     >,
     to_tree_tx: Sender<
-        FromEngine<EngineApiRequest<EthEngineTypes, EthPrimitives, MockEthProvider>, Block>,
+        FromEngine<EngineApiRequest<EthEngineTypes, EthPrimitives, MockEthProvider, reth_evm_ethereum::EthEvmConfig>, Block>,
     >,
     from_tree_rx: UnboundedReceiver<EngineApiEvent>,
     blocks: Vec<ExecutedBlockWithTrieUpdates>,

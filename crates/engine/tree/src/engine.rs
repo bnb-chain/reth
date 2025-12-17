@@ -9,6 +9,7 @@ use alloy_primitives::B256;
 use futures::{Stream, StreamExt};
 use reth_chain_state::ExecutedBlockWithTrieUpdates;
 use reth_engine_primitives::{BeaconEngineMessage, ConsensusEngineEvent};
+use reth_evm::ConfigureEvm;
 use reth_ethereum_primitives::EthPrimitives;
 use reth_payload_primitives::PayloadTypes;
 use reth_primitives_traits::{Block, NodePrimitives, RecoveredBlock};
@@ -242,16 +243,22 @@ impl EngineApiKind {
 
 /// The request variants that the engine API handler can receive.
 #[derive(Debug)]
-pub enum EngineApiRequest<T: PayloadTypes, N: NodePrimitives, Factory> {
+pub enum EngineApiRequest<T: PayloadTypes, N: NodePrimitives, P, Evm>
+where
+    Evm: ConfigureEvm<Primitives = N>,
+{
     /// A request received from the consensus engine.
     Beacon(BeaconEngineMessage<T>),
     /// A custom request received from the engine.
-    Custom(CustomRequestMessage<Factory, ()>),
+    Custom(CustomRequestMessage<P, Evm, N>),
     /// Request to insert an already executed block, e.g. via payload building.
     InsertExecutedBlock(ExecutedBlockWithTrieUpdates<N>),
 }
 
-impl<T: PayloadTypes, N: NodePrimitives, P> Display for EngineApiRequest<T, N, P> {
+impl<T: PayloadTypes, N: NodePrimitives, P, Evm> Display for EngineApiRequest<T, N, P, Evm>
+where
+    Evm: ConfigureEvm<Primitives = N>,
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Beacon(msg) => msg.fmt(f),
@@ -263,18 +270,22 @@ impl<T: PayloadTypes, N: NodePrimitives, P> Display for EngineApiRequest<T, N, P
     }
 }
 
-impl<T: PayloadTypes, N: NodePrimitives, P> From<BeaconEngineMessage<T>>
-    for EngineApiRequest<T, N, P>
+impl<T: PayloadTypes, N: NodePrimitives, P, Evm> From<BeaconEngineMessage<T>>
+    for EngineApiRequest<T, N, P, Evm>
+where
+    Evm: ConfigureEvm<Primitives = N>,
 {
     fn from(msg: BeaconEngineMessage<T>) -> Self {
         Self::Beacon(msg)
     }
 }
 
-impl<T: PayloadTypes, N: NodePrimitives, P> From<EngineApiRequest<T, N, P>>
-    for FromEngine<EngineApiRequest<T, N, P>, N::Block>
+impl<T: PayloadTypes, N: NodePrimitives, P, Evm> From<EngineApiRequest<T, N, P, Evm>>
+    for FromEngine<EngineApiRequest<T, N, P, Evm>, N::Block>
+where
+    Evm: ConfigureEvm<Primitives = N>,
 {
-    fn from(req: EngineApiRequest<T, N, P>) -> Self {
+    fn from(req: EngineApiRequest<T, N, P, Evm>) -> Self {
         Self::Request(req)
     }
 }

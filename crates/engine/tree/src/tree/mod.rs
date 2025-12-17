@@ -262,9 +262,9 @@ where
     /// them one by one so that we can handle incoming engine API in between and don't become
     /// unresponsive. This can happen during live sync transition where we're trying to close the
     /// gap (up to 3 epochs of blocks in the worst case).
-    incoming_tx: Sender<FromEngine<EngineApiRequest<T, N, P>, N::Block>>,
+    incoming_tx: Sender<FromEngine<EngineApiRequest<T, N, P, C>, N::Block>>,
     /// Incoming engine API requests.
-    incoming: Receiver<FromEngine<EngineApiRequest<T, N, P>, N::Block>>,
+    incoming: Receiver<FromEngine<EngineApiRequest<T, N, P, C>, N::Block>>,
     /// Outgoing events that are emitted to the handler.
     outgoing: UnboundedSender<EngineApiEvent<N>>,
     /// Channels to the persistence layer.
@@ -385,7 +385,7 @@ where
         config: TreeConfig,
         kind: EngineApiKind,
         evm_config: C,
-    ) -> (Sender<FromEngine<EngineApiRequest<T, N, P>, N::Block>>, UnboundedReceiver<EngineApiEvent<N>>)
+    ) -> (Sender<FromEngine<EngineApiRequest<T, N, P, C>, N::Block>>, UnboundedReceiver<EngineApiEvent<N>>)
     {
         let best_block_number = provider.best_block_number().unwrap_or(0);
         let header = provider.sealed_header(best_block_number).ok().flatten().unwrap_or_default();
@@ -423,7 +423,7 @@ where
     }
 
     /// Returns a new [`Sender`] to send messages to this type.
-    pub fn sender(&self) -> Sender<FromEngine<EngineApiRequest<T, N, P>, N::Block>> {
+    pub fn sender(&self) -> Sender<FromEngine<EngineApiRequest<T, N, P, C>, N::Block>> {
         self.incoming_tx.clone()
     }
 
@@ -1152,7 +1152,7 @@ where
     #[expect(clippy::type_complexity)]
     fn try_recv_engine_message(
         &self,
-    ) -> Result<Option<FromEngine<EngineApiRequest<T, N, P>, N::Block>>, RecvError> {
+    ) -> Result<Option<FromEngine<EngineApiRequest<T, N, P, C>, N::Block>>, RecvError> {
         if self.persistence_state.in_progress() {
             // try to receive the next request with a timeout to not block indefinitely
             match self.incoming.recv_timeout(std::time::Duration::from_millis(500)) {
@@ -1254,7 +1254,7 @@ where
     /// Handles a message from the engine.
     fn on_engine_message(
         &mut self,
-        msg: FromEngine<EngineApiRequest<T, N, P>, N::Block>,
+        msg: FromEngine<EngineApiRequest<T, N, P, C>, N::Block>,
     ) -> Result<(), InsertBlockFatalError> {
         match msg {
             FromEngine::Event(event) => match event {
@@ -2999,13 +2999,17 @@ impl PersistingKind {
 
 /// A custom request message for the engine.
 #[derive(Debug)]
-pub enum CustomRequestMessage<Factory, Evm = (), N = (), P = ()> {
+pub enum CustomRequestMessage<P, Evm, N>
+where
+    Evm: ConfigureEvm<Primitives = N>,
+    N: NodePrimitives,
+{
     /// Request to calculate the parallel state root for a given parent hash.
     RequestParallelStateRoot {
         /// The parent hash to calculate the parallel state root for.
         parent_hash: BlockHash,
         /// The sender for returning the parallel state root.
-        tx: oneshot::Sender<RethResult<ParallelStateRoot<Factory>>>,
+        tx: oneshot::Sender<RethResult<ParallelStateRoot<P>>>,
     },
     /// Request to calculate the parallel state root for a given parent hash.
     RequestPayloadProcessor {
@@ -3019,11 +3023,15 @@ pub enum CustomRequestMessage<Factory, Evm = (), N = (), P = ()> {
         /// The allocated trie input to use.
         allocated_trie_input: Option<TrieInput>,
         /// The sender for returning the parallel state root.
-        tx: oneshot::Sender<RethResult<(TrieInput, ConsistentDbView<Factory>, Option<StateProviderBuilder<N, P>>, PersistingKind)>>,
+        tx: oneshot::Sender<RethResult<(TrieInput, ConsistentDbView<P>, Option<StateProviderBuilder<N, P>>, PersistingKind)>>,
     },
 }
 
-impl<Factory, Evm, N, P> Display for CustomRequestMessage<Factory, Evm, N, P> {
+impl<P, Evm, N> Display for CustomRequestMessage<P, Evm, N>
+where
+    Evm: ConfigureEvm<Primitives = N>,
+    N: NodePrimitives,
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::RequestParallelStateRoot { parent_hash, .. } => {
