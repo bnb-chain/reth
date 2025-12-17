@@ -2922,7 +2922,7 @@ where
         ))
     }
 
-    fn request_parallel_ctx(&self, parent_hash: BlockHash, allocated_trie_input: Option<TrieInput>) -> ProviderResult<(TrieInput, ConsistentDbView<P>, Option<StateProviderBuilder<N, P>>, PersistingKind)> {
+    fn request_parallel_ctx(&self, parent_hash: BlockHash, allocated_trie_input: Option<TrieInput>) -> ProviderResult<CustomParallelCtx<P, N>> {
         let consistent_view = ConsistentDbView::new_with_latest_tip(self.provider.clone())?;
         let state_provider_builder = self.state_provider_builder(parent_hash)?;
         let trie_input = self.compute_trie_input(
@@ -2931,12 +2931,12 @@ where
             parent_hash,
             allocated_trie_input,
         )?;
-        Ok((
+        Ok(CustomParallelCtx {
             trie_input,
             consistent_view,
-            state_provider_builder,
-            PersistingKind::PersistingDescendant,
-        ))
+            state_provider_builder: state_provider_builder,
+            persisting_kind: PersistingKind::PersistingDescendant,
+        })
     }
 }
 
@@ -2997,6 +2997,34 @@ impl PersistingKind {
     }
 }
 
+/// A custom parallel context for parallel state computation.
+pub struct CustomParallelCtx<P, N>
+where
+    N: NodePrimitives,
+{
+    /// The trie input to use for the parallel state computation.
+    pub trie_input: TrieInput,
+    /// The consistent view to use for the parallel state computation.
+    pub consistent_view: ConsistentDbView<P>,
+    /// The state provider builder to use for the parallel state computation.
+    pub state_provider_builder: Option<StateProviderBuilder<N, P>>,
+    /// The persisting kind to use for the parallel state computation.
+    pub persisting_kind: PersistingKind,
+}
+
+impl<P, N> std::fmt::Debug for CustomParallelCtx<P, N>
+where
+    N: NodePrimitives,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CustomParallelCtx")
+            .field("trie_input", &"...")
+            .field("consistent_view", &"...")
+            .field("state_provider_builder", &"...")
+            .field("persisting_kind", &self.persisting_kind)
+            .finish()
+    }
+}
 /// A custom request message for the engine.
 #[derive(Debug)]
 pub enum CustomRequestMessage<P, Evm, N>
@@ -3023,7 +3051,7 @@ where
         /// The allocated trie input to use.
         allocated_trie_input: Option<TrieInput>,
         /// The sender for returning the parallel state root.
-        tx: oneshot::Sender<RethResult<(TrieInput, ConsistentDbView<P>, Option<StateProviderBuilder<N, P>>, PersistingKind)>>,
+        tx: oneshot::Sender<RethResult<CustomParallelCtx<P, N>>>,
     },
 }
 
