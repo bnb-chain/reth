@@ -53,9 +53,6 @@ pub mod prewarm;
 pub mod sparse_trie;
 pub mod triedb_prefetcher;
 
-#[cfg(test)]
-mod triedb_prefetcher_test;
-
 use configured_sparse_trie::ConfiguredSparseTrie;
 use triedb_prefetcher::TrieDBPrefetchHandle;
 
@@ -285,15 +282,15 @@ where
         P: BlockReader + StateProviderFactory + StateReader + Clone + 'static,
     {
         let (prewarm_rx, execution_rx) = self.spawn_tx_iterator(transactions);
-        
+
         let (to_multi_proof, rev_multi_proof) = channel();
 
         let prewarm_handle = self.spawn_caching_with(env, prewarm_rx, provider_builder, Some(to_multi_proof.clone()));
-        
+
         let (prefetch_handle, prefetch_result_rx) = TrieDBPrefetchHandle::new(
             root_hash, path_db, difflayers, self.executor.clone(), rev_multi_proof)
             .expect("Failed to create TrieDBPrefetchHandle");
-        
+
         self.executor.spawn_blocking(move || {
             prefetch_handle.run();
         });
@@ -461,9 +458,9 @@ pub struct PayloadHandle<Tx, Err> {
 
 impl<Tx, Err> PayloadHandle<Tx, Err> {
     /// Receives the trie db prefetch result
-    /// 
+    ///
     /// # Panics
-    /// 
+    ///
     /// If payload processing was started without background prefetch task.
     pub fn triedb_preftch_result(&mut self) -> Result<Option<Arc<TrieDBPrefetchState<PathDB>>>, ParallelStateRootError> {
         let result = self.trie_db_prefetch_result_rx

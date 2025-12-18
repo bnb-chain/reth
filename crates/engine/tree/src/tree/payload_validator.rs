@@ -44,7 +44,7 @@ use reth_trie::{updates::TrieUpdates, HashedPostState, KeccakKeyHasher, TrieInpu
 use reth_trie_db::DatabaseHashedPostState;
 use reth_trie_parallel::root::{ParallelStateRoot, ParallelStateRootError};
 use rust_eth_triedb::{get_global_triedb, TrieDBError};
-use std::{collections::HashMap, sync::Arc, thread, time::Instant};
+use std::{collections::HashMap, sync::Arc, time::Instant};
 use tracing::{debug, debug_span, error, info, trace, warn};
 
 /// Context providing access to tree state during validation.
@@ -453,16 +453,6 @@ where
             )
             .into())
         }
-
-        // Asynchronously drop large resources that may block the main thread
-        // This allows the function to return immediately while cleanup happens in background
-        thread::spawn(move || {
-            // Drop resources in background thread to avoid blocking main thread
-            drop(handle);
-            drop(trie_hashed_state);
-            drop(difflayers);
-            drop(state_provider);
-        });
 
         Ok(ExecutedBlockWithTrieUpdates {
             block: ExecutedBlock {
