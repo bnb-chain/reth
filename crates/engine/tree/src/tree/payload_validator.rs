@@ -514,16 +514,6 @@ where
             .into())
         }
 
-        // Asynchronously drop large resources that may block the main thread
-        // This allows the function to return immediately while cleanup happens in background
-        thread::spawn(move || {
-            // Drop resources in background thread to avoid blocking main thread
-            drop(handle);
-            drop(trie_hashed_state);
-            drop(difflayers);
-            drop(state_provider);
-        });
-
         Ok(ExecutedBlockWithTrieUpdates {
             block: ExecutedBlock {
                 recovered_block: Arc::new(block),
