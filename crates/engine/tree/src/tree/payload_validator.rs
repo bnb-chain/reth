@@ -419,7 +419,7 @@ where
         let validate_start = Instant::now();
         let trie_hashed_state = hashed_state.to_triedb_hashed_post_state();
         let block_state_root = block.state_root();
-        let (new_root, difflayer) = triedb.intermediate_and_commit_hashed_post_state_v2(
+        let (new_root, difflayer) = triedb.intermediate_and_commit_hashed_post_state(
             parent_block.state_root(),
             difflayers.as_ref(),
             &trie_hashed_state,

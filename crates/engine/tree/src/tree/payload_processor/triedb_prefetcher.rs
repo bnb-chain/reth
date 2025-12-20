@@ -131,14 +131,14 @@ impl TrieDBPrefetchHandle {
                                 );
                             }
                         }
-                        MultiProofMessage::StateUpdate(_, update) => {
-                            let state = evm_state_to_trie_db_prefetch_state(&update);
-                            if let Err(e) = self.state_message_tx.send(TrieDBPrefetchMessage::PrefetchState(state)) {
-                                error!(
-                                    target: "engine::trie_db_prefetch",
-                                    "Triedb prefetch handle failed to send prefetch state message(state update) to account task: {:?}", e.to_string()
-                                );
-                            }
+                        MultiProofMessage::StateUpdate(_, _) => {
+                            // let state = evm_state_to_trie_db_prefetch_state(&update);
+                            // if let Err(e) = self.state_message_tx.send(TrieDBPrefetchMessage::PrefetchState(state)) {
+                            //     error!(
+                            //         target: "engine::trie_db_prefetch",
+                            //         "Triedb prefetch handle failed to send prefetch state message(state update) to account task: {:?}", e.to_string()
+                            //     );
+                            // }
                         }
                         MultiProofMessage::FinishedStateUpdates => {
                             // Set cancellation flag to immediately stop all tasks
