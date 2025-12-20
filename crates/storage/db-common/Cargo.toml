@@ -27,7 +27,6 @@ reth-execution-errors.workspace = true
 # triedb
 rust-eth-triedb.workspace = true
 rust-eth-triedb-common.workspace = true
-rust-eth-triedb-state-trie.workspace = true
 
 # alloy
 alloy-trie.workspace = true

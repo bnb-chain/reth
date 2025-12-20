@@ -23,7 +23,7 @@ use revm_database::{AccountStatus, BundleAccount};
 
 use alloy_consensus::constants::KECCAK_EMPTY;
 use rust_eth_triedb::TrieDBHashedPostState;
-use rust_eth_triedb_state_trie::account::StateAccount;
+use rust_eth_triedb_common::StateAccount;
 
 /// Representation of in-memory hashed state.
 #[derive(PartialEq, Eq, Clone, Default, Debug)]

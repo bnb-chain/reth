@@ -25,8 +25,7 @@ use reth_trie::{
 };
 use reth_trie_db::DatabaseStateRoot;
 use rust_eth_triedb::triedb_manager::{get_global_triedb, is_triedb_active};
-use rust_eth_triedb_common::DiffLayer;
-use rust_eth_triedb_state_trie::account::StateAccount;
+use rust_eth_triedb_common::{StateAccount, DiffLayer};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, io::BufRead, sync::Arc};
 use tracing::{debug, error, info, trace};

@@ -46,7 +46,7 @@ rayon = { workspace = true, optional = true }
 
 # triedb dependencies (always available)
 rust-eth-triedb = { workspace = true }
-rust-eth-triedb-state-trie = { workspace = true }
+rust-eth-triedb-common = { workspace = true }
 
 [dev-dependencies]
 reth-primitives-traits = { workspace = true, features = ["serde"] }

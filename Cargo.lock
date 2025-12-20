@@ -5956,9 +5956,9 @@ checksum = "5e0826a989adedc2a244799e823aece04662b66609d96af8dff7ac6df9a8925d"
 
 [[package]]
 name = "ntapi"
-version = "0.4.1"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e8a3895c6391c39d7fe7ebc444a87eb2991b2a0bc718fdabd071eec617fc68e4"
+checksum = "c70f219e21142367c70c0b30c6a9e3a14d55b4d12a204d897fbec83a0363f081"
 dependencies = [
  "winapi",
 ]
@@ -6644,9 +6644,9 @@ dependencies = [
 
 [[package]]
 name = "portable-atomic"
-version = "1.11.1"
+version = "1.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f84267b20a16ea918e43c6a88433c2d54fa145c92a811b5b047ccbe153674483"
+checksum = "f59e70c4aef1e55797c2e8fd94a4f2a973fc972cfde0e0b05f683667b0cd39dd"
 
 [[package]]
 name = "potential_utf"
@@ -7809,7 +7809,6 @@ dependencies = [
  "reth-trie-db",
  "rust-eth-triedb",
  "rust-eth-triedb-common",
- "rust-eth-triedb-state-trie",
  "serde",
  "serde_json",
  "thiserror 2.0.17",
@@ -10793,7 +10792,7 @@ dependencies = [
  "revm-database",
  "revm-state",
  "rust-eth-triedb",
- "rust-eth-triedb-state-trie",
+ "rust-eth-triedb-common",
  "serde",
  "serde_json",
  "serde_with",
@@ -11328,7 +11327,7 @@ checksum = "48fd7bd8a6377e15ad9d42a8ec25371b94ddc67abe7c8b9127bec79bebaaae18"
 [[package]]
 name = "rust-eth-triedb"
 version = "0.1.0"
-source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?branch=triedb_opt#af2311e462812f45ab17611304792c6ce63f631b"
+source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?branch=triedb_opt_1#583930630084e919ca5be9053793aabb2f06ff99"
 dependencies = [
  "alloy-primitives",
  "alloy-trie",
@@ -11349,9 +11348,11 @@ dependencies = [
 [[package]]
 name = "rust-eth-triedb-common"
 version = "0.1.0"
-source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?branch=triedb_opt#af2311e462812f45ab17611304792c6ce63f631b"
+source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?branch=triedb_opt_1#583930630084e919ca5be9053793aabb2f06ff99"
 dependencies = [
  "alloy-primitives",
+ "alloy-rlp",
+ "alloy-trie",
  "auto_impl",
  "thiserror 1.0.69",
  "tikv-jemallocator",
@@ -11360,7 +11361,7 @@ dependencies = [
 [[package]]
 name = "rust-eth-triedb-pathdb"
 version = "0.1.0"
-source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?branch=triedb_opt#af2311e462812f45ab17611304792c6ce63f631b"
+source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?branch=triedb_opt_1#583930630084e919ca5be9053793aabb2f06ff99"
 dependencies = [
  "alloy-primitives",
  "alloy-trie",
@@ -11379,7 +11380,7 @@ dependencies = [
 [[package]]
 name = "rust-eth-triedb-state-trie"
 version = "0.1.0"
-source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?branch=triedb_opt#af2311e462812f45ab17611304792c6ce63f631b"
+source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?branch=triedb_opt_1#583930630084e919ca5be9053793aabb2f06ff99"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
