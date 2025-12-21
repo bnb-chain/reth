@@ -131,14 +131,14 @@ impl TrieDBPrefetchHandle {
                                 );
                             }
                         }
-                        MultiProofMessage::StateUpdate(_, _) => {
-                            // let state = evm_state_to_trie_db_prefetch_state(&update);
-                            // if let Err(e) = self.state_message_tx.send(TrieDBPrefetchMessage::PrefetchState(state)) {
-                            //     error!(
-                            //         target: "engine::trie_db_prefetch",
-                            //         "Triedb prefetch handle failed to send prefetch state message(state update) to account task: {:?}", e.to_string()
-                            //     );
-                            // }
+                        MultiProofMessage::StateUpdate(_, update) => {
+                            let state = evm_state_to_trie_db_prefetch_state(&update);
+                            if let Err(e) = self.state_message_tx.send(TrieDBPrefetchMessage::PrefetchState(state)) {
+                                error!(
+                                    target: "engine::trie_db_prefetch",
+                                    "Triedb prefetch handle failed to send prefetch state message(state update) to account task: {:?}", e.to_string()
+                                );
+                            }
                         }
                         MultiProofMessage::FinishedStateUpdates => {
                             // Set cancellation flag to immediately stop all tasks
@@ -196,7 +196,7 @@ pub(super) struct TrieDBPrefetchAccountTask {
 
     /// Prefetch state for the account trie.
     prefetch_state: Box<TrieDBPrefetchState<PathDB>>,
-    
+
     /// Cancellation flag shared across all prefetch tasks.
     cancel_flag: Arc<AtomicBool>,
 }
@@ -464,8 +464,8 @@ impl TrieDBPrefetchAccountTask {
 
             let (state_message_tx, state_message_rx) = mpsc::channel();
             let (storage_task, storage_result_rx) = TrieDBPrefetchStorageTask::new(
-                hashed_address, 
-                storage_trie, 
+                hashed_address,
+                storage_trie,
                 state_message_rx,
                 self.cancel_flag.clone(),
             );
@@ -499,7 +499,7 @@ pub(super) struct TrieDBPrefetchStorageTask {
 
     state_message_rx: Receiver<TrieDBPrefetchMessage>,
     prefetch_result_tx: Sender<TrieDBPrefetchResult>,
-    
+
     /// Cancellation flag shared across all prefetch tasks.
     cancel_flag: Arc<AtomicBool>,
 }
@@ -525,13 +525,13 @@ impl TrieDBPrefetchStorageTask {
 
     pub(super) fn terminate(&mut self) {
         if let Err(e) = self.prefetch_result_tx.send(TrieDBPrefetchResult::PrefetchStorageResult((
-            self.hashed_address, 
-            self.storage_trie.clone(), 
+            self.hashed_address,
+            self.storage_trie.clone(),
             self.touched_slots.len()
         ))) {
             error!(
                 target: "engine::trie_db_prefetch",
-                "Failed to send PrefetchStorageResult for address 0x{:x}: {:?}", 
+                "Failed to send PrefetchStorageResult for address 0x{:x}: {:?}",
                 self.hashed_address, e
             );
         }
