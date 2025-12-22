@@ -37,3 +37,26 @@ async fn blobs_exclusive() {
         _ => unreachable!(),
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reject_blob_tx_with_zero_blob_fee() {
+    let txpool = TestPoolBuilder::default();
+    let mut mock_tx_factory = MockTransactionFactory::default();
+
+    // Create a blob transaction with zero max_fee_per_blob_gas
+    let blob_tx = mock_tx_factory.create_eip4844();
+    let zero_fee_tx = blob_tx.transaction.with_blob_fee(0);
+
+    let res = txpool.add_transaction(TransactionOrigin::External, zero_fee_tx).await;
+
+    // Should be rejected due to zero blob fee
+    assert!(res.is_err());
+    let err = res.unwrap_err();
+
+    match err.kind {
+        PoolErrorKind::InvalidTransaction(_) => {
+            // Expected: InvalidPoolTransactionError::Eip4844(ZeroBlobFee)
+        }
+        _ => panic!("Expected InvalidTransaction error for zero blob fee, got: {:?}", err.kind),
+    }
+}
