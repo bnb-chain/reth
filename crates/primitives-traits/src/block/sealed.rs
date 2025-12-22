@@ -11,7 +11,7 @@ use alloy_eips::{eip1898::BlockWithParent, BlockNumHash};
 use alloy_primitives::{Address, BlockHash, Sealable, Sealed, B256};
 use alloy_rlp::{Decodable, Encodable};
 use bytes::BufMut;
-use core::{hash::Hash, ops::Deref};
+use core::ops::Deref;
 
 /// Sealed full block composed of the block's header and body.
 ///
