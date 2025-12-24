@@ -2632,11 +2632,20 @@ where
 
         let ctx = TreeCtx::new(&mut self.state, &self.canonical_in_memory_state);
 
+        let current_timestamp_nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+
         let start = Instant::now();
 
         let executed = execute(&mut self.payload_validator, input, ctx)?;
 
         let gas_used = executed.sealed_block().header().gas_used();
+        let block_timestamp = executed.sealed_block().header().timestamp();
+        let block_timestamp_nanos = block_timestamp as u128 * 1_000_000_000;
+        let timestamp_delay_nanos =
+            current_timestamp_nanos.saturating_sub(block_timestamp_nanos) as f64;
 
         // if the parent is the canonical head, we can insert the block as the pending block
         if self.state.tree_state.canonical_block_hash() == executed.recovered_block().parent_hash()
@@ -2665,6 +2674,10 @@ where
             .engine
             .block_insert_mgasps
             .set(gas_used as f64 / elapsed.as_secs_f64());
+        self.metrics
+            .engine
+            .block_insert_timestamp_delay
+            .record(timestamp_delay_nanos);
         debug!(target: "engine::tree", block=?block_num_hash, "Finished inserting block");
         Ok(InsertPayloadOk::Inserted(BlockStatus::Valid))
     }
