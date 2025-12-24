@@ -187,6 +187,9 @@ pub struct EngineMetrics {
     pub(crate) block_insert_total_duration: Histogram,
     /// Block insert throughput in mgas/s
     pub(crate) block_insert_mgasps: Gauge,
+    /// Block insertion delay: the difference between current timestamp and block header timestamp
+    /// (in nanoseconds)
+    pub(crate) block_insert_timestamp_delay: Histogram,
 }
 
 /// Metrics for engine forkchoiceUpdated responses.
