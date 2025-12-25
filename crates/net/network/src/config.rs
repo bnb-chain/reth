@@ -220,6 +220,8 @@ pub struct NetworkConfigBuilder<N: NetworkPrimitives = EthNetworkPrimitives> {
     /// The Ethereum P2P handshake, see also:
     /// <https://github.com/ethereum/devp2p/blob/master/rlpx.md#initial-handshake>.
     handshake: Arc<dyn EthRlpxHandshake>,
+    /// The node ids of the proxyed nodes.
+    proxyed_node_ids: Vec<PeerId>,
 }
 
 impl NetworkConfigBuilder<EthNetworkPrimitives> {
@@ -260,6 +262,7 @@ impl<N: NetworkPrimitives> NetworkConfigBuilder<N> {
             transactions_manager_config: Default::default(),
             nat: None,
             handshake: Arc::new(EthHandshake::default()),
+            proxyed_node_ids: Vec::new(),
         }
     }
 
@@ -467,6 +470,14 @@ impl<N: NetworkPrimitives> NetworkConfigBuilder<N> {
         self.boot_nodes.iter()
     }
 
+    /// Sets the proxied peer IDs.
+    ///
+    /// These peer IDs will be treated specially in the network layer.
+    pub fn proxied_peers(mut self, peer_ids: Vec<PeerId>) -> Self {
+        self.proxyed_node_ids = peer_ids;
+        self
+    }
+
     /// Disable the DNS discovery.
     pub fn disable_dns_discovery(mut self) -> Self {
         self.dns_discovery_config = None;
@@ -606,6 +617,7 @@ impl<N: NetworkPrimitives> NetworkConfigBuilder<N> {
             transactions_manager_config,
             nat,
             handshake,
+            proxyed_node_ids,
         } = self;
 
         let head = head.unwrap_or_else(|| Head {
@@ -651,6 +663,10 @@ impl<N: NetworkPrimitives> NetworkConfigBuilder<N> {
             }
         }
 
+        // Set proxyed_node_ids in peers_config
+        let mut peers_config = peers_config.unwrap_or_default();
+        peers_config.proxyed_node_ids = proxyed_node_ids;
+
         NetworkConfig {
             client,
             secret_key,
@@ -660,7 +676,7 @@ impl<N: NetworkPrimitives> NetworkConfigBuilder<N> {
             discovery_v5_config: discovery_v5_builder.map(|builder| builder.build()),
             discovery_v4_addr: discovery_addr.unwrap_or(DEFAULT_DISCOVERY_ADDRESS),
             listener_addr,
-            peers_config: peers_config.unwrap_or_default(),
+            peers_config,
             sessions_config: sessions_config.unwrap_or_default(),
             chain_id,
             block_import: block_import.unwrap_or_else(|| Box::<ProofOfStakeBlockImport>::default()),

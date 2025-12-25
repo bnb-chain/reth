@@ -75,6 +75,9 @@ pub struct ActiveSessionHandle<N: NetworkPrimitives> {
     pub(crate) local_addr: Option<SocketAddr>,
     /// The Status message the peer sent for the `eth` handshake
     pub(crate) status: Arc<UnifiedStatus>,
+    /// Current total difficulty, updated when receiving NewBlock messages
+    /// This is essential for BSC and other chains that rely on TD
+    pub(crate) current_td: Arc<parking_lot::Mutex<Option<alloy_primitives::U256>>>,
 }
 
 // === impl ActiveSessionHandle ===
@@ -135,8 +138,28 @@ impl<N: NetworkPrimitives> ActiveSessionHandle<N> {
         self.remote_addr
     }
 
+    /// Returns the current total difficulty
+    pub fn current_td(&self) -> Option<alloy_primitives::U256> {
+        *self.current_td.lock()
+    }
+
+    /// Updates the current total difficulty
+    pub fn update_td(&self, td: Option<alloy_primitives::U256>) {
+        *self.current_td.lock() = td;
+    }
+
     /// Extracts the [`PeerInfo`] from the session handle.
-    pub(crate) fn peer_info(&self, record: &NodeRecord, kind: PeerKind) -> PeerInfo {
+    pub(crate) fn peer_info(
+        &self,
+        record: &NodeRecord,
+        kind: PeerKind,
+        best_hash: alloy_primitives::B256,
+        best_number: Option<u64>,
+        best_td: Option<alloy_primitives::U256>,
+    ) -> PeerInfo {
+        // Use session's current_td if available, otherwise fallback to provided best_td
+        let td = self.current_td().or(best_td);
+
         PeerInfo {
             remote_id: self.remote_id,
             direction: self.direction,
@@ -150,6 +173,9 @@ impl<N: NetworkPrimitives> ActiveSessionHandle<N> {
             status: self.status.clone(),
             session_established: self.established,
             kind,
+            best_hash,
+            best_number,
+            best_td: td,
         }
     }
 }
