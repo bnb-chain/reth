@@ -1023,18 +1023,28 @@ where
         state: &EngineApiTreeState<N>,
         allocated_trie_input: Option<TrieInput>,
     ) -> ProviderResult<TrieInput> {
+        let total_started = Instant::now();
+
         // get allocated trie input or use a default trie input
+        let alloc_started = Instant::now();
         let mut input = allocated_trie_input.unwrap_or_default();
+        let alloc_elapsed = alloc_started.elapsed();
 
+        let best_block_started = Instant::now();
         let best_block_number = provider.best_block_number()?;
+        let best_block_elapsed = best_block_started.elapsed();
 
+        let blocks_by_hash_started = Instant::now();
         let (mut historical, mut blocks) = state
             .tree_state
             .blocks_by_hash(parent_hash)
             .map_or_else(|| (parent_hash.into(), vec![]), |(hash, blocks)| (hash.into(), blocks));
+        let blocks_by_hash_elapsed = blocks_by_hash_started.elapsed();
 
         // If the current block is a descendant of the currently persisting blocks, then we need to
         // filter in-memory blocks, so that none of them are already persisted in the database.
+        let filter_started = Instant::now();
+        let mut filtered_blocks: usize = 0;
         if persisting_kind.is_descendant() {
             // Iterate over the blocks from oldest to newest.
             while let Some(block) = blocks.last() {
@@ -1043,6 +1053,7 @@ where
                     // Remove those blocks that lower than or equal to the highest database
                     // block.
                     blocks.pop();
+                    filtered_blocks += 1;
                 } else {
                     // If the block is higher than the best block number, stop filtering, as it's
                     // the first block that's not in the database.
@@ -1059,6 +1070,7 @@ where
                 parent_hash.into()
             };
         }
+        let filter_elapsed = filter_started.elapsed();
 
         if blocks.is_empty() {
             debug!(target: "engine::tree", %parent_hash, "Parent found on disk");
@@ -1067,17 +1079,22 @@ where
         }
 
         // Convert the historical block to the block number.
+        let convert_anchor_started = Instant::now();
         let block_number = provider
             .convert_hash_or_number(historical)?
             .ok_or_else(|| ProviderError::BlockHashNotFound(historical.as_hash().unwrap()))?;
+        let convert_anchor_elapsed = convert_anchor_started.elapsed();
 
         // Retrieve revert state for historical block.
+        let revert_started = Instant::now();
+        let mut revert_from_db = false;
         let revert_state = if block_number == best_block_number {
             // We do not check against the `last_block_number` here because
             // `HashedPostState::from_reverts` only uses the database tables, and not static files.
             debug!(target: "engine::tree", block_number, best_block_number, "Empty revert state");
             HashedPostState::default()
         } else {
+            revert_from_db = true;
             let revert_state = HashedPostState::from_reverts::<KeccakKeyHasher>(
                 provider.tx_ref(),
                 block_number + 1,
@@ -1093,11 +1110,44 @@ where
             );
             revert_state
         };
+        let revert_elapsed = revert_started.elapsed();
+        let revert_accounts = revert_state.accounts.len();
+        let revert_storages = revert_state.storages.len();
+
+        let append_started = Instant::now();
         input.append(revert_state);
+        let append_elapsed = append_started.elapsed();
 
         // Extend with contents of parent in-memory blocks.
+        let extend_started = Instant::now();
         input.extend_with_blocks(
             blocks.iter().rev().map(|block| (block.hashed_state(), block.trie_updates())),
+        );
+        let extend_elapsed = extend_started.elapsed();
+
+        let total_elapsed = total_started.elapsed();
+        debug!(
+            target: "engine::tree",
+            %parent_hash,
+            %historical,
+            persisting_kind = ?persisting_kind,
+            best_block_number,
+            anchor_block_number = block_number,
+            in_memory_blocks = blocks.len(),
+            filtered_blocks,
+            revert_from_db,
+            revert_accounts,
+            revert_storages,
+            t_alloc_ms = alloc_elapsed.as_millis(),
+            t_best_block_ms = best_block_elapsed.as_millis(),
+            t_blocks_by_hash_ms = blocks_by_hash_elapsed.as_millis(),
+            t_filter_ms = filter_elapsed.as_millis(),
+            t_convert_anchor_ms = convert_anchor_elapsed.as_millis(),
+            t_revert_ms = revert_elapsed.as_millis(),
+            t_append_ms = append_elapsed.as_millis(),
+            t_extend_ms = extend_elapsed.as_millis(),
+            t_total_ms = total_elapsed.as_millis(),
+            "compute_trie_input timing breakdown"
         );
 
         Ok(input)
