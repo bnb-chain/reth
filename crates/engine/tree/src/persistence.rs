@@ -143,21 +143,57 @@ where
         &self,
         blocks: Vec<ExecutedBlockWithTrieUpdates<N::Primitives>>,
     ) -> Result<Option<BlockNumHash>, PersistenceError> {
-        debug!(target: "engine::persistence", first=?blocks.first().map(|b| b.recovered_block.num_hash()), last=?blocks.last().map(|b| b.recovered_block.num_hash()), "Saving range of blocks");
-        let start_time = Instant::now();
+        let block_count = blocks.len();
+        let first_num_hash = blocks.first().map(|b| b.recovered_block.num_hash());
+        let last_num_hash = blocks.last().map(|b| b.recovered_block.num_hash());
+        debug!(
+            target: "engine::persistence",
+            first=?first_num_hash,
+            last=?last_num_hash,
+            block_count,
+            "Saving range of blocks"
+        );
+
+        let total_started = Instant::now();
         let last_block_hash_num = blocks.last().map(|block| BlockNumHash {
             hash: block.recovered_block().hash(),
             number: block.recovered_block().header().number(),
         });
 
         if last_block_hash_num.is_some() {
+            let provider_started = Instant::now();
             let provider_rw = self.provider.database_provider_rw()?;
-            let static_file_provider = self.provider.static_file_provider();
+            let provider_elapsed = provider_started.elapsed();
 
+            let static_started = Instant::now();
+            let static_file_provider = self.provider.static_file_provider();
+            let static_elapsed = static_started.elapsed();
+
+            let save_started = Instant::now();
             UnifiedStorageWriter::from(&provider_rw, &static_file_provider).save_blocks(blocks)?;
+            let save_elapsed = save_started.elapsed();
+
+            let commit_started = Instant::now();
             UnifiedStorageWriter::commit(provider_rw)?;
+            let commit_elapsed = commit_started.elapsed();
+
+            let total_elapsed = total_started.elapsed();
+            debug!(
+                target: "engine::persistence",
+                first=?first_num_hash,
+                last=?last_num_hash,
+                block_count,
+                provider_open_ms = provider_elapsed.as_millis(),
+                static_provider_ms = static_elapsed.as_millis(),
+                save_blocks_ms = save_elapsed.as_millis(),
+                commit_ms = commit_elapsed.as_millis(),
+                total_ms = total_elapsed.as_millis(),
+                "Persisted blocks timing breakdown"
+            );
+        } else {
+            debug!(target: "engine::persistence", block_count, "No blocks provided to persist");
         }
-        self.metrics.save_blocks_duration_seconds.record(start_time.elapsed());
+        self.metrics.save_blocks_duration_seconds.record(total_started.elapsed());
         Ok(last_block_hash_num)
     }
 }

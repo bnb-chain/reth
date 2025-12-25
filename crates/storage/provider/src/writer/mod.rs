@@ -145,6 +145,9 @@ where
             return Ok(())
         }
 
+        let write_started = std::time::Instant::now();
+        let block_count = blocks.len();
+
         // NOTE: checked non-empty above
         let first_block = blocks.first().unwrap().recovered_block();
 
@@ -152,14 +155,20 @@ where
         let first_number = first_block.number();
         let last_block_number = last_block.number();
 
-        debug!(target: "provider::storage_writer", block_count = %blocks.len(), "Writing blocks and execution data to storage");
+        debug!(target: "provider::storage_writer", block_count = %block_count, "Writing blocks and execution data to storage");
+
+        // Timing accumulators (keep overhead low; all printed once at end).
+        let mut insert_block_ms: u128 = 0;
+        let mut write_state_ms: u128 = 0;
+        let mut triedb_commit_flush_ms: u128 = 0;
+        let mut write_hashed_state_ms: u128 = 0;
+        let mut write_trie_updates_ms: u128 = 0;
+        let mut update_history_ms: u128 = 0;
+        let mut update_pipeline_ms: u128 = 0;
 
         // Only get TrieDB instance if TrieDB is active
-        let mut triedb_opt = if is_triedb_active() {
-            Some(get_global_triedb())
-        } else {
-            None
-        };
+        let triedb_active = is_triedb_active();
+        let mut triedb_opt = if triedb_active { Some(get_global_triedb()) } else { None };
 
         // TODO: Do performant / batched writes for each type of object
         // instead of a loop over all blocks,
@@ -193,18 +202,23 @@ where
             };
 
             let block_hash = recovered_block.hash();
+            let insert_started = std::time::Instant::now();
             self.database()
                 .insert_block(Arc::unwrap_or_clone(recovered_block), StorageLocation::Both)?;
+            insert_block_ms += insert_started.elapsed().as_millis();
 
             // Write state and changesets to the database.
             // Must be written after blocks because of the receipt lookup.
+            let write_state_started = std::time::Instant::now();
             self.database().write_state(
                 &execution_output,
                 OriginalValuesKnown::No,
                 StorageLocation::StaticFiles,
             )?;
+            write_state_ms += write_state_started.elapsed().as_millis();
 
             if let (Some(ref mut triedb), Some(latest_state_root)) = (triedb_opt.as_mut(), latest_state_root_opt) {
+                let triedb_started = std::time::Instant::now();
                 let triedb_hashed_post_state = hashed_state_clone.as_ref().to_triedb_hashed_post_state();
                 let (new_root, difflayer) = triedb.commit_hashed_post_state(latest_state_root, None, &triedb_hashed_post_state)
                     .map_err(|e| ProviderError::other(e))?;
@@ -213,23 +227,48 @@ where
                 }
                 triedb.flush(block_number, new_root, &difflayer)
                     .map_err(|e| ProviderError::other(e))?;
+                triedb_commit_flush_ms += triedb_started.elapsed().as_millis();
             } else {
                 // insert hashes and intermediate merkle nodes
+                let hashed_started = std::time::Instant::now();
                 self.database()
                     .write_hashed_state(&Arc::unwrap_or_clone(hashed_state).into_sorted())?;
+                write_hashed_state_ms += hashed_started.elapsed().as_millis();
+
+                let trie_started = std::time::Instant::now();
                 self.database().write_trie_updates(
                     trie.as_ref().ok_or(ProviderError::MissingTrieUpdates(block_hash))?,
                 )?;
+                write_trie_updates_ms += trie_started.elapsed().as_millis();
             }
         }
 
         // update history indices
+        let history_started = std::time::Instant::now();
         self.database().update_history_indices(first_number..=last_block_number)?;
+        update_history_ms += history_started.elapsed().as_millis();
 
         // Update pipeline progress
+        let pipeline_started = std::time::Instant::now();
         self.database().update_pipeline_stages(last_block_number, false)?;
+        update_pipeline_ms += pipeline_started.elapsed().as_millis();
 
-        debug!(target: "provider::storage_writer", range = ?first_number..=last_block_number, "Appended block data");
+        let write_elapsed = write_started.elapsed();
+        debug!(
+            target: "provider::storage_writer",
+            range = ?first_number..=last_block_number,
+            block_count = %block_count,
+            write_duration_ms = write_elapsed.as_millis(),
+            triedb_active,
+            insert_block_ms = insert_block_ms as u64,
+            write_state_ms = write_state_ms as u64,
+            triedb_commit_flush_ms = triedb_commit_flush_ms as u64,
+            write_hashed_state_ms = write_hashed_state_ms as u64,
+            write_trie_updates_ms = write_trie_updates_ms as u64,
+            update_history_ms = update_history_ms as u64,
+            update_pipeline_ms = update_pipeline_ms as u64,
+            "Appended block data"
+        );
 
         Ok(())
     }
