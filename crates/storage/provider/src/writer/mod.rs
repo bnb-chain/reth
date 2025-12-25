@@ -96,9 +96,23 @@ impl UnifiedStorageWriter<'_, (), ()> {
     where
         P: DBProvider<Tx: DbTxMut> + StaticFileProviderFactory,
     {
+        let total_started = std::time::Instant::now();
         let static_file = provider.static_file_provider();
+        let sf_started = std::time::Instant::now();
         static_file.commit()?;
+        let sf_elapsed = sf_started.elapsed();
+
+        let db_started = std::time::Instant::now();
         provider.commit()?;
+        let db_elapsed = db_started.elapsed();
+
+        debug!(
+            target: "provider::storage_writer",
+            static_file_commit_ms = sf_elapsed.as_millis(),
+            db_commit_ms = db_elapsed.as_millis(),
+            total_commit_ms = total_started.elapsed().as_millis(),
+            "UnifiedStorageWriter::commit finished"
+        );
         Ok(())
     }
 
@@ -114,9 +128,23 @@ impl UnifiedStorageWriter<'_, (), ()> {
     where
         P: DBProvider<Tx: DbTxMut> + StaticFileProviderFactory,
     {
+        let total_started = std::time::Instant::now();
         let static_file = provider.static_file_provider();
+        let db_started = std::time::Instant::now();
         provider.commit()?;
+        let db_elapsed = db_started.elapsed();
+
+        let sf_started = std::time::Instant::now();
         static_file.commit()?;
+        let sf_elapsed = sf_started.elapsed();
+
+        debug!(
+            target: "provider::storage_writer",
+            db_commit_ms = db_elapsed.as_millis(),
+            static_file_commit_ms = sf_elapsed.as_millis(),
+            total_commit_ms = total_started.elapsed().as_millis(),
+            "UnifiedStorageWriter::commit_unwind finished"
+        );
         Ok(())
     }
 }
