@@ -4,11 +4,12 @@ use std::{fmt, str::FromStr, time::Duration};
 
 use crate::version::default_client_version;
 use clap::{
+    value_parser,
     builder::{PossibleValue, TypedValueParser},
     error::ErrorKind,
     Arg, Args, Command, Error,
 };
-use reth_db::{mdbx::MaxReadTransactionDuration, ClientVersion};
+use reth_db::{mdbx::{MaxReadTransactionDuration, SyncMode}, ClientVersion};
 use reth_storage_errors::db::LogLevel;
 
 /// Parameters for database configuration
@@ -38,6 +39,12 @@ pub struct DatabaseArgs {
     /// Maximum number of readers allowed to access the database concurrently.
     #[arg(long = "db.max-readers")]
     pub max_readers: Option<u64>,
+    /// Controls how aggressively the database synchronizes data to disk.
+    #[arg(
+        long = "db.sync-mode",
+        value_parser = value_parser!(SyncMode),
+    )]
+    pub sync_mode: Option<SyncMode>,
 }
 
 impl DatabaseArgs {
@@ -66,6 +73,7 @@ impl DatabaseArgs {
             .with_geometry_max_size(self.max_size)
             .with_growth_step(self.growth_step)
             .with_max_readers(self.max_readers)
+            .with_sync_mode(self.sync_mode)
     }
 }
 

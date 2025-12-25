@@ -102,6 +102,11 @@ pub struct DatabaseArguments {
     /// MDBX allows up to 32767 readers (`MDBX_READERS_LIMIT`). This arg is to configure the max
     /// readers.
     max_readers: Option<u64>,
+    /// Defines the synchronization strategy used by the MDBX database when writing data to disk.
+    ///
+    /// This determines how aggressively MDBX ensures data durability versus prioritizing
+    /// performance.
+    sync_mode: SyncMode,
 }
 
 impl Default for DatabaseArguments {
@@ -125,6 +130,7 @@ impl DatabaseArguments {
             max_read_transaction_duration: None,
             exclusive: None,
             max_readers: None,
+            sync_mode: SyncMode::Durable,
         }
     }
 
@@ -186,6 +192,15 @@ impl DatabaseArguments {
     /// Set `max_readers` flag.
     pub const fn with_max_readers(mut self, max_readers: Option<u64>) -> Self {
         self.max_readers = max_readers;
+        self
+    }
+
+    /// Sets the database sync mode.
+    pub const fn with_sync_mode(mut self, sync_mode: Option<SyncMode>) -> Self {
+        if let Some(sync_mode) = sync_mode {
+            self.sync_mode = sync_mode;
+        }
+
         self
     }
 
@@ -330,7 +345,7 @@ impl DatabaseEnv {
             DatabaseEnvKind::RW => {
                 // enable writemap mode in RW mode
                 inner_env.write_map();
-                Mode::ReadWrite { sync_mode: SyncMode::Durable }
+                Mode::ReadWrite { sync_mode: args.sync_mode }
             }
         };
 
