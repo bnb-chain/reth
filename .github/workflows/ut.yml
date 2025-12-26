@@ -1,0 +1,36 @@
+name: unit tests
+
+on:
+  pull_request:
+  workflow_dispatch:
+  push:
+    branches:
+      - "**"
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  unit-test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    env:
+      RUST_BACKTRACE: 1
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Run unit tests
+        run: cargo test --workspace --lib --bins --features "asm-keccak"
