@@ -170,7 +170,8 @@ mod read_transactions {
         /// comparable. The time of transaction opening is stored as a value.
         ///
         /// The backtrace of the transaction opening is recorded only when debug assertions are
-        /// enabled.
+        /// enabled, unless `MDBX_TX_BACKTRACE` is set in the environment (useful for production
+        /// debugging).
         active: DashMap<usize, (TransactionPtr, Instant, Option<Arc<Backtrace>>)>,
         /// List of timed out transactions that were not aborted by the user yet, hence have a
         /// dangling read transaction pointer.
@@ -189,7 +190,8 @@ mod read_transactions {
                 (
                     tx,
                     Instant::now(),
-                    cfg!(debug_assertions).then(|| Arc::new(Backtrace::force_capture())),
+                    (cfg!(debug_assertions) || std::env::var_os("MDBX_TX_BACKTRACE").is_some())
+                        .then(|| Arc::new(Backtrace::force_capture())),
                 ),
             );
         }
