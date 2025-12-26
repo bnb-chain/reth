@@ -42,4 +42,4 @@ jobs:
           cache-on-failure: true
 
       - name: Run unit tests
-        run: cargo test --workspace --lib --bins --features "asm-keccak"
+        run: make test-unit
