@@ -3,13 +3,14 @@
 name: integration
 
 on:
-  pull_request:
-  merge_group:
-  push:
-    branches: [main]
-  schedule:
-    # Run once a day at 3:00 UTC
-    - cron: "0 3 * * *"
+  workflow_dispatch: # disable action temporarily
+  # pull_request:
+  # merge_group:
+  # push:
+  #   branches: [main]
+  # schedule:
+  #   # Run once a day at 3:00 UTC
+  #   - cron: "0 3 * * *"
 
 env:
   CARGO_TERM_COLOR: always
