@@ -6,6 +6,7 @@ use alloy_consensus::error::ValueError;
 use alloy_network::TxSigner;
 use op_alloy_consensus::OpTxEnvelope;
 use op_alloy_rpc_types::{OpTransactionReceipt, OpTransactionRequest};
+use reth_rpc_convert::CustomRpcHeader;
 use reth_op::rpc::RpcTypes;
 use reth_rpc_api::eth::{
     transaction::TryIntoTxEnv, EthTxEnvError, SignTxRequestError, SignableTxRequest, TryIntoSimTx,
@@ -17,7 +18,12 @@ use revm::context::{BlockEnv, CfgEnv};
 pub struct CustomRpcTypes;
 
 impl RpcTypes for CustomRpcTypes {
-    type Header = alloy_rpc_types_eth::Header<CustomHeader>;
+    /// Custom header type used by this node.
+    ///
+    /// We use `CustomRpcHeader<CustomHeader>` so that headers can be converted from the
+    /// node's consensus `CustomHeader` via the generic `CustomHeaderConverter`, without
+    /// requiring a `FromConsensusHeader` implementation for a concrete RPC header type.
+    type Header = CustomRpcHeader<CustomHeader>;
     type Receipt = OpTransactionReceipt;
     type TransactionRequest = OpTransactionRequest;
     type TransactionResponse = op_alloy_rpc_types::Transaction<CustomTransaction>;
