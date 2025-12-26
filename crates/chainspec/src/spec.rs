@@ -381,7 +381,7 @@ impl ChainSpec {
                 // given timestamp.
                 for (fork, params) in bf_params.iter().rev() {
                     if self.hardforks.is_fork_active_at_timestamp(fork.clone(), timestamp) {
-                        return *params
+                        return *params;
                     }
                 }
 
@@ -455,8 +455,8 @@ impl ChainSpec {
             // We filter out TTD-based forks w/o a pre-known block since those do not show up in
             // the fork filter.
             Some(match condition {
-                ForkCondition::Block(block) |
-                ForkCondition::TTD { fork_block: Some(block), .. } => ForkFilterKey::Block(block),
+                ForkCondition::Block(block)
+                | ForkCondition::TTD { fork_block: Some(block), .. } => ForkFilterKey::Block(block),
                 ForkCondition::Timestamp(time) => ForkFilterKey::Time(time),
                 _ => return None,
             })
@@ -483,8 +483,8 @@ impl ChainSpec {
         for (_, cond) in self.hardforks.forks_iter() {
             // handle block based forks and the sepolia merge netsplit block edge case (TTD
             // ForkCondition with Some(block))
-            if let ForkCondition::Block(block) |
-            ForkCondition::TTD { fork_block: Some(block), .. } = cond
+            if let ForkCondition::Block(block)
+            | ForkCondition::TTD { fork_block: Some(block), .. } = cond
             {
                 if head.number >= block {
                     // skip duplicated hardforks: hardforks enabled at genesis block
@@ -495,7 +495,7 @@ impl ChainSpec {
                 } else {
                     // we can return here because this block fork is not active, so we set the
                     // `next` value
-                    return ForkId { hash: forkhash, next: block }
+                    return ForkId { hash: forkhash, next: block };
                 }
             }
         }
@@ -517,7 +517,7 @@ impl ChainSpec {
                 // can safely return here because we have already handled all block forks and
                 // have handled all active timestamp forks, and set the next value to the
                 // timestamp that is known but not active yet
-                return ForkId { hash: forkhash, next: timestamp }
+                return ForkId { hash: forkhash, next: timestamp };
             }
         }
 
@@ -1088,7 +1088,10 @@ Merge hard forks:
 Post-merge hard forks (timestamp based):
 - Shanghai                         @1681338455
 - Cancun                           @1710338135
-- Prague                           @1746612311"
+- Prague                           @1746612311
+- Osaka                            @1764798551
+- Bpo1                             @1765978199
+- Bpo2                             @1767747671"
         );
     }
 
@@ -1332,7 +1335,7 @@ Post-merge hard forks (timestamp based):
                 ),
                 (
                     EthereumHardfork::Prague,
-                    ForkId { hash: ForkHash([0xc3, 0x76, 0xcf, 0x8b]), next: 0 },
+                    ForkId { hash: ForkHash([0xc3, 0x76, 0xcf, 0x8b]), next: 1764798551 },
                 ),
             ],
         );
@@ -1397,7 +1400,11 @@ Post-merge hard forks (timestamp based):
                 ),
                 (
                     EthereumHardfork::Prague,
-                    ForkId { hash: ForkHash([0xed, 0x88, 0xb5, 0xfd]), next: 0 },
+                    ForkId {
+                        hash: ForkHash([0xed, 0x88, 0xb5, 0xfd]),
+                        // Next timestamp is the next configured Sepolia fork activation.
+                        next: 1760427360,
+                    },
                 ),
             ],
         );
@@ -1473,12 +1480,12 @@ Post-merge hard forks (timestamp based):
                 // First Prague block
                 (
                     Head { number: 20000002, timestamp: 1746612311, ..Default::default() },
-                    ForkId { hash: ForkHash([0xc3, 0x76, 0xcf, 0x8b]), next: 0 },
+                    ForkId { hash: ForkHash([0xc3, 0x76, 0xcf, 0x8b]), next: 1764798551 },
                 ),
                 // Future Prague block
                 (
                     Head { number: 20000002, timestamp: 2000000000, ..Default::default() },
-                    ForkId { hash: ForkHash([0xc3, 0x76, 0xcf, 0x8b]), next: 0 },
+                    ForkId { hash: ForkHash([0xfd, 0x41, 0x45, 0x58]), next: 0 },
                 ),
             ],
         );
@@ -1496,7 +1503,7 @@ Post-merge hard forks (timestamp based):
                 // First Prague block
                 (
                     Head { number: 0, timestamp: 1742999833, ..Default::default() },
-                    ForkId { hash: ForkHash([0x09, 0x29, 0xe2, 0x4e]), next: 0 },
+                    ForkId { hash: ForkHash([0x09, 0x29, 0xe2, 0x4e]), next: 1761677592 },
                 ),
             ],
         )
@@ -1544,7 +1551,7 @@ Post-merge hard forks (timestamp based):
                 // First Prague block
                 (
                     Head { number: 123, timestamp: 1740434112, ..Default::default() },
-                    ForkId { hash: ForkHash([0xdf, 0xbd, 0x9b, 0xed]), next: 0 },
+                    ForkId { hash: ForkHash([0xdf, 0xbd, 0x9b, 0xed]), next: 1759308480 },
                 ),
             ],
         )
@@ -1594,7 +1601,7 @@ Post-merge hard forks (timestamp based):
                 // First Prague block
                 (
                     Head { number: 1735377, timestamp: 1741159776, ..Default::default() },
-                    ForkId { hash: ForkHash([0xed, 0x88, 0xb5, 0xfd]), next: 0 },
+                    ForkId { hash: ForkHash([0xed, 0x88, 0xb5, 0xfd]), next: 1760427360 },
                 ),
             ],
         );
@@ -1742,11 +1749,11 @@ Post-merge hard forks (timestamp based):
                 ), // First Prague block
                 (
                     Head { number: 20000004, timestamp: 1746612311, ..Default::default() },
-                    ForkId { hash: ForkHash([0xc3, 0x76, 0xcf, 0x8b]), next: 0 },
+                    ForkId { hash: ForkHash([0xc3, 0x76, 0xcf, 0x8b]), next: 1764798551 },
                 ), // Future Prague block
                 (
                     Head { number: 20000004, timestamp: 2000000000, ..Default::default() },
-                    ForkId { hash: ForkHash([0xc3, 0x76, 0xcf, 0x8b]), next: 0 },
+                    ForkId { hash: ForkHash([0xfd, 0x41, 0x45, 0x58]), next: 0 },
                 ),
             ],
         );
@@ -2404,7 +2411,8 @@ Post-merge hard forks (timestamp based):
     #[test]
     fn latest_eth_mainnet_fork_id() {
         assert_eq!(
-            ForkId { hash: ForkHash([0xc3, 0x76, 0xcf, 0x8b]), next: 0 },
+            // Latest fork ID reflects the most recent configured Ethereum mainnet fork.
+            ForkId { hash: ForkHash([0xfd, 0x41, 0x45, 0x58]), next: 0 },
             MAINNET.latest_fork_id()
         )
     }
