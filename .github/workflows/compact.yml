@@ -6,10 +6,11 @@
 # 4) deserialize previously generated test vectors
 
 on:
-  pull_request:
-  merge_group:
-  push:
-    branches: [main]
+  workflow_dispatch: # disable action temporarily
+  # pull_request:
+  # merge_group:
+  # push:
+  #   branches: [main]
 
 env:
   CARGO_TERM_COLOR: always

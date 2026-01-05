@@ -4,8 +4,8 @@ name: docker-nightly
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 1 * * *"
+  # schedule:
+  #   - cron: "0 1 * * *"
 env:
   REPO_NAME: ${{ github.repository_owner }}/reth
   IMAGE_NAME: ${{ github.repository_owner }}/reth

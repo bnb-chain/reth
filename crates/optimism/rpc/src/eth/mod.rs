@@ -19,13 +19,14 @@ use op_alloy_network::Optimism;
 pub use receipt::{OpReceiptBuilder, OpReceiptFieldsBuilder};
 use reqwest::Url;
 use reth_evm::ConfigureEvm;
-use reth_node_api::{FullNodeComponents, FullNodeTypes, HeaderTy};
+use reth_node_api::{FullNodeComponents, FullNodeTypes, HeaderTy, NodeTypes};
 use reth_node_builder::rpc::{EthApiBuilder, EthApiCtx};
 use reth_optimism_flashblocks::{
     ExecutionPayloadBaseV1, FlashBlockCompleteSequenceRx, FlashBlockService, PendingBlockRx,
     WsFlashBlockStream,
 };
 use reth_rpc::eth::{core::EthApiInner, DevSigner};
+use reth_rpc_convert::CustomHeaderConverter;
 use reth_rpc_eth_api::{
     helpers::{
         pending_block::BuildPendingEnv, spec::SignersForApi, AddDevSigners, EthApiSpec, EthFees,
@@ -358,11 +359,15 @@ impl<N: RpcNodeCore, Rpc: RpcConvert> OpEthApiInner<N, Rpc> {
 }
 
 /// Converter for OP RPC types.
+///
+/// This uses a custom header converter so that RPC headers can be derived directly from the
+/// node's consensus header type without requiring a `FromConsensusHeader` implementation
+/// for the concrete RPC header type.
 pub type OpRpcConvert<N, NetworkT> = RpcConverter<
     NetworkT,
     <N as FullNodeComponents>::Evm,
     OpReceiptConverter<<N as FullNodeTypes>::Provider>,
-    (),
+    CustomHeaderConverter,
     OpTxInfoMapper<<N as FullNodeTypes>::Provider>,
 >;
 
@@ -442,6 +447,10 @@ where
                                  + Unpin,
         >,
     >,
+    // OP-specific requirements for the node configuration.
+    <<N as FullNodeTypes>::Types as NodeTypes>::ChainSpec: reth_optimism_forks::OpHardforks,
+    <<<N as FullNodeTypes>::Types as NodeTypes>::Primitives as reth_node_api::NodePrimitives>::Receipt:
+        reth_optimism_primitives::DepositReceipt,
     NetworkT: RpcTypes,
     OpRpcConvert<N, NetworkT>: RpcConvert<Network = NetworkT>,
     OpEthApi<N, OpRpcConvert<N, NetworkT>>:
@@ -457,8 +466,9 @@ where
             flashblocks_url,
             ..
         } = self;
-        let rpc_converter =
+        let rpc_converter: OpRpcConvert<N, NetworkT> =
             RpcConverter::new(OpReceiptConverter::new(ctx.components.provider().clone()))
+                .with_header_converter(CustomHeaderConverter)
                 .with_mapper(OpTxInfoMapper::new(ctx.components.provider().clone()));
 
         let sequencer_client = if let Some(url) = sequencer_url {
