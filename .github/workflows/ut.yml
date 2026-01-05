@@ -3,9 +3,9 @@ name: unit tests
 on:
   # pull_request:
   workflow_dispatch:
-  # push:
-  #   branches:
-  #     - "**"
+  push:
+    branches:
+      - "**"
 
 env:
   CARGO_TERM_COLOR: always
