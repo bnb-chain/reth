@@ -8133,6 +8133,7 @@ dependencies = [
  "reth-prune",
  "reth-prune-types",
  "reth-revm",
+ "reth-rpc-convert",
  "reth-stages",
  "reth-stages-api",
  "reth-static-file",

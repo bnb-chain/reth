@@ -36,6 +36,7 @@ use reth_provider::{
     StateRootProvider, TransactionVariant,
 };
 use reth_revm::database::StateProviderDatabase;
+use reth_rpc_convert::calculate_millisecond_timestamp;
 use reth_stages_api::ControlFlow;
 use reth_trie::{HashedPostState, TrieInput};
 use reth_trie_db::DatabaseHashedPostState;
@@ -2380,10 +2381,11 @@ where
         let executed = execute(&mut self.payload_validator, input, ctx)?;
 
         let gas_used = executed.sealed_block().header().gas_used();
-        let block_timestamp = executed.sealed_block().header().timestamp();
+        let block_timestamp_millis =
+            calculate_millisecond_timestamp(executed.sealed_block().header());
 
         // Calculate block insertion timestamp delay in nanoseconds
-        let block_timestamp_nanos = block_timestamp as u128 * 1_000_000_000;
+        let block_timestamp_nanos = (block_timestamp_millis as u128) * 1_000_000;
         let timestamp_delay_nanos =
             current_timestamp_nanos.saturating_sub(block_timestamp_nanos) as f64;
 
