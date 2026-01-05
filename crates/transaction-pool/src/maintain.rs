@@ -237,7 +237,7 @@ pub async fn maintain_transaction_pool<N, Client, P, St, Tasks>(
             if finalized > FINALIZED_BLOCK_OFFSET {
                 debug!(target: "txpool", finalized_block = %finalized, "finalized block");
                 if let BlobStoreUpdates::Finalized(blobs) =
-                    blob_store_tracker.on_finalized_block(finalized-FINALIZED_BLOCK_OFFSET)
+                    blob_store_tracker.on_finalized_block(finalized - FINALIZED_BLOCK_OFFSET)
                 {
                     let num_blobs = blobs.len();
                     metrics.inc_deleted_tracked_blobs(num_blobs);
@@ -323,8 +323,8 @@ pub async fn maintain_transaction_pool<N, Client, P, St, Tasks>(
                 let old_first = old_blocks.first();
 
                 // check if the reorg is not canonical with the pool's block
-                if !(old_first.parent_hash() == pool_info.last_seen_block_hash ||
-                    new_first.parent_hash() == pool_info.last_seen_block_hash)
+                if !(old_first.parent_hash() == pool_info.last_seen_block_hash
+                    || new_first.parent_hash() == pool_info.last_seen_block_hash)
                 {
                     // the new block points to a higher block than the oldest block in the old chain
                     maintained_state = MaintainedPoolState::Drifted;
@@ -470,7 +470,7 @@ pub async fn maintain_transaction_pool<N, Client, P, St, Tasks>(
                     // keep track of mined blob transactions
                     blob_store_tracker.add_new_chain_blocks(&blocks);
 
-                    continue
+                    continue;
                 }
 
                 let mut changed_accounts = Vec::with_capacity(state.state().len());
@@ -620,14 +620,14 @@ where
     P: TransactionPool<Transaction: PoolTransaction<Consensus: SignedTransaction>>,
 {
     if !file_path.exists() {
-        return Ok(())
+        return Ok(());
     }
 
     debug!(target: "txpool", txs_file =?file_path, "Check local persistent storage for saved transactions");
     let data = reth_fs_util::read(file_path)?;
 
     if data.is_empty() {
-        return Ok(())
+        return Ok(());
     }
 
     let pool_transactions: Vec<(TransactionOrigin, <P as TransactionPool>::Transaction)> =
@@ -678,7 +678,7 @@ where
     let local_transactions = pool.get_local_transactions();
     if local_transactions.is_empty() {
         trace!(target: "txpool", "no local transactions to save");
-        return
+        return;
     }
 
     let local_transactions = local_transactions
@@ -695,7 +695,7 @@ where
         Ok(data) => data,
         Err(err) => {
             warn!(target: "txpool", %err, txs_file=?file_path, "failed to serialize local transactions to json");
-            return
+            return;
         }
     };
 
@@ -750,7 +750,7 @@ pub async fn backup_local_transactions_task<P>(
 {
     let Some(transactions_path) = config.transactions_path else {
         // nothing to do
-        return
+        return;
     };
 
     if let Err(err) = load_and_reinsert_transactions(pool.clone(), &transactions_path).await {
@@ -769,13 +769,14 @@ pub async fn backup_local_transactions_task<P>(
 mod tests {
     use super::*;
     use crate::{
-        blobstore::InMemoryBlobStore, validate::EthTransactionValidatorBuilder,
-        CoinbaseTipOrdering, EthPooledTransaction, Pool, TransactionOrigin,
+        blobstore::InMemoryBlobStore, test_utils::TransactionBuilder,
+        validate::EthTransactionValidatorBuilder, CoinbaseTipOrdering, EthPooledTransaction, Pool,
+        TransactionOrigin,
     };
-    use alloy_eips::eip2718::Decodable2718;
-    use alloy_primitives::{hex, U256};
-    use reth_ethereum_primitives::PooledTransactionVariant;
+    use alloy_eips::eip1559::MIN_PROTOCOL_BASE_FEE;
+    use alloy_primitives::{Address, B256, U256};
     use reth_fs_util as fs;
+    use reth_primitives_traits::{SignedTransaction, SignerRecoverable};
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_tasks::TaskManager;
 
@@ -794,15 +795,32 @@ mod tests {
     async fn test_save_local_txs_backup() {
         let temp_dir = tempfile::tempdir().unwrap();
         let transactions_path = temp_dir.path().join(FILENAME).with_extension(EXTENSION);
-        let tx_bytes = hex!(
-            "02f87201830655c2808505ef61f08482565f94388c818ca8b9251b393131c08a736a67ccb192978801049e39c4b5b1f580c001a01764ace353514e8abdfb92446de356b260e3c1225b73fc4c8876a6258d12a129a04f02294aa61ca7676061cd99f29275491218b4754b46a0248e5e42bc5091f507"
-        );
-        let tx = PooledTransactionVariant::decode_2718(&mut &tx_bytes[..]).unwrap();
+
+        // Create a valid EIP-1559 transaction with non-zero tip
+        let signer_key = B256::random();
+        let to = Address::random();
+
+        let tx_signed = TransactionBuilder::default()
+            .signer(signer_key)
+            .nonce(42)
+            .max_fee_per_gas(MIN_PROTOCOL_BASE_FEE as u128 * 2)
+            .max_priority_fee_per_gas(MIN_PROTOCOL_BASE_FEE as u128)
+            .gas_limit(21000)
+            .to(to)
+            .value(1000)
+            .into_eip1559();
+
+        // Recover sender from the signed transaction
+        let sender = tx_signed.recover_signer_unchecked().unwrap();
+
         let provider = MockEthProvider::default();
-        let transaction = EthPooledTransaction::from_pooled(tx.try_into_recovered().unwrap());
-        let tx_to_cmp = transaction.clone();
-        let sender = hex!("1f9090aaE28b8a3dCeaDf281B0F12828e676c326").into();
         provider.add_account(sender, ExtendedAccount::new(42, U256::MAX));
+
+        let transaction = EthPooledTransaction::try_from_consensus(
+            SignedTransaction::try_into_recovered(tx_signed).unwrap(),
+        )
+        .unwrap();
+        let tx_to_cmp = transaction.clone();
         let blob_store = InMemoryBlobStore::default();
         let validator = EthTransactionValidatorBuilder::new(provider).build(blob_store.clone());
 
