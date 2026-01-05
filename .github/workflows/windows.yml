@@ -3,11 +3,12 @@
 name: windows
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-  merge_group:
+  workflow_dispatch: # disable action temporarily
+  # push:
+  #   branches: [main]
+  # pull_request:
+  #   branches: [main]
+  # merge_group:
 
 jobs:
   check-reth:

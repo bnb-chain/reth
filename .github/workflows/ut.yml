@@ -1,0 +1,52 @@
+name: unit tests
+
+on:
+  # pull_request:
+  workflow_dispatch:
+  # push:
+  #   branches:
+  #     - "**"
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  unit-test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    env:
+      RUST_BACKTRACE: 1
+    timeout-minutes: 120
+    steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libclang-dev llvm liburing-dev pkg-config
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Run unit tests
+        run: make test-unit

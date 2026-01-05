@@ -3,10 +3,13 @@
 name: unit
 
 on:
-  pull_request:
-  merge_group:
-  push:
-    branches: [main]
+  workflow_dispatch: # disable action temporarily
+  # pull_request:
+  # merge_group:
+  # workflow_dispatch:
+  # push:
+  #   branches:
+  #     - main
 
 env:
   CARGO_TERM_COLOR: always

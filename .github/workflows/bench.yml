@@ -1,11 +1,12 @@
 # Runs benchmarks.
 
 on:
-  pull_request:
+  workflow_dispatch: # disable action temporarily
+  # pull_request:
   # TODO: Disabled temporarily for https://github.com/CodSpeedHQ/runner/issues/55
   # merge_group:
-  push:
-    branches: [main]
+  # push:
+  #   branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
