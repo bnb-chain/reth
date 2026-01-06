@@ -131,7 +131,11 @@ impl<N: ProviderNodeTypes> BlockchainProvider<N> {
     /// [`BlockHashReader`]. This may fail if the inner read database transaction fails to open.
     #[track_caller]
     pub fn consistent_provider(&self) -> ProviderResult<ConsistentProvider<N>> {
-        ConsistentProvider::new(self.chain_spec(), self.database.clone(), self.canonical_in_memory_state())
+        ConsistentProvider::new(
+            self.chain_spec(),
+            self.database.clone(),
+            self.canonical_in_memory_state(),
+        )
     }
 
     /// This uses a given [`BlockState`] to initialize a state provider for that block.
@@ -604,7 +608,7 @@ impl<N: ProviderNodeTypes> StateProviderFactory for BlockchainProvider<N> {
 
     fn maybe_pending(&self) -> ProviderResult<Option<StateProviderBox>> {
         if let Some(pending) = self.canonical_in_memory_state.pending_state() {
-            return Ok(Some(Box::new(self.block_state_provider(&pending)?)))
+            return Ok(Some(Box::new(self.block_state_provider(&pending)?)));
         }
 
         Ok(None)

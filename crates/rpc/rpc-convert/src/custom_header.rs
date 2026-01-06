@@ -161,7 +161,8 @@ where
     }
 }
 
-// RpcObject is automatically implemented via blanket impl for types that implement Serialize + Deserialize
+// RpcObject is automatically implemented via blanket impl for types that implement Serialize +
+// Deserialize
 
 /// Type alias for the standard Ethereum custom header
 pub type EthereumCustomHeader = CustomRpcHeader<alloy_consensus::Header>;
@@ -202,7 +203,8 @@ pub fn calculate_millisecond_timestamp<T: reth_primitives_traits::BlockHeader>(h
     let ms_part = if let Some(mix_hash) = mix_hash {
         if mix_hash != B256::ZERO {
             let bytes = mix_hash.as_slice();
-            // Convert last 8 bytes to u64 (big-endian), equivalent to Go's uint256.SetBytes32().Uint64()
+            // Convert last 8 bytes to u64 (big-endian), equivalent to Go's
+            // uint256.SetBytes32().Uint64()
             let mut result = 0u64;
             for &byte in bytes.iter().skip(24).take(8) {
                 result = (result << 8) | u64::from(byte);
