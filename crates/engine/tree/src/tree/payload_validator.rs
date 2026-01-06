@@ -108,11 +108,11 @@ impl<'a, N: NodePrimitives> TreeCtx<'a, N> {
     pub fn persisting_kind_for(&self, block: BlockWithParent) -> PersistingKind {
         // Check that we're currently persisting.
         let Some(action) = self.persistence().current_action() else {
-            return PersistingKind::NotPersisting
+            return PersistingKind::NotPersisting;
         };
         // Check that the persistince action is saving blocks, not removing them.
         let CurrentPersistenceAction::SavingBlocks { highest } = action else {
-            return PersistingKind::PersistingNotDescendant
+            return PersistingKind::PersistingNotDescendant;
         };
 
         // The block being validated can only be a descendant if its number is higher than
@@ -120,7 +120,7 @@ impl<'a, N: NodePrimitives> TreeCtx<'a, N> {
         if block.block.number > highest.number &&
             self.state().tree_state.is_descendant(*highest, block)
         {
-            return PersistingKind::PersistingDescendant
+            return PersistingKind::PersistingDescendant;
         }
 
         // In all other cases, the block is not a descendant.
@@ -271,7 +271,9 @@ where
     }
 
     /// Validates a block that has already been converted from a payload with triedb.
-    pub fn validate_block_with_state_with_triedb<T: PayloadTypes<BuiltPayload: BuiltPayload<Primitives = N>>>(
+    pub fn validate_block_with_state_with_triedb<
+        T: PayloadTypes<BuiltPayload: BuiltPayload<Primitives = N>>,
+    >(
         &mut self,
         input: BlockOrPayload<T>,
         mut ctx: TreeCtx<'_, N>,
@@ -280,14 +282,16 @@ where
         V: PayloadValidator<T, Block = N::Block>,
         Evm: ConfigureEngineEvm<T::ExecutionData, Primitives = N>,
     {
-         /// A helper macro that returns the block in case there was an error
-         macro_rules! ensure_ok {
+        /// A helper macro that returns the block in case there was an error
+        macro_rules! ensure_ok {
             ($expr:expr) => {
                 match $expr {
                     Ok(val) => val,
                     Err(e) => {
                         let block = self.convert_to_block(input)?;
-                        return Err(InsertBlockError::new(block.into_sealed_block(), e.into()).into())
+                        return Err(
+                            InsertBlockError::new(block.into_sealed_block(), e.into()).into()
+                        );
                     }
                 }
             };
@@ -305,7 +309,7 @@ where
                 self.convert_to_block(input)?.into_sealed_block(),
                 ProviderError::HeaderNotFound(parent_hash.into()).into(),
             )
-            .into())
+            .into());
         };
 
         let state_provider = ensure_ok!(provider_builder.build());
@@ -317,7 +321,7 @@ where
                 self.convert_to_block(input)?.into_sealed_block(),
                 ProviderError::HeaderNotFound(parent_hash.into()).into(),
             )
-            .into())
+            .into());
         };
 
         let evm_env = self.evm_env_for(&input);
@@ -325,11 +329,8 @@ where
         let env = ExecutionEnv { evm_env, hash: input.hash(), parent_hash: input.parent_hash() };
 
         let txs = self.tx_iterator_for(&input)?;
-        let mut handle = self.payload_processor.spawn_cache_exclusive(
-            env.clone(),
-            txs,
-            provider_builder,
-        );
+        let mut handle =
+            self.payload_processor.spawn_cache_exclusive(env.clone(), txs, provider_builder);
 
         // Use cached state provider before executing, used in execution after prewarming threads
         // complete
@@ -371,13 +372,13 @@ where
             self.consensus.validate_header_against_parent(block.sealed_header(), &parent_block)
         {
             warn!(target: "engine::tree", ?block, "Failed to validate header {} against parent: {e}", block.hash());
-            return Err(InsertBlockError::new(block.into_sealed_block(), e.into()).into())
+            return Err(InsertBlockError::new(block.into_sealed_block(), e.into()).into());
         }
 
         if let Err(err) = self.consensus.validate_block_post_execution(&block, &output) {
             // call post-block hook
             self.on_invalid_block(&parent_block, &block, &output, None, ctx.state_mut());
-            return Err(InsertBlockError::new(block.into_sealed_block(), err.into()).into())
+            return Err(InsertBlockError::new(block.into_sealed_block(), err.into()).into());
         }
 
         let hashed_state = self.provider.hashed_post_state(&output.state);
@@ -387,7 +388,7 @@ where
         {
             // call post-block hook
             self.on_invalid_block(&parent_block, &block, &output, None, ctx.state_mut());
-            return Err(InsertBlockError::new(block.into_sealed_block(), err.into()).into())
+            return Err(InsertBlockError::new(block.into_sealed_block(), err.into()).into());
         }
         // terminate prewarming task with good state output
         handle.terminate_caching(Some(output.state.clone()));
@@ -429,7 +430,9 @@ where
                     Ok(val) => val,
                     Err(e) => {
                         let block = self.convert_to_block(input)?;
-                        return Err(InsertBlockError::new(block.into_sealed_block(), e.into()).into())
+                        return Err(
+                            InsertBlockError::new(block.into_sealed_block(), e.into()).into()
+                        );
                     }
                 }
             };
@@ -447,7 +450,7 @@ where
                 self.convert_to_block(input)?.into_sealed_block(),
                 ProviderError::HeaderNotFound(parent_hash.into()).into(),
             )
-            .into())
+            .into());
         };
 
         let state_provider = ensure_ok!(provider_builder.build());
@@ -459,7 +462,7 @@ where
                 self.convert_to_block(input)?.into_sealed_block(),
                 ProviderError::HeaderNotFound(parent_hash.into()).into(),
             )
-            .into())
+            .into());
         };
 
         let evm_env = self.evm_env_for(&input);
@@ -591,13 +594,13 @@ where
             self.consensus.validate_header_against_parent(block.sealed_header(), &parent_block)
         {
             warn!(target: "engine::tree", ?block, "Failed to validate header {} against parent: {e}", block.hash());
-            return Err(InsertBlockError::new(block.into_sealed_block(), e.into()).into())
+            return Err(InsertBlockError::new(block.into_sealed_block(), e.into()).into());
         }
 
         if let Err(err) = self.consensus.validate_block_post_execution(&block, &output) {
             // call post-block hook
             self.on_invalid_block(&parent_block, &block, &output, None, ctx.state_mut());
-            return Err(InsertBlockError::new(block.into_sealed_block(), err.into()).into())
+            return Err(InsertBlockError::new(block.into_sealed_block(), err.into()).into());
         }
 
         let hashed_state = self.provider.hashed_post_state(&output.state);
@@ -607,7 +610,7 @@ where
         {
             // call post-block hook
             self.on_invalid_block(&parent_block, &block, &output, None, ctx.state_mut());
-            return Err(InsertBlockError::new(block.into_sealed_block(), err.into()).into())
+            return Err(InsertBlockError::new(block.into_sealed_block(), err.into()).into());
         }
 
         // Skip state root computation entirely in fastnode mode
@@ -620,7 +623,6 @@ where
 
             let root_time = Instant::now();
             let mut maybe_state_root = None;
-
 
             if run_parallel_state_root {
                 // if we new payload extends the current canonical change we attempt to use the
@@ -723,7 +725,7 @@ where
                 )
                 .into(),
             )
-            .into())
+            .into());
         }
 
         // terminate prewarming task with good state output
@@ -785,12 +787,12 @@ where
     fn validate_block_inner(&self, block: &RecoveredBlock<N::Block>) -> Result<(), ConsensusError> {
         if let Err(e) = self.consensus.validate_header(block.sealed_header()) {
             error!(target: "engine::tree", ?block, "Failed to validate header {}: {e}", block.hash());
-            return Err(e)
+            return Err(e);
         }
 
         if let Err(e) = self.consensus.validate_block_pre_execution(block.sealed_block()) {
             error!(target: "engine::tree", ?block, "Failed to validate block {}: {e}", block.hash());
-            return Err(e)
+            return Err(e);
         }
 
         Ok(())
@@ -969,7 +971,7 @@ where
                 self.provider.clone(),
                 historical,
                 Some(blocks),
-            )))
+            )));
         }
 
         // Check if the block is persisted
@@ -977,7 +979,7 @@ where
             debug!(target: "engine::tree", %hash, number = %header.number(), "found canonical state for block in database, creating provider builder");
             // For persisted blocks, we create a builder that will fetch state directly from the
             // database
-            return Ok(Some(StateProviderBuilder::new(self.provider.clone(), hash, None)))
+            return Ok(Some(StateProviderBuilder::new(self.provider.clone(), hash, None)));
         }
 
         debug!(target: "engine::tree", %hash, "no canonical state found for block");
@@ -1046,7 +1048,7 @@ where
                 } else {
                     // If the block is higher than the best block number, stop filtering, as it's
                     // the first block that's not in the database.
-                    break
+                    break;
                 }
             }
 

@@ -91,7 +91,10 @@ impl HashedPostState {
                     None => HashedStorage::new(false),
                     Some(_) => HashedStorage::from_plain_storage(
                         AccountStatus::Changed,
-                        account.storage.iter().map(|(slot, value)| (slot, &value.previous_or_original_value)),
+                        account
+                            .storage
+                            .iter()
+                            .map(|(slot, value)| (slot, &value.previous_or_original_value)),
                     ),
                 };
                 (hashed_address, (hashed_account, hashed_storage))
@@ -118,7 +121,7 @@ impl HashedPostState {
                 Some(account) => {
                     let code_hash = match account.bytecode_hash {
                         Some(code_hash) => code_hash,
-                        None => KECCAK_EMPTY
+                        None => KECCAK_EMPTY,
                     };
                     let acc = StateAccount::default()
                         .with_nonce(account.nonce)
@@ -311,7 +314,7 @@ impl HashedPostState {
                         if storage_in_targets.contains(&slot) &&
                             !storage_added_removed_keys.is_some_and(|k| k.is_removed(&slot))
                         {
-                            return true
+                            return true;
                         }
 
                         storage_not_in_targets.storage.insert(slot, *value);
@@ -346,7 +349,7 @@ impl HashedPostState {
         });
         self.accounts.retain(|&address, account| {
             if targets.contains_key(&address) {
-                return true
+                return true;
             }
 
             state_updates_not_in_targets.accounts.insert(address, *account);

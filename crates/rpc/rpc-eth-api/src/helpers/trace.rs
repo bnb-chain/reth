@@ -280,7 +280,7 @@ pub trait Trace: LoadState<Error: FromEvmError<Self::Evm>> {
         async move {
             let block = async {
                 if block.is_some() {
-                    return Ok(block)
+                    return Ok(block);
                 }
                 self.recovered_block(block_id).await
             };
@@ -291,7 +291,7 @@ pub trait Trace: LoadState<Error: FromEvmError<Self::Evm>> {
 
             if block.body().transactions().is_empty() {
                 // nothing to trace
-                return Ok(Some(Vec::new()))
+                return Ok(Some(Vec::new()));
             }
 
             // replay all transactions of the block
@@ -440,9 +440,11 @@ pub trait Trace: LoadState<Error: FromEvmError<Self::Evm>> {
 
         // apply relevant system calls
         let mut evm = self.evm_config().evm_with_env(db, evm_env.clone());
-        system_caller.apply_blockhashes_contract_call(block.header().parent_hash(), &mut evm).map_err(|err| {
-            EthApiError::EvmCustom(format!("failed to apply 2935 system call {err}"))
-        })?;
+        system_caller
+            .apply_blockhashes_contract_call(block.header().parent_hash(), &mut evm)
+            .map_err(|err| {
+                EthApiError::EvmCustom(format!("failed to apply 2935 system call {err}"))
+            })?;
 
         Ok(())
     }

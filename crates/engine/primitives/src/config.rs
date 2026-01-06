@@ -102,7 +102,7 @@ pub struct TreeConfig {
     /// This disables validation of state root hashes during live sync.
     skip_state_root_validation: bool,
     /// The minimum number of blocks required to trigger a pipeline run for backfilling.
-    /// 
+    ///
     /// When the local head is behind the forkchoice head by more than this threshold,
     /// the pipeline will be used to backfill blocks instead of downloading them individually.
     min_blocks_for_pipeline_run: u64,

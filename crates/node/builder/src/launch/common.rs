@@ -91,7 +91,9 @@ use tokio::sync::{
 use futures::{future::Either, stream, Stream, StreamExt};
 use reth_node_ethstats::EthStatsService;
 use reth_node_events::{cl::ConsensusLayerHealthEvents, node::NodeEvent};
-use rust_eth_triedb::triedb_manager::{init_global_triedb_manager, disable_triedb, is_triedb_active};
+use rust_eth_triedb::triedb_manager::{
+    disable_triedb, init_global_triedb_manager, is_triedb_active,
+};
 
 /// Reusable setup for launching a node.
 ///
@@ -162,7 +164,12 @@ impl LaunchContext {
             .wrap_err_with(|| format!("Could not load config file {config_path:?}"))?;
 
         Self::save_pruning_config_if_full_node(&mut toml_config, config, &config_path)?;
-        Self::save_statedb_config_if_triedb(&mut toml_config, config, &config_path, &self.data_dir)?;
+        Self::save_statedb_config_if_triedb(
+            &mut toml_config,
+            config,
+            &config_path,
+            &self.data_dir,
+        )?;
 
         info!(target: "reth::cli", path = ?config_path, "Configuration loaded");
 
@@ -261,10 +268,8 @@ impl LaunchContext {
                     // Use TrieDB
                     let triedb_path = data_dir.data_dir().join("rust_eth_triedb");
                     let path_str = triedb_path.to_string_lossy().to_string();
-                    let statedb_config = StateDbConfig {
-                        r#type: "triedb".to_string(),
-                        path: triedb_path.clone(),
-                    };
+                    let statedb_config =
+                        StateDbConfig { r#type: "triedb".to_string(), path: triedb_path.clone() };
                     reth_config.update_statedb_config(statedb_config);
                     info!(target: "reth::cli", "Saving state database config (triedb) to toml file");
                     reth_config.save(config_path.as_ref())?;
@@ -274,10 +279,8 @@ impl LaunchContext {
                 } else {
                     // Use default MDBX and save to file
                     let db_path = data_dir.data_dir().join("db");
-                    let statedb_config = StateDbConfig {
-                        r#type: "mdbx".to_string(),
-                        path: db_path,
-                    };
+                    let statedb_config =
+                        StateDbConfig { r#type: "mdbx".to_string(), path: db_path };
                     reth_config.update_statedb_config(statedb_config);
                     info!(target: "reth::cli", "Saving state database config (mdbx) to toml file");
                     reth_config.save(config_path.as_ref())?;
@@ -1003,7 +1006,7 @@ where
                 error!(
                     "Op-mainnet has been launched without importing the pre-Bedrock state. The chain can't progress without this. See also https://reth.rs/run/sync-op-mainnet.html?minimal-bootstrap-recommended"
                 );
-                return Err(ProviderError::BestBlockNotFound)
+                return Err(ProviderError::BestBlockNotFound);
             }
         }
 
@@ -1073,7 +1076,8 @@ where
             .block_number;
 
         let triedb = rust_eth_triedb::get_global_triedb();
-        let (triedb_checkpoint_block_number, triedb_checkpoint_state_root) = triedb.latest_persist_state().unwrap();
+        let (triedb_checkpoint_block_number, triedb_checkpoint_state_root) =
+            triedb.latest_persist_state().unwrap();
 
         // Skip the first stage as we've already retrieved it and comparing all other checkpoints
         // against it.
@@ -1110,8 +1114,14 @@ where
         info!(target: "consensus::engine", "Pipeline sync progress is consistent, will check live sync progress");
 
         let last_persisted_block_number = self.blockchain_db().last_block_number()?;
-        let last_persisted_header = self.blockchain_db().header_by_number(last_persisted_block_number)?
-            .ok_or_else(|| reth_provider::ProviderError::HeaderNotFound(alloy_eips::BlockHashOrNumber::Number(last_persisted_block_number)))?;
+        let last_persisted_header = self
+            .blockchain_db()
+            .header_by_number(last_persisted_block_number)?
+            .ok_or_else(|| {
+                reth_provider::ProviderError::HeaderNotFound(alloy_eips::BlockHashOrNumber::Number(
+                    last_persisted_block_number,
+                ))
+            })?;
         let last_persisted_state_root = last_persisted_header.state_root();
 
         if last_persisted_block_number > triedb_checkpoint_block_number {

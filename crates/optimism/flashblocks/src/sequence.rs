@@ -76,7 +76,7 @@ where
             self.clear_and_broadcast_blocks();
 
             self.inner.insert(flashblock.index, PreparedFlashBlock::new(flashblock)?);
-            return Ok(())
+            return Ok(());
         }
 
         // only insert if we previously received the same block, assume we received index 0

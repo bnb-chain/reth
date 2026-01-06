@@ -125,7 +125,7 @@ pub trait EstimateCall: Call {
             // Reuse the same EVM instance
             if let Ok(res) = evm.transact(min_tx_env).map_err(Self::Error::from_evm_err) {
                 if res.result.is_success() {
-                    return Ok(U256::from(MIN_TRANSACTION_GAS))
+                    return Ok(U256::from(MIN_TRANSACTION_GAS));
                 }
             }
         }
@@ -152,7 +152,7 @@ pub trait EstimateCall: Call {
                 return Err(RpcInvalidTransactionError::GasRequiredExceedsAllowance {
                     gas_limit: tx_env.gas_limit(),
                 }
-                .into_eth_err())
+                .into_eth_err());
             }
             // Propagate other results (successful or other errors).
             ethres => ethres?,
@@ -163,7 +163,7 @@ pub trait EstimateCall: Call {
             ExecutionResult::Halt { reason, .. } => {
                 // here we don't check for invalid opcode because already executed with highest gas
                 // limit
-                return Err(Self::Error::from_evm_halt(reason, tx_env.gas_limit()))
+                return Err(Self::Error::from_evm_halt(reason, tx_env.gas_limit()));
             }
             ExecutionResult::Revert { output, .. } => {
                 // if price or limit was included in the request then we can execute the request
@@ -173,7 +173,7 @@ pub trait EstimateCall: Call {
                 } else {
                     // the transaction did revert
                     Err(RpcInvalidTransactionError::Revert(RevertError::new(output)).into_eth_err())
-                }
+                };
             }
         };
 
@@ -234,7 +234,7 @@ pub trait EstimateCall: Call {
             if (highest_gas_limit - lowest_gas_limit) as f64 / (highest_gas_limit as f64) <
                 ESTIMATE_GAS_ERROR_RATIO
             {
-                break
+                break;
             };
 
             let mut mid_tx_env = tx_env.clone();

@@ -10,4 +10,3 @@ pub struct StateDbArgs {
     #[arg(long = "statedb.triedb", default_value_t = false)]
     pub triedb: bool,
 }
-
