@@ -5,10 +5,10 @@ use crate::{
     persistence::PersistenceHandle,
     tree::{error::InsertPayloadError, metrics::EngineApiMetrics, payload_validator::TreeCtx},
 };
-use alloy_consensus::BlockHeader;
-use alloy_eips::{eip1898::BlockWithParent, BlockNumHash, NumHash};
+use alloy_consensus::{BlockHeader, TxReceipt};
+use alloy_eips::{eip1898::BlockWithParent, BlockNumHash, NumHash, Encodable2718};
 use alloy_evm::block::StateChangeSource;
-use alloy_primitives::{BlockHash, BlockNumber, B256};
+use alloy_primitives::{keccak256, BlockHash, BlockNumber, B256};
 use alloy_rpc_types_engine::{
     ForkchoiceState, PayloadStatus, PayloadStatusEnum, PayloadValidationError,
 };
@@ -29,7 +29,7 @@ use reth_payload_builder::PayloadBuilderHandle;
 use reth_payload_primitives::{
     BuiltPayload, EngineApiMessageVersion, NewPayloadError, PayloadBuilderAttributes, PayloadTypes,
 };
-use reth_primitives_traits::{NodePrimitives, RecoveredBlock, SealedBlock, SealedHeader};
+use reth_primitives_traits::{BlockBody, NodePrimitives, RecoveredBlock, SealedBlock, SealedHeader, SignedTransaction};
 use reth_provider::{
     providers::ConsistentDbView, BlockNumReader, BlockReader, DBProvider, DatabaseProviderFactory,
     HashedPostStateProvider, ProviderError, StateProviderBox, StateProviderFactory, StateReader,
@@ -2539,11 +2539,37 @@ where
         // If the error was due to an invalid payload, the payload is added to the
         // invalid headers cache and `Ok` with [PayloadStatusEnum::Invalid] is
         // returned.
+
+        // Collect transaction and receipt hashes for debug output (similar to assembler.rs)
+        let tx_hashes: Vec<String> = block.body().transactions().iter().enumerate().map(|(idx, tx)| {
+            format!("[{}] 0x{:x}", idx, tx.tx_hash())
+        }).collect();
+
+        // Try to get receipts from provider, but don't fail if unavailable
+        let receipt_hashes: Vec<String> = self.provider
+            .receipts_by_block(block.hash().into())
+            .ok()
+            .flatten()
+            .map(|receipts| {
+                receipts.iter().enumerate().map(|(idx, receipt)| {
+                    // Encode receipt with bloom using encode_2718 (same as calculate_receipt_root_no_memo)
+                    let encoded = receipt.with_bloom_ref().encoded_2718();
+                    let receipt_hash = keccak256(&encoded);
+                    format!("[{}] 0x{:x}", idx, receipt_hash)
+                }).collect()
+            })
+            .unwrap_or_default();
+
         warn!(
             target: "engine::tree",
             invalid_hash=%block.hash(),
             invalid_number=block.number(),
             %validation_err,
+            header=?block.header(),
+            tx_count=block.body().transactions().len(),
+            receipt_count=receipt_hashes.len(),
+            tx_hashes=%tx_hashes.join(", "),
+            receipt_hashes=%receipt_hashes.join(", "),
             "Invalid block error on new payload",
         );
         let latest_valid_hash = self.latest_valid_hash_for_invalid_payload(block.parent_hash())?;
