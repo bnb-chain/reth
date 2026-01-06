@@ -4,12 +4,12 @@ name: book
 
 on:
   workflow_dispatch: # disable action temporarily
-  # push:
-  #   branches: [main]
-  # pull_request:
-  #   branches: [main]
-  #   types: [opened, reopened, synchronize, closed]
-  # merge_group:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize, closed]
+  merge_group:
 
 jobs:
   build:
