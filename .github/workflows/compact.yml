@@ -7,10 +7,10 @@
 
 on:
   workflow_dispatch: # disable action temporarily
-  # pull_request:
-  # merge_group:
-  # push:
-  #   branches: [main]
+  pull_request:
+  merge_group:
+  push:
+    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
@@ -18,8 +18,8 @@ env:
 name: compact-codec
 jobs:
   compact-codec:
-    runs-on:
-      group: Reth
+    runs-on: ubuntu-latest
+      # group: Reth
     strategy:
       matrix:
         bin:
