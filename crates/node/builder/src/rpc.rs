@@ -39,6 +39,10 @@ use std::{
     future::Future,
     ops::{Deref, DerefMut},
 };
+use tokio::sync::mpsc::UnboundedSender;
+use reth_engine_tree::engine::EngineApiRequest;
+use reth_provider::providers::BlockchainProvider;
+use reth_node_api::NodeTypesWithDBAdapter;
 
 /// Contains the handles to the spawned RPC servers.
 ///
@@ -316,6 +320,16 @@ where
     }
 }
 
+/// Internal alias for the Engine API sender type tied to a node.
+pub type EngineApiTx<Node> = UnboundedSender<
+    EngineApiRequest<
+        <<Node as FullNodeTypes>::Types as NodeTypes>::Payload,
+        <<Node as FullNodeTypes>::Types as NodeTypes>::Primitives,
+        BlockchainProvider<NodeTypesWithDBAdapter<<Node as FullNodeTypes>::Types, <Node as FullNodeTypes>::DB>>,
+        <Node as FullNodeComponents>::Evm
+    >
+>;
+
 /// Handle to the launched RPC servers.
 pub struct RpcHandle<Node: FullNodeComponents, EthApi: EthApiTypes> {
     /// Handles to launched servers.
@@ -329,6 +343,11 @@ pub struct RpcHandle<Node: FullNodeComponents, EthApi: EthApiTypes> {
     pub engine_events: EventSender<ConsensusEngineEvent<<Node::Types as NodeTypes>::Primitives>>,
     /// Handle to the beacon consensus engine.
     pub beacon_engine_handle: ConsensusEngineHandle<<Node::Types as NodeTypes>::Payload>,
+    /// Sender for engine API requests flowing from RPC to engine service.
+    ///
+    /// Factory requirement (for clarity): ProviderFactory implements
+    /// `DatabaseProviderFactory<Provider: BlockReader> + Clone + Send + Sync + 'static`.
+    pub engine_api_tx: Option<EngineApiTx<Node>>,
 }
 
 impl<Node: FullNodeComponents, EthApi: EthApiTypes> Clone for RpcHandle<Node, EthApi> {
@@ -338,6 +357,7 @@ impl<Node: FullNodeComponents, EthApi: EthApiTypes> Clone for RpcHandle<Node, Et
             rpc_registry: self.rpc_registry.clone(),
             engine_events: self.engine_events.clone(),
             beacon_engine_handle: self.beacon_engine_handle.clone(),
+            engine_api_tx: self.engine_api_tx.clone(),
         }
     }
 }
@@ -938,6 +958,7 @@ where
             rpc_registry: registry,
             engine_events,
             beacon_engine_handle: engine_handle,
+            engine_api_tx: None,
         })
     }
 

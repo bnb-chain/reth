@@ -23,6 +23,7 @@ use reth_engine_primitives::{
     BeaconEngineMessage, BeaconOnNewPayloadError, ConsensusEngineEvent, ExecutionPayload,
     ForkchoiceStateTracker, OnForkChoiceUpdated,
 };
+
 use reth_errors::{ConsensusError, ProviderResult, RethError, RethResult};
 use reth_evm::{ConfigureEvm, OnStateHook};
 use reth_payload_builder::PayloadBuilderHandle;
@@ -44,7 +45,8 @@ use revm_primitives::U256;
 use rust_eth_triedb_common::{DiffLayer, DiffLayers};
 use state::TreeState;
 use std::{
-    fmt::Debug,
+    fmt::{Debug, Display},
+    marker::PhantomData,
     sync::{
         mpsc::{Receiver, RecvError, RecvTimeoutError, Sender},
         Arc,
@@ -293,9 +295,9 @@ where
     /// them one by one so that we can handle incoming engine API in between and don't become
     /// unresponsive. This can happen during live sync transition where we're trying to close the
     /// gap (up to 3 epochs of blocks in the worst case).
-    incoming_tx: Sender<FromEngine<EngineApiRequest<T, N>, N::Block>>,
+    incoming_tx: Sender<FromEngine<EngineApiRequest<T, N, P, C>, N::Block>>,
     /// Incoming engine API requests.
-    incoming: Receiver<FromEngine<EngineApiRequest<T, N>, N::Block>>,
+    incoming: Receiver<FromEngine<EngineApiRequest<T, N, P, C>, N::Block>>,
     /// Outgoing events that are emitted to the handler.
     outgoing: UnboundedSender<EngineApiEvent<N>>,
     /// Channels to the persistence layer.
@@ -416,8 +418,10 @@ where
         config: TreeConfig,
         kind: EngineApiKind,
         evm_config: C,
-    ) -> (Sender<FromEngine<EngineApiRequest<T, N>, N::Block>>, UnboundedReceiver<EngineApiEvent<N>>)
-    {
+    ) -> (
+        Sender<FromEngine<EngineApiRequest<T, N, P, C>, N::Block>>,
+        UnboundedReceiver<EngineApiEvent<N>>,
+    ) {
         let best_block_number = provider.best_block_number().unwrap_or(0);
         let header = provider.sealed_header(best_block_number).ok().flatten().unwrap_or_default();
 
@@ -454,7 +458,7 @@ where
     }
 
     /// Returns a new [`Sender`] to send messages to this type.
-    pub fn sender(&self) -> Sender<FromEngine<EngineApiRequest<T, N>, N::Block>> {
+    pub fn sender(&self) -> Sender<FromEngine<EngineApiRequest<T, N, P, C>, N::Block>> {
         self.incoming_tx.clone()
     }
 
@@ -1250,7 +1254,7 @@ where
     #[expect(clippy::type_complexity)]
     fn try_recv_engine_message(
         &self,
-    ) -> Result<Option<FromEngine<EngineApiRequest<T, N>, N::Block>>, RecvError> {
+    ) -> Result<Option<FromEngine<EngineApiRequest<T, N, P, C>, N::Block>>, RecvError> {
         if self.persistence_state.in_progress() {
             // try to receive the next request with a timeout to not block indefinitely
             match self.incoming.recv_timeout(std::time::Duration::from_millis(500)) {
@@ -1352,7 +1356,7 @@ where
     /// Handles a message from the engine.
     fn on_engine_message(
         &mut self,
-        msg: FromEngine<EngineApiRequest<T, N>, N::Block>,
+        msg: FromEngine<EngineApiRequest<T, N, P, C>, N::Block>,
     ) -> Result<(), InsertBlockFatalError> {
         match msg {
             FromEngine::Event(event) => match event {
@@ -1461,12 +1465,12 @@ where
                         }
                     }
                     EngineApiRequest::Custom(request) => match request {
-                        CustomRequestMessage::RequestDiffLayer { parent_hash, tx } => {
+                        CustomRequestMessage::RequestDiffLayer { parent_hash, tx, .. } => {
                             let output = self
                                 .state
                                 .get_merged_difflayers(parent_hash)
-                                .ok_or_else(|| RethError::msg("DiffLayers not found"));
-                            if tx.send(output).is_err() {
+                                .ok_or_else(|| "DiffLayers not found".to_string());
+                            if tx.send(output.map_err(RethError::msg)).is_err() {
                                 error!(target: "engine::tree", "Failed to send event");
                             }
                         }
@@ -3070,11 +3074,27 @@ where
     Evm: ConfigureEvm<Primitives = N>,
     N: NodePrimitives,
 {
-    /// Request to calculate the parallel state root for a given parent hash.
+    /// Request to get the diff layers for a given parent hash.
     RequestDiffLayer {
-        /// The parent hash to calculate the parallel state root for.
+        /// The parent hash to get the diff layers for.
         parent_hash: BlockHash,
-        /// The sender for returning the parallel state root.
+        /// The sender for returning the diff layers.
         tx: oneshot::Sender<RethResult<DiffLayers>>,
+        /// Phantom data to hold the generic types.
+        _phantom: PhantomData<(P, Evm, N)>,
     },
+}
+
+impl<P, Evm, N> Display for CustomRequestMessage<P, Evm, N>
+where
+    Evm: ConfigureEvm<Primitives = N>,
+    N: NodePrimitives,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RequestDiffLayer { parent_hash, .. } => {
+                write!(f, "RequestDiffLayer(parent_hash: {:?})", parent_hash)
+            }
+        }
+    }
 }
