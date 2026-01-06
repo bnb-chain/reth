@@ -4,9 +4,10 @@ use crate::{
     StorageLocation, TrieWriter,
 };
 use alloy_consensus::BlockHeader;
-use reth_chain_state::{ExecutedBlock, ExecutedBlockWithTrieUpdates};
+use reth_chain_state::{ExecutedBlock, ExecutedBlockWithTrieUpdates, ExecutedTrieUpdates};
 use reth_db_api::transaction::{DbTx, DbTxMut};
 use reth_errors::{ProviderError, ProviderResult};
+use reth_execution_types::ExecutionOutcome;
 use reth_storage_errors::db::DatabaseError;
 use rust_eth_triedb::get_global_triedb;
 use rust_eth_triedb::triedb_manager::is_triedb_active;
@@ -14,6 +15,7 @@ use reth_primitives_traits::{NodePrimitives, SignedTransaction};
 use reth_static_file_types::StaticFileSegment;
 use reth_storage_api::{DBProvider, StageCheckpointWriter, TransactionsProviderExt};
 use reth_storage_errors::writer::UnifiedStorageWriterError;
+use reth_trie::{updates::TrieUpdates, HashedPostState};
 use revm_database::OriginalValuesKnown;
 use std::sync::Arc;
 use tracing::debug;
@@ -185,6 +187,21 @@ where
 
         debug!(target: "provider::storage_writer", block_count = %block_count, "Writing blocks and execution data to storage");
 
+        // Safety: we assume blocks are ordered and contiguous (canonical extension).
+        // This was already an implicit requirement of the previous per-block write logic (and of
+        // the engine persistence caller). We still validate it here to avoid silently writing
+        // incorrect indices in release builds if a future refactor violates the invariant.
+        if !blocks
+            .iter()
+            .zip(blocks.iter().skip(1))
+            .all(|(a, b)| a.recovered_block().number() + 1 == b.recovered_block().number())
+        {
+            return Err(ProviderError::Database(DatabaseError::Other(format!(
+                "save_blocks expects a contiguous, ascending block range, got first={} last={} count={}",
+                first_number, last_block_number, block_count
+            ))));
+        }
+
         // Timing accumulators (keep overhead low; all printed once at end).
         let mut insert_block_ms: u128 = 0;
         let mut write_state_ms: u128 = 0;
@@ -198,77 +215,138 @@ where
         let triedb_active = is_triedb_active();
         let mut triedb_opt = if triedb_active { Some(get_global_triedb()) } else { None };
 
-        // TODO: Do performant / batched writes for each type of object
-        // instead of a loop over all blocks,
-        // meaning:
-        //  * blocks
-        //  * state
-        //  * hashed state
-        //  * trie updates (cannot naively extend, need helper)
-        //  * indices (already done basically)
-        // Insert the blocks
-        for ExecutedBlockWithTrieUpdates {
-            block: ExecutedBlock { recovered_block, execution_output, hashed_state },
-            trie,
-        } in blocks
-        {
-            let block_number = recovered_block.number();
-            let state_root = recovered_block.state_root();
-            let hashed_state_clone = hashed_state.clone();
+        // NOTE: When TrieDB is inactive (default), the hashed state and trie updates represent
+        // the latest (tip) state. Writing them per-block causes repeated sorting and cursor setup,
+        // and can be a major bottleneck under high IO pressure. We can safely batch/merge these
+        // across the input range and apply them once (last write wins).
+        if triedb_active {
+            // Insert blocks + write state + triedb commit/flush per-block (needs parent root).
+            for ExecutedBlockWithTrieUpdates {
+                block: ExecutedBlock { recovered_block, execution_output, hashed_state },
+                trie: _trie,
+            } in blocks
+            {
+                let block_number = recovered_block.number();
+                let state_root = recovered_block.state_root();
+                let hashed_state_clone = hashed_state.clone();
 
-            // Only check latest_persist_state if TrieDB is active
-            let latest_state_root_opt = if let Some(ref mut triedb) = triedb_opt {
-                let (latest_block_number, latest_state_root) = triedb.latest_persist_state()
+                let (latest_block_number, latest_state_root) = triedb_opt
+                    .as_mut()
+                    .expect("triedb_active implies triedb_opt is Some")
+                    .latest_persist_state()
                     .map_err(|e| ProviderError::other(e))?;
 
                 if latest_block_number != block_number - 1 {
-                    return Err(ProviderError::Database(DatabaseError::Other(format!("latest_block_number != block_number - 1, latest_block_number={}, block_number={}", latest_block_number, block_number))));
+                    return Err(ProviderError::Database(DatabaseError::Other(format!(
+                        "latest_block_number != block_number - 1, latest_block_number={}, block_number={}",
+                        latest_block_number, block_number
+                    ))));
                 }
-                Some(latest_state_root)
-            } else {
-                None
-            };
 
-            let block_hash = recovered_block.hash();
-            let insert_started = std::time::Instant::now();
-            self.database()
-                .insert_block(Arc::unwrap_or_clone(recovered_block), StorageLocation::Both)?;
-            insert_block_ms += insert_started.elapsed().as_millis();
+                let insert_started = std::time::Instant::now();
+                self.database()
+                    .insert_block(Arc::unwrap_or_clone(recovered_block), StorageLocation::Both)?;
+                insert_block_ms += insert_started.elapsed().as_millis();
 
-            // Write state and changesets to the database.
+                // Must be written after blocks because of the receipt lookup.
+                let write_state_started = std::time::Instant::now();
+                self.database().write_state(
+                    &execution_output,
+                    OriginalValuesKnown::No,
+                    StorageLocation::StaticFiles,
+                )?;
+                write_state_ms += write_state_started.elapsed().as_millis();
+
+                let triedb_started = std::time::Instant::now();
+                let triedb_hashed_post_state =
+                    hashed_state_clone.as_ref().to_triedb_hashed_post_state();
+                let (new_root, difflayer) = triedb_opt
+                    .as_mut()
+                    .expect("triedb_active implies triedb_opt is Some")
+                    .commit_hashed_post_state(latest_state_root, None, &triedb_hashed_post_state)
+                    .map_err(|e| ProviderError::other(e))?;
+                if new_root != state_root {
+                    return Err(ProviderError::Database(DatabaseError::Other(format!(
+                        "write hashed state to triedb, block_number={}, new_root({:?}) != state_root({:?})",
+                        block_number, new_root, state_root
+                    ))));
+                }
+                triedb_opt
+                    .as_mut()
+                    .expect("triedb_active implies triedb_opt is Some")
+                    .flush(block_number, new_root, &difflayer)
+                    .map_err(|e| ProviderError::other(e))?;
+                triedb_commit_flush_ms += triedb_started.elapsed().as_millis();
+            }
+        } else {
+            // Insert blocks per-block (still required), but batch state + hashed state + trie
+            // updates across the whole range.
+            let mut combined_execution_outcome: Option<ExecutionOutcome<N::Receipt>> = None;
+            let mut combined_hashed_state: HashedPostState = Default::default();
+            let mut combined_trie_updates: TrieUpdates = Default::default();
+
+            for ExecutedBlockWithTrieUpdates {
+                block: ExecutedBlock { recovered_block, execution_output, hashed_state },
+                trie,
+            } in blocks
+            {
+                let block_hash = recovered_block.hash();
+
+                let insert_started = std::time::Instant::now();
+                self.database()
+                    .insert_block(Arc::unwrap_or_clone(recovered_block), StorageLocation::Both)?;
+                insert_block_ms += insert_started.elapsed().as_millis();
+
+                // Merge execution outcome (bundle + receipts + requests).
+                let execution_outcome = Arc::try_unwrap(execution_output)
+                    .unwrap_or_else(|arc| (*arc).clone());
+                if let Some(ref mut combined) = combined_execution_outcome {
+                    combined.extend(execution_outcome);
+                } else {
+                    combined_execution_outcome = Some(execution_outcome);
+                }
+
+                // Merge hashed post state. Later entries take precedence.
+                let hashed_post_state =
+                    Arc::try_unwrap(hashed_state).unwrap_or_else(|arc| (*arc).clone());
+                combined_hashed_state.extend(hashed_post_state);
+
+                // Merge trie updates (last write wins, and removals prune prior inserts).
+                let trie_updates = match trie {
+                    ExecutedTrieUpdates::Present(updates) => {
+                        Arc::try_unwrap(updates).unwrap_or_else(|arc| (*arc).clone())
+                    }
+                    ExecutedTrieUpdates::Missing => {
+                        return Err(ProviderError::MissingTrieUpdates(block_hash))
+                    }
+                };
+                combined_trie_updates.extend(trie_updates);
+            }
+
+            // Write state and changesets once for the entire range.
             // Must be written after blocks because of the receipt lookup.
             let write_state_started = std::time::Instant::now();
+            let mut combined_execution_outcome = combined_execution_outcome
+                .expect("blocks is non-empty; combined_execution_outcome must be Some");
+            // Ensure indexing matches the actual stored range.
+            combined_execution_outcome.set_first_block(first_number);
             self.database().write_state(
-                &execution_output,
+                &combined_execution_outcome,
                 OriginalValuesKnown::No,
                 StorageLocation::StaticFiles,
             )?;
             write_state_ms += write_state_started.elapsed().as_millis();
 
-            if let (Some(ref mut triedb), Some(latest_state_root)) = (triedb_opt.as_mut(), latest_state_root_opt) {
-                let triedb_started = std::time::Instant::now();
-                let triedb_hashed_post_state = hashed_state_clone.as_ref().to_triedb_hashed_post_state();
-                let (new_root, difflayer) = triedb.commit_hashed_post_state(latest_state_root, None, &triedb_hashed_post_state)
-                    .map_err(|e| ProviderError::other(e))?;
-                if new_root != state_root {
-                    return Err(ProviderError::Database(DatabaseError::Other(format!("write hashed state to triedb, block_number={}, new_root({:?}) != state_root({:?})", block_number, new_root, state_root))));
-                }
-                triedb.flush(block_number, new_root, &difflayer)
-                    .map_err(|e| ProviderError::other(e))?;
-                triedb_commit_flush_ms += triedb_started.elapsed().as_millis();
-            } else {
-                // insert hashes and intermediate merkle nodes
-                let hashed_started = std::time::Instant::now();
-                self.database()
-                    .write_hashed_state(&Arc::unwrap_or_clone(hashed_state).into_sorted())?;
-                write_hashed_state_ms += hashed_started.elapsed().as_millis();
+            // Write hashed state once.
+            let hashed_started = std::time::Instant::now();
+            let combined_hashed_state_sorted = combined_hashed_state.into_sorted();
+            self.database().write_hashed_state(&combined_hashed_state_sorted)?;
+            write_hashed_state_ms += hashed_started.elapsed().as_millis();
 
-                let trie_started = std::time::Instant::now();
-                self.database().write_trie_updates(
-                    trie.as_ref().ok_or(ProviderError::MissingTrieUpdates(block_hash))?,
-                )?;
-                write_trie_updates_ms += trie_started.elapsed().as_millis();
-            }
+            // Write trie updates once.
+            let trie_started = std::time::Instant::now();
+            self.database().write_trie_updates(&combined_trie_updates)?;
+            write_trie_updates_ms += trie_started.elapsed().as_millis();
         }
 
         // update history indices

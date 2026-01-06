@@ -306,9 +306,6 @@ where
                             .await?;
                         Ok(FourByteFrame::from(&inspector).into())
                     }
-                    GethDebugBuiltInTracerType::Erc7562Tracer => {
-                        Err(EthApiError::Unsupported("unsupported tracer").into())
-                    }
                     GethDebugBuiltInTracerType::CallTracer => {
                         let call_config = tracer_config
                             .into_call_config()
@@ -438,6 +435,7 @@ where
 
                         Ok(frame.into())
                     }
+                    _ => Err(EthApiError::Unsupported("unsupported tracer").into()),
                 },
                 #[cfg(not(feature = "js-tracer"))]
                 GethDebugTracerType::JsTracer(_) => {
@@ -788,9 +786,6 @@ where
                         let res = self.eth_api().inspect(db, evm_env, tx_env, &mut inspector)?;
                         return Ok((FourByteFrame::from(&inspector).into(), res.state))
                     }
-                    GethDebugBuiltInTracerType::Erc7562Tracer => {
-                        return Err(EthApiError::Unsupported("unsupported tracer").into())
-                    }
                     GethDebugBuiltInTracerType::CallTracer => {
                         let call_config = tracer_config
                             .clone()
@@ -884,6 +879,7 @@ where
 
                         return Ok((frame.into(), res.state));
                     }
+                    _ => return Err(EthApiError::Unsupported("unsupported tracer").into()),
                 },
                 #[cfg(not(feature = "js-tracer"))]
                 GethDebugTracerType::JsTracer(_) => {
