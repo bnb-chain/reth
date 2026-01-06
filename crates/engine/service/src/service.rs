@@ -42,8 +42,8 @@ type EngineServiceType<N, Client, Evm> = ChainOrchestrator<
             EngineApiRequest<
                 <N as NodeTypes>::Payload,
                 <N as NodeTypes>::Primitives,
-                <N as NodeTypes>::Payload,
-                Evm,
+                BlockchainProvider<N>,
+                Evm
             >,
             <N as NodeTypes>::Primitives,
         >,
@@ -75,6 +75,7 @@ where
     Evm: ConfigureEvm<Primitives = N::Primitives> + Send + Sync + 'static,
 {
     /// Constructor for `EngineService`.
+    #[expect(clippy::too_many_arguments)]
     pub fn new<V>(
         consensus: Arc<dyn FullConsensus<N::Primitives, Error = ConsensusError>>,
         chain_spec: Arc<N::ChainSpec>,

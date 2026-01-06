@@ -4,12 +4,14 @@ use crate::{
     backfill::BackfillAction,
     chain::{ChainHandler, FromOrchestrator, HandlerEvent},
     download::{BlockDownloader, DownloadAction, DownloadOutcome},
+    tree::CustomRequestMessage,
 };
 use alloy_primitives::B256;
 use futures::{Stream, StreamExt};
 use reth_chain_state::ExecutedBlockWithTrieUpdates;
 use reth_engine_primitives::{BeaconEngineMessage, ConsensusEngineEvent};
 use reth_ethereum_primitives::EthPrimitives;
+use reth_evm::ConfigureEvm;
 use reth_payload_primitives::PayloadTypes;
 use reth_primitives_traits::{Block, NodePrimitives, RecoveredBlock};
 use std::{
@@ -242,19 +244,26 @@ impl EngineApiKind {
 
 /// The request variants that the engine API handler can receive.
 #[derive(Debug)]
-pub enum EngineApiRequest<T: PayloadTypes, N: NodePrimitives, P, Evm> {
+pub enum EngineApiRequest<T: PayloadTypes, N: NodePrimitives, P, Evm>
+where
+    Evm: ConfigureEvm<Primitives = N>,
+{
     /// A request received from the consensus engine.
     Beacon(BeaconEngineMessage<T>),
-    /// Request to insert an already executed block, e.g. via payload building.
-    InsertExecutedBlock(ExecutedBlockWithTrieUpdates<N>),
     /// A custom request received from the engine.
     Custom(CustomRequestMessage<P, Evm, N>),
+    /// Request to insert an already executed block, e.g. via payload building.
+    InsertExecutedBlock(ExecutedBlockWithTrieUpdates<N>),
 }
 
-impl<T: PayloadTypes, N: NodePrimitives, P, Evm> Display for EngineApiRequest<T, N, P, Evm> {
+impl<T: PayloadTypes, N: NodePrimitives, P, Evm> Display for EngineApiRequest<T, N, P, Evm>
+where
+    Evm: ConfigureEvm<Primitives = N>,
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Beacon(msg) => msg.fmt(f),
+            Self::Custom(msg) => msg.fmt(f),
             Self::InsertExecutedBlock(block) => {
                 write!(f, "InsertExecutedBlock({:?})", block.recovered_block().num_hash())
             }
