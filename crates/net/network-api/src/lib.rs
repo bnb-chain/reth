@@ -249,7 +249,7 @@ pub struct PeerInfo {
     pub best_hash: B256,
     /// Real-time tracked best block number of the peer
     pub best_number: Option<u64>,
-    /// Real-time tracked total difficulty of the peer (None in PoS)
+    /// Real-time tracked total difficulty of the peer (None in `PoS`)
     pub best_td: Option<U256>,
 }
 
