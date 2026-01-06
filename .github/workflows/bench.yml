@@ -2,11 +2,11 @@
 
 on:
   workflow_dispatch: # disable action temporarily
-  # pull_request:
+  pull_request:
   # TODO: Disabled temporarily for https://github.com/CodSpeedHQ/runner/issues/55
   # merge_group:
-  # push:
-  #   branches: [main]
+  push:
+    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
@@ -16,8 +16,8 @@ env:
 name: bench
 jobs:
   codspeed:
-    runs-on:
-      group: Reth
+    runs-on: ubuntu-latest
+      # group: Reth
     steps:
       - uses: actions/checkout@v5
         with:
