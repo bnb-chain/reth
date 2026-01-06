@@ -91,8 +91,8 @@ pub struct PeersManager {
     net_connection_state: NetworkConnectionState,
     /// How long to temporarily ban ip on an incoming connection attempt.
     incoming_ip_throttle_duration: Duration,
-    /// The map of proxyed node ids.
-    proxyed_node_ids_map: Arc<RwLock<HashSet<PeerId>>>,
+    /// The map of proxied node ids.
+    proxied_node_ids_map: Arc<RwLock<HashSet<PeerId>>>,
 }
 
 impl PeersManager {
@@ -111,7 +111,7 @@ impl PeersManager {
             basic_nodes,
             max_backoff_count,
             incoming_ip_throttle_duration,
-            proxyed_node_ids,
+            proxied_node_ids,
         } = config;
         let (manager_tx, handle_rx) = mpsc::unbounded_channel();
         let now = Instant::now();
@@ -142,12 +142,12 @@ impl PeersManager {
             });
         }
 
-        let proxyed_node_ids_map =
-            Arc::new(RwLock::new(HashSet::with_capacity(proxyed_node_ids.len())));
+        let proxied_node_ids_map =
+            Arc::new(RwLock::new(HashSet::with_capacity(proxied_node_ids.len())));
         {
-            let mut proxyed_node_ids_map_guard = proxyed_node_ids_map.write().unwrap();
-            for proxyed_node_id in proxyed_node_ids {
-                proxyed_node_ids_map_guard.insert(proxyed_node_id);
+            let mut proxied_node_ids_map_guard = proxied_node_ids_map.write().unwrap();
+            for proxied_node_id in proxied_node_ids {
+                proxied_node_ids_map_guard.insert(proxied_node_id);
             }
         }
 
@@ -174,7 +174,7 @@ impl PeersManager {
             max_backoff_count,
             net_connection_state: NetworkConnectionState::default(),
             incoming_ip_throttle_duration,
-            proxyed_node_ids_map,
+            proxied_node_ids_map,
         }
     }
 
@@ -1058,8 +1058,8 @@ impl PeersManager {
     }
 
     /// Checks if the given peer ID belongs to a proxied node.
-    pub fn is_proxyed_peer(&self, peer_id: &PeerId) -> bool {
-        self.proxyed_node_ids_map.read().unwrap().contains(peer_id)
+    pub fn is_proxied_peer(&self, peer_id: &PeerId) -> bool {
+        self.proxied_node_ids_map.read().unwrap().contains(peer_id)
     }
 }
 
