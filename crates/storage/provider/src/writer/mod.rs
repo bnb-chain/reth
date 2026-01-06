@@ -4,18 +4,20 @@ use crate::{
     StorageLocation, TrieWriter,
 };
 use alloy_consensus::BlockHeader;
+use alloy_eips::eip2718::Encodable2718;
 use reth_chain_state::{ExecutedBlock, ExecutedBlockWithTrieUpdates, ExecutedTrieUpdates};
 use reth_db_api::transaction::{DbTx, DbTxMut};
+use reth_db_api::table::Compress;
 use reth_errors::{ProviderError, ProviderResult};
 use reth_execution_types::ExecutionOutcome;
 use reth_storage_errors::db::DatabaseError;
 use rust_eth_triedb::get_global_triedb;
 use rust_eth_triedb::triedb_manager::is_triedb_active;
-use reth_primitives_traits::{NodePrimitives, SignedTransaction};
+use reth_primitives_traits::{BlockBody, NodePrimitives, SignedTransaction};
 use reth_static_file_types::StaticFileSegment;
 use reth_storage_api::{DBProvider, StageCheckpointWriter, TransactionsProviderExt};
 use reth_storage_errors::writer::UnifiedStorageWriterError;
-use reth_trie::{updates::TrieUpdates, HashedPostState};
+use reth_trie::{updates::TrieUpdates, BranchNodeCompact, HashedPostState};
 use revm_database::OriginalValuesKnown;
 use std::sync::Arc;
 use tracing::debug;
@@ -211,6 +213,22 @@ where
         let mut update_history_ms: u128 = 0;
         let mut update_pipeline_ms: u128 = 0;
 
+        // Data volume counters (only computed when debug logging is enabled).
+        let debug_enabled = tracing::enabled!(tracing::Level::DEBUG);
+        let mut total_txs: u64 = 0;
+        let mut total_receipts: u64 = 0;
+        let mut hashed_accounts_updates: u64 = 0;
+        let mut hashed_storage_accounts: u64 = 0;
+        let mut hashed_storage_slots: u64 = 0;
+        let mut trie_account_nodes_updated: u64 = 0;
+        let mut trie_account_nodes_removed: u64 = 0;
+        let mut trie_storage_tries: u64 = 0;
+        let mut trie_storage_nodes_updated: u64 = 0;
+        let mut trie_storage_nodes_removed: u64 = 0;
+        let mut hashed_state_est_bytes: u64 = 0;
+        let mut trie_updates_est_bytes: u64 = 0;
+        let mut block_txs_est_bytes: u64 = 0;
+
         // Only get TrieDB instance if TrieDB is active
         let triedb_active = is_triedb_active();
         let mut triedb_opt = if triedb_active { Some(get_global_triedb()) } else { None };
@@ -229,6 +247,31 @@ where
                 let block_number = recovered_block.number();
                 let state_root = recovered_block.state_root();
                 let hashed_state_clone = hashed_state.clone();
+
+                if debug_enabled {
+                    // block tx count
+                    total_txs += recovered_block.body().transactions().len() as u64;
+                    block_txs_est_bytes += recovered_block
+                        .body()
+                        .transactions()
+                        .iter()
+                        .map(|tx| tx.encode_2718_len() as u64)
+                        .sum::<u64>();
+                    // receipts count (each executed block outcome is expected to contain 1 block)
+                    total_receipts += execution_output
+                        .receipts()
+                        .get(0)
+                        .map(|r| r.len() as u64)
+                        .unwrap_or_default();
+                    // hashed post state size
+                    hashed_accounts_updates += hashed_state.accounts.len() as u64;
+                    hashed_storage_accounts += hashed_state.storages.len() as u64;
+                    hashed_storage_slots += hashed_state
+                        .storages
+                        .values()
+                        .map(|s| s.storage.len() as u64)
+                        .sum::<u64>();
+                }
 
                 let (latest_block_number, latest_state_root) = triedb_opt
                     .as_mut()
@@ -292,6 +335,21 @@ where
             {
                 let block_hash = recovered_block.hash();
 
+                if debug_enabled {
+                    total_txs += recovered_block.body().transactions().len() as u64;
+                    block_txs_est_bytes += recovered_block
+                        .body()
+                        .transactions()
+                        .iter()
+                        .map(|tx| tx.encode_2718_len() as u64)
+                        .sum::<u64>();
+                    total_receipts += execution_output
+                        .receipts()
+                        .get(0)
+                        .map(|r| r.len() as u64)
+                        .unwrap_or_default();
+                }
+
                 let insert_started = std::time::Instant::now();
                 self.database()
                     .insert_block(Arc::unwrap_or_clone(recovered_block), StorageLocation::Both)?;
@@ -309,6 +367,15 @@ where
                 // Merge hashed post state. Later entries take precedence.
                 let hashed_post_state =
                     Arc::try_unwrap(hashed_state).unwrap_or_else(|arc| (*arc).clone());
+                if debug_enabled {
+                    hashed_accounts_updates += hashed_post_state.accounts.len() as u64;
+                    hashed_storage_accounts += hashed_post_state.storages.len() as u64;
+                    hashed_storage_slots += hashed_post_state
+                        .storages
+                        .values()
+                        .map(|s| s.storage.len() as u64)
+                        .sum::<u64>();
+                }
                 combined_hashed_state.extend(hashed_post_state);
 
                 // Merge trie updates (last write wins, and removals prune prior inserts).
@@ -320,6 +387,15 @@ where
                         return Err(ProviderError::MissingTrieUpdates(block_hash))
                     }
                 };
+                if debug_enabled {
+                    trie_account_nodes_updated += trie_updates.account_nodes_ref().len() as u64;
+                    trie_account_nodes_removed += trie_updates.removed_nodes_ref().len() as u64;
+                    trie_storage_tries += trie_updates.storage_tries_ref().len() as u64;
+                    for st in trie_updates.storage_tries_ref().values() {
+                        trie_storage_nodes_updated += st.storage_nodes_ref().len() as u64;
+                        trie_storage_nodes_removed += st.removed_nodes_ref().len() as u64;
+                    }
+                }
                 combined_trie_updates.extend(trie_updates);
             }
 
@@ -347,6 +423,70 @@ where
             let trie_started = std::time::Instant::now();
             self.database().write_trie_updates(&combined_trie_updates)?;
             write_trie_updates_ms += trie_started.elapsed().as_millis();
+
+            // Estimate written bytes (best-effort) for hashed state + trie updates.
+            //
+            // We intentionally estimate the _encoded DB record sizes_ (key + compressed value) to
+            // get a useful IO magnitude, not the in-memory sizes.
+            if debug_enabled {
+                #[inline]
+                fn compressed_len<T: Compress>(value: &T) -> usize {
+                    if let Some(bytes) = value.uncompressable_ref() {
+                        return bytes.len()
+                    }
+                    let mut buf = <T as Compress>::Compressed::default();
+                    value.compress_to_buf(&mut buf);
+                    buf.as_ref().len()
+                }
+
+                // HashedAccounts: key=B256(32) + value=Account compressed (or key only on delete).
+                // HashedStorages: key=B256(32) + subkey=B256(32) + value=StorageEntry compressed (or key+subkey only on delete).
+                //
+                // NOTE: This is approximate because we don't know which deletes hit existing rows,
+                // but the key+subkey sizes are still a good proxy.
+                let mut hashed_bytes: u64 = 0;
+                hashed_bytes += hashed_accounts_updates.saturating_mul(32);
+                // For accounts, include value bytes only for "present" updates.
+                // We don't have the exact "present vs delete" split here without iterating the state,
+                // so approximate with `hashed_accounts_updates` keys only.
+                //
+                // If you need a tighter estimate, we can compute it from `combined_hashed_state_sorted`.
+                //
+                // Storage entries: estimate key+subkey for all observed slot updates.
+                hashed_bytes += hashed_storage_slots.saturating_mul(32 + 32);
+                hashed_state_est_bytes = hashed_bytes;
+
+                // Trie updates: AccountsTrie key=StoredNibbles (len=nibbles) + value=BranchNodeCompact compressed.
+                // StoragesTrie key=B256(32) + subkey=StoredNibblesSubKey(65) + value=StorageTrieEntry node compressed.
+                let mut trie_bytes: u64 = 0;
+                // Account trie nodes
+                for (nibbles, node) in combined_trie_updates.account_nodes_ref() {
+                    trie_bytes += nibbles.len() as u64;
+                    trie_bytes += compressed_len::<BranchNodeCompact>(node) as u64;
+                }
+                for nibbles in combined_trie_updates.removed_nodes_ref() {
+                    trie_bytes += nibbles.len() as u64;
+                }
+                // Storage trie nodes
+                for (_hashed_address, st_updates) in combined_trie_updates.storage_tries_ref() {
+                    // deletion marker (duplicates wipe) still needs the key
+                    if st_updates.is_deleted() {
+                        trie_bytes += 32;
+                    }
+                    for (nibbles, node) in st_updates.storage_nodes_ref() {
+                        trie_bytes += 32; // hashed address
+                        trie_bytes += 65; // StoredNibblesSubKey (64 pad + len)
+                        trie_bytes += nibbles.len() as u64; // actual nibbles payload (approx, useful)
+                        trie_bytes += compressed_len::<BranchNodeCompact>(node) as u64;
+                    }
+                    for nibbles in st_updates.removed_nodes_ref() {
+                        trie_bytes += 32;
+                        trie_bytes += 65;
+                        trie_bytes += nibbles.len() as u64;
+                    }
+                }
+                trie_updates_est_bytes = trie_bytes;
+            }
         }
 
         // update history indices
@@ -366,6 +506,19 @@ where
             block_count = %block_count,
             write_duration_ms = write_elapsed.as_millis(),
             triedb_active,
+            tx_count = total_txs,
+            receipt_count = total_receipts,
+            block_txs_est_bytes,
+            hashed_accounts_updates,
+            hashed_storage_accounts,
+            hashed_storage_slots,
+            hashed_state_est_bytes,
+            trie_account_nodes_updated,
+            trie_account_nodes_removed,
+            trie_storage_tries,
+            trie_storage_nodes_updated,
+            trie_storage_nodes_removed,
+            trie_updates_est_bytes,
             insert_block_ms = insert_block_ms as u64,
             write_state_ms = write_state_ms as u64,
             triedb_commit_flush_ms = triedb_commit_flush_ms as u64,
