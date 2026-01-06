@@ -153,7 +153,7 @@ where
         debug!(target: "provider::storage_writer", block_count = %blocks.len(), "Writing blocks and execution data to storage");
 
         // Only get TrieDB instance if TrieDB is active
-        let mut triedb_opt = is_triedb_active().then(|| get_global_triedb());
+        let mut triedb_opt = is_triedb_active().then(get_global_triedb);
 
         // TODO: Do performant / batched writes for each type of object
         // instead of a loop over all blocks,

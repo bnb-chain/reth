@@ -275,7 +275,6 @@ impl LaunchContext {
                     reth_config.save(config_path.as_ref())?;
                     // Initialize TrieDB
                     init_global_triedb_manager(&path_str);
-                    None
                 } else {
                     // Use default MDBX and save to file
                     let db_path = data_dir.data_dir().join("db");
@@ -286,8 +285,8 @@ impl LaunchContext {
                     reth_config.save(config_path.as_ref())?;
                     // Disable TrieDB
                     disable_triedb();
-                    None
                 }
+                None
             }
         };
 
