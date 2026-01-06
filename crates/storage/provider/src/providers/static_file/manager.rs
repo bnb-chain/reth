@@ -69,6 +69,28 @@ pub enum StaticFileAccess {
     RW,
 }
 
+/// Sync mode for static file writes.
+///
+/// This controls whether commits call `sync_all()` on the underlying files.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum StaticFileSyncMode {
+    /// Default durable behavior: `sync_all()` the static file components on commit.
+    #[default]
+    Durable,
+    /// Do not call `sync_all()` on commit (flush only).
+    ///
+    /// CAUTION: A crash/power loss may leave static files in an inconsistent state and require
+    /// resync or repair.
+    NoSync,
+}
+
+impl StaticFileSyncMode {
+    /// Returns `true` if commits should call `sync_all()`.
+    pub const fn sync_all(&self) -> bool {
+        matches!(self, Self::Durable)
+    }
+}
+
 impl StaticFileAccess {
     /// Returns `true` if read-only access.
     pub const fn is_read_only(&self) -> bool {
@@ -262,6 +284,8 @@ pub struct StaticFileProviderInner<N> {
     metrics: Option<Arc<StaticFileProviderMetrics>>,
     /// Access rights of the provider.
     access: StaticFileAccess,
+    /// Sync mode for static file writes.
+    sync_mode: StaticFileSyncMode,
     /// Number of blocks per file.
     blocks_per_file: u64,
     /// Write lock for when access is [`StaticFileAccess::RW`].
@@ -289,6 +313,7 @@ impl<N: NodePrimitives> StaticFileProviderInner<N> {
             path: path.as_ref().to_path_buf(),
             metrics: None,
             access,
+            sync_mode: StaticFileSyncMode::default(),
             blocks_per_file: DEFAULT_BLOCKS_PER_STATIC_FILE,
             _lock_file,
             _pd: Default::default(),
@@ -299,6 +324,11 @@ impl<N: NodePrimitives> StaticFileProviderInner<N> {
 
     pub const fn is_read_only(&self) -> bool {
         self.access.is_read_only()
+    }
+
+    /// Returns the configured sync mode for static file writes.
+    pub const fn sync_mode(&self) -> StaticFileSyncMode {
+        self.sync_mode
     }
 
     /// Each static file has a fixed number of blocks. This gives out the range where the requested
@@ -323,6 +353,16 @@ impl<N: NodePrimitives> StaticFileProvider<N> {
         let mut provider =
             Arc::try_unwrap(self.0).expect("should be called when initializing only");
         provider.metrics = Some(Arc::new(StaticFileProviderMetrics::default()));
+        Self(Arc::new(provider))
+    }
+
+    /// Sets the sync mode for static file writes.
+    ///
+    /// Note: This should only be used during initialization.
+    pub fn with_sync_mode(self, sync_mode: StaticFileSyncMode) -> Self {
+        let mut provider =
+            Arc::try_unwrap(self.0).expect("should be called when initializing only");
+        provider.sync_mode = sync_mode;
         Self(Arc::new(provider))
     }
 

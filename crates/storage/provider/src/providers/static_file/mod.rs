@@ -1,5 +1,5 @@
 mod manager;
-pub use manager::{StaticFileAccess, StaticFileProvider, StaticFileWriter};
+pub use manager::{StaticFileAccess, StaticFileProvider, StaticFileSyncMode, StaticFileWriter};
 
 mod jar;
 pub use jar::StaticFileJarProvider;

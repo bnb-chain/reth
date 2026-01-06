@@ -248,6 +248,18 @@ impl<H: NippyJarHeader> NippyJarWriter<H> {
 
     /// Prunes rows from data and offsets file and updates its configuration on disk
     pub fn prune_rows(&mut self, num_rows: usize) -> Result<(), NippyJarError> {
+        self.prune_rows_inner(num_rows, true)
+    }
+
+    /// Prunes rows from data and offsets file and updates its configuration on disk without
+    /// synchronizing all data to disk.
+    ///
+    /// CAUTION: does not call `sync_all` on the files.
+    pub fn prune_rows_without_sync_all(&mut self, num_rows: usize) -> Result<(), NippyJarError> {
+        self.prune_rows_inner(num_rows, false)
+    }
+
+    fn prune_rows_inner(&mut self, num_rows: usize, sync_all: bool) -> Result<(), NippyJarError> {
         self.dirty = true;
 
         self.offsets_file.flush()?;
@@ -314,8 +326,10 @@ impl<H: NippyJarHeader> NippyJarWriter<H> {
             }
         }
 
-        self.offsets_file.get_ref().sync_all()?;
-        self.data_file.get_ref().sync_all()?;
+        if sync_all {
+            self.offsets_file.get_ref().sync_all()?;
+            self.data_file.get_ref().sync_all()?;
+        }
 
         self.offsets_file.seek(SeekFrom::End(0))?;
         self.data_file.seek(SeekFrom::End(0))?;
@@ -358,7 +372,6 @@ impl<H: NippyJarHeader> NippyJarWriter<H> {
     ///
     /// This function flushes the buffered data to the data file and commits the offsets,
     /// but it does not guarantee that all data is synchronized to persistent storage.
-    #[cfg(feature = "test-utils")]
     pub fn commit_without_sync_all(&mut self) -> Result<(), NippyJarError> {
         self.data_file.flush()?;
 
@@ -379,7 +392,6 @@ impl<H: NippyJarHeader> NippyJarWriter<H> {
         Ok(())
     }
 
-    #[cfg(feature = "test-utils")]
     fn commit_offsets_without_sync_all(&mut self) -> Result<(), NippyJarError> {
         self.commit_offsets_inner()
     }

@@ -45,6 +45,14 @@ pub struct DatabaseArgs {
         value_parser = value_parser!(SyncMode),
     )]
     pub sync_mode: Option<SyncMode>,
+
+    /// Disable `fsync`/`sync_all` when writing static files (NippyJar).
+    ///
+    /// CAUTION: This can significantly improve write throughput, but a crash/power loss may leave
+    /// static files in an inconsistent state. In that case you may need to resync or otherwise
+    /// repair static files.
+    #[arg(long = "static-files-no-sync", default_value = "false", verbatim_doc_comment)]
+    pub static_files_no_sync: bool,
 }
 
 impl DatabaseArgs {
@@ -74,6 +82,11 @@ impl DatabaseArgs {
             .with_growth_step(self.growth_step)
             .with_max_readers(self.max_readers)
             .with_sync_mode(self.sync_mode)
+    }
+
+    /// Returns `true` if static file writes should skip `sync_all`.
+    pub const fn static_files_no_sync(&self) -> bool {
+        self.static_files_no_sync
     }
 }
 

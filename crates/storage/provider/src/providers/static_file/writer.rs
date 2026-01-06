@@ -2,6 +2,7 @@ use super::{
     manager::StaticFileProviderInner, metrics::StaticFileProviderMetrics, StaticFileProvider,
 };
 use crate::providers::static_file::metrics::StaticFileProviderOperation;
+use crate::providers::static_file::StaticFileSyncMode;
 use alloy_consensus::BlockHeader;
 use alloy_primitives::{BlockHash, BlockNumber, TxNumber, U256};
 use parking_lot::{lock_api::RwLockWriteGuard, RawRwLock, RwLock};
@@ -206,7 +207,11 @@ impl<N: NodePrimitives> StaticFileProviderRW<N> {
             self.user_header_mut().prune(pruned_rows);
         }
 
-        self.writer.commit().map_err(ProviderError::other)?;
+        if self.reader().sync_mode().sync_all() {
+            self.writer.commit().map_err(ProviderError::other)?;
+        } else {
+            self.writer.commit_without_sync_all().map_err(ProviderError::other)?;
+        }
 
         // Updates the [SnapshotProvider] manager
         self.update_index()?;
@@ -231,7 +236,11 @@ impl<N: NodePrimitives> StaticFileProviderRW<N> {
 
         if self.writer.is_dirty() {
             // Commits offsets and new user_header to disk
-            self.writer.commit().map_err(ProviderError::other)?;
+            if self.reader().sync_mode().sync_all() {
+                self.writer.commit().map_err(ProviderError::other)?;
+            } else {
+                self.writer.commit_without_sync_all().map_err(ProviderError::other)?;
+            }
 
             if let Some(metrics) = &self.metrics {
                 metrics.record_segment_operation(
@@ -255,35 +264,9 @@ impl<N: NodePrimitives> StaticFileProviderRW<N> {
         Ok(())
     }
 
-    /// Commits configuration changes to disk and updates the reader index with the new changes.
-    ///
-    /// CAUTION: does not call `sync_all` on the files.
-    #[cfg(feature = "test-utils")]
-    pub fn commit_without_sync_all(&mut self) -> ProviderResult<()> {
-        let start = Instant::now();
-
-        // Commits offsets and new user_header to disk
-        self.writer.commit_without_sync_all().map_err(ProviderError::other)?;
-
-        if let Some(metrics) = &self.metrics {
-            metrics.record_segment_operation(
-                self.writer.user_header().segment(),
-                StaticFileProviderOperation::CommitWriter,
-                Some(start.elapsed()),
-            );
-        }
-
-        debug!(
-            target: "provider::static_file",
-            segment = ?self.writer.user_header().segment(),
-            path = ?self.data_path,
-            duration = ?start.elapsed(),
-            "Commit"
-        );
-
-        self.update_index()?;
-
-        Ok(())
+    /// Returns the configured sync mode for static file writes.
+    fn sync_mode(&self) -> StaticFileSyncMode {
+        self.reader().sync_mode()
     }
 
     /// Updates the `self.reader` internal index.
@@ -414,7 +397,13 @@ impl<N: NodePrimitives> StaticFileProviderRW<N> {
                 } else {
                     // Update `SegmentHeader`
                     self.writer.user_header_mut().prune(len);
-                    self.writer.prune_rows(len as usize).map_err(ProviderError::other)?;
+                    if self.sync_mode().sync_all() {
+                        self.writer.prune_rows(len as usize).map_err(ProviderError::other)?;
+                    } else {
+                        self.writer
+                            .prune_rows_without_sync_all(len as usize)
+                            .map_err(ProviderError::other)?;
+                    }
                     break
                 }
 
@@ -424,7 +413,13 @@ impl<N: NodePrimitives> StaticFileProviderRW<N> {
                 self.writer.user_header_mut().prune(remaining_rows);
 
                 // Truncate data
-                self.writer.prune_rows(remaining_rows as usize).map_err(ProviderError::other)?;
+                if self.sync_mode().sync_all() {
+                    self.writer.prune_rows(remaining_rows as usize).map_err(ProviderError::other)?;
+                } else {
+                    self.writer
+                        .prune_rows_without_sync_all(remaining_rows as usize)
+                        .map_err(ProviderError::other)?;
+                }
                 remaining_rows = 0;
             }
         }

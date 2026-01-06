@@ -578,11 +578,18 @@ where
         N: ProviderNodeTypes<DB = DB, ChainSpec = ChainSpec>,
         Evm: ConfigureEvm<Primitives = N::Primitives> + 'static,
     {
-        let factory = ProviderFactory::new(
-            self.right().clone(),
-            self.chain_spec(),
-            StaticFileProvider::read_write(self.data_dir().static_files())?,
-        )
+        let mut static_files = StaticFileProvider::read_write(self.data_dir().static_files())?;
+        if self.node_config().db.static_files_no_sync() {
+            tracing::warn!(
+                target: "reth::static_files",
+                "Static file sync is DISABLED (--static-files-no-sync). This can improve throughput, \
+but a crash/power loss may corrupt static files. You may need to resync or repair static files."
+            );
+            static_files =
+                static_files.with_sync_mode(reth_provider::providers::StaticFileSyncMode::NoSync);
+        }
+
+        let factory = ProviderFactory::new(self.right().clone(), self.chain_spec(), static_files)
         .with_prune_modes(self.prune_modes())
         .with_static_files_metrics();
 
