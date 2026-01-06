@@ -16,6 +16,7 @@ Commands:
   get          Gets the content of a table for the given key
   drop         Deletes all database entries
   clear        Deletes all table entries
+  migrate      Migrate database to another location
   repair-trie  Verifies trie consistency and outputs any inconsistencies
   version      Lists current and local database versions
   path         Returns the full database path
@@ -70,6 +71,11 @@ Database:
           Open environment in exclusive/monopolistic mode. Makes it possible to open a database on an NFS volume
 
           [possible values: true, false]
+
+      --db.page-size <PAGE_SIZE>
+          Database page size (e.g., 4KB, 8KB, 16KB).
+          NOTE: Can only be set when creating a new database. Default: system default (typically
+          4KB).
 
       --db.max-size <MAX_SIZE>
           Maximum database size (e.g., 4TB, 8MB)
