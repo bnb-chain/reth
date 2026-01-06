@@ -3,7 +3,7 @@
 name: book
 
 on:
-  workflow_dispatch: # disable action temporarily
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request:

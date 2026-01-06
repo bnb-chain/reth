@@ -3,7 +3,7 @@
 name: e2e
 
 on:
-  workflow_dispatch: # disable action temporarily
+  workflow_dispatch:
   pull_request:
   merge_group:
   push:
