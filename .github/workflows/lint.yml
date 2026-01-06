@@ -112,6 +112,8 @@ jobs:
       - uses: rui314/setup-mold@v1
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@cargo-hack
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y liburing-dev pkg-config libclang-dev
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
