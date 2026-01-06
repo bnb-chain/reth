@@ -96,7 +96,7 @@ where
                                 Poll::Ready(HandlerEvent::Event(ev))
                             }
                             HandlerEvent::FatalError => Poll::Ready(HandlerEvent::FatalError),
-                        }
+                        };
                     }
                     RequestHandlerEvent::Download(req) => {
                         // delegate download request to the downloader
@@ -110,7 +110,7 @@ where
                 // and delegate the request to the handler
                 self.handler.on_event(FromEngine::Request(req.into()));
                 // skip downloading in this iteration to allow the handler to process the request
-                continue
+                continue;
             }
 
             // advance the downloader
@@ -119,10 +119,10 @@ where
                     // delegate the downloaded blocks to the handler
                     self.handler.on_event(FromEngine::DownloadedBlocks(blocks));
                 }
-                continue
+                continue;
             }
 
-            return Poll::Pending
+            return Poll::Pending;
         }
     }
 }
@@ -202,7 +202,7 @@ where
 
     fn poll(&mut self, cx: &mut Context<'_>) -> Poll<RequestHandlerEvent<Self::Event>> {
         let Some(ev) = ready!(self.from_tree.poll_recv(cx)) else {
-            return Poll::Ready(RequestHandlerEvent::HandlerEvent(HandlerEvent::FatalError))
+            return Poll::Ready(RequestHandlerEvent::HandlerEvent(HandlerEvent::FatalError));
         };
 
         let ev = match ev {
@@ -242,34 +242,43 @@ impl EngineApiKind {
 
 /// The request variants that the engine API handler can receive.
 #[derive(Debug)]
-pub enum EngineApiRequest<T: PayloadTypes, N: NodePrimitives> {
+pub enum EngineApiRequest<T: PayloadTypes, N: NodePrimitives, P, Evm> {
     /// A request received from the consensus engine.
     Beacon(BeaconEngineMessage<T>),
     /// Request to insert an already executed block, e.g. via payload building.
     InsertExecutedBlock(ExecutedBlockWithTrieUpdates<N>),
+    /// A custom request received from the engine.
+    Custom(CustomRequestMessage<P, Evm, N>),
 }
 
-impl<T: PayloadTypes, N: NodePrimitives> Display for EngineApiRequest<T, N> {
+impl<T: PayloadTypes, N: NodePrimitives, P, Evm> Display for EngineApiRequest<T, N, P, Evm> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Beacon(msg) => msg.fmt(f),
             Self::InsertExecutedBlock(block) => {
                 write!(f, "InsertExecutedBlock({:?})", block.recovered_block().num_hash())
             }
+            Self::Custom(_) => write!(f, "Custom"),
         }
     }
 }
 
-impl<T: PayloadTypes, N: NodePrimitives> From<BeaconEngineMessage<T>> for EngineApiRequest<T, N> {
+impl<T: PayloadTypes, N: NodePrimitives, P, Evm> From<BeaconEngineMessage<T>>
+    for EngineApiRequest<T, N, P, Evm>
+where
+    Evm: ConfigureEvm<Primitives = N>,
+{
     fn from(msg: BeaconEngineMessage<T>) -> Self {
         Self::Beacon(msg)
     }
 }
 
-impl<T: PayloadTypes, N: NodePrimitives> From<EngineApiRequest<T, N>>
-    for FromEngine<EngineApiRequest<T, N>, N::Block>
+impl<T: PayloadTypes, N: NodePrimitives, P, Evm> From<EngineApiRequest<T, N, P, Evm>>
+    for FromEngine<EngineApiRequest<T, N, P, Evm>, N::Block>
+where
+    Evm: ConfigureEvm<Primitives = N>,
 {
-    fn from(req: EngineApiRequest<T, N>) -> Self {
+    fn from(req: EngineApiRequest<T, N, P, Evm>) -> Self {
         Self::Request(req)
     }
 }

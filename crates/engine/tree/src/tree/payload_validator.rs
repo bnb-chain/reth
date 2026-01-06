@@ -44,6 +44,7 @@ use reth_trie::{updates::TrieUpdates, HashedPostState, KeccakKeyHasher, TrieInpu
 use reth_trie_db::DatabaseHashedPostState;
 use reth_trie_parallel::root::{ParallelStateRoot, ParallelStateRootError};
 use rust_eth_triedb::{get_global_triedb, TrieDBError};
+use rust_eth_triedb_common::DiffLayers;
 use std::{collections::HashMap, sync::Arc, time::Instant};
 use tracing::{debug, debug_span, error, info, trace, warn};
 
@@ -109,19 +110,19 @@ impl<'a, N: NodePrimitives> TreeCtx<'a, N> {
     pub fn persisting_kind_for(&self, block: BlockWithParent) -> PersistingKind {
         // Check that we're currently persisting.
         let Some(action) = self.persistence().current_action() else {
-            return PersistingKind::NotPersisting
+            return PersistingKind::NotPersisting;
         };
         // Check that the persistince action is saving blocks, not removing them.
         let CurrentPersistenceAction::SavingBlocks { highest } = action else {
-            return PersistingKind::PersistingNotDescendant
+            return PersistingKind::PersistingNotDescendant;
         };
 
         // The block being validated can only be a descendant if its number is higher than
         // the highest block persisting. Otherwise, it's likely a fork of a lower block.
-        if block.block.number > highest.number &&
-            self.state().tree_state.is_descendant(*highest, block)
+        if block.block.number > highest.number
+            && self.state().tree_state.is_descendant(*highest, block)
         {
-            return PersistingKind::PersistingDescendant
+            return PersistingKind::PersistingDescendant;
         }
 
         // In all other cases, the block is not a descendant.
@@ -275,7 +276,9 @@ where
     }
 
     /// Validates a block that has already been converted from a payload with triedb.
-    pub fn validate_block_with_state_with_triedb_sync_validate<T: PayloadTypes<BuiltPayload: BuiltPayload<Primitives = N>>>(
+    pub fn validate_block_with_state_with_triedb_sync_validate<
+        T: PayloadTypes<BuiltPayload: BuiltPayload<Primitives = N>>,
+    >(
         &mut self,
         input: BlockOrPayload<T>,
         mut ctx: TreeCtx<'_, N>,
@@ -284,14 +287,16 @@ where
         V: PayloadValidator<T, Block = N::Block>,
         Evm: ConfigureEngineEvm<T::ExecutionData, Primitives = N>,
     {
-         /// A helper macro that returns the block in case there was an error
-         macro_rules! ensure_ok {
+        /// A helper macro that returns the block in case there was an error
+        macro_rules! ensure_ok {
             ($expr:expr) => {
                 match $expr {
                     Ok(val) => val,
                     Err(e) => {
                         let block = self.convert_to_block(input)?;
-                        return Err(InsertBlockError::new(block.into_sealed_block(), e.into()).into())
+                        return Err(
+                            InsertBlockError::new(block.into_sealed_block(), e.into()).into()
+                        );
                     }
                 }
             };
@@ -312,7 +317,7 @@ where
                 self.convert_to_block(input)?.into_sealed_block(),
                 ProviderError::HeaderNotFound(parent_hash.into()).into(),
             )
-            .into())
+            .into());
         };
 
         let state_provider = ensure_ok!(provider_builder.build());
@@ -324,7 +329,7 @@ where
                 self.convert_to_block(input)?.into_sealed_block(),
                 ProviderError::HeaderNotFound(parent_hash.into()).into(),
             )
-            .into())
+            .into());
         };
 
         let evm_env = self.evm_env_for(&input);
@@ -381,13 +386,13 @@ where
             self.consensus.validate_header_against_parent(block.sealed_header(), &parent_block)
         {
             warn!(target: "engine::tree", ?block, "Failed to validate header {} against parent: {e}", block.hash());
-            return Err(InsertBlockError::new(block.into_sealed_block(), e.into()).into())
+            return Err(InsertBlockError::new(block.into_sealed_block(), e.into()).into());
         }
 
         if let Err(err) = self.consensus.validate_block_post_execution(&block, &output) {
             // call post-block hook
             self.on_invalid_block(&parent_block, &block, &output, None, ctx.state_mut());
-            return Err(InsertBlockError::new(block.into_sealed_block(), err.into()).into())
+            return Err(InsertBlockError::new(block.into_sealed_block(), err.into()).into());
         }
 
         let hashed_state = self.provider.hashed_post_state(&output.state);
@@ -397,7 +402,7 @@ where
         {
             // call post-block hook
             self.on_invalid_block(&parent_block, &block, &output, None, ctx.state_mut());
-            return Err(InsertBlockError::new(block.into_sealed_block(), err.into()).into())
+            return Err(InsertBlockError::new(block.into_sealed_block(), err.into()).into());
         }
         // terminate prewarming task with good state output
         handle.terminate_caching(Some(output.state.clone()));
@@ -414,35 +419,36 @@ where
                 None
             }
         };
-        self.metrics.block_validation.triedb_prefetch_duration.record(prefetch_start.elapsed().as_secs_f64());
+        self.metrics
+            .block_validation
+            .triedb_prefetch_duration
+            .record(prefetch_start.elapsed().as_secs_f64());
 
         let validate_start = Instant::now();
         let trie_hashed_state = hashed_state.to_triedb_hashed_post_state();
-        let block_state_root = block.state_root();
-        let (new_root, difflayer) = triedb.intermediate_and_commit_hashed_post_state(
-            parent_block.state_root(),
-            difflayers.as_ref(),
-            &trie_hashed_state,
-            prefetch_state
-        )
-        .map_err(|e: TrieDBError| {
-            let err = InsertBlockError::new(
-                block.clone().into_sealed_block(),
-                ProviderError::other(e).into()
-            );
-            InsertPayloadError::<N::Block>::from(err)
-        })?;
-        self.metrics.block_validation.triedb_validate_duration.record(validate_start.elapsed().as_secs_f64());
+        let block_state_root: revm_primitives::FixedBytes<32> = block.state_root();
+        let (new_root, difflayer) = triedb
+            .intermediate_and_commit_hashed_post_state(
+                parent_block.state_root(),
+                difflayers.as_ref(),
+                &trie_hashed_state,
+                prefetch_state,
+            )
+            .map_err(|e: TrieDBError| {
+                let err = InsertBlockError::new(
+                    block.clone().into_sealed_block(),
+                    ProviderError::other(e).into(),
+                );
+                InsertPayloadError::<N::Block>::from(err)
+            })?;
+        self.metrics
+            .block_validation
+            .triedb_validate_duration
+            .record(validate_start.elapsed().as_secs_f64());
 
         if new_root != block_state_root {
             // call post-block hook
-            self.on_invalid_block(
-                &parent_block,
-                &block,
-                &output,
-                None,
-                ctx.state_mut(),
-            );
+            self.on_invalid_block(&parent_block, &block, &output, None, ctx.state_mut());
             let block_state_root = block.header().state_root();
             return Err(InsertBlockError::new(
                 block.into_sealed_block(),
@@ -451,7 +457,7 @@ where
                 )
                 .into(),
             )
-            .into())
+            .into());
         }
 
         Ok(ExecutedBlockWithTrieUpdates {
@@ -466,7 +472,9 @@ where
     }
 
     /// Validates a block that has already been converted from a payload with triedb.
-    pub fn validate_block_with_state_with_triedb_async_validate<T: PayloadTypes<BuiltPayload: BuiltPayload<Primitives = N>>>(
+    pub fn validate_block_with_state_with_triedb_async_validate<
+        T: PayloadTypes<BuiltPayload: BuiltPayload<Primitives = N>>,
+    >(
         &mut self,
         input: BlockOrPayload<T>,
         mut ctx: TreeCtx<'_, N>,
@@ -476,13 +484,15 @@ where
         Evm: ConfigureEngineEvm<T::ExecutionData, Primitives = N>,
     {
         /// A helper macro that returns the block in case there was an error
-         macro_rules! ensure_ok {
+        macro_rules! ensure_ok {
             ($expr:expr) => {
                 match $expr {
                     Ok(val) => val,
                     Err(e) => {
                         let block = self.convert_to_block(input)?;
-                        return Err(InsertBlockError::new(block.into_sealed_block(), e.into()).into())
+                        return Err(
+                            InsertBlockError::new(block.into_sealed_block(), e.into()).into()
+                        );
                     }
                 }
             };
@@ -500,7 +510,7 @@ where
                 self.convert_to_block(input)?.into_sealed_block(),
                 ProviderError::HeaderNotFound(parent_hash.into()).into(),
             )
-            .into())
+            .into());
         };
 
         let state_provider = ensure_ok!(provider_builder.build());
@@ -512,7 +522,7 @@ where
                 self.convert_to_block(input)?.into_sealed_block(),
                 ProviderError::HeaderNotFound(parent_hash.into()).into(),
             )
-            .into())
+            .into());
         };
 
         let evm_env = self.evm_env_for(&input);
@@ -520,11 +530,8 @@ where
         let env = ExecutionEnv { evm_env, hash: input.hash(), parent_hash: input.parent_hash() };
 
         let txs = self.tx_iterator_for(&input)?;
-        let mut handle = self.payload_processor.spawn_cache_exclusive(
-            env.clone(),
-            txs,
-            provider_builder,
-        );
+        let mut handle =
+            self.payload_processor.spawn_cache_exclusive(env.clone(), txs, provider_builder);
 
         // Use cached state provider before executing, used in execution after prewarming threads
         // complete
@@ -566,13 +573,13 @@ where
             self.consensus.validate_header_against_parent(block.sealed_header(), &parent_block)
         {
             warn!(target: "engine::tree", ?block, "Failed to validate header {} against parent: {e}", block.hash());
-            return Err(InsertBlockError::new(block.into_sealed_block(), e.into()).into())
+            return Err(InsertBlockError::new(block.into_sealed_block(), e.into()).into());
         }
 
         if let Err(err) = self.consensus.validate_block_post_execution(&block, &output) {
             // call post-block hook
             self.on_invalid_block(&parent_block, &block, &output, None, ctx.state_mut());
-            return Err(InsertBlockError::new(block.into_sealed_block(), err.into()).into())
+            return Err(InsertBlockError::new(block.into_sealed_block(), err.into()).into());
         }
 
         let hashed_state = self.provider.hashed_post_state(&output.state);
@@ -582,7 +589,7 @@ where
         {
             // call post-block hook
             self.on_invalid_block(&parent_block, &block, &output, None, ctx.state_mut());
-            return Err(InsertBlockError::new(block.into_sealed_block(), err.into()).into())
+            return Err(InsertBlockError::new(block.into_sealed_block(), err.into()).into());
         }
         // terminate prewarming task with good state output
         handle.terminate_caching(Some(output.state.clone()));
@@ -597,6 +604,71 @@ where
             difflayer: None,
         })
     }
+
+    /// Calculates the state root for a block or payload using TrieDB.
+    ///
+    /// This method computes the state root by applying the hashed post state changes
+    /// on top of the parent block's state, using the TrieDB for efficient trie operations.
+    ///
+    /// # Arguments
+    ///
+    /// * `input` - The block or payload to calculate the state root for
+    /// * `difflayers` - Accumulated diff layers from previous blocks for incremental trie updates
+    /// * `hashed_state` - The hashed post state containing account and storage changes
+    /// * `state` - Optional reference to the engine API tree state for accessing in-memory blocks
+    ///
+    /// # Returns
+    ///
+    /// Returns a tuple containing:
+    /// * The computed state root (`B256`)
+    /// * Optional trie updates (currently always `None`)
+    ///
+    /// # Errors
+    ///
+    /// Returns `ProviderError` if:
+    /// * The parent block cannot be found in memory or database
+    /// * TrieDB state root computation fails
+    // pub fn calculate_state_root_with_triedb<
+    //     T: PayloadTypes<BuiltPayload: BuiltPayload<Primitives = N>>,
+    // >(
+    //     &mut self,
+    //     input: BlockOrPayload<T>,
+    //     difflayers: DiffLayers,
+    //     hashed_state: HashedPostState,
+    //     state: Option<&EngineApiTreeState<N>>,
+    // ) -> ProviderResult<(B256, Option<TrieUpdates>)>
+    // where
+    //     V: PayloadValidator<T, Block = N::Block>,
+    //     Evm: ConfigureEngineEvm<T::ExecutionData, Primitives = N>,
+    // {
+    //     let parent_hash = input.parent_hash();
+    //     let mut triedb = get_global_triedb();
+
+    //     // fetch parent block from memory (if available) or database
+    //     let parent_block = if let Some(state) = state {
+    //         // First check in-memory state for blocks not yet persisted
+    //         self.sealed_header_by_hash(parent_hash, state)?
+    //     } else {
+    //         // Fall back to database only
+    //         self.provider.sealed_header_by_hash(parent_hash)?
+    //     };
+
+    //     let Some(parent_block) = parent_block else {
+    //         return Err(ProviderError::HeaderNotFound(parent_hash.into()));
+    //     };
+
+    //     let trie_hashed_state = hashed_state.to_triedb_hashed_post_state();
+    //     let (new_root, difflayer) = triedb
+    //         .intermediate_and_commit_hashed_post_state(
+    //             parent_block.state_root(),
+    //             Some(&difflayers),
+    //             &trie_hashed_state,
+    //             None,
+    //         )
+    //         .map_err(ProviderError::other)?;
+
+    //     Ok((new_root, None))
+    // }
 
     /// Validates a block that has already been converted from a payload.
     ///
@@ -629,7 +701,9 @@ where
                     Ok(val) => val,
                     Err(e) => {
                         let block = self.convert_to_block(input)?;
-                        return Err(InsertBlockError::new(block.into_sealed_block(), e.into()).into())
+                        return Err(
+                            InsertBlockError::new(block.into_sealed_block(), e.into()).into()
+                        );
                     }
                 }
             };
@@ -647,7 +721,7 @@ where
                 self.convert_to_block(input)?.into_sealed_block(),
                 ProviderError::HeaderNotFound(parent_hash.into()).into(),
             )
-            .into())
+            .into());
         };
 
         let state_provider = ensure_ok!(provider_builder.build());
@@ -659,7 +733,7 @@ where
                 self.convert_to_block(input)?.into_sealed_block(),
                 ProviderError::HeaderNotFound(parent_hash.into()).into(),
             )
-            .into())
+            .into());
         };
 
         let evm_env = self.evm_env_for(&input);
@@ -689,10 +763,10 @@ where
         //    accounting for the prefix sets.
         let has_ancestors_with_missing_trie_updates =
             self.has_ancestors_with_missing_trie_updates(input.block_with_parent(), ctx.state());
-        let mut use_state_root_task = run_parallel_state_root &&
-            self.config.use_state_root_task() &&
-            !has_ancestors_with_missing_trie_updates &&
-            !self.config.skip_state_root_validation();
+        let mut use_state_root_task = run_parallel_state_root
+            && self.config.use_state_root_task()
+            && !has_ancestors_with_missing_trie_updates
+            && !self.config.skip_state_root_validation();
 
         debug!(
             target: "engine::tree",
@@ -791,13 +865,13 @@ where
             self.consensus.validate_header_against_parent(block.sealed_header(), &parent_block)
         {
             warn!(target: "engine::tree", ?block, "Failed to validate header {} against parent: {e}", block.hash());
-            return Err(InsertBlockError::new(block.into_sealed_block(), e.into()).into())
+            return Err(InsertBlockError::new(block.into_sealed_block(), e.into()).into());
         }
 
         if let Err(err) = self.consensus.validate_block_post_execution(&block, &output) {
             // call post-block hook
             self.on_invalid_block(&parent_block, &block, &output, None, ctx.state_mut());
-            return Err(InsertBlockError::new(block.into_sealed_block(), err.into()).into())
+            return Err(InsertBlockError::new(block.into_sealed_block(), err.into()).into());
         }
 
         let hashed_state = self.provider.hashed_post_state(&output.state);
@@ -807,7 +881,7 @@ where
         {
             // call post-block hook
             self.on_invalid_block(&parent_block, &block, &output, None, ctx.state_mut());
-            return Err(InsertBlockError::new(block.into_sealed_block(), err.into()).into())
+            return Err(InsertBlockError::new(block.into_sealed_block(), err.into()).into());
         }
 
         // Skip state root computation entirely in fastnode mode
@@ -820,7 +894,6 @@ where
 
             let root_time = Instant::now();
             let mut maybe_state_root = None;
-
 
             if run_parallel_state_root {
                 // if we new payload extends the current canonical change we attempt to use the
@@ -923,7 +996,7 @@ where
                 )
                 .into(),
             )
-            .into())
+            .into());
         }
 
         // terminate prewarming task with good state output
@@ -986,12 +1059,12 @@ where
     fn validate_block_inner(&self, block: &RecoveredBlock<N::Block>) -> Result<(), ConsensusError> {
         if let Err(e) = self.consensus.validate_header(block.sealed_header()) {
             error!(target: "engine::tree", ?block, "Failed to validate header {}: {e}", block.hash());
-            return Err(e)
+            return Err(e);
         }
 
         if let Err(e) = self.consensus.validate_block_pre_execution(block.sealed_block()) {
             error!(target: "engine::tree", ?block, "Failed to validate block {}: {e}", block.hash());
-            return Err(e)
+            return Err(e);
         }
 
         Ok(())
@@ -1170,7 +1243,7 @@ where
                 self.provider.clone(),
                 historical,
                 Some(blocks),
-            )))
+            )));
         }
 
         // Check if the block is persisted
@@ -1178,7 +1251,7 @@ where
             debug!(target: "engine::tree", %hash, number = %header.number(), "found canonical state for block in database, creating provider builder");
             // For persisted blocks, we create a builder that will fetch state directly from the
             // database
-            return Ok(Some(StateProviderBuilder::new(self.provider.clone(), hash, None)))
+            return Ok(Some(StateProviderBuilder::new(self.provider.clone(), hash, None)));
         }
 
         debug!(target: "engine::tree", %hash, "no canonical state found for block");
@@ -1247,7 +1320,7 @@ where
                 } else {
                     // If the block is higher than the best block number, stop filtering, as it's
                     // the first block that's not in the database.
-                    break
+                    break;
                 }
             }
 
