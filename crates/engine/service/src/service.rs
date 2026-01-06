@@ -53,7 +53,6 @@ type EngineServiceType<N, Client, Evm> = ChainOrchestrator<
     >,
     PipelineSync<N>,
 >;
-
 /// The type that drives the chain forward and communicates progress.
 #[pin_project]
 #[expect(missing_debug_implementations)]

@@ -41,7 +41,7 @@ use reth_trie_db::{ChangesetCache, DatabaseHashedPostState};
 use reth_trie_parallel::root::ParallelStateRoot;
 use revm::state::EvmState;
 use revm_primitives::U256;
-use rust_eth_triedb_common::DiffLayers;
+use rust_eth_triedb_common::{DiffLayer, DiffLayers};
 use state::TreeState;
 use std::{fmt::{Debug, Display}, ops, sync::Arc, time::Instant};
 
@@ -163,6 +163,31 @@ impl<N: NodePrimitives> EngineApiTreeState<N> {
     /// Returns merged difflayers by parent block hash
     pub(crate) fn merged_difflayer_by_hash(&self, parent_block_hash: B256) -> Option<DiffLayers> {
         self.tree_state.merged_difflayer_by_hash(parent_block_hash)
+    }
+
+    /// Returns the difflayer for a specific block by its hash.
+    ///
+    /// This retrieves the single difflayer that was generated when the block was executed.
+    /// Returns `None` if the block is not found or has no difflayer.
+    pub fn difflayer_by_block_hash(&self, block_hash: B256) -> Option<Arc<DiffLayer>> {
+        self.tree_state.blocks_by_hash.get(&block_hash).and_then(|block| block.difflayer.clone())
+    }
+
+    /// Returns merged difflayers accumulated from the parent block hash up to the tip.
+    ///
+    /// This method walks back from the given parent block hash, merging all difflayers
+    /// from ancestor blocks that are in memory (not yet persisted).
+    ///
+    /// # Arguments
+    ///
+    /// * `parent_block_hash` - The hash of the parent block to start accumulating from
+    ///
+    /// # Returns
+    ///
+    /// Returns `Some(DiffLayers)` with all accumulated diff layers, or `None` if no
+    /// difflayers are found or the parent block is not in memory.
+    pub fn get_merged_difflayers(&self, parent_block_hash: B256) -> Option<DiffLayers> {
+        self.merged_difflayer_by_hash(parent_block_hash)
     }
 }
 
@@ -433,6 +458,71 @@ where
     /// Returns a new [`Sender`] to send messages to this type.
     pub fn sender(&self) -> Sender<FromEngine<EngineApiRequest<T, N, P, C>, N::Block>> {
         self.incoming_tx.clone()
+    }
+
+    /// Returns the difflayer for a specific block by its hash.
+    ///
+    /// This retrieves the single difflayer that was generated when the block was executed
+    /// and is currently held in memory (not yet persisted to disk).
+    ///
+    /// # Arguments
+    ///
+    /// * `block_hash` - The hash of the block to retrieve the difflayer for
+    ///
+    /// # Returns
+    ///
+    /// Returns `Some(Arc<DiffLayer>)` if the block exists in memory and has a difflayer,
+    /// `None` otherwise.
+    ///
+    /// # Use Cases
+    ///
+    /// - Get the difflayer for a single specific block
+    /// - Inspect state changes made by a particular block
+    pub fn difflayer_by_block_hash(&self, block_hash: B256) -> Option<Arc<DiffLayer>> {
+        self.state.difflayer_by_block_hash(block_hash)
+    }
+
+    /// Returns merged difflayers accumulated from the parent block hash.
+    ///
+    /// This method walks back from the given parent block hash through the chain
+    /// of in-memory blocks, merging all difflayers to provide a consolidated view
+    /// of state changes since the last persisted block.
+    ///
+    /// # Arguments
+    ///
+    /// * `parent_block_hash` - The hash of the parent block to start accumulating from
+    ///
+    /// # Returns
+    ///
+    /// Returns `Some(DiffLayers)` with all accumulated diff layers merged together,
+    /// or `None` if:
+    /// - The parent block is not found in memory
+    /// - No difflayers exist in the chain
+    /// - The parent block is already persisted to disk
+    ///
+    /// # Use Cases
+    ///
+    /// - When building block N+1, pass block N's hash to get all accumulated changes
+    /// - Essential for validator nodes to calculate state roots for new blocks
+    /// - Used with `calculate_state_root_with_triedb` for efficient trie updates
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Building block N+1 after block N
+    /// let parent_hash = block_n.hash();
+    /// let difflayers = engine_handler.get_merged_difflayers(parent_hash)?;
+    ///
+    /// // Use difflayers to calculate state root for new block
+    /// let (state_root, _) = validator.calculate_state_root_with_triedb(
+    ///     new_block_payload,
+    ///     difflayers,
+    ///     hashed_state,
+    ///     Some(&engine_state),
+    /// )?;
+    /// ```
+    pub fn get_merged_difflayers(&self, parent_block_hash: B256) -> Option<DiffLayers> {
+        self.state.get_merged_difflayers(parent_block_hash)
     }
 
     /// Run the engine API handler.
@@ -3339,6 +3429,7 @@ where
             .finish()
     }
 }
+
 /// A custom request message for the engine.
 #[derive(Debug)]
 pub enum CustomRequestMessage<P, Evm, N>
