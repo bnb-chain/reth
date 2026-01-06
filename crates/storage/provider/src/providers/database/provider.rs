@@ -303,7 +303,9 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
         // Unwind storage history indices.
         self.unwind_storage_history_indices(changed_storages.iter().copied())?;
 
-        if !rust_eth_triedb::triedb_manager::is_triedb_active() {
+        if rust_eth_triedb::triedb_manager::is_triedb_active() {
+            tracing::error!("unwind_trie_state_range is not supported triedb");
+        } else {
             // Calculate the reverted merkle root.
             // This is the same as `StateRoot::incremental_root_with_updates`, only the prefix sets
             // are pre-loaded.
@@ -336,8 +338,6 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
                 })));
             }
             self.write_trie_updates(&trie_updates)?;
-        } else {
-            tracing::error!("unwind_trie_state_range is not supported triedb");
         }
 
         Ok(())

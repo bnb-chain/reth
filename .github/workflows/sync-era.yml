@@ -4,8 +4,8 @@ name: sync-era test
 
 on:
   workflow_dispatch:
-  # schedule:
-  #   - cron: "0 */6 * * *"
+  schedule:
+    - cron: "0 */6 * * *"
 
 env:
   CARGO_TERM_COLOR: always
@@ -17,8 +17,8 @@ concurrency:
 jobs:
   sync:
     name: sync (${{ matrix.chain.bin }})
-    runs-on:
-      group: Reth
+    runs-on: ubuntu-latest
+      # group: Reth
     env:
       RUST_LOG: info,sync=error
       RUST_BACKTRACE: 1

@@ -133,6 +133,7 @@ arbitrary = [
     "nybbles/arbitrary",
     "reth-codecs/arbitrary",
     "alloy-rpc-types-eth?/arbitrary",
+    "rust-eth-triedb-state-trie/arbitrary",
 ]
 rayon = ["dep:rayon"]
 

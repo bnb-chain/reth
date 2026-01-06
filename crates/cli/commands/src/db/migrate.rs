@@ -84,7 +84,7 @@ impl Command {
 
             // Display size comparison
             let src_size = src_env.info()?.map_size();
-            if let Ok(dst_metadata) = std::fs::metadata(&self.to.join("mdbx.dat")) {
+            if let Ok(dst_metadata) = std::fs::metadata(self.to.join("mdbx.dat")) {
                 let dst_size = dst_metadata.len() as usize;
                 info!(target: "reth::cli", "Source database map size: {}", format_byte_size(src_size));
                 info!(target: "reth::cli", "Destination file size: {}", format_byte_size(dst_size));

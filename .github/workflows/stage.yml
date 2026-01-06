@@ -3,11 +3,11 @@
 name: stage-test
 
 on:
-  workflow_dispatch: # disable action temporarily
-  # pull_request:
-  # merge_group:
-  # push:
-  #   branches: [main]
+  workflow_dispatch:
+  pull_request:
+  merge_group:
+  push:
+    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
@@ -23,8 +23,8 @@ jobs:
     name: stage-run-test
     # Only run stage commands test in merge groups
     if: github.event_name == 'merge_group'
-    runs-on:
-      group: Reth
+    runs-on: ubuntu-latest
+      # group: Reth
     env:
       RUST_LOG: info,sync=error
       RUST_BACKTRACE: 1

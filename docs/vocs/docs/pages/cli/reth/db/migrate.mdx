@@ -1,35 +1,45 @@
-# reth import
+# reth db migrate
 
-This syncs RLP encoded blocks from a file or files
+Migrate database to another location
 
 ```bash
-$ reth import --help
+$ reth db migrate --help
 ```
 ```txt
-Usage: reth import [OPTIONS] <IMPORT_PATH>...
+Usage: reth db migrate [OPTIONS] --to <DEST_PATH>
 
 Options:
   -h, --help
           Print help (see a summary with '-h')
 
+Copy Options:
+      --to <DEST_PATH>
+          Destination database directory (must not exist)
+
+      --tables <TABLES>
+          Specific tables to copy (comma-separated). Example: --tables Headers,Bodies
+
+      --page-size <PAGE_SIZE>
+          Page size (e.g., 4KB, 8KB). Default: system default (typically 4KB).
+          NOTE: Can only be set when creating a new database.
+
+      --max-size <MAX_SIZE>
+          Maximum database size (e.g., 4TB, 12TB). Default: source database size
+
+      --growth-step <GROWTH_STEP>
+          Database growth step (e.g., 4GB, 8GB)
+
+          [default: 4GB]
+
+      --commit-every <COMMIT_EVERY>
+          Commit every N records. Smaller = less memory, slower
+
+          [default: 100000]
+
+  -q, --quiet
+          Suppress progress messages
+
 Datadir:
-      --datadir <DATA_DIR>
-          The path to the data dir for all reth files and subdirectories.
-
-          Defaults to the OS-specific data directory:
-
-          - Linux: `$XDG_DATA_HOME/reth/` or `$HOME/.local/share/reth/`
-          - Windows: `{FOLDERID_RoamingAppData}/reth/`
-          - macOS: `$HOME/Library/Application Support/reth/`
-
-          [default: default]
-
-      --datadir.static-files <PATH>
-          The absolute path to store static files in.
-
-      --config <FILE>
-          The path to the configuration file to use
-
       --chain <CHAIN_OR_PATH>
           The chain this node is running.
           Possible values are either a built-in chain or the path to a chain specification file.
@@ -38,54 +48,6 @@ Datadir:
               mainnet, sepolia, holesky, hoodi, dev
 
           [default: mainnet]
-
-Database:
-      --db.log-level <LOG_LEVEL>
-          Database logging level. Levels higher than "notice" require a debug build
-
-          Possible values:
-          - fatal:   Enables logging for critical conditions, i.e. assertion failures
-          - error:   Enables logging for error conditions
-          - warn:    Enables logging for warning conditions
-          - notice:  Enables logging for normal but significant condition
-          - verbose: Enables logging for verbose informational
-          - debug:   Enables logging for debug-level messages
-          - trace:   Enables logging for trace debug-level messages
-          - extra:   Enables logging for extra debug-level messages
-
-      --db.exclusive <EXCLUSIVE>
-          Open environment in exclusive/monopolistic mode. Makes it possible to open a database on an NFS volume
-
-          [possible values: true, false]
-
-      --db.page-size <PAGE_SIZE>
-          Database page size (e.g., 4KB, 8KB, 16KB).
-          NOTE: Can only be set when creating a new database. Default: system default (typically
-          4KB).
-
-      --db.max-size <MAX_SIZE>
-          Maximum database size (e.g., 4TB, 8MB)
-
-      --db.growth-step <GROWTH_STEP>
-          Database growth step (e.g., 4GB, 4KB)
-
-      --db.read-transaction-timeout <READ_TRANSACTION_TIMEOUT>
-          Read transaction timeout in seconds, 0 means no timeout
-
-      --db.max-readers <MAX_READERS>
-          Maximum number of readers allowed to access the database concurrently
-
-      --no-state
-          Disables stages that require state.
-
-      --chunk-len <CHUNK_LEN>
-          Chunk byte length to read from file.
-
-  <IMPORT_PATH>...
-          The path(s) to block file(s) for import.
-
-          The online stages (headers and bodies) are replaced by a file import, after which the
-          remaining stages are executed. Multiple files will be imported sequentially.
 
 Logging:
       --log.stdout.format <FORMAT>
@@ -165,7 +127,4 @@ Display:
           -vvv    Info
           -vvvv   Debug
           -vvvvv  Traces (warning: very verbose!)
-
-  -q, --quiet
-          Silence all log output
 ```

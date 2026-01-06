@@ -188,13 +188,7 @@ impl<N: NetworkPrimitives> TransactionFetcher<N> {
         let TxFetchMetadata { fallback_peers, .. } =
             self.hashes_fetch_inflight_and_pending_fetch.peek(&hash)?;
 
-        for peer_id in fallback_peers.iter() {
-            if self.is_idle(peer_id) {
-                return Some(peer_id);
-            }
-        }
-
-        None
+        fallback_peers.iter().find(|&peer_id| self.is_idle(peer_id)).map(|v| v as _)
     }
 
     /// Returns any idle peer for any hash pending fetch. If one is found, the corresponding
@@ -284,9 +278,7 @@ impl<N: NetworkPrimitives> TransactionFetcher<N> {
 
         // folds size based on expected response size  and adds selected hashes to the request
         // list and the other hashes to the surplus list
-        loop {
-            let Some((hash, metadata)) = hashes_from_announcement_iter.next() else { break };
-
+        for (hash, metadata) in hashes_from_announcement_iter.by_ref() {
             let Some((_ty, size)) = metadata else {
                 unreachable!("this method is called upon reception of an eth68 announcement")
             };

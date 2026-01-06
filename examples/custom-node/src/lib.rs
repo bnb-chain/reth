@@ -7,6 +7,9 @@
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
+// Used in `arbitrary` feature
+use alloy_rpc_types_eth as _;
+
 use crate::{
     engine::{CustomEngineValidatorBuilder, CustomPayloadTypes},
     engine_api::CustomEngineApiBuilder,

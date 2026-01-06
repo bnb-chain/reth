@@ -130,7 +130,7 @@ impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> Command<C>
         // Initialize or disable TrieDB based on config
         if let Some(ref statedb_config) = config.statedb {
             if statedb_config.r#type == "triedb" {
-                init_global_triedb_manager(&statedb_config.path.to_string_lossy().to_string());
+                init_global_triedb_manager(statedb_config.path.to_string_lossy().as_ref());
                 is_triedb = true;
             } else {
                 disable_triedb();
@@ -141,7 +141,7 @@ impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> Command<C>
         }
 
         let builder = if is_triedb {
-            let builder = if self.offline {
+            if self.offline {
                 Pipeline::<N>::builder().add_stages(
                     OfflineStages::new(
                         evm_config,
@@ -183,50 +183,44 @@ impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> Command<C>
                         ExExManagerHandle::empty(),
                     )),
                 )
-            };
-
-            builder
+            }
+        } else if self.offline {
+            Pipeline::<N>::builder().add_stages(
+                OfflineStages::new(
+                    evm_config,
+                    NoopConsensus::arc(),
+                    config.stages,
+                    prune_modes.clone(),
+                )
+                .builder()
+                .disable(reth_stages::StageId::SenderRecovery),
+            )
         } else {
-            let builder = if self.offline {
-                Pipeline::<N>::builder().add_stages(
-                    OfflineStages::new(
-                        evm_config,
-                        NoopConsensus::arc(),
-                        config.stages,
-                        prune_modes.clone(),
-                    )
-                    .builder()
-                    .disable(reth_stages::StageId::SenderRecovery),
+            Pipeline::<N>::builder().with_tip_sender(tip_tx).add_stages(
+                DefaultStages::new(
+                    provider_factory.clone(),
+                    tip_rx,
+                    Arc::new(NoopConsensus::default()),
+                    NoopHeaderDownloader::default(),
+                    NoopBodiesDownloader::default(),
+                    evm_config.clone(),
+                    stage_conf.clone(),
+                    prune_modes.clone(),
+                    None,
                 )
-            } else {
-                Pipeline::<N>::builder().with_tip_sender(tip_tx).add_stages(
-                    DefaultStages::new(
-                        provider_factory.clone(),
-                        tip_rx,
-                        Arc::new(NoopConsensus::default()),
-                        NoopHeaderDownloader::default(),
-                        NoopBodiesDownloader::default(),
-                        evm_config.clone(),
-                        stage_conf.clone(),
-                        prune_modes.clone(),
-                        None,
-                    )
-                    .set(ExecutionStage::new(
-                        evm_config,
-                        Arc::new(NoopConsensus::default()),
-                        ExecutionStageThresholds {
-                            max_blocks: None,
-                            max_changes: None,
-                            max_cumulative_gas: None,
-                            max_duration: None,
-                        },
-                        stage_conf.execution_external_clean_threshold(),
-                        ExExManagerHandle::empty(),
-                    )),
-                )
-            };
-
-            builder
+                .set(ExecutionStage::new(
+                    evm_config,
+                    Arc::new(NoopConsensus::default()),
+                    ExecutionStageThresholds {
+                        max_blocks: None,
+                        max_changes: None,
+                        max_cumulative_gas: None,
+                        max_duration: None,
+                    },
+                    stage_conf.execution_external_clean_threshold(),
+                    ExExManagerHandle::empty(),
+                )),
+            )
         };
 
         let pipeline = builder.build(

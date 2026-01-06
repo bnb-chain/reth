@@ -22,7 +22,7 @@
     issue_tracker_base_url = "https://github.com/paradigmxyz/reth/issues/"
 )]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
-#![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 use crate::{
     error::{DecodePacketError, Discv4Error},
@@ -2402,7 +2402,7 @@ pub enum DiscoveryUpdate {
     /// Node that was removed from the table
     Removed(PeerId),
     /// A series of updates
-    Batch(Vec<DiscoveryUpdate>),
+    Batch(Vec<Self>),
 }
 
 #[cfg(test)]

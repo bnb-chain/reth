@@ -3,14 +3,14 @@
 name: integration
 
 on:
-  workflow_dispatch: # disable action temporarily
+  workflow_dispatch:
   pull_request:
   merge_group:
   push:
     branches: [main]
-  # schedule:
-  #   # Run once a day at 3:00 UTC
-  #   - cron: "0 3 * * *"
+  schedule:
+    # Run once a day at 3:00 UTC
+    - cron: "0 3 * * *"
 
 env:
   CARGO_TERM_COLOR: always
@@ -44,6 +44,8 @@ jobs:
           docker-images: true
           swap-storage: true
       - uses: actions/checkout@v5
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y liburing-dev pkg-config libclang-dev
       - uses: rui314/setup-mold@v1
       - uses: dtolnay/rust-toolchain@stable
       - name: Install Geth

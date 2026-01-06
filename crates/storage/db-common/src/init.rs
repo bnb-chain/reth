@@ -151,11 +151,11 @@ where
 
     insert_genesis_state(&provider_rw, alloc.iter())?;
 
-    if !is_triedb_active() {
+    if is_triedb_active() {
+        info!(target: "reth::storage", "TrieDB is active, skipping mdbx state root computation");
+    } else {
         // compute state root to populate trie tables
         compute_state_root(&provider_rw, None)?;
-    } else {
-        info!(target: "reth::storage", "TrieDB is active, skipping mdbx state root computation");
     }
 
     // insert sync stage
@@ -190,10 +190,10 @@ where
         + StateWriter
         + AsRef<Provider>,
 {
-    if !is_triedb_active() {
-        insert_state(provider, alloc, 0)
-    } else {
+    if is_triedb_active() {
         insert_triedb_state(provider, alloc, 0)
+    } else {
+        insert_state(provider, alloc, 0)
     }
 }
 
@@ -242,8 +242,8 @@ where
         let mut state_account = StateAccount::default()
             .with_nonce(account.nonce.unwrap_or_default())
             .with_balance(account.balance);
-        if bytecode_hash.is_some() {
-            state_account = state_account.with_code_hash(bytecode_hash.unwrap());
+        if let Some(bytecode_hash) = bytecode_hash {
+            state_account = state_account.with_code_hash(bytecode_hash);
         }
         state_accounts.insert(hashed_address, Some(state_account));
 
