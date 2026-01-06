@@ -254,12 +254,12 @@ impl LaunchContext {
                 }
 
                 // Check if path needs to be updated
-                if existing_config.path != expected_path {
+                if existing_config.path == expected_path {
+                    None
+                } else {
                     let mut updated_config = existing_config.clone();
                     updated_config.path = expected_path.clone();
                     Some((expected_path, updated_config))
-                } else {
-                    None
                 }
             }
             None => {
@@ -269,7 +269,7 @@ impl LaunchContext {
                     let triedb_path = data_dir.data_dir().join("rust_eth_triedb");
                     let path_str = triedb_path.to_string_lossy().to_string();
                     let statedb_config =
-                        StateDbConfig { r#type: "triedb".to_string(), path: triedb_path.clone() };
+                        StateDbConfig { r#type: "triedb".to_string(), path: triedb_path };
                     reth_config.update_statedb_config(statedb_config);
                     info!(target: "reth::cli", "Saving state database config (triedb) to toml file");
                     reth_config.save(config_path.as_ref())?;
@@ -1065,7 +1065,7 @@ where
         Ok(None)
     }
 
-    /// Check if the pipeline is consistent under TrieDB.
+    /// Check if the pipeline is consistent under `TrieDB`.
     pub fn check_pipeline_consistency_under_triedb(&self) -> ProviderResult<Option<B256>> {
         // If no target was provided, check if the stages are congruent - check if the
         // checkpoint of the last stage matches the checkpoint of the first.
@@ -1081,7 +1081,7 @@ where
 
         // Skip the first stage as we've already retrieved it and comparing all other checkpoints
         // against it.
-        for stage_id in StageId::ALL.iter() {
+        for stage_id in &StageId::ALL {
             let stage_checkpoint = self
                 .blockchain_db()
                 .get_stage_checkpoint(*stage_id)?
@@ -1140,14 +1140,13 @@ where
             triedb_checkpoint_state_root = ?triedb_checkpoint_state_root,
             "Last persisted state is behind of the TrieDB state, start pipeline sync to align");
             return self.blockchain_db().block_hash(last_persisted_block_number);
-        } else {
-            info!(target: "consensus::engine",
-            last_persisted_block_number,
-            last_persisted_state_root = ?last_persisted_state_root,
-            triedb_checkpoint_block_number,
-            triedb_checkpoint_state_root = ?triedb_checkpoint_state_root,
-            "Last persisted state equal TrieDB state, start live sync");
         }
+        info!(target: "consensus::engine",
+        last_persisted_block_number,
+        last_persisted_state_root = ?last_persisted_state_root,
+        triedb_checkpoint_block_number,
+        triedb_checkpoint_state_root = ?triedb_checkpoint_state_root,
+        "Last persisted state equal TrieDB state, start live sync");
 
         Ok(None)
     }

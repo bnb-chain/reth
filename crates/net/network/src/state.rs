@@ -284,7 +284,7 @@ impl<N: NetworkPrimitives> NetworkState<N> {
     }
 
     /// Gets the peer's real-time best block information
-    /// Returns (best_hash, best_number, best_td)
+    /// Returns (`best_hash`, `best_number`, `best_td`)
     pub(crate) fn get_peer_best_block(
         &self,
         peer_id: &PeerId,
@@ -552,7 +552,7 @@ impl<N: NetworkPrimitives> NetworkState<N> {
 pub(crate) struct ActivePeer<N: NetworkPrimitives> {
     /// Best block of the peer.
     pub(crate) best_hash: B256,
-    /// Total difficulty of the peer (None in PoS)
+    /// Total difficulty of the peer (None in `PoS`)
     pub(crate) best_td: Option<alloy_primitives::U256>,
     /// The capabilities of the remote peer.
     #[expect(dead_code)]

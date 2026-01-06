@@ -1949,7 +1949,7 @@ where
     ///
     /// If the `local_tip` is greater than the `block`, then this will return false.
     #[inline]
-    fn exceeds_backfill_run_threshold(&self, local_tip: u64, block: u64) -> bool {
+    const fn exceeds_backfill_run_threshold(&self, local_tip: u64, block: u64) -> bool {
         block > local_tip && block - local_tip > self.config.min_blocks_for_pipeline_run()
     }
 

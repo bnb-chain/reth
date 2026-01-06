@@ -182,7 +182,7 @@ pub enum Eip4844PoolTransactionError {
     /// Thrown if blob transaction has an EIP-4844 style sidecar after Osaka.
     #[error("unexpected eip-4844 sidecar after osaka")]
     UnexpectedEip4844SidecarAfterOsaka,
-    /// Thrown if blob transaction has a zero max_fee_per_blob_gas
+    /// Thrown if blob transaction has a zero `max_fee_per_blob_gas`
     #[error("blob transaction with zero max_fee_per_blob_gas")]
     ZeroBlobFee,
 }

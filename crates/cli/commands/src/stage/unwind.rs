@@ -130,7 +130,7 @@ impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> Command<C>
         // Initialize or disable TrieDB based on config
         if let Some(ref statedb_config) = config.statedb {
             if statedb_config.r#type == "triedb" {
-                init_global_triedb_manager(&statedb_config.path.to_string_lossy().to_string());
+                init_global_triedb_manager(statedb_config.path.to_string_lossy().as_ref());
                 is_triedb = true;
             } else {
                 disable_triedb();

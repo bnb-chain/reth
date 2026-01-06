@@ -292,11 +292,7 @@ pub trait EthTransactions: LoadTransaction<Provider: BlockReaderIdExt> {
         Self::Provider: BlockIdReader,
     {
         async move {
-            let block_info = if let Some(block) = self.recovered_block(block_id).await? {
-                Some((block.hash(), block.number(), block.base_fee_per_gas()))
-            } else {
-                None
-            };
+            let block_info = self.recovered_block(block_id).await?.map(|block| (block.hash(), block.number(), block.base_fee_per_gas()));
 
             let block_hash = match block_id {
                 BlockId::Hash(hash) => hash.block_hash,
