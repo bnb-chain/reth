@@ -116,7 +116,7 @@ impl HashedPostState {
     pub fn to_triedb_hashed_post_state(&self) -> TrieDBHashedPostState {
         let mut triedb_hashed_post_state = TrieDBHashedPostState::default();
 
-        for (hashed_address, account) in self.accounts.iter() {
+        for (hashed_address, account) in &self.accounts {
             match account {
                 Some(account) => {
                     let code_hash = match account.bytecode_hash {
@@ -142,12 +142,12 @@ impl HashedPostState {
             }
         }
 
-        for (hashed_address, storages) in self.storages.iter() {
+        for (hashed_address, storages) in &self.storages {
             if storages.storage.is_empty() {
                 continue;
             }
             let mut kvs = HashMap::new();
-            for (hashed_key, value) in storages.storage.iter() {
+            for (hashed_key, value) in &storages.storage {
                 if value.is_zero() {
                     // if the value is zero, it means the storage is being deleted
                     kvs.insert(*hashed_key, None);
@@ -311,8 +311,8 @@ impl HashedPostState {
                 Some(storage_in_targets) => {
                     let mut storage_not_in_targets = HashedStorage::default();
                     storage.storage.retain(|&slot, value| {
-                        if storage_in_targets.contains(&slot) &&
-                            !storage_added_removed_keys.is_some_and(|k| k.is_removed(&slot))
+                        if storage_in_targets.contains(&slot)
+                            && !storage_added_removed_keys.is_some_and(|k| k.is_removed(&slot))
                         {
                             return true;
                         }
