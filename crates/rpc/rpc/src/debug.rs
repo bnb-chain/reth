@@ -306,6 +306,9 @@ where
                             .await?;
                         Ok(FourByteFrame::from(&inspector).into())
                     }
+                    GethDebugBuiltInTracerType::Erc7562Tracer => {
+                        Err(EthApiError::Unsupported("unsupported tracer").into())
+                    }
                     GethDebugBuiltInTracerType::CallTracer => {
                         let call_config = tracer_config
                             .into_call_config()
@@ -784,6 +787,9 @@ where
                         Self::handle_bsc_system_transaction(&mut evm_env, &tx_env);
                         let res = self.eth_api().inspect(db, evm_env, tx_env, &mut inspector)?;
                         return Ok((FourByteFrame::from(&inspector).into(), res.state))
+                    }
+                    GethDebugBuiltInTracerType::Erc7562Tracer => {
+                        return Err(EthApiError::Unsupported("unsupported tracer").into())
                     }
                     GethDebugBuiltInTracerType::CallTracer => {
                         let call_config = tracer_config
