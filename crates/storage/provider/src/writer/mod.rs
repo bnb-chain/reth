@@ -209,9 +209,7 @@ where
                 if new_root != state_root {
                     return Err(ProviderError::Database(DatabaseError::Other(format!("write hashed state to triedb, block_number={}, new_root({:?}) != state_root({:?})", block_number, new_root, state_root))));
                 }
-                triedb
-                    .flush(block_number, new_root, &difflayer)
-                    .map_err(ProviderError::other)?;
+                triedb.flush(block_number, new_root, &difflayer).map_err(ProviderError::other)?;
             } else {
                 // insert hashes and intermediate merkle nodes
                 self.database()
