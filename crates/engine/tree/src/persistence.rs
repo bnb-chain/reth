@@ -1,10 +1,11 @@
 use crate::metrics::PersistenceMetrics;
 use alloy_consensus::BlockHeader;
 use alloy_eips::BlockNumHash;
+use alloy_eips::eip2718::Encodable2718;
 use reth_chain_state::ExecutedBlockWithTrieUpdates;
 use reth_errors::ProviderError;
 use reth_ethereum_primitives::EthPrimitives;
-use reth_primitives_traits::NodePrimitives;
+use reth_primitives_traits::{BlockBody, NodePrimitives};
 use reth_provider::{
     providers::ProviderNodeTypes, writer::UnifiedStorageWriter, BlockHashReader,
     ChainStateBlockWriter, DatabaseProviderFactory, ProviderFactory, StaticFileProviderFactory,
@@ -160,6 +161,19 @@ where
             number: block.recovered_block().header().number(),
         });
 
+        // Cheap estimate of the write volume for the range (tx bytes only).
+        let tx_bytes_est: u64 = blocks
+            .iter()
+            .map(|b| {
+                b.recovered_block()
+                    .body()
+                    .transactions()
+                    .iter()
+                    .map(|tx| tx.encode_2718_len() as u64)
+                    .sum::<u64>()
+            })
+            .sum();
+
         if last_block_hash_num.is_some() {
             let provider_started = Instant::now();
             let provider_rw = self.provider.database_provider_rw()?;
@@ -190,6 +204,20 @@ where
                 total_ms = total_elapsed.as_millis(),
                 "Persisted blocks timing breakdown"
             );
+
+            // Record per-block averages and estimated write size for the range.
+            //
+            // Note: "write size" is an estimate intended for correlation and capacity planning.
+            // We currently estimate transaction bytes (EIP-2718 encoded length) because it is
+            // cheap to compute and stable across storage backends.
+            if block_count > 0 {
+                let avg_secs = total_elapsed.as_secs_f64() / block_count as f64;
+                self.metrics.save_blocks_avg_block_duration_seconds.record(avg_secs);
+                self.metrics.save_blocks_tx_bytes_est.record(tx_bytes_est as f64);
+                self.metrics
+                    .save_blocks_tx_bytes_est_per_block
+                    .record(tx_bytes_est as f64 / block_count as f64);
+            }
         } else {
             debug!(target: "engine::persistence", block_count, "No blocks provided to persist");
         }
