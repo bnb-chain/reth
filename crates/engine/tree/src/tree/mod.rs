@@ -2434,19 +2434,26 @@ where
         parent_hash: B256,
         allocated_trie_input: Option<TrieInput>,
     ) -> ProviderResult<TrieInput> {
+        let started = std::time::Instant::now();
         // get allocated trie input or use a default trie input
+        let allocated_input = allocated_trie_input.is_some();
         let mut input = allocated_trie_input.unwrap_or_default();
 
+        let best_started = std::time::Instant::now();
         let best_block_number = provider.best_block_number()?;
+        let best_ms = best_started.elapsed().as_millis();
 
+        let blocks_by_hash_started = std::time::Instant::now();
         let (mut historical, mut blocks) = self
             .state
             .tree_state
             .blocks_by_hash(parent_hash)
             .map_or_else(|| (parent_hash.into(), vec![]), |(hash, blocks)| (hash.into(), blocks));
+        let blocks_by_hash_ms = blocks_by_hash_started.elapsed().as_millis();
 
         // If the current block is a descendant of the currently persisting blocks, then we need to
         // filter in-memory blocks, so that none of them are already persisted in the database.
+        let filter_started = std::time::Instant::now();
         if persisting_kind.is_descendant() {
             // Iterate over the blocks from oldest to newest.
             while let Some(block) = blocks.last() {
@@ -2471,6 +2478,7 @@ where
                 parent_hash.into()
             };
         }
+        let filter_ms = filter_started.elapsed().as_millis();
 
         if blocks.is_empty() {
             debug!(target: "engine::tree", %parent_hash, "Parent found on disk");
@@ -2479,11 +2487,15 @@ where
         }
 
         // Convert the historical block to the block number.
+        let anchor_started = std::time::Instant::now();
         let block_number = provider
             .convert_hash_or_number(historical)?
             .ok_or_else(|| ProviderError::BlockHashNotFound(historical.as_hash().unwrap()))?;
+        let anchor_ms = anchor_started.elapsed().as_millis();
 
         // Retrieve revert state for historical block.
+        let revert_started = std::time::Instant::now();
+        let (mut revert_accounts, mut revert_storages) = (0usize, 0usize);
         let revert_state = if block_number == best_block_number {
             // We do not check against the `last_block_number` here because
             // `HashedPostState::from_reverts` only uses the database tables, and not static files.
@@ -2495,6 +2507,8 @@ where
                 block_number + 1,
             )
             .map_err(ProviderError::from)?;
+            revert_accounts = revert_state.accounts.len();
+            revert_storages = revert_state.storages.len();
             debug!(
                 target: "engine::tree",
                 block_number,
@@ -2505,11 +2519,38 @@ where
             );
             revert_state
         };
+        let revert_ms = revert_started.elapsed().as_millis();
         input.append(revert_state);
 
         // Extend with contents of parent in-memory blocks.
+        let extend_started = std::time::Instant::now();
         input.extend_with_blocks(
             blocks.iter().rev().map(|block| (block.hashed_state(), block.trie_updates())),
+        );
+        let extend_ms = extend_started.elapsed().as_millis();
+
+        // Single summary log for easy flame-charting in logs.
+        //
+        // Note: this is in addition to the existing "Parent found ..." + revert-state logs above.
+        debug!(
+            target: "engine::tree",
+            %parent_hash,
+            persisting_kind = ?persisting_kind,
+            allocated_input,
+            best_block_number,
+            historical = ?historical,
+            anchor_block_number = block_number,
+            in_memory_blocks = blocks.len(),
+            revert_accounts,
+            revert_storages,
+            best_ms = best_ms as u64,
+            blocks_by_hash_ms = blocks_by_hash_ms as u64,
+            filter_ms = filter_ms as u64,
+            anchor_ms = anchor_ms as u64,
+            revert_ms = revert_ms as u64,
+            extend_ms = extend_ms as u64,
+            total_ms = started.elapsed().as_millis() as u64,
+            "compute_trie_input timing breakdown"
         );
 
         Ok(input)
