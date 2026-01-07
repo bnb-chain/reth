@@ -44,7 +44,6 @@ use reth_trie::{updates::TrieUpdates, HashedPostState, KeccakKeyHasher, TrieInpu
 use reth_trie_db::DatabaseHashedPostState;
 use reth_trie_parallel::root::{ParallelStateRoot, ParallelStateRootError};
 use rust_eth_triedb::{get_global_triedb, TrieDBError};
-use rust_eth_triedb_common::DiffLayers;
 use std::{collections::HashMap, sync::Arc, time::Instant};
 use tracing::{debug, debug_span, error, info, trace, warn};
 
@@ -604,71 +603,6 @@ where
             difflayer: None,
         })
     }
-
-    /// Calculates the state root for a block or payload using TrieDB.
-    ///
-    /// This method computes the state root by applying the hashed post state changes
-    /// on top of the parent block's state, using the TrieDB for efficient trie operations.
-    ///
-    /// # Arguments
-    ///
-    /// * `input` - The block or payload to calculate the state root for
-    /// * `difflayers` - Accumulated diff layers from previous blocks for incremental trie updates
-    /// * `hashed_state` - The hashed post state containing account and storage changes
-    /// * `state` - Optional reference to the engine API tree state for accessing in-memory blocks
-    ///
-    /// # Returns
-    ///
-    /// Returns a tuple containing:
-    /// * The computed state root (`B256`)
-    /// * Optional trie updates (currently always `None`)
-    ///
-    /// # Errors
-    ///
-    /// Returns `ProviderError` if:
-    /// * The parent block cannot be found in memory or database
-    /// * TrieDB state root computation fails
-    // pub fn calculate_state_root_with_triedb<
-    //     T: PayloadTypes<BuiltPayload: BuiltPayload<Primitives = N>>,
-    // >(
-    //     &mut self,
-    //     input: BlockOrPayload<T>,
-    //     difflayers: DiffLayers,
-    //     hashed_state: HashedPostState,
-    //     state: Option<&EngineApiTreeState<N>>,
-    // ) -> ProviderResult<(B256, Option<TrieUpdates>)>
-    // where
-    //     V: PayloadValidator<T, Block = N::Block>,
-    //     Evm: ConfigureEngineEvm<T::ExecutionData, Primitives = N>,
-    // {
-    //     let parent_hash = input.parent_hash();
-    //     let mut triedb = get_global_triedb();
-
-    //     // fetch parent block from memory (if available) or database
-    //     let parent_block = if let Some(state) = state {
-    //         // First check in-memory state for blocks not yet persisted
-    //         self.sealed_header_by_hash(parent_hash, state)?
-    //     } else {
-    //         // Fall back to database only
-    //         self.provider.sealed_header_by_hash(parent_hash)?
-    //     };
-
-    //     let Some(parent_block) = parent_block else {
-    //         return Err(ProviderError::HeaderNotFound(parent_hash.into()));
-    //     };
-
-    //     let trie_hashed_state = hashed_state.to_triedb_hashed_post_state();
-    //     let (new_root, difflayer) = triedb
-    //         .intermediate_and_commit_hashed_post_state(
-    //             parent_block.state_root(),
-    //             Some(&difflayers),
-    //             &trie_hashed_state,
-    //             None,
-    //         )
-    //         .map_err(ProviderError::other)?;
-
-    //     Ok((new_root, None))
-    // }
 
     /// Validates a block that has already been converted from a payload.
     ///

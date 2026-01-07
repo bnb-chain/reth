@@ -267,7 +267,6 @@ where
             Self::InsertExecutedBlock(block) => {
                 write!(f, "InsertExecutedBlock({:?})", block.recovered_block().num_hash())
             }
-            Self::Custom(_) => write!(f, "Custom"),
         }
     }
 }
