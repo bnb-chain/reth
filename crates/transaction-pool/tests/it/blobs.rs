@@ -1,5 +1,7 @@
 //! Blob transaction tests
 
+use alloy_primitives::U256;
+use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
 use reth_transaction_pool::{
     blobstore::InMemoryBlobStore,
     error::{Eip4844PoolTransactionError, InvalidPoolTransactionError, PoolErrorKind},
@@ -8,8 +10,6 @@ use reth_transaction_pool::{
     AddedTransactionOutcome, CoinbaseTipOrdering, Pool, PoolConfig, PoolTransaction,
     TransactionOrigin, TransactionPool,
 };
-use alloy_primitives::U256;
-use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn blobs_exclusive() {
@@ -49,7 +49,7 @@ async fn reject_blob_tx_with_zero_blob_fee() {
     let provider = MockEthProvider::default();
     let mut mock_tx_factory = MockTransactionFactory::default();
     let blob_tx = mock_tx_factory.create_eip4844();
-    
+
     // Add account with sufficient balance
     provider.add_account(
         blob_tx.transaction.sender(),
@@ -58,16 +58,11 @@ async fn reject_blob_tx_with_zero_blob_fee() {
 
     // Create a validator that does proper validation
     let blob_store = InMemoryBlobStore::default();
-    let validator = EthTransactionValidatorBuilder::new(provider)
-        .build(blob_store.clone());
+    let validator = EthTransactionValidatorBuilder::new(provider).build(blob_store.clone());
 
     // Create a transaction pool with the real validator
-    let txpool = Pool::new(
-        validator,
-        CoinbaseTipOrdering::default(),
-        blob_store,
-        PoolConfig::default(),
-    );
+    let txpool =
+        Pool::new(validator, CoinbaseTipOrdering::default(), blob_store, PoolConfig::default());
 
     // Create a blob transaction with zero max_fee_per_blob_gas
     let zero_fee_tx = blob_tx.transaction.with_blob_fee(0);
