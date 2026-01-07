@@ -16,8 +16,8 @@ env:
 name: bench
 jobs:
   codspeed:
-    runs-on:
-      group: Reth
+    runs-on: ubuntu-latest
+      # group: Reth
     steps:
       - uses: actions/checkout@v5
         with:

@@ -292,11 +292,10 @@ pub trait EthTransactions: LoadTransaction<Provider: BlockReaderIdExt> {
         Self::Provider: BlockIdReader,
     {
         async move {
-            let block_info = if let Some(block) = self.recovered_block(block_id).await? {
-                Some((block.hash(), block.number(), block.base_fee_per_gas()))
-            } else {
-                None
-            };
+            let block_info = self
+                .recovered_block(block_id)
+                .await?
+                .map(|block| (block.hash(), block.number(), block.base_fee_per_gas()));
 
             let block_hash = match block_id {
                 BlockId::Hash(hash) => hash.block_hash,
@@ -350,6 +349,7 @@ pub trait EthTransactions: LoadTransaction<Provider: BlockReaderIdExt> {
     ///
     /// Returns `Ok(Some(Vec))` with all pending transactions converted to RPC format.
     /// Returns `Ok(Some(Vec::new()))` if there are no pending transactions.
+    #[allow(clippy::type_complexity)]
     fn pending_transactions(
         &self,
     ) -> impl Future<Output = Result<Option<Vec<RpcTransaction<Self::NetworkTypes>>>, Self::Error>> + Send
@@ -376,6 +376,7 @@ pub trait EthTransactions: LoadTransaction<Provider: BlockReaderIdExt> {
     ///
     /// Returns a structured response with `txData` and `receipt` fields.
     /// Returns `Ok(None)` if the transaction does not exist.
+    #[allow(clippy::type_complexity)]
     fn transaction_data_and_receipt(
         &self,
         hash: B256,

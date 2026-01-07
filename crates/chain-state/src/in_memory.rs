@@ -318,7 +318,7 @@ impl<N: NodePrimitives> CanonicalInMemoryState<N> {
         {
             if self.inner.in_memory_state.blocks.read().get(&persisted_num_hash.hash).is_none() {
                 // do nothing
-                return
+                return;
             }
         }
 
@@ -542,7 +542,7 @@ impl<N: NodePrimitives> CanonicalInMemoryState<N> {
             if let Some(tx) =
                 block_state.block_ref().recovered_block().body().transaction_by_hash(&hash)
             {
-                return Some(tx.clone())
+                return Some(tx.clone());
             }
         }
         None
@@ -570,7 +570,7 @@ pub struct BlockState<N: NodePrimitives = EthPrimitives> {
     /// The executed block that determines the state after this block has been executed.
     block: ExecutedBlockWithTrieUpdates<N>,
     /// The block's parent block if it exists.
-    parent: Option<Arc<BlockState<N>>>,
+    parent: Option<Arc<Self>>,
 }
 
 impl<N: NodePrimitives> BlockState<N> {

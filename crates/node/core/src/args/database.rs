@@ -23,7 +23,8 @@ pub struct DatabaseArgs {
     #[arg(long = "db.exclusive")]
     pub exclusive: Option<bool>,
     /// Database page size (e.g., 4KB, 8KB, 16KB).
-    /// NOTE: Can only be set when creating a new database. Default: system default (typically 4KB).
+    /// NOTE: Can only be set when creating a new database. Default: system default (typically
+    /// 4KB).
     #[arg(long = "db.page-size", value_parser = parse_byte_size, verbatim_doc_comment)]
     pub page_size: Option<usize>,
     /// Maximum database size (e.g., 4TB, 8MB)

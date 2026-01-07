@@ -12,7 +12,7 @@
     issue_tracker_base_url = "https://github.com/paradigmxyz/reth/issues/"
 )]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
-#![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 use std::{
     cmp::Reverse,
@@ -256,7 +256,7 @@ impl EtlFile {
     /// Can return error if it reaches EOF before filling the internal buffers.
     pub(crate) fn read_next(&mut self) -> std::io::Result<Option<(Vec<u8>, Vec<u8>)>> {
         if self.len == 0 {
-            return Ok(None)
+            return Ok(None);
         }
 
         let mut buffer_key_length = [0; KV_LEN];

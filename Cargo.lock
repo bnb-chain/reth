@@ -11350,6 +11350,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "alloy-trie",
+ "arbitrary",
  "auto_impl",
  "hex",
  "rand 0.8.5",

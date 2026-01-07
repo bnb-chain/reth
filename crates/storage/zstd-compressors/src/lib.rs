@@ -6,7 +6,7 @@
     issue_tracker_base_url = "https://github.com/paradigmxyz/reth/issues/"
 )]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
-#![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate alloc;
@@ -120,7 +120,7 @@ impl ReusableDecompressor {
                     reserved_upper_bound = true;
                     if let Some(upper_bound) = Decompressor::upper_bound(src) {
                         if let Some(additional) = upper_bound.checked_sub(self.buf.capacity()) {
-                            break 'b additional
+                            break 'b additional;
                         }
                     }
                 }

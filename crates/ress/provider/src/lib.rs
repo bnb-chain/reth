@@ -6,7 +6,7 @@
     issue_tracker_base_url = "https://github.com/paradigmxyz/reth/issues/"
 )]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
-#![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 use alloy_consensus::BlockHeader as _;
 use alloy_primitives::{Bytes, B256};
@@ -97,7 +97,7 @@ where
     /// Generate state witness
     pub fn generate_witness(&self, block_hash: B256) -> ProviderResult<Vec<Bytes>> {
         if let Some(witness) = self.witness_cache.lock().get(&block_hash).cloned() {
-            return Ok(witness.as_ref().clone())
+            return Ok(witness.as_ref().clone());
         }
 
         let block =
@@ -107,7 +107,7 @@ where
         if best_block_number.saturating_sub(block.number()) > self.max_witness_window {
             return Err(ProviderError::TrieWitnessError(
                 "witness target block exceeds maximum witness window".to_owned(),
-            ))
+            ));
         }
 
         let mut executed_ancestors = Vec::new();
@@ -136,7 +136,7 @@ where
                     }
 
                     let Some(executed) = executed else {
-                        return Err(ProviderError::StateForHashNotFound(ancestor_hash))
+                        return Err(ProviderError::StateForHashNotFound(ancestor_hash));
                     };
                     ancestor_hash = executed.sealed_block().parent_hash();
                     executed_ancestors.push(executed);

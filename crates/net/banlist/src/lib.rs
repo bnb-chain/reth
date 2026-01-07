@@ -6,7 +6,7 @@
     issue_tracker_base_url = "https://github.com/paradigmxyz/reth/issues/"
 )]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
-#![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 type PeerId = alloy_primitives::B512;
 
@@ -16,7 +16,7 @@ use std::{collections::HashMap, net::IpAddr, time::Instant};
 /// Should be replaced with [`IpAddr::is_global`](std::net::IpAddr::is_global) once it is stable.
 pub const fn is_global(ip: &IpAddr) -> bool {
     if ip.is_unspecified() || ip.is_loopback() {
-        return false
+        return false;
     }
 
     match ip {
@@ -62,7 +62,7 @@ impl BanList {
             if let Some(until) = until {
                 if now > *until {
                     evicted.push(*peer);
-                    return false
+                    return false;
                 }
             }
             true
@@ -77,7 +77,7 @@ impl BanList {
             if let Some(until) = until {
                 if now > *until {
                     evicted.push(*peer);
-                    return false
+                    return false;
                 }
             }
             true

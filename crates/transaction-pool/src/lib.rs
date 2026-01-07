@@ -267,7 +267,7 @@
     html_favicon_url = "https://avatars0.githubusercontent.com/u/97369466?s=256",
     issue_tracker_base_url = "https://github.com/paradigmxyz/reth/issues/"
 )]
-#![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
 pub use crate::{
@@ -394,7 +394,7 @@ where
         if transactions.len() == 1 {
             let (origin, tx) = transactions.into_iter().next().unwrap();
             let res = self.pool.validator().validate_transaction(origin, tx).await;
-            return vec![(origin, res)]
+            return vec![(origin, res)];
         }
         let origins: Vec<_> = transactions.iter().map(|(origin, _)| *origin).collect();
         let tx_outcomes = self.pool.validator().validate_transactions(transactions).await;
@@ -509,7 +509,7 @@ where
         transactions: Vec<Self::Transaction>,
     ) -> Vec<PoolResult<AddedTransactionOutcome>> {
         if transactions.is_empty() {
-            return Vec::new()
+            return Vec::new();
         }
         let validated = self.validate_all(origin, transactions).await;
 
@@ -521,7 +521,7 @@ where
         transactions: Vec<(TransactionOrigin, Self::Transaction)>,
     ) -> Vec<PoolResult<AddedTransactionOutcome>> {
         if transactions.is_empty() {
-            return Vec::new()
+            return Vec::new();
         }
         let validated = self.validate_all_with_origins(transactions).await;
 
@@ -752,7 +752,7 @@ where
         &self,
         tx_hash: TxHash,
         blob: BlobTransactionSidecarVariant,
-    ) ->  Result<(), BlobStoreError> {
+    ) -> Result<(), BlobStoreError> {
         self.pool.blob_store().insert(tx_hash, blob)
     }
 

@@ -195,7 +195,7 @@ where
         if let Some(entry) = &self.cache.get(&key) {
             self.increment_by_one_precompile_cache_hits();
             if input.gas >= entry.gas_used() {
-                return entry.to_precompile_result()
+                return entry.to_precompile_result();
             }
         }
 
@@ -273,9 +273,9 @@ mod tests {
 
     #[test]
     fn test_precompile_cache_basic() {
-        let dyn_precompile: DynPrecompile = |_input: PrecompileInput<'_>| -> PrecompileResult {
+        let dyn_precompile: DynPrecompile = (|_input: PrecompileInput<'_>| -> PrecompileResult {
             Ok(PrecompileOutput { gas_used: 0, bytes: Bytes::default(), reverted: false })
-        }
+        })
         .into();
 
         let cache =

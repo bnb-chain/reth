@@ -4,12 +4,12 @@ name: kurtosis
 
 on:
   workflow_dispatch:
-  # schedule:
-  #   - cron: "0 */6 * * *"
+  schedule:
+    - cron: "0 */6 * * *"
 
-  # push:
-  #   tags:
-  #     - '*'
+  push:
+    tags:
+      - '*'
 
 env:
   CARGO_TERM_COLOR: always
@@ -30,8 +30,8 @@ jobs:
     strategy:
       fail-fast: false
     name: run kurtosis
-    runs-on:
-      group: Reth
+    runs-on: ubuntu-latest
+      # group: Reth
     needs:
       - prepare-reth
     steps:
@@ -59,8 +59,8 @@ jobs:
   notify-on-error:
     needs: test
     if: failure()
-    runs-on:
-      group: Reth
+    runs-on: ubuntu-latest
+      # group: Reth
     steps:
       - name: Slack Webhook Action
         uses: rtCamp/action-slack-notify@v2

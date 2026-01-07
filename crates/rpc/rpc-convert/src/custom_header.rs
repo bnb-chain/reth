@@ -28,7 +28,7 @@ pub struct CustomRpcHeader<H = alloy_consensus::Header> {
 
 impl<H> CustomRpcHeader<H> {
     /// Create a new custom header from consensus header components
-    pub fn new(
+    pub const fn new(
         hash: BlockHash,
         inner: H,
         total_difficulty: Option<U256>,
@@ -161,7 +161,8 @@ where
     }
 }
 
-// RpcObject is automatically implemented via blanket impl for types that implement Serialize + Deserialize
+// RpcObject is automatically implemented via blanket impl for types that implement Serialize +
+// Deserialize
 
 /// Type alias for the standard Ethereum custom header
 pub type EthereumCustomHeader = CustomRpcHeader<alloy_consensus::Header>;
@@ -194,22 +195,23 @@ where
     }
 }
 
-/// calculate millisecond timestamp from header mix_hash for any BlockHeader type  
+/// calculate millisecond timestamp from header `mix_hash` for any `BlockHeader` type  
 pub fn calculate_millisecond_timestamp<T: reth_primitives_traits::BlockHeader>(header: &T) -> u64 {
     let seconds = header.timestamp();
     let mix_hash = header.mix_hash();
 
     let ms_part = if let Some(mix_hash) = mix_hash {
-        if mix_hash != B256::ZERO {
+        if mix_hash == B256::ZERO {
+            0
+        } else {
             let bytes = mix_hash.as_slice();
-            // Convert last 8 bytes to u64 (big-endian), equivalent to Go's uint256.SetBytes32().Uint64()
+            // Convert last 8 bytes to u64 (big-endian), equivalent to Go's
+            // uint256.SetBytes32().Uint64()
             let mut result = 0u64;
             for &byte in bytes.iter().skip(24).take(8) {
                 result = (result << 8) | u64::from(byte);
             }
             result
-        } else {
-            0
         }
     } else {
         0

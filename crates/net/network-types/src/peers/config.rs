@@ -167,8 +167,8 @@ pub struct PeersConfig {
     #[cfg_attr(feature = "serde", serde(default, with = "humantime_serde"))]
     pub incoming_ip_throttle_duration: Duration,
 
-    /// The node ids of the proxyed nodes.
-    pub proxyed_node_ids: Vec<PeerId>,
+    /// The node ids of the proxied nodes.
+    pub proxied_node_ids: Vec<PeerId>,
 }
 
 impl Default for PeersConfig {
@@ -187,7 +187,7 @@ impl Default for PeersConfig {
             basic_nodes: Default::default(),
             max_backoff_count: 5,
             incoming_ip_throttle_duration: INBOUND_IP_THROTTLE_DURATION,
-            proxyed_node_ids: Vec::new(),
+            proxied_node_ids: Vec::new(),
         }
     }
 }
