@@ -22,7 +22,6 @@ jobs:
   test:
     name: test / ${{ matrix.type }} (${{ matrix.partition }}/${{ matrix.total_partitions }})
     runs-on: ubuntu-latest
-      # group: Reth
     env:
       RUST_BACKTRACE: 1
     strategy:
@@ -80,7 +79,6 @@ jobs:
   state:
     name: Ethereum state tests
     runs-on: ubuntu-latest
-      # group: Reth
     env:
       RUST_LOG: info,sync=error
       RUST_BACKTRACE: 1
@@ -117,7 +115,6 @@ jobs:
   doc:
     name: doc tests
     runs-on: ubuntu-latest
-      # group: Reth
     env:
       RUST_BACKTRACE: 1
     timeout-minutes: 30

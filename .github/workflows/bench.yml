@@ -17,7 +17,6 @@ name: bench
 jobs:
   codspeed:
     runs-on: ubuntu-latest
-      # group: Reth
     steps:
       - uses: actions/checkout@v5
         with:
@@ -36,5 +35,6 @@ jobs:
       - name: Run the benchmarks
         uses: CodSpeedHQ/action@v4
         with:
+          mode: simulation
           run: cargo codspeed run --workspace
           token: ${{ secrets.CODSPEED_TOKEN }}

@@ -1,9 +1,14 @@
 //! Blob transaction tests
 
+use alloy_primitives::U256;
+use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
 use reth_transaction_pool::{
-    error::PoolErrorKind,
+    blobstore::InMemoryBlobStore,
+    error::{Eip4844PoolTransactionError, InvalidPoolTransactionError, PoolErrorKind},
     test_utils::{MockTransaction, MockTransactionFactory, TestPoolBuilder},
-    AddedTransactionOutcome, PoolTransaction, TransactionOrigin, TransactionPool,
+    validate::EthTransactionValidatorBuilder,
+    AddedTransactionOutcome, CoinbaseTipOrdering, Pool, PoolConfig, PoolTransaction,
+    TransactionOrigin, TransactionPool,
 };
 
 #[tokio::test(flavor = "multi_thread")]
@@ -40,11 +45,26 @@ async fn blobs_exclusive() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn reject_blob_tx_with_zero_blob_fee() {
-    let txpool = TestPoolBuilder::default();
+    // Create a mock provider with account balance
+    let provider = MockEthProvider::default();
     let mut mock_tx_factory = MockTransactionFactory::default();
+    let blob_tx = mock_tx_factory.create_eip4844();
+
+    // Add account with sufficient balance
+    provider.add_account(
+        blob_tx.transaction.sender(),
+        ExtendedAccount::new(*blob_tx.transaction.get_nonce(), U256::MAX),
+    );
+
+    // Create a validator that does proper validation
+    let blob_store = InMemoryBlobStore::default();
+    let validator = EthTransactionValidatorBuilder::new(provider).build(blob_store.clone());
+
+    // Create a transaction pool with the real validator
+    let txpool =
+        Pool::new(validator, CoinbaseTipOrdering::default(), blob_store, PoolConfig::default());
 
     // Create a blob transaction with zero max_fee_per_blob_gas
-    let blob_tx = mock_tx_factory.create_eip4844();
     let zero_fee_tx = blob_tx.transaction.with_blob_fee(0);
 
     let res = txpool.add_transaction(TransactionOrigin::External, zero_fee_tx).await;
@@ -54,9 +74,11 @@ async fn reject_blob_tx_with_zero_blob_fee() {
     let err = res.unwrap_err();
 
     match err.kind {
-        PoolErrorKind::InvalidTransaction(_) => {
+        PoolErrorKind::InvalidTransaction(InvalidPoolTransactionError::Eip4844(
+            Eip4844PoolTransactionError::ZeroBlobFee,
+        )) => {
             // Expected: InvalidPoolTransactionError::Eip4844(ZeroBlobFee)
         }
-        _ => panic!("Expected InvalidTransaction error for zero blob fee, got: {:?}", err.kind),
+        _ => panic!("Expected Eip4844(ZeroBlobFee) error for zero blob fee, got: {:?}", err.kind),
     }
 }

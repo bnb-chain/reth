@@ -33,7 +33,6 @@ jobs:
       fail-fast: false
     name: run kurtosis
     runs-on: ubuntu-latest
-      # group: Reth
     needs:
       - prepare-reth
     steps:
@@ -90,7 +89,6 @@ jobs:
     needs: test
     if: failure()
     runs-on: ubuntu-latest
-      # group: Reth
     steps:
       - name: Slack Webhook Action
         uses: rtCamp/action-slack-notify@v2

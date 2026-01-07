@@ -19,7 +19,6 @@ name: compact-codec
 jobs:
   compact-codec:
     runs-on: ubuntu-latest
-      # group: Reth
     strategy:
       matrix:
         bin:

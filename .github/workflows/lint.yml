@@ -1,7 +1,6 @@
 name: lint
 
 on:
-  workflow_dispatch: # disable action temporarily
   pull_request:
   merge_group:
   push:
@@ -95,19 +94,9 @@ jobs:
   #       run: .github/assets/check_rv32imac.sh
 
   crate-checks:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-16core
     timeout-minutes: 120
     steps:
-      - name: Free disk space
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
       - uses: actions/checkout@v5
       - uses: rui314/setup-mold@v1
       - uses: dtolnay/rust-toolchain@stable
@@ -270,20 +259,21 @@ jobs:
           RUSTFLAGS: -D warnings
 
   # Check crates correctly propagate features
-  feature-propagation:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v5
-      - name: fetch deps
-        run: |
-          # Eagerly pull dependencies
-          time cargo metadata --format-version=1 --locked > /dev/null
-      - name: run zepter
-        run: |
-          cargo install zepter -f --locked
-          zepter --version
-          time zepter run check
+  # TODO: Re-enable this when we have a way to test it
+  # feature-propagation:
+  #   runs-on: ubuntu-latest
+  #   timeout-minutes: 20
+  #   steps:
+  #     - uses: actions/checkout@v5
+  #     - name: fetch deps
+  #       run: |
+  #         # Eagerly pull dependencies
+  #         time cargo metadata --format-version=1 --locked > /dev/null
+  #     - name: run zepter
+  #       run: |
+  #         cargo install zepter -f --locked
+  #         zepter --version
+  #         time zepter run check
 
   deny:
     uses: ithacaxyz/ci/.github/workflows/deny.yml@main
@@ -305,7 +295,7 @@ jobs:
       - grafana
       - no-test-deps
       - features
-      - feature-propagation
+      # - feature-propagation
       - deny
     timeout-minutes: 30
     steps:

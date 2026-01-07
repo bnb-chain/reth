@@ -18,7 +18,6 @@ jobs:
   sync:
     name: sync (${{ matrix.chain.bin }})
     runs-on: ubuntu-latest
-      # group: Reth
     env:
       RUST_LOG: info,sync=error
       RUST_BACKTRACE: 1

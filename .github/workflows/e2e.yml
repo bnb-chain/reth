@@ -20,8 +20,7 @@ concurrency:
 jobs:
   test:
     name: e2e-testsuite
-    runs-on: ubuntu-latest
-      # group: Reth
+    runs-on: ubuntu-latest      
     env:
       RUST_BACKTRACE: 1
     timeout-minutes: 90
