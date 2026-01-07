@@ -202,7 +202,7 @@ impl<N: NetworkPrimitives> NetworkState<N> {
         let hash = msg.block.block().header().hash_slow();
         let number = msg.block.block().header().number();
         let mut count = 0;
-        let mut proxyed_peer_count = 0;
+        let mut proxied_peer_count = 0;
 
         // Shuffle to propagate to a random sample of peers on every block announcement
         let mut peers: Vec<_> = self.active_peers.iter_mut().collect();
@@ -230,8 +230,8 @@ impl<N: NetworkPrimitives> NetworkState<N> {
                 count += 1;
             }
 
-            if count > num_propagate && self.peers_manager.is_proxyed_peer(peer_id) {
-                debug!("peer:{} is proxyed, sending new block:{}", peer_id, number);
+            if count > num_propagate && self.peers_manager.is_proxied_peer(peer_id) {
+                debug!("peer:{} is proxied, sending new block:{}", peer_id, number);
                 self.queued_messages
                     .push_back(StateAction::NewBlock { peer_id: *peer_id, block: msg.clone() });
 
@@ -242,14 +242,14 @@ impl<N: NetworkPrimitives> NetworkState<N> {
 
                 // mark the block as seen by the peer
                 peer.blocks.insert(msg.hash);
-                proxyed_peer_count += 1;
+                proxied_peer_count += 1;
             }
-            // todo: evn
+            // todo: even
         }
 
         debug!(
-            "Propagated block hash:{}, count:{}, proxyed_peer_count:{}",
-            hash, count, proxyed_peer_count,
+            "Propagated block hash:{}, count:{}, proxied_peer_count:{}",
+            hash, count, proxied_peer_count,
         );
     }
 
@@ -284,7 +284,7 @@ impl<N: NetworkPrimitives> NetworkState<N> {
     }
 
     /// Gets the peer's real-time best block information
-    /// Returns (best_hash, best_number, best_td)
+    /// Returns (`best_hash`, `best_number`, `best_td`)
     pub(crate) fn get_peer_best_block(
         &self,
         peer_id: &PeerId,
@@ -387,8 +387,8 @@ impl<N: NetworkPrimitives> NetworkState<N> {
                 self.state_fetcher.on_pending_disconnect(&peer_id);
                 self.queued_messages.push_back(StateAction::Disconnect { peer_id, reason });
             }
-            PeerAction::DisconnectBannedIncoming { peer_id }
-            | PeerAction::DisconnectUntrustedIncoming { peer_id } => {
+            PeerAction::DisconnectBannedIncoming { peer_id } |
+            PeerAction::DisconnectUntrustedIncoming { peer_id } => {
                 self.state_fetcher.on_pending_disconnect(&peer_id);
                 self.queued_messages.push_back(StateAction::Disconnect { peer_id, reason: None });
             }
@@ -552,7 +552,7 @@ impl<N: NetworkPrimitives> NetworkState<N> {
 pub(crate) struct ActivePeer<N: NetworkPrimitives> {
     /// Best block of the peer.
     pub(crate) best_hash: B256,
-    /// Total difficulty of the peer (None in PoS)
+    /// Total difficulty of the peer (None in `PoS`)
     pub(crate) best_td: Option<alloy_primitives::U256>,
     /// The capabilities of the remote peer.
     #[expect(dead_code)]

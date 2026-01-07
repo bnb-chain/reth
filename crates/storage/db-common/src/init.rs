@@ -119,17 +119,17 @@ where
                 // make sure that our database has been written to, and throw error if it's empty.
                 if factory.get_stage_checkpoint(StageId::Headers)?.is_none() {
                     error!(target: "reth::storage", "Genesis header found on static files, but database is uninitialized.");
-                    return Err(InitStorageError::UninitializedDatabase)
+                    return Err(InitStorageError::UninitializedDatabase);
                 }
 
                 debug!("Genesis already written, skipping.");
-                return Ok(hash)
+                return Ok(hash);
             }
 
             return Err(InitStorageError::GenesisHashMismatch {
                 chainspec_hash: hash,
                 storage_hash: block_hash,
-            })
+            });
         }
         Err(e) => {
             debug!(?e);
@@ -151,11 +151,11 @@ where
 
     insert_genesis_state(&provider_rw, alloc.iter())?;
 
-    if !is_triedb_active() {
+    if is_triedb_active() {
+        info!(target: "reth::storage", "TrieDB is active, skipping mdbx state root computation");
+    } else {
         // compute state root to populate trie tables
         compute_state_root(&provider_rw, None)?;
-    } else {
-        info!(target: "reth::storage", "TrieDB is active, skipping mdbx state root computation");
     }
 
     // insert sync stage
@@ -190,10 +190,10 @@ where
         + StateWriter
         + AsRef<Provider>,
 {
-    if !is_triedb_active() {
-        insert_state(provider, alloc, 0)
-    } else {
+    if is_triedb_active() {
         insert_triedb_state(provider, alloc, 0)
+    } else {
+        insert_state(provider, alloc, 0)
     }
 }
 
@@ -242,8 +242,8 @@ where
         let mut state_account = StateAccount::default()
             .with_nonce(account.nonce.unwrap_or_default())
             .with_balance(account.balance);
-        if bytecode_hash.is_some() {
-            state_account = state_account.with_code_hash(bytecode_hash.unwrap());
+        if let Some(bytecode_hash) = bytecode_hash {
+            state_account = state_account.with_code_hash(bytecode_hash);
         }
         state_accounts.insert(hashed_address, Some(state_account));
 
@@ -289,21 +289,27 @@ where
         );
     }
 
-
-    let (root, nodes, diff_storage_roots) = triedb.batch_update_and_commit(
-        alloy_trie::EMPTY_ROOT_HASH,
-        None,
-        state_accounts,
-        HashSet::new(),
-        storage_states)
-        .map_err(|_| ProviderError::Database(DatabaseError::Other("Failed to update and commit state".to_string())))?;
+    let (root, nodes, diff_storage_roots) = triedb
+        .batch_update_and_commit(
+            alloy_trie::EMPTY_ROOT_HASH,
+            None,
+            state_accounts,
+            HashSet::new(),
+            storage_states,
+        )
+        .map_err(|_| {
+            ProviderError::Database(DatabaseError::Other(
+                "Failed to update and commit state".to_string(),
+            ))
+        })?;
 
     let diff_nodes = (*nodes.to_diff_nodes()).clone();
     let difflayer = Some(Arc::new(DiffLayer::new(diff_nodes, diff_storage_roots)));
-    triedb.flush(0, root, &difflayer).map_err(|_| ProviderError::Database(DatabaseError::Other("Failed to flush state".to_string())))?;
+    triedb.flush(0, root, &difflayer).map_err(|_| {
+        ProviderError::Database(DatabaseError::Other("Failed to flush state".to_string()))
+    })?;
 
     info!(target: "reth::storage", "Triedb genesis state root computed: {:?}", root);
-
 
     let all_reverts_init: RevertsInit = HashMap::from_iter([(block, reverts_init)]);
 
@@ -326,7 +332,6 @@ where
 
     Ok(())
 }
-
 
 /// Inserts state at given block into database.
 pub fn insert_state<'a, 'b, Provider>(
@@ -536,7 +541,7 @@ where
         + AsRef<Provider>,
 {
     if etl_config.file_size == 0 {
-        return Err(eyre::eyre!("ETL file size cannot be zero"))
+        return Err(eyre::eyre!("ETL file size cannot be zero"));
     }
 
     let block = provider_rw.last_block_number()?;
@@ -560,7 +565,7 @@ where
             got: dump_state_root,
             expected: expected_state_root,
         })
-        .into())
+        .into());
     }
 
     debug!(target: "reth::cli",
@@ -596,7 +601,7 @@ where
             got: computed_state_root,
             expected: expected_state_root,
         })
-        .into())
+        .into());
     }
 
     // insert sync stages for stages that require state
@@ -630,7 +635,7 @@ fn parse_accounts(
 
     while let Ok(n) = reader.read_line(&mut line) {
         if n == 0 {
-            break
+            break;
         }
 
         let GenesisAccountWithAddress { genesis_account, address } = serde_json::from_str(&line)?;
@@ -783,7 +788,7 @@ where
                     "State root has been computed"
                 );
 
-                return Ok(root)
+                return Ok(root);
             }
         }
     }

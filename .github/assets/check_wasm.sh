@@ -59,8 +59,38 @@ exclude_crates=(
   reth-engine-local
   reth-ress-protocol
   reth-ress-provider
-  # The following are not supposed to be working
+  # The following are not supposed to be working (jemalloc/tokio dependencies)
   reth # all of the crates below
+  reth-chain-state # jemalloc, tokio
+  reth-config # jemalloc
+  reth-consensus # jemalloc
+  reth-consensus-common # jemalloc, tokio
+  reth-db # jemalloc
+  reth-db-api # jemalloc
+  reth-engine-primitives # jemalloc, tokio
+  reth-errors # jemalloc
+  reth-ethereum-consensus # jemalloc, tokio
+  reth-ethereum-engine-primitives # jemalloc, tokio
+  reth-evm # jemalloc
+  reth-evm-ethereum # jemalloc
+  reth-execution-types # jemalloc, tokio
+  reth-exex-types # jemalloc, tokio
+  reth-network-api # jemalloc, tokio
+  reth-network-p2p # jemalloc, tokio
+  reth-node-types # jemalloc
+  reth-optimism-consensus # jemalloc, tokio
+  reth-optimism-evm # jemalloc
+  reth-payload-builder-primitives # jemalloc, tokio
+  reth-payload-primitives # jemalloc, tokio
+  reth-revm # jemalloc
+  reth-rpc-server-types # jemalloc, tokio
+  reth-stages-types # jemalloc
+  reth-stateless # jemalloc
+  reth-storage-api # jemalloc, tokio
+  reth-trie # jemalloc
+  reth-trie-common # jemalloc
+  reth-trie-db # jemalloc
+  reth-trie-sparse # jemalloc
   reth-storage-rpc-provider
   reth-invalid-block-hooks # reth-provider
   reth-libmdbx # mdbx

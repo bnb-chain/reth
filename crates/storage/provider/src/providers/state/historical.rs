@@ -79,7 +79,7 @@ impl<'b, Provider: DBProvider + BlockNumReader> HistoricalStateProviderRef<'b, P
     /// Lookup an account in the `AccountsHistory` table
     pub fn account_history_lookup(&self, address: Address) -> ProviderResult<HistoryInfo> {
         if !self.lowest_available_blocks.is_account_history_available(self.block_number) {
-            return Err(ProviderError::StateAtBlockPruned(self.block_number))
+            return Err(ProviderError::StateAtBlockPruned(self.block_number));
         }
 
         // history key to search IntegerList of block number changesets.
@@ -98,7 +98,7 @@ impl<'b, Provider: DBProvider + BlockNumReader> HistoricalStateProviderRef<'b, P
         storage_key: StorageKey,
     ) -> ProviderResult<HistoryInfo> {
         if !self.lowest_available_blocks.is_storage_history_available(self.block_number) {
-            return Err(ProviderError::StateAtBlockPruned(self.block_number))
+            return Err(ProviderError::StateAtBlockPruned(self.block_number));
         }
 
         // history key to search IntegerList of block number changesets.
@@ -122,7 +122,7 @@ impl<'b, Provider: DBProvider + BlockNumReader> HistoricalStateProviderRef<'b, P
         if !self.lowest_available_blocks.is_account_history_available(self.block_number) ||
             !self.lowest_available_blocks.is_storage_history_available(self.block_number)
         {
-            return Err(ProviderError::StateAtBlockPruned(self.block_number))
+            return Err(ProviderError::StateAtBlockPruned(self.block_number));
         }
 
         if self.check_distance_against_limit(EPOCH_SLOTS)? {
@@ -139,7 +139,7 @@ impl<'b, Provider: DBProvider + BlockNumReader> HistoricalStateProviderRef<'b, P
     /// Retrieve revert hashed storage for this history provider and target address.
     fn revert_storage(&self, address: Address) -> ProviderResult<HashedStorage> {
         if !self.lowest_available_blocks.is_storage_history_available(self.block_number) {
-            return Err(ProviderError::StateAtBlockPruned(self.block_number))
+            return Err(ProviderError::StateAtBlockPruned(self.block_number));
         }
 
         if self.check_distance_against_limit(EPOCH_SLOTS * 10)? {

@@ -506,6 +506,7 @@ where
     Engine: EngineTypes,
     Engine::ExecutionPayloadEnvelopeV3: Into<ExecutionPayloadEnvelopeV3>,
 {
+    #[allow(unused_assignments)]
     fn execute<'a>(&'a mut self, env: &'a mut Environment<Engine>) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             let mut accepted_check: bool = false;

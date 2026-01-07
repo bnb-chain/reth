@@ -7,14 +7,12 @@ use alloy_consensus::BlockHeader;
 use reth_chain_state::{ExecutedBlock, ExecutedBlockWithTrieUpdates};
 use reth_db_api::transaction::{DbTx, DbTxMut};
 use reth_errors::{ProviderError, ProviderResult};
-use reth_storage_errors::db::DatabaseError;
-use rust_eth_triedb::get_global_triedb;
-use rust_eth_triedb::triedb_manager::is_triedb_active;
 use reth_primitives_traits::{NodePrimitives, SignedTransaction};
 use reth_static_file_types::StaticFileSegment;
 use reth_storage_api::{DBProvider, StageCheckpointWriter, TransactionsProviderExt};
-use reth_storage_errors::writer::UnifiedStorageWriterError;
+use reth_storage_errors::{db::DatabaseError, writer::UnifiedStorageWriterError};
 use revm_database::OriginalValuesKnown;
+use rust_eth_triedb::{get_global_triedb, triedb_manager::is_triedb_active};
 use std::sync::Arc;
 use tracing::debug;
 
@@ -77,7 +75,7 @@ impl<'a, ProviderDB, ProviderSF> UnifiedStorageWriter<'a, ProviderDB, ProviderSF
     #[expect(unused)]
     const fn ensure_static_file(&self) -> Result<(), UnifiedStorageWriterError> {
         if self.static_file.is_none() {
-            return Err(UnifiedStorageWriterError::MissingStaticFileWriter)
+            return Err(UnifiedStorageWriterError::MissingStaticFileWriter);
         }
         Ok(())
     }
@@ -142,7 +140,7 @@ where
     {
         if blocks.is_empty() {
             debug!(target: "provider::storage_writer", "Attempted to write empty block range");
-            return Ok(())
+            return Ok(());
         }
 
         // NOTE: checked non-empty above
@@ -155,11 +153,7 @@ where
         debug!(target: "provider::storage_writer", block_count = %blocks.len(), "Writing blocks and execution data to storage");
 
         // Only get TrieDB instance if TrieDB is active
-        let mut triedb_opt = if is_triedb_active() {
-            Some(get_global_triedb())
-        } else {
-            None
-        };
+        let mut triedb_opt = is_triedb_active().then(get_global_triedb);
 
         // TODO: Do performant / batched writes for each type of object
         // instead of a loop over all blocks,
@@ -181,8 +175,8 @@ where
 
             // Only check latest_persist_state if TrieDB is active
             let latest_state_root_opt = if let Some(ref mut triedb) = triedb_opt {
-                let (latest_block_number, latest_state_root) = triedb.latest_persist_state()
-                    .map_err(|e| ProviderError::other(e))?;
+                let (latest_block_number, latest_state_root) =
+                    triedb.latest_persist_state().map_err(ProviderError::other)?;
 
                 if latest_block_number != block_number - 1 {
                     return Err(ProviderError::Database(DatabaseError::Other(format!("latest_block_number != block_number - 1, latest_block_number={}, block_number={}", latest_block_number, block_number))));
@@ -204,15 +198,18 @@ where
                 StorageLocation::StaticFiles,
             )?;
 
-            if let (Some(ref mut triedb), Some(latest_state_root)) = (triedb_opt.as_mut(), latest_state_root_opt) {
-                let triedb_hashed_post_state = hashed_state_clone.as_ref().to_triedb_hashed_post_state();
-                let (new_root, difflayer) = triedb.commit_hashed_post_state(latest_state_root, None, &triedb_hashed_post_state)
-                    .map_err(|e| ProviderError::other(e))?;
+            if let (Some(ref mut triedb), Some(latest_state_root)) =
+                (triedb_opt.as_mut(), latest_state_root_opt)
+            {
+                let triedb_hashed_post_state =
+                    hashed_state_clone.as_ref().to_triedb_hashed_post_state();
+                let (new_root, difflayer) = triedb
+                    .commit_hashed_post_state(latest_state_root, None, &triedb_hashed_post_state)
+                    .map_err(ProviderError::other)?;
                 if new_root != state_root {
                     return Err(ProviderError::Database(DatabaseError::Other(format!("write hashed state to triedb, block_number={}, new_root({:?}) != state_root({:?})", block_number, new_root, state_root))));
                 }
-                triedb.flush(block_number, new_root, &difflayer)
-                    .map_err(|e| ProviderError::other(e))?;
+                triedb.flush(block_number, new_root, &difflayer).map_err(ProviderError::other)?;
             } else {
                 // insert hashes and intermediate merkle nodes
                 self.database()

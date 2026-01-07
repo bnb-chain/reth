@@ -425,9 +425,9 @@ where
 
         // Drop non-local transactions with a fee lower than the configured fee for acceptance into
         // the pool.
-        if !is_local
-            && transaction.is_dynamic_fee()
-            && transaction.max_priority_fee_per_gas() < self.minimum_priority_fee
+        if !is_local &&
+            transaction.is_dynamic_fee() &&
+            transaction.max_priority_fee_per_gas() < self.minimum_priority_fee
         {
             return Err(TransactionValidationOutcome::Invalid(
                 transaction,
@@ -506,8 +506,8 @@ where
         }
 
         // Osaka validation of max tx gas.
-        if self.fork_tracker.is_osaka_activated()
-            && transaction.gas_limit() > MAX_TX_GAS_LIMIT_OSAKA
+        if self.fork_tracker.is_osaka_activated() &&
+            transaction.gas_limit() > MAX_TX_GAS_LIMIT_OSAKA
         {
             return Err(TransactionValidationOutcome::Invalid(
                 transaction,
@@ -1677,7 +1677,7 @@ mod tests {
             ExtendedAccount::new(transaction.nonce(), alloy_primitives::U256::ZERO),
         );
 
-        // Valdiate with balance check enabled
+        // Validate with balance check enabled
         let validator = EthTransactionValidatorBuilder::new(provider.clone())
             .build(InMemoryBlobStore::default());
 
@@ -1693,7 +1693,7 @@ mod tests {
             panic!("Expected Invalid outcome with InsufficientFunds error");
         }
 
-        // Valdiate with balance check disabled
+        // Validate with balance check disabled
         let validator = EthTransactionValidatorBuilder::new(provider)
             .disable_balance_check() // This should allow the transaction through despite zero balance
             .build(InMemoryBlobStore::default());

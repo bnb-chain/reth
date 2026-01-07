@@ -10,7 +10,7 @@
     issue_tracker_base_url = "https://github.com/paradigmxyz/reth/issues/"
 )]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
-#![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 use memmap2::Mmap;
 use serde::{Deserialize, Serialize};
@@ -306,12 +306,12 @@ impl<H: NippyJarHeader> NippyJar<H> {
         columns: &[impl IntoIterator<Item = ColumnResult<Vec<u8>>>],
     ) -> Result<(), NippyJarError> {
         if columns.len() != self.columns {
-            return Err(NippyJarError::ColumnLenMismatch(self.columns, columns.len()))
+            return Err(NippyJarError::ColumnLenMismatch(self.columns, columns.len()));
         }
 
         if let Some(compression) = &self.compressor {
             if !compression.is_ready() {
-                return Err(NippyJarError::CompressorNotReady)
+                return Err(NippyJarError::CompressorNotReady);
             }
         }
 
@@ -353,9 +353,9 @@ impl DataReader {
 
         // Ensure that the size of an offset is at most 8 bytes.
         if offset_size > 8 {
-            return Err(NippyJarError::OffsetSizeTooBig { offset_size })
+            return Err(NippyJarError::OffsetSizeTooBig { offset_size });
         } else if offset_size == 0 {
-            return Err(NippyJarError::OffsetSizeTooSmall { offset_size })
+            return Err(NippyJarError::OffsetSizeTooSmall { offset_size });
         }
 
         Ok(Self { data_file, data_mmap, offset_file, offset_size, offset_mmap })
@@ -395,7 +395,7 @@ impl DataReader {
 
         let offset_end = index.saturating_add(self.offset_size as usize);
         if offset_end > self.offset_mmap.len() {
-            return Err(NippyJarError::OffsetOutOfBounds { index })
+            return Err(NippyJarError::OffsetOutOfBounds { index });
         }
 
         buffer[..self.offset_size as usize].copy_from_slice(&self.offset_mmap[index..offset_end]);

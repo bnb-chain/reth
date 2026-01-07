@@ -1,5 +1,6 @@
 use crate::{
-    error::BeaconForkChoiceUpdateError, BeaconOnNewPayloadError, BSCEngineMessageError, ExecutionPayload, ForkchoiceStatus
+    error::BeaconForkChoiceUpdateError, BSCEngineMessageError, BeaconOnNewPayloadError,
+    ExecutionPayload, ForkchoiceStatus,
 };
 use alloy_primitives::{BlockHash, BlockNumber, U256};
 use alloy_rpc_types_engine::{

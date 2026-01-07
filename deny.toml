@@ -8,6 +8,9 @@ ignore = [
     "RUSTSEC-2024-0384",
     # https://rustsec.org/advisories/RUSTSEC-2024-0436 paste! is unmaintained
     "RUSTSEC-2024-0436",
+    # https://rustsec.org/advisories/RUSTSEC-2025-0137 ruint reciprocal_mg10 unsoundness
+    # TODO: upgrade ruint to >=1.17.1 when alloy-primitives updates
+    "RUSTSEC-2025-0137",
 ]
 
 # This section is considered when running `cargo deny check bans`.
@@ -89,4 +92,6 @@ allow-git = [
     "https://github.com/alloy-rs/evm",
     "https://github.com/alloy-rs/hardforks",
     "https://github.com/paradigmxyz/jsonrpsee",
+    # BSC triedb integration
+    "https://github.com/bnb-chain/reth-bsc-triedb",
 ]

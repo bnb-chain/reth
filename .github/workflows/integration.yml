@@ -3,14 +3,14 @@
 name: integration
 
 on:
-  workflow_dispatch: # disable action temporarily
-  # pull_request:
-  # merge_group:
-  # push:
-  #   branches: [main]
-  # schedule:
-  #   # Run once a day at 3:00 UTC
-  #   - cron: "0 3 * * *"
+  workflow_dispatch:
+  pull_request:
+  merge_group:
+  push:
+    branches: [main, develop, ci-e2e]
+  schedule:
+    # Run once a day at 3:00 UTC
+    - cron: "0 3 * * *"
 
 env:
   CARGO_TERM_COLOR: always
@@ -24,8 +24,8 @@ jobs:
   test:
     name: test / ${{ matrix.network }}
     if: github.event_name != 'schedule'
-    runs-on:
-      group: Reth
+    runs-on: ubuntu-latest
+      # group: Reth
     env:
       RUST_BACKTRACE: 1
     strategy:
@@ -33,7 +33,19 @@ jobs:
         network: ["ethereum", "optimism"]
     timeout-minutes: 60
     steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
       - uses: actions/checkout@v5
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y liburing-dev pkg-config libclang-dev
       - uses: rui314/setup-mold@v1
       - uses: dtolnay/rust-toolchain@stable
       - name: Install Geth

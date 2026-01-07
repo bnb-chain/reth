@@ -131,7 +131,11 @@ impl<N: ProviderNodeTypes> BlockchainProvider<N> {
     /// [`BlockHashReader`]. This may fail if the inner read database transaction fails to open.
     #[track_caller]
     pub fn consistent_provider(&self) -> ProviderResult<ConsistentProvider<N>> {
-        ConsistentProvider::new(self.chain_spec(), self.database.clone(), self.canonical_in_memory_state())
+        ConsistentProvider::new(
+            self.chain_spec(),
+            self.database.clone(),
+            self.canonical_in_memory_state(),
+        )
     }
 
     /// This uses a given [`BlockState`] to initialize a state provider for that block.
@@ -604,7 +608,7 @@ impl<N: ProviderNodeTypes> StateProviderFactory for BlockchainProvider<N> {
 
     fn maybe_pending(&self) -> ProviderResult<Option<StateProviderBox>> {
         if let Some(pending) = self.canonical_in_memory_state.pending_state() {
-            return Ok(Some(Box::new(self.block_state_provider(&pending)?)))
+            return Ok(Some(Box::new(self.block_state_provider(&pending)?)));
         }
 
         Ok(None)
@@ -2282,7 +2286,7 @@ mod tests {
 
             // Invalid/Non-existent argument should return `None`
             {
-                call_method!($arg_count, provider, $method, |_,_,_,_| ( ($invalid_args, None)), tx_num, tx_hash, &in_memory_blocks[0], &receipts);
+                call_method!($arg_count, provider, $method, |_,_,_,_| ($invalid_args, None), tx_num, tx_hash, &in_memory_blocks[0], &receipts);
             }
 
             // Check that the item is only in memory and not in database
@@ -2293,7 +2297,7 @@ mod tests {
                 call_method!($arg_count, provider, $method, |_,_,_,_| (args.clone(), expected_item), tx_num, tx_hash, last_mem_block, &receipts);
 
                 // Ensure the item is not in storage
-                call_method!($arg_count, provider.database, $method, |_,_,_,_| ( (args, None)), tx_num, tx_hash, last_mem_block, &receipts);
+                call_method!($arg_count, provider.database, $method, |_,_,_,_| (args, None), tx_num, tx_hash, last_mem_block, &receipts);
             }
         )*
     }};

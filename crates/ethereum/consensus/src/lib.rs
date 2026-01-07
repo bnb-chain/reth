@@ -6,7 +6,7 @@
     issue_tracker_base_url = "https://github.com/paradigmxyz/reth/issues/"
 )]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
-#![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate alloc;
@@ -133,11 +133,11 @@ where
         if self.chain_spec.is_shanghai_active_at_timestamp(header.timestamp()) &&
             header.withdrawals_root().is_none()
         {
-            return Err(ConsensusError::WithdrawalsRootMissing)
+            return Err(ConsensusError::WithdrawalsRootMissing);
         } else if !self.chain_spec.is_shanghai_active_at_timestamp(header.timestamp()) &&
             header.withdrawals_root().is_some()
         {
-            return Err(ConsensusError::WithdrawalsRootUnexpected)
+            return Err(ConsensusError::WithdrawalsRootUnexpected);
         }
 
         // Ensures that EIP-4844 fields are valid once cancun is active.
@@ -149,19 +149,19 @@ where
                     .unwrap_or_else(BlobParams::cancun),
             )?;
         } else if header.blob_gas_used().is_some() {
-            return Err(ConsensusError::BlobGasUsedUnexpected)
+            return Err(ConsensusError::BlobGasUsedUnexpected);
         } else if header.excess_blob_gas().is_some() {
-            return Err(ConsensusError::ExcessBlobGasUnexpected)
+            return Err(ConsensusError::ExcessBlobGasUnexpected);
         } else if header.parent_beacon_block_root().is_some() {
-            return Err(ConsensusError::ParentBeaconBlockRootUnexpected)
+            return Err(ConsensusError::ParentBeaconBlockRootUnexpected);
         }
 
         if self.chain_spec.is_prague_active_at_timestamp(header.timestamp()) {
             if header.requests_hash().is_none() {
-                return Err(ConsensusError::RequestsHashMissing)
+                return Err(ConsensusError::RequestsHashMissing);
             }
         } else if header.requests_hash().is_some() {
-            return Err(ConsensusError::RequestsHashUnexpected)
+            return Err(ConsensusError::RequestsHashUnexpected);
         }
 
         Ok(())

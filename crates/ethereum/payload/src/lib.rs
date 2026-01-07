@@ -6,7 +6,7 @@
     issue_tracker_base_url = "https://github.com/paradigmxyz/reth/issues/"
 )]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
-#![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![allow(clippy::useless_let_if_seq)]
 
 use alloy_consensus::Transaction;
@@ -213,12 +213,12 @@ where
                 &pool_tx,
                 InvalidPoolTransactionError::ExceedsGasLimit(pool_tx.gas_limit(), block_gas_limit),
             );
-            continue
+            continue;
         }
 
         // check if the job was cancelled, if so we can exit early
         if cancel.is_cancelled() {
-            return Ok(BuildOutcome::Cancelled)
+            return Ok(BuildOutcome::Cancelled);
         }
 
         // convert tx to a signed transaction
@@ -261,14 +261,14 @@ where
                         },
                     ),
                 );
-                continue
+                continue;
             }
 
             let blob_sidecar_result = 'sidecar: {
                 let Some(sidecar) =
                     pool.get_blob(*tx.hash()).map_err(PayloadBuilderError::other)?
                 else {
-                    break 'sidecar Err(Eip4844PoolTransactionError::MissingEip4844BlobSidecar)
+                    break 'sidecar Err(Eip4844PoolTransactionError::MissingEip4844BlobSidecar);
                 };
 
                 if chain_spec.is_osaka_active_at_timestamp(attributes.timestamp) {
@@ -288,7 +288,7 @@ where
                 Ok(sidecar) => Some(sidecar),
                 Err(error) => {
                     best_txs.mark_invalid(&pool_tx, InvalidPoolTransactionError::Eip4844(error));
-                    continue
+                    continue;
                 }
             };
         }
@@ -312,7 +312,7 @@ where
                         ),
                     );
                 }
-                continue
+                continue;
             }
             // this is an error that we should treat as fatal for this attempt
             Err(err) => return Err(PayloadBuilderError::evm(err)),
@@ -347,7 +347,7 @@ where
         // Release db
         drop(builder);
         // can skip building the block
-        return Ok(BuildOutcome::Aborted { fees: total_fees, cached_reads })
+        return Ok(BuildOutcome::Aborted { fees: total_fees, cached_reads });
     }
 
     let BlockBuilderOutcome { execution_result, block, .. } = builder.finish(&state_provider)?;

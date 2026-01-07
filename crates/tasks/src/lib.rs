@@ -10,7 +10,7 @@
     issue_tracker_base_url = "https://github.com/paradigmxyz/reth/issues/"
 )]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
-#![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 use crate::{
     metrics::{IncCounterOnDrop, TaskExecutorMetrics},
@@ -245,7 +245,7 @@ impl TaskManager {
         while self.graceful_tasks.load(Ordering::Relaxed) > 0 {
             if when.map(|when| std::time::Instant::now() > when).unwrap_or(false) {
                 debug!("graceful shutdown timed out");
-                return false
+                return false;
             }
             std::hint::spin_loop();
         }

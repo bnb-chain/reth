@@ -114,7 +114,7 @@ where
                 "Missing flashblock payload base"
             );
 
-            return None
+            return None;
         };
 
         // attempt an initial consecutive check
@@ -227,12 +227,12 @@ where
                         "Clearing current flashblock on new canonical block"
                     );
 
-                    return Poll::Ready(Some(Ok(None)))
+                    return Poll::Ready(Some(Ok(None)));
                 }
             }
 
             if !this.rebuild && this.current.is_some() {
-                return Poll::Pending
+                return Poll::Pending;
             }
 
             // try to build a block on top of latest
@@ -248,10 +248,10 @@ where
                 this.job.replace((now, rx));
 
                 // continue and poll the spawned job
-                continue
+                continue;
             }
 
-            return Poll::Pending
+            return Poll::Pending;
         }
     }
 }

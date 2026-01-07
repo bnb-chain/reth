@@ -124,7 +124,9 @@ where
             })?
             .with_components(components_builder, on_component_initialized).await?;
 
-        let engine_tree_config = if is_triedb_active() && engine_tree_config.memory_block_buffer_target() < 256 {
+        let engine_tree_config = if is_triedb_active() &&
+            engine_tree_config.memory_block_buffer_target() < 256
+        {
             info!(target: "reth::cli", "TrieDB is active, setting memory block buffer target to 256, old target={}", engine_tree_config.memory_block_buffer_target());
             engine_tree_config.with_memory_block_buffer_target(256)
         } else {
@@ -242,6 +244,7 @@ where
 
         info!(target: "reth::cli", "Consensus engine initialized");
 
+        #[allow(clippy::needless_continue)]
         let events = stream_select!(
             event_sender.new_listener().map(Into::into),
             pipeline_events.map(Into::into),

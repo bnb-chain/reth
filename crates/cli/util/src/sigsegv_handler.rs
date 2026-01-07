@@ -49,7 +49,7 @@ extern "C" fn print_stack_trace(_: libc::c_int) {
         // Collect return addresses
         let depth = libc::backtrace(stack_trace.as_mut_ptr(), MAX_FRAMES as i32);
         if depth == 0 {
-            return
+            return;
         }
         &stack_trace[0..depth as usize]
     };
@@ -67,7 +67,7 @@ extern "C" fn print_stack_trace(_: libc::c_int) {
         let period = period.saturating_add(1); // avoid "what if wrapped?" branches
         let Some(offset) = stack.iter().skip(period).zip(stack).position(cycled) else {
             // impossible.
-            return
+            return;
         };
 
         // Count matching trace slices, else we could miscount "biphasic cycles"
@@ -126,7 +126,7 @@ pub fn install() {
         libc::sigaltstack(&raw const alt_stack, ptr::null_mut());
 
         let mut sa: libc::sigaction = mem::zeroed();
-        sa.sa_sigaction = print_stack_trace as libc::sighandler_t;
+        sa.sa_sigaction = print_stack_trace as *const () as libc::sighandler_t;
         sa.sa_flags = libc::SA_NODEFER | libc::SA_RESETHAND | libc::SA_ONSTACK;
         libc::sigemptyset(&raw mut sa.sa_mask);
         libc::sigaction(libc::SIGSEGV, &raw const sa, ptr::null_mut());
