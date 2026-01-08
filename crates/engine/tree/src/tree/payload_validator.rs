@@ -1119,6 +1119,40 @@ where
         let append_elapsed = append_started.elapsed();
 
         // Extend with contents of parent in-memory blocks.
+        // Collect overlay size statistics (hashed state + trie updates) for correlation with timing.
+        let mut inmem_hashed_accounts = 0usize;
+        let mut inmem_hashed_storages = 0usize;
+        let mut inmem_hashed_storage_slots = 0usize;
+        let mut inmem_trie_account_nodes = 0usize;
+        let mut inmem_trie_account_nodes_removed = 0usize;
+        let mut inmem_trie_storage_tries = 0usize;
+        let mut inmem_trie_storage_deleted_tries = 0usize;
+        let mut inmem_trie_storage_nodes = 0usize;
+        let mut inmem_trie_storage_nodes_removed = 0usize;
+        let mut inmem_missing_trie_updates_blocks = 0usize;
+        for block in &blocks {
+            let hashed_state = block.hashed_state();
+            inmem_hashed_accounts += hashed_state.accounts.len();
+            inmem_hashed_storages += hashed_state.storages.len();
+            inmem_hashed_storage_slots +=
+                hashed_state.storages.values().map(|s| s.storage.len()).sum::<usize>();
+
+            if let Some(trie_updates) = block.trie_updates() {
+                inmem_trie_account_nodes += trie_updates.account_nodes_ref().len();
+                inmem_trie_account_nodes_removed += trie_updates.removed_nodes_ref().len();
+                inmem_trie_storage_tries += trie_updates.storage_tries_ref().len();
+                for st in trie_updates.storage_tries_ref().values() {
+                    if st.is_deleted() {
+                        inmem_trie_storage_deleted_tries += 1;
+                    }
+                    inmem_trie_storage_nodes += st.storage_nodes_ref().len();
+                    inmem_trie_storage_nodes_removed += st.removed_nodes_ref().len();
+                }
+            } else {
+                inmem_missing_trie_updates_blocks += 1;
+            }
+        }
+
         let extend_started = Instant::now();
         input.extend_with_blocks(
             blocks.iter().rev().map(|block| (block.hashed_state(), block.trie_updates())),
@@ -1138,6 +1172,16 @@ where
             revert_from_db,
             revert_accounts,
             revert_storages,
+            inmem_hashed_accounts,
+            inmem_hashed_storages,
+            inmem_hashed_storage_slots,
+            inmem_trie_account_nodes,
+            inmem_trie_account_nodes_removed,
+            inmem_trie_storage_tries,
+            inmem_trie_storage_deleted_tries,
+            inmem_trie_storage_nodes,
+            inmem_trie_storage_nodes_removed,
+            inmem_missing_trie_updates_blocks,
             alloc_ms = alloc_elapsed.as_millis() as u64,
             best_ms = best_block_elapsed.as_millis() as u64,
             blocks_by_hash_ms = blocks_by_hash_elapsed.as_millis() as u64,
