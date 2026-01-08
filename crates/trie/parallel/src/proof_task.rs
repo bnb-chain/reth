@@ -42,7 +42,7 @@ use std::{
     time::Instant,
 };
 use tokio::runtime::Handle;
-use tracing::debug;
+use tracing::{debug, warn};
 
 #[cfg(feature = "metrics")]
 use crate::proof_task_metrics::ProofTaskMetrics;
@@ -119,7 +119,7 @@ impl<Factory: DatabaseProviderFactory> ProofTaskManager<Factory> {
 
 impl<Factory> ProofTaskManager<Factory>
 where
-    Factory: DatabaseProviderFactory<Provider: BlockReader> + 'static,
+    Factory: DatabaseProviderFactory<Provider: BlockReader> + Clone + 'static,
 {
     /// Inserts the task into the pending tasks queue.
     pub fn queue_proof_task(&mut self, task: ProofTaskKind) {
@@ -129,20 +129,14 @@ where
     /// Gets either the next available transaction, or creates a new one if all are in use and the
     /// total number of transactions created is less than the max concurrency.
     pub fn get_or_create_tx(&mut self) -> ProviderResult<Option<ProofTaskTx<FactoryTx<Factory>>>> {
-        if let Some(mut proof_task_tx) = self.proof_task_txs.pop() {
-            // Attach a fresh read-only transaction for this task.
-            let provider_ro = self.view.provider_ro()?;
-            proof_task_tx.attach_tx(provider_ro.into_tx());
+        if let Some(proof_task_tx) = self.proof_task_txs.pop() {
             return Ok(Some(proof_task_tx));
         }
 
         // if we can create a new tx within our concurrency limits, create one on-demand
         if self.total_transactions < self.max_concurrency {
-            let provider_ro = self.view.provider_ro()?;
             self.total_transactions += 1;
-            let mut proof_task_tx = ProofTaskTx::new(self.task_ctx.clone(), self.total_transactions);
-            proof_task_tx.attach_tx(provider_ro.into_tx());
-            return Ok(Some(proof_task_tx));
+            return Ok(Some(ProofTaskTx::new(self.task_ctx.clone(), self.total_transactions)));
         }
 
         Ok(None)
@@ -162,16 +156,81 @@ where
             return Ok(())
         };
 
+        let queued_at = Instant::now();
+        let task_kind = match &task {
+            ProofTaskKind::StorageProof(_, _) => "storage_proof",
+            ProofTaskKind::BlindedAccountNode(_, _) => "blinded_account_node",
+            ProofTaskKind::BlindedStorageNode(_, _, _) => "blinded_storage_node",
+        };
+        let worker_id = proof_task_tx.id;
+
+        #[cfg(feature = "metrics")]
+        let proof_task_metrics = self.metrics.task_metrics.clone();
+
         let tx_sender = self.tx_sender.clone();
-        self.executor.spawn_blocking(move || match task {
-            ProofTaskKind::StorageProof(input, sender) => {
-                proof_task_tx.storage_proof(input, sender, tx_sender);
+        let view = self.view.clone();
+        self.executor.spawn_blocking(move || {
+            let queue_delay = queued_at.elapsed();
+            let queue_delay_ms = queue_delay.as_millis() as u64;
+            debug!(
+                target: "trie::proof_task",
+                task_kind,
+                worker_id,
+                queue_delay_ms,
+                "Proof task dequeued (blocking pool queue delay)"
+            );
+            if queue_delay_ms >= 5_000 {
+                warn!(
+                    target: "trie::proof_task",
+                    task_kind,
+                    worker_id,
+                    queue_delay_ms,
+                    "Proof task experienced high blocking pool queue delay"
+                );
             }
-            ProofTaskKind::BlindedAccountNode(path, sender) => {
-                proof_task_tx.blinded_account_node(path, sender, tx_sender);
-            }
-            ProofTaskKind::BlindedStorageNode(account, path, sender) => {
-                proof_task_tx.blinded_storage_node(account, path, sender, tx_sender);
+
+            #[cfg(feature = "metrics")]
+            proof_task_metrics.record_queue_delay_seconds(queue_delay.as_secs_f64());
+
+            // Open the RO transaction *inside* the blocking task to avoid holding it while queued
+            // in the tokio blocking thread pool.
+            let mut proof_task_tx = proof_task_tx;
+            match view.provider_ro() {
+                Ok(provider_ro) => {
+                    proof_task_tx.attach_tx(provider_ro.into_tx());
+                    match task {
+                        ProofTaskKind::StorageProof(input, sender) => {
+                            proof_task_tx.storage_proof(input, sender, tx_sender);
+                        }
+                        ProofTaskKind::BlindedAccountNode(path, sender) => {
+                            proof_task_tx.blinded_account_node(path, sender, tx_sender);
+                        }
+                        ProofTaskKind::BlindedStorageNode(account, path, sender) => {
+                            proof_task_tx.blinded_storage_node(account, path, sender, tx_sender);
+                        }
+                    }
+                }
+                Err(err) => {
+                    // If we fail to open the transaction, return an error to the caller and
+                    // recycle the worker slot.
+                    match task {
+                        ProofTaskKind::StorageProof(_input, sender) => {
+                            let _ = sender.send(Err(ParallelStateRootError::Other(err.to_string())));
+                        }
+                        ProofTaskKind::BlindedAccountNode(_path, sender) => {
+                            let _ = sender.send(Err(SparseTrieError::from(
+                                reth_execution_errors::SparseTrieErrorKind::Other(Box::new(err)),
+                            )));
+                        }
+                        ProofTaskKind::BlindedStorageNode(_account, _path, sender) => {
+                            let _ = sender.send(Err(SparseTrieError::from(
+                                reth_execution_errors::SparseTrieErrorKind::Other(Box::new(err)),
+                            )));
+                        }
+                    }
+                    proof_task_tx.release_tx();
+                    let _ = tx_sender.send(ProofTaskMessage::Transaction(proof_task_tx));
+                }
             }
         });
 

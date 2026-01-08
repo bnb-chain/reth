@@ -27,6 +27,9 @@ pub struct ProofTaskTrieMetrics {
     blinded_account_nodes: Histogram,
     /// A histogram for the number of blinded storage nodes fetched.
     blinded_storage_nodes: Histogram,
+    /// Queue delay (seconds) between scheduling a proof task and it actually starting execution on
+    /// the tokio blocking thread pool.
+    queue_delay_seconds: Histogram,
 }
 
 impl ProofTaskTrieMetrics {
@@ -38,5 +41,10 @@ impl ProofTaskTrieMetrics {
     /// Record storage nodes fetched.
     pub fn record_storage_nodes(&self, count: usize) {
         self.blinded_storage_nodes.record(count as f64);
+    }
+
+    /// Record how long a proof task waited in the blocking pool queue before starting.
+    pub fn record_queue_delay_seconds(&self, secs: f64) {
+        self.queue_delay_seconds.record(secs);
     }
 }
