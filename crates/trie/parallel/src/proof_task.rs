@@ -1,12 +1,14 @@
-//! A Task that manages sending proof requests to a number of tasks that have longer-running
-//! database transactions.
+//! A Task that manages sending proof requests to a number of tasks.
 //!
-//! The [`ProofTaskManager`] ensures that there are a max number of currently executing proof tasks,
-//! and is responsible for managing the fixed number of database transactions created at the start
-//! of the task.
+//! The [`ProofTaskManager`] ensures that there are a max number of currently executing proof tasks.
 //!
-//! Individual [`ProofTaskTx`] instances manage a dedicated [`InMemoryTrieCursorFactory`] and
-//! [`HashedPostStateCursorFactory`], which are each backed by a database transaction.
+//! Important: we intentionally do **not** keep read-only MDBX transactions open across multiple
+//! proof tasks. A single long-lived read transaction can:
+//! - be timed out if read-transaction timeouts are enabled; and
+//! - pin old pages under MVCC, which can slow down writers.
+//!
+//! Instead, each spawned proof task opens a fresh read-only transaction and drops it at the end of
+//! the task.
 
 use crate::root::ParallelStateRootError;
 use alloy_primitives::{map::B256Set, B256};
@@ -127,16 +129,20 @@ where
     /// Gets either the next available transaction, or creates a new one if all are in use and the
     /// total number of transactions created is less than the max concurrency.
     pub fn get_or_create_tx(&mut self) -> ProviderResult<Option<ProofTaskTx<FactoryTx<Factory>>>> {
-        if let Some(proof_task_tx) = self.proof_task_txs.pop() {
+        if let Some(mut proof_task_tx) = self.proof_task_txs.pop() {
+            // Attach a fresh read-only transaction for this task.
+            let provider_ro = self.view.provider_ro()?;
+            proof_task_tx.attach_tx(provider_ro.into_tx());
             return Ok(Some(proof_task_tx));
         }
 
         // if we can create a new tx within our concurrency limits, create one on-demand
         if self.total_transactions < self.max_concurrency {
             let provider_ro = self.view.provider_ro()?;
-            let tx = provider_ro.into_tx();
             self.total_transactions += 1;
-            return Ok(Some(ProofTaskTx::new(tx, self.task_ctx.clone(), self.total_transactions)));
+            let mut proof_task_tx = ProofTaskTx::new(self.task_ctx.clone(), self.total_transactions);
+            proof_task_tx.attach_tx(provider_ro.into_tx());
+            return Ok(Some(proof_task_tx));
         }
 
         Ok(None)
@@ -217,8 +223,10 @@ where
 /// This contains all information shared between all storage proof instances.
 #[derive(Debug)]
 pub struct ProofTaskTx<Tx> {
-    /// The tx that is reused for proof calculations.
-    tx: Tx,
+    /// The tx attached for the currently running proof task.
+    ///
+    /// This is `None` while the worker slot is idle in the pool.
+    tx: Option<Tx>,
 
     /// Trie updates, prefix sets, and state updates
     task_ctx: ProofTaskCtx,
@@ -229,10 +237,24 @@ pub struct ProofTaskTx<Tx> {
 }
 
 impl<Tx> ProofTaskTx<Tx> {
-    /// Initializes a [`ProofTaskTx`] using the given transaction and a [`ProofTaskCtx`]. The id is
-    /// used only for tracing.
-    const fn new(tx: Tx, task_ctx: ProofTaskCtx, id: usize) -> Self {
-        Self { tx, task_ctx, id }
+    /// Initializes an *idle* [`ProofTaskTx`] worker slot using the given [`ProofTaskCtx`]. The id
+    /// is used only for tracing.
+    const fn new(task_ctx: ProofTaskCtx, id: usize) -> Self {
+        Self { tx: None, task_ctx, id }
+    }
+
+    /// Attaches a transaction to this worker slot for the duration of a single task.
+    fn attach_tx(&mut self, tx: Tx) {
+        self.tx = Some(tx);
+    }
+
+    /// Drops the attached transaction (if any).
+    fn release_tx(&mut self) {
+        self.tx.take();
+    }
+
+    fn tx(&self) -> &Tx {
+        self.tx.as_ref().expect("ProofTaskTx is expected to have an attached tx while running")
     }
 }
 
@@ -247,12 +269,12 @@ where
         HashedPostStateCursorFactory<'_, DatabaseHashedCursorFactory<'_, Tx>>,
     ) {
         let trie_cursor_factory = InMemoryTrieCursorFactory::new(
-            DatabaseTrieCursorFactory::new(&self.tx),
+            DatabaseTrieCursorFactory::new(self.tx()),
             &self.task_ctx.nodes_sorted,
         );
 
         let hashed_cursor_factory = HashedPostStateCursorFactory::new(
-            DatabaseHashedCursorFactory::new(&self.tx),
+            DatabaseHashedCursorFactory::new(self.tx()),
             &self.task_ctx.state_sorted,
         );
 
@@ -261,7 +283,7 @@ where
 
     /// Calculates a storage proof for the given hashed address, and desired prefix set.
     fn storage_proof(
-        self,
+        mut self,
         input: StorageProofInput,
         result_sender: Sender<StorageProofResult>,
         tx_sender: Sender<ProofTaskMessage<Tx>>,
@@ -333,13 +355,14 @@ where
             );
         }
 
-        // send the tx back
+        // Drop the transaction before returning the worker slot to the pool.
+        self.release_tx();
         let _ = tx_sender.send(ProofTaskMessage::Transaction(self));
     }
 
     /// Retrieves blinded account node by path.
     fn blinded_account_node(
-        self,
+        mut self,
         path: Nibbles,
         result_sender: Sender<TrieNodeProviderResult>,
         tx_sender: Sender<ProofTaskMessage<Tx>>,
@@ -376,13 +399,14 @@ where
             );
         }
 
-        // send the tx back
+        // Drop the transaction before returning the worker slot to the pool.
+        self.release_tx();
         let _ = tx_sender.send(ProofTaskMessage::Transaction(self));
     }
 
     /// Retrieves blinded storage node of the given account by path.
     fn blinded_storage_node(
-        self,
+        mut self,
         account: B256,
         path: Nibbles,
         result_sender: Sender<TrieNodeProviderResult>,
@@ -423,7 +447,8 @@ where
             );
         }
 
-        // send the tx back
+        // Drop the transaction before returning the worker slot to the pool.
+        self.release_tx();
         let _ = tx_sender.send(ProofTaskMessage::Transaction(self));
     }
 }
