@@ -224,6 +224,29 @@ where
             storage_proof_receivers.insert(hashed_address, receiver);
         }
 
+        // Await all storage proofs _before_ opening a database read transaction.
+        //
+        // Rationale: storage proofs are computed in parallel and can be delayed by executor
+        // scheduling. Holding an MDBX read transaction open while blocking on channels can trigger
+        // read transaction timeouts and also pins an MVCC snapshot longer than necessary.
+        let wait_started = std::time::Instant::now();
+        let mut collected_storage_proofs: B256Map<DecodedStorageMultiProof> =
+            B256Map::with_capacity_and_hasher(storage_proof_receivers.len(), Default::default());
+        for (hashed_address, rx) in storage_proof_receivers {
+            let decoded_storage_multiproof = rx.recv().map_err(|e| {
+                ParallelStateRootError::StorageRoot(StorageRootError::Database(DatabaseError::Other(
+                    format!("channel closed for {hashed_address}: {e}"),
+                )))
+            })??;
+            collected_storage_proofs.insert(hashed_address, decoded_storage_multiproof);
+        }
+        debug!(
+            target: "trie::parallel_proof",
+            waited_ms = wait_started.elapsed().as_millis() as u64,
+            collected = collected_storage_proofs.len(),
+            "Collected storage multiproofs"
+        );
+
         let provider_ro = self.view.provider_ro()?;
         let trie_cursor_factory = InMemoryTrieCursorFactory::new(
             DatabaseTrieCursorFactory::new(provider_ro.tx_ref()),
@@ -272,16 +295,8 @@ where
                     hash_builder.add_branch(node.key, node.value, node.children_are_in_trie);
                 }
                 TrieElement::Leaf(hashed_address, account) => {
-                    let decoded_storage_multiproof = match storage_proof_receivers
-                        .remove(&hashed_address)
-                    {
-                        Some(rx) => rx.recv().map_err(|e| {
-                            ParallelStateRootError::StorageRoot(StorageRootError::Database(
-                                DatabaseError::Other(format!(
-                                    "channel closed for {hashed_address}: {e}"
-                                )),
-                            ))
-                        })??,
+                    let decoded_storage_multiproof = match collected_storage_proofs.remove(&hashed_address) {
+                        Some(proof) => proof,
                         // Since we do not store all intermediate nodes in the database, there might
                         // be a possibility of re-adding a non-modified leaf to the hash builder.
                         None => {

@@ -378,6 +378,7 @@ impl HashedPostState {
     }
 
     fn extend_inner(&mut self, other: Cow<'_, Self>) {
+        self.accounts.reserve(other.accounts.len());
         self.accounts.extend(other.accounts.iter().map(|(&k, &v)| (k, v)));
 
         self.storages.reserve(other.storages.len());
@@ -523,6 +524,7 @@ impl HashedStorage {
             self.wiped = true;
             self.storage.clear();
         }
+        self.storage.reserve(other.storage.len());
         self.storage.extend(other.storage.iter().map(|(&k, &v)| (k, v)));
     }
 

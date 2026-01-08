@@ -2436,12 +2436,18 @@ where
     ) -> ProviderResult<TrieInput> {
         let started = std::time::Instant::now();
         // get allocated trie input or use a default trie input
+        let alloc_started = std::time::Instant::now();
         let allocated_input = allocated_trie_input.is_some();
         let mut input = allocated_trie_input.unwrap_or_default();
+        let alloc_elapsed = alloc_started.elapsed();
+        let alloc_ms = alloc_elapsed.as_millis();
+        let alloc_us = alloc_elapsed.as_micros();
 
         let best_started = std::time::Instant::now();
         let best_block_number = provider.best_block_number()?;
-        let best_ms = best_started.elapsed().as_millis();
+        let best_elapsed = best_started.elapsed();
+        let best_ms = best_elapsed.as_millis();
+        let best_us = best_elapsed.as_micros();
 
         let blocks_by_hash_started = std::time::Instant::now();
         let (mut historical, mut blocks) = self
@@ -2449,11 +2455,14 @@ where
             .tree_state
             .blocks_by_hash(parent_hash)
             .map_or_else(|| (parent_hash.into(), vec![]), |(hash, blocks)| (hash.into(), blocks));
-        let blocks_by_hash_ms = blocks_by_hash_started.elapsed().as_millis();
+        let blocks_by_hash_elapsed = blocks_by_hash_started.elapsed();
+        let blocks_by_hash_ms = blocks_by_hash_elapsed.as_millis();
+        let blocks_by_hash_us = blocks_by_hash_elapsed.as_micros();
 
         // If the current block is a descendant of the currently persisting blocks, then we need to
         // filter in-memory blocks, so that none of them are already persisted in the database.
         let filter_started = std::time::Instant::now();
+        let pre_filter_blocks = blocks.len();
         if persisting_kind.is_descendant() {
             // Iterate over the blocks from oldest to newest.
             while let Some(block) = blocks.last() {
@@ -2478,7 +2487,10 @@ where
                 parent_hash.into()
             };
         }
-        let filter_ms = filter_started.elapsed().as_millis();
+        let filtered_blocks = pre_filter_blocks.saturating_sub(blocks.len());
+        let filter_elapsed = filter_started.elapsed();
+        let filter_ms = filter_elapsed.as_millis();
+        let filter_us = filter_elapsed.as_micros();
 
         if blocks.is_empty() {
             debug!(target: "engine::tree", %parent_hash, "Parent found on disk");
@@ -2491,11 +2503,14 @@ where
         let block_number = provider
             .convert_hash_or_number(historical)?
             .ok_or_else(|| ProviderError::BlockHashNotFound(historical.as_hash().unwrap()))?;
-        let anchor_ms = anchor_started.elapsed().as_millis();
+        let anchor_elapsed = anchor_started.elapsed();
+        let anchor_ms = anchor_elapsed.as_millis();
+        let anchor_us = anchor_elapsed.as_micros();
 
         // Retrieve revert state for historical block.
         let revert_started = std::time::Instant::now();
         let (mut revert_accounts, mut revert_storages) = (0usize, 0usize);
+        let revert_from_db = block_number != best_block_number;
         let revert_state = if block_number == best_block_number {
             // We do not check against the `last_block_number` here because
             // `HashedPostState::from_reverts` only uses the database tables, and not static files.
@@ -2519,19 +2534,82 @@ where
             );
             revert_state
         };
-        let revert_ms = revert_started.elapsed().as_millis();
+        let revert_elapsed = revert_started.elapsed();
+        let revert_ms = revert_elapsed.as_millis();
+        let revert_us = revert_elapsed.as_micros();
+
+        let append_started = std::time::Instant::now();
         input.append(revert_state);
+        let append_elapsed = append_started.elapsed();
+        let append_ms = append_elapsed.as_millis();
+        let append_us = append_elapsed.as_micros();
 
         // Extend with contents of parent in-memory blocks.
+        //
+        // Engineering-focused instrumentation:
+        // - record data volumes of the in-memory overlay;
+        // - pre-reserve capacity in the underlying hashmaps to reduce rehash/alloc during merge;
+        // - record microsecond-level timings in addition to millisecond-level ones.
+        let mut inmem_hashed_accounts = 0usize;
+        let mut inmem_hashed_storages = 0usize;
+        let mut inmem_hashed_storage_slots = 0usize;
+        let mut inmem_trie_account_nodes = 0usize;
+        let mut inmem_trie_account_nodes_removed = 0usize;
+        let mut inmem_trie_storage_tries = 0usize;
+        let mut inmem_trie_storage_deleted_tries = 0usize;
+        let mut inmem_trie_storage_nodes = 0usize;
+        let mut inmem_trie_storage_nodes_removed = 0usize;
+        let mut inmem_missing_trie_updates_blocks = 0usize;
+
+        for block in &blocks {
+            let hashed_state = block.hashed_state();
+            inmem_hashed_accounts += hashed_state.accounts.len();
+            inmem_hashed_storages += hashed_state.storages.len();
+            inmem_hashed_storage_slots +=
+                hashed_state.storages.values().map(|s| s.storage.len()).sum::<usize>();
+
+            if let Some(trie_updates) = block.trie_updates() {
+                inmem_trie_account_nodes += trie_updates.account_nodes_ref().len();
+                inmem_trie_account_nodes_removed += trie_updates.removed_nodes_ref().len();
+                inmem_trie_storage_tries += trie_updates.storage_tries_ref().len();
+                for st in trie_updates.storage_tries_ref().values() {
+                    if st.is_deleted() {
+                        inmem_trie_storage_deleted_tries += 1;
+                    }
+                    inmem_trie_storage_nodes += st.storage_nodes_ref().len();
+                    inmem_trie_storage_nodes_removed += st.removed_nodes_ref().len();
+                }
+            } else {
+                inmem_missing_trie_updates_blocks += 1;
+            }
+        }
+
+        // Best-effort reserve to reduce rehash/alloc while merging.
+        //
+        // Note: reserve takes "additional" capacity, so we use a conservative upper bound (sum of
+        // all in-memory updates).
+        if !blocks.is_empty() {
+            input.state.accounts.reserve(inmem_hashed_accounts);
+            input.state.storages.reserve(inmem_hashed_storages);
+            input.nodes.account_nodes.reserve(inmem_trie_account_nodes);
+            input.nodes.removed_nodes.reserve(inmem_trie_account_nodes_removed);
+            input.nodes.storage_tries.reserve(inmem_trie_storage_tries);
+        }
+
         let extend_started = std::time::Instant::now();
         input.extend_with_blocks(
             blocks.iter().rev().map(|block| (block.hashed_state(), block.trie_updates())),
         );
-        let extend_ms = extend_started.elapsed().as_millis();
+        let extend_elapsed = extend_started.elapsed();
+        let extend_ms = extend_elapsed.as_millis();
+        let extend_us = extend_elapsed.as_micros();
 
         // Single summary log for easy flame-charting in logs.
         //
         // Note: this is in addition to the existing "Parent found ..." + revert-state logs above.
+        let total_elapsed = started.elapsed();
+        let total_ms = total_elapsed.as_millis();
+        let total_us = total_elapsed.as_micros();
         debug!(
             target: "engine::tree",
             %parent_hash,
@@ -2541,15 +2619,38 @@ where
             historical = ?historical,
             anchor_block_number = block_number,
             in_memory_blocks = blocks.len(),
+            filtered_blocks,
+            revert_from_db,
             revert_accounts,
             revert_storages,
+            inmem_hashed_accounts,
+            inmem_hashed_storages,
+            inmem_hashed_storage_slots,
+            inmem_trie_account_nodes,
+            inmem_trie_account_nodes_removed,
+            inmem_trie_storage_tries,
+            inmem_trie_storage_deleted_tries,
+            inmem_trie_storage_nodes,
+            inmem_trie_storage_nodes_removed,
+            inmem_missing_trie_updates_blocks,
+            alloc_ms = alloc_ms as u64,
             best_ms = best_ms as u64,
             blocks_by_hash_ms = blocks_by_hash_ms as u64,
             filter_ms = filter_ms as u64,
             anchor_ms = anchor_ms as u64,
             revert_ms = revert_ms as u64,
+            append_ms = append_ms as u64,
             extend_ms = extend_ms as u64,
-            total_ms = started.elapsed().as_millis() as u64,
+            total_ms = total_ms as u64,
+            alloc_us = alloc_us as u64,
+            best_us = best_us as u64,
+            blocks_by_hash_us = blocks_by_hash_us as u64,
+            filter_us = filter_us as u64,
+            anchor_us = anchor_us as u64,
+            revert_us = revert_us as u64,
+            append_us = append_us as u64,
+            extend_us = extend_us as u64,
+            total_us = total_us as u64,
             "compute_trie_input timing breakdown"
         );
 
