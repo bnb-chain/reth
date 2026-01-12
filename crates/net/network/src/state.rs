@@ -229,9 +229,7 @@ impl<N: NetworkPrimitives> NetworkState<N> {
                 peer.blocks.insert(msg.hash);
 
                 count += 1;
-            }
-
-            if count > num_propagate && self.peers_manager.is_proxyed_peer(peer_id) {
+            } else if self.peers_manager.is_proxyed_peer(peer_id) {
                 debug!("peer:{} is proxyed, sending new block:{}", peer_id, number);
                 self.queued_messages
                     .push_back(StateAction::NewBlock { peer_id: *peer_id, block: msg.clone() });
