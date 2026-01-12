@@ -506,6 +506,30 @@ where
             .record(validate_start.elapsed().as_secs_f64());
 
         if new_root != block_state_root {
+            // Emit a high-signal warning before we mark the block invalid so operators can quickly
+            // correlate mismatches with execution inputs and chain context.
+            //
+            // Note: `new_root` is the computed root, `block_state_root` is the root from the block
+            // header.
+            warn!(
+                target: "engine::tree",
+                invalid_hash = ?block.hash(),
+                invalid_number = block_num_hash.number,
+                parent_hash = ?parent_block.hash(),
+                parent_state_root = ?parent_block.state_root(),
+                got = ?new_root,
+                expected = ?block_state_root,
+                tx_count = block.body().transaction_count(),
+                hashed_accounts = hashed_state.accounts.len(),
+                hashed_storages = hashed_state.storages.len(),
+                hashed_storage_slots = hashed_state
+                    .storages
+                    .values()
+                    .map(|s| s.storage.len())
+                    .sum::<usize>(),
+                has_difflayers = difflayers.is_some(),
+                "mismatched block state root (triedb validate)"
+            );
             // call post-block hook
             self.on_invalid_block(&parent_block, &block, &output, None, ctx.state_mut());
             let block_state_root = block.header().state_root();
