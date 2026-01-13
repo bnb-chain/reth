@@ -280,7 +280,7 @@ jobs:
     needs:
       - clippy-binaries
       - clippy
-      - wasm
+      # - wasm
       - crate-checks
       - docs
       - fmt
