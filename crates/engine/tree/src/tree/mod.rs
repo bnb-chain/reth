@@ -3024,72 +3024,64 @@ where
 
         while current_number >= last_block_number {
             walked += 1;
-            match self.provider.block_number(current_hash)? {
-                Some(block_number) => {
-                    // add canonical chain td
-                    match self.provider.header_td_by_number(block_number)? {
-                        Some(td) => {
-                            ret_td = ret_td.wrapping_add(td);
+            match canonical_td_for_hash(current_hash)? {
+                Some((block_number, td)) => {
+                    // add canonical chain td (only if `current_hash` is truly canonical at
+                    // `block_number`)
+                    ret_td = ret_td.wrapping_add(td);
 
-                            // If we know the canonical parent TD and this is a direct child, then
-                            // TD must not be less than parent_td + difficulty.
-                            if let Some(expected) = expected_td {
-                                if ret_td < expected {
-                                    tracing::warn!(
-                                        target: "engine::tree",
-                                        requested_number=?number,
-                                        requested_hash=?hash,
-                                        parent_hash=?ret_header.parent_hash(),
-                                        parent_canonical_td=?parent_canonical_td.map(|(_, td)| td),
-                                        expected_td=?expected_td,
-                                        computed_td=?ret_td,
-                                        walked,
-                                        fork_steps_truncated,
-                                        fork_steps=?fork_steps,
-                                        canonical_td_number=?block_number,
-                                        canonical_td=?td,
-                                        "Non-monotonic TD computed for fork header; TD derivation likely inconsistent"
-                                    );
-                                } else if capture_steps {
-                                    tracing::debug!(
-                                        target: "engine::tree",
-                                        requested_number=?number,
-                                        requested_hash=?hash,
-                                        parent_hash=?ret_header.parent_hash(),
-                                        expected_td=?expected_td,
-                                        computed_td=?ret_td,
-                                        walked,
-                                        fork_steps_truncated,
-                                        fork_steps=?fork_steps,
-                                        canonical_td_number=?block_number,
-                                        canonical_td=?td,
-                                        "Computed TD for fork header"
-                                    );
-                                }
-                            } else if capture_steps {
-                                tracing::debug!(
-                                    target: "engine::tree",
-                                    requested_number=?number,
-                                    requested_hash=?hash,
-                                    parent_hash=?ret_header.parent_hash(),
-                                    computed_td=?ret_td,
-                                    walked,
-                                    fork_steps_truncated,
-                                    fork_steps=?fork_steps,
-                                    canonical_td_number=?block_number,
-                                    canonical_td=?td,
-                                    "Computed TD for fork header (no canonical parent TD available)"
-                                );
-                            }
-
-                            return Ok((ret_header, Some(ret_td)));
+                    // If we know the canonical parent TD and this is a direct child, then TD must
+                    // not be less than parent_td + difficulty.
+                    if let Some(expected) = expected_td {
+                        if ret_td < expected {
+                            tracing::warn!(
+                                target: "engine::tree",
+                                requested_number=?number,
+                                requested_hash=?hash,
+                                parent_hash=?ret_header.parent_hash(),
+                                parent_canonical_td=?parent_canonical_td.map(|(_, td)| td),
+                                expected_td=?expected_td,
+                                computed_td=?ret_td,
+                                walked,
+                                fork_steps_truncated,
+                                fork_steps=?fork_steps,
+                                canonical_td_number=?block_number,
+                                canonical_td=?td,
+                                "Non-monotonic TD computed for fork header; TD derivation likely inconsistent"
+                            );
+                        } else if capture_steps {
+                            tracing::debug!(
+                                target: "engine::tree",
+                                requested_number=?number,
+                                requested_hash=?hash,
+                                parent_hash=?ret_header.parent_hash(),
+                                expected_td=?expected_td,
+                                computed_td=?ret_td,
+                                walked,
+                                fork_steps_truncated,
+                                fork_steps=?fork_steps,
+                                canonical_td_number=?block_number,
+                                canonical_td=?td,
+                                "Computed TD for fork header"
+                            );
                         }
-                        None => {
-                            tracing::warn!(target: "engine::tree", current_number=?current_number, current_hash=?current_hash,
-                                "header td not found for block number, just return none");
-                            return Ok((ret_header, None));
-                        }
+                    } else if capture_steps {
+                        tracing::debug!(
+                            target: "engine::tree",
+                            requested_number=?number,
+                            requested_hash=?hash,
+                            parent_hash=?ret_header.parent_hash(),
+                            computed_td=?ret_td,
+                            walked,
+                            fork_steps_truncated,
+                            fork_steps=?fork_steps,
+                            canonical_td_number=?block_number,
+                            canonical_td=?td,
+                            "Computed TD for fork header (no canonical parent TD available)"
+                        );
                     }
+ 
+                    return Ok((ret_header, Some(ret_td)));
                 }
                 None => {
                     // continue to query forks
