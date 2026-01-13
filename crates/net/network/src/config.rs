@@ -228,8 +228,8 @@ pub struct NetworkConfigBuilder<N: NetworkPrimitives = EthNetworkPrimitives> {
     required_block_hashes: Vec<B256>,
     /// Optional network id
     network_id: Option<u64>,
-    /// The node ids of the proxyed nodes.
-    proxyed_node_ids: Vec<PeerId>,
+    /// The node ids of the proxied nodes.
+    proxied_node_ids: Vec<PeerId>,
 }
 
 impl NetworkConfigBuilder<EthNetworkPrimitives> {
@@ -272,7 +272,7 @@ impl<N: NetworkPrimitives> NetworkConfigBuilder<N> {
             handshake: Arc::new(EthHandshake::default()),
             required_block_hashes: Vec::new(),
             network_id: None,
-            proxyed_node_ids: Vec::new(),
+            proxied_node_ids: Vec::new(),
         }
     }
 
@@ -484,7 +484,7 @@ impl<N: NetworkPrimitives> NetworkConfigBuilder<N> {
     ///
     /// These peer IDs will be treated specially in the network layer.
     pub fn proxied_peers(mut self, peer_ids: Vec<PeerId>) -> Self {
-        self.proxyed_node_ids = peer_ids;
+        self.proxied_node_ids = peer_ids;
         self
     }
 
@@ -641,7 +641,7 @@ impl<N: NetworkPrimitives> NetworkConfigBuilder<N> {
             handshake,
             required_block_hashes,
             network_id,
-            proxyed_node_ids,
+            proxied_node_ids,
         } = self;
 
         let head = head.unwrap_or_else(|| Head {
@@ -689,9 +689,9 @@ impl<N: NetworkPrimitives> NetworkConfigBuilder<N> {
             dns_networks.insert(link.parse().expect("is valid DNS link entry"));
         }
 
-        // Set proxyed_node_ids in peers_config
+        // Set proxied_node_ids in peers_config
         let mut peers_config = peers_config.unwrap_or_default();
-        peers_config.proxyed_node_ids = proxyed_node_ids;
+        peers_config.proxied_node_ids = proxied_node_ids;
 
         NetworkConfig {
             client,
