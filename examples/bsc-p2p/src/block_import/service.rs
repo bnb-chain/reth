@@ -404,7 +404,12 @@ mod tests {
     fn create_test_block() -> NewBlockMessage<NewBlock<Block>> {
         let block: reth_primitives::Block = Block::default();
         let new_block = NewBlock { block: block.clone(), td: U128::ZERO };
-        NewBlockMessage { hash: block.header.hash_slow(), block: Arc::new(new_block) }
+        NewBlockMessage {
+            hash: block.header.hash_slow(),
+            block: Arc::new(new_block),
+            // `NewBlockMessage::td` expects `Option<U256>`, so we convert from U128 here.
+            td: Some(alloy_primitives::U256::ZERO),
+        }
     }
 
     /// Helper function to handle engine messages with specified payload statuses

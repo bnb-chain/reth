@@ -16,7 +16,7 @@ use alloy_primitives::{
     Address, BlockHash, BlockNumber, TxHash, TxNumber, B256, U256,
 };
 use reth_chain_state::{BlockState, CanonicalInMemoryState, MemoryOverlayStateProviderRef};
-use reth_chainspec::ChainInfo;
+use reth_chainspec::{ChainInfo, EthChainSpec};
 use reth_db_api::models::{AccountBeforeTx, BlockNumberAddress, StoredBlockBodyIndices};
 use reth_execution_types::{BundleStateInit, ExecutionOutcome, RevertsInit};
 use reth_node_types::{BlockTy, HeaderTy, ReceiptTy, TxTy};
@@ -35,7 +35,6 @@ use std::{
     sync::Arc,
 };
 use tracing::trace;
-use reth_chainspec::EthChainSpec;
 
 /// Type that interacts with a snapshot view of the blockchain (storage and in-memory) at time of
 /// instantiation, EXCEPT for pending, safe and finalized block which might change while holding
@@ -683,34 +682,39 @@ impl<N: ProviderNodeTypes> HeaderProvider for ConsistentProvider<N> {
                 return self.storage_provider.header_td_by_number(number);
             }
             // found head in memory, calculate td by adding in-memory canonical tds
-            let mut td = self.storage_provider.header_td_by_number(latest_block_number)?.ok_or(ProviderError::HeaderNotFound(latest_block_number.into()))?;
+            let mut td = self
+                .storage_provider
+                .header_td_by_number(latest_block_number)?
+                .ok_or(ProviderError::HeaderNotFound(latest_block_number.into()))?;
             for num in latest_block_number + 1..=number {
-                let header = self.header_by_number(num)?.ok_or(ProviderError::HeaderNotFound(num.into()))?;
+                let header =
+                    self.header_by_number(num)?.ok_or(ProviderError::HeaderNotFound(num.into()))?;
                 td = td.wrapping_add(header.difficulty());
             }
             return Ok(Some(td));
         }
 
         // ETH TD calculation logic
-        let number = if self.head_block.as_ref().and_then(|b| b.block_on_chain(number.into())).is_some()
-        {
-            // If the block exists in memory, we should return a TD for it.
-            //
-            // The canonical in memory state should only store post-merge blocks. Post-merge blocks
-            // have zero difficulty. This means we can use the total difficulty for the last
-            // finalized block number if present (so that we are not affected by reorgs), if not the
-            // last number in the database will be used.
-            if let Some(last_finalized_num_hash) =
-                self.canonical_in_memory_state.get_finalized_num_hash()
-            {
-                last_finalized_num_hash.number
+        let number =
+            if self.head_block.as_ref().and_then(|b| b.block_on_chain(number.into())).is_some() {
+                // If the block exists in memory, we should return a TD for it.
+                //
+                // The canonical in memory state should only store post-merge blocks. Post-merge
+                // blocks have zero difficulty. This means we can use the total
+                // difficulty for the last finalized block number if present (so
+                // that we are not affected by reorgs), if not the last number in
+                // the database will be used.
+                if let Some(last_finalized_num_hash) =
+                    self.canonical_in_memory_state.get_finalized_num_hash()
+                {
+                    last_finalized_num_hash.number
+                } else {
+                    self.last_block_number()?
+                }
             } else {
-                self.last_block_number()?
-            }
-        } else {
-            // Otherwise, return what we have on disk for the input block
-            number
-        };
+                // Otherwise, return what we have on disk for the input block
+                number
+            };
         self.storage_provider.header_td_by_number(number)
     }
 

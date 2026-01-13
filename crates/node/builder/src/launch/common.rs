@@ -90,7 +90,9 @@ use tokio::sync::{
 use futures::{future::Either, stream, Stream, StreamExt};
 use reth_node_ethstats::EthStatsService;
 use reth_node_events::{cl::ConsensusLayerHealthEvents, node::NodeEvent};
-use rust_eth_triedb::triedb_manager::{init_global_triedb_manager, disable_triedb, is_triedb_active};
+use rust_eth_triedb::triedb_manager::{
+    disable_triedb, init_global_triedb_manager, is_triedb_active,
+};
 
 /// Reusable setup for launching a node.
 ///
@@ -161,7 +163,12 @@ impl LaunchContext {
             .wrap_err_with(|| format!("Could not load config file {config_path:?}"))?;
 
         Self::save_pruning_config(&mut toml_config, config, &config_path)?;
-        Self::save_statedb_config_if_triedb(&mut toml_config, config, &config_path, &self.data_dir)?;
+        Self::save_statedb_config_if_triedb(
+            &mut toml_config,
+            config,
+            &config_path,
+            &self.data_dir,
+        )?;
 
         info!(target: "reth::cli", path = ?config_path, "Configuration loaded");
 
@@ -247,12 +254,12 @@ impl LaunchContext {
                 }
 
                 // Check if path needs to be updated
-                if existing_config.path != expected_path {
+                if existing_config.path == expected_path {
+                    None
+                } else {
                     let mut updated_config = existing_config.clone();
                     updated_config.path = expected_path.clone();
                     Some((expected_path, updated_config))
-                } else {
-                    None
                 }
             }
             None => {
@@ -261,30 +268,25 @@ impl LaunchContext {
                     // Use TrieDB
                     let triedb_path = data_dir.data_dir().join("rust_eth_triedb");
                     let path_str = triedb_path.to_string_lossy().to_string();
-                    let statedb_config = StateDbConfig {
-                        r#type: "triedb".to_string(),
-                        path: triedb_path.clone(),
-                    };
+                    let statedb_config =
+                        StateDbConfig { r#type: "triedb".to_string(), path: triedb_path };
                     reth_config.update_statedb_config(statedb_config);
                     info!(target: "reth::cli", "Saving state database config (triedb) to toml file");
                     reth_config.save(config_path.as_ref())?;
                     // Initialize TrieDB
                     init_global_triedb_manager(&path_str);
-                    None
                 } else {
                     // Use default MDBX and save to file
                     let db_path = data_dir.data_dir().join("db");
-                    let statedb_config = StateDbConfig {
-                        r#type: "mdbx".to_string(),
-                        path: db_path,
-                    };
+                    let statedb_config =
+                        StateDbConfig { r#type: "mdbx".to_string(), path: db_path };
                     reth_config.update_statedb_config(statedb_config);
                     info!(target: "reth::cli", "Saving state database config (mdbx) to toml file");
                     reth_config.save(config_path.as_ref())?;
                     // Disable TrieDB
                     disable_triedb();
-                    None
                 }
+                None
             }
         };
 
@@ -1058,8 +1060,7 @@ where
         Ok(None)
     }
 
-
-    /// Check if the pipeline is consistent under TrieDB.
+    /// Check if the pipeline is consistent under `TrieDB`.
     pub fn check_pipeline_consistency_under_triedb(&self) -> ProviderResult<Option<B256>> {
         // If no target was provided, check if the stages are congruent - check if the
         // checkpoint of the last stage matches the checkpoint of the first.
@@ -1070,11 +1071,12 @@ where
             .block_number;
 
         let triedb = rust_eth_triedb::get_global_triedb();
-        let (triedb_checkpoint_block_number, triedb_checkpoint_state_root) = triedb.latest_persist_state().unwrap();
+        let (triedb_checkpoint_block_number, triedb_checkpoint_state_root) =
+            triedb.latest_persist_state().unwrap();
 
         // Skip the first stage as we've already retrieved it and comparing all other checkpoints
         // against it.
-        for stage_id in StageId::ALL.iter() {
+        for stage_id in &StageId::ALL {
             let stage_checkpoint = self
                 .blockchain_db()
                 .get_stage_checkpoint(*stage_id)?
@@ -1107,8 +1109,14 @@ where
         info!(target: "consensus::engine", "Pipeline sync progress is consistent, will check live sync progress");
 
         let last_persisted_block_number = self.blockchain_db().last_block_number()?;
-        let last_persisted_header = self.blockchain_db().header_by_number(last_persisted_block_number)?
-            .ok_or_else(|| reth_provider::ProviderError::HeaderNotFound(alloy_eips::BlockHashOrNumber::Number(last_persisted_block_number)))?;
+        let last_persisted_header = self
+            .blockchain_db()
+            .header_by_number(last_persisted_block_number)?
+            .ok_or_else(|| {
+                reth_provider::ProviderError::HeaderNotFound(alloy_eips::BlockHashOrNumber::Number(
+                    last_persisted_block_number,
+                ))
+            })?;
         let last_persisted_state_root = last_persisted_header.state_root();
 
         if last_persisted_block_number > triedb_checkpoint_block_number {
@@ -1127,14 +1135,13 @@ where
             triedb_checkpoint_state_root = ?triedb_checkpoint_state_root,
             "Last persisted state is behind of the TrieDB state, start pipeline sync to align");
             return self.blockchain_db().block_hash(last_persisted_block_number);
-        } else {
-            info!(target: "consensus::engine",
-            last_persisted_block_number,
-            last_persisted_state_root = ?last_persisted_state_root,
-            triedb_checkpoint_block_number,
-            triedb_checkpoint_state_root = ?triedb_checkpoint_state_root,
-            "Last persisted state equal TrieDB state, start live sync");
         }
+        info!(target: "consensus::engine",
+        last_persisted_block_number,
+        last_persisted_state_root = ?last_persisted_state_root,
+        triedb_checkpoint_block_number,
+        triedb_checkpoint_state_root = ?triedb_checkpoint_state_root,
+        "Last persisted state equal TrieDB state, start live sync");
 
         Ok(None)
     }
@@ -1147,26 +1154,25 @@ where
     where
         T: FullNodeTypes<Provider: StaticFileProviderFactory>,
     {
-        if self.node_config().pruning.bodies_pre_merge {
-            if let Some(merge_block) =
-                self.chain_spec().ethereum_fork_activation(EthereumHardfork::Paris).block_number()
-            {
-                // Ensure we only expire transactions after we synced past the merge block.
-                let Some(latest) = self.blockchain_db().latest_header()? else { return Ok(()) };
-                if latest.number() > merge_block {
-                    let provider = self.blockchain_db().static_file_provider();
-                    if provider
-                        .get_lowest_transaction_static_file_block()
-                        .is_some_and(|lowest| lowest < merge_block)
-                    {
-                        info!(target: "reth::cli", merge_block, "Expiring pre-merge transactions");
-                        provider.delete_segment_below_block(
-                            StaticFileSegment::Transactions,
-                            merge_block,
-                        )?;
-                    } else {
-                        debug!(target: "reth::cli", merge_block, "No pre-merge transactions to expire");
-                    }
+        if self.node_config().pruning.bodies_pre_merge &&
+            let Some(merge_block) = self
+                .chain_spec()
+                .ethereum_fork_activation(EthereumHardfork::Paris)
+                .block_number()
+        {
+            // Ensure we only expire transactions after we synced past the merge block.
+            let Some(latest) = self.blockchain_db().latest_header()? else { return Ok(()) };
+            if latest.number() > merge_block {
+                let provider = self.blockchain_db().static_file_provider();
+                if provider
+                    .get_lowest_transaction_static_file_block()
+                    .is_some_and(|lowest| lowest < merge_block)
+                {
+                    info!(target: "reth::cli", merge_block, "Expiring pre-merge transactions");
+                    provider
+                        .delete_segment_below_block(StaticFileSegment::Transactions, merge_block)?;
+                } else {
+                    debug!(target: "reth::cli", merge_block, "No pre-merge transactions to expire");
                 }
             }
         }

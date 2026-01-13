@@ -548,7 +548,7 @@ pub(super) mod serde_bincode_compat {
     /// #[derive(Serialize, Deserialize)]
     /// struct Data {
     ///     #[serde_as(as = "serde_bincode_compat::OpReceipt<'_>")]
-    ///     receipt: OpReceipt,
+    ///     receipt: reth_optimism_primitives::OpReceipt,
     /// }
     /// ```
     #[derive(Debug, Serialize, Deserialize)]
