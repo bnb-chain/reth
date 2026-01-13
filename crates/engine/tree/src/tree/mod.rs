@@ -8,7 +8,7 @@ use crate::{
 use alloy_consensus::BlockHeader;
 use alloy_eips::{eip1898::BlockWithParent, BlockNumHash, NumHash};
 use alloy_evm::block::StateChangeSource;
-use alloy_primitives::{B256, BlockHash, BlockNumber};
+use alloy_primitives::{BlockHash, BlockNumber, B256};
 use alloy_rpc_types_engine::{
     ForkchoiceState, PayloadStatus, PayloadStatusEnum, PayloadValidationError,
 };
@@ -87,8 +87,8 @@ pub mod state;
 /// an epoch has slots), then this exceeds the threshold at which the pipeline should be used to
 /// backfill this gap.
 ///
-/// This is kept for backwards compatibility with tests. Use `TreeConfig::min_blocks_for_pipeline_run()`
-/// for configurable threshold.
+/// This is kept for backwards compatibility with tests. Use
+/// `TreeConfig::min_blocks_for_pipeline_run()` for configurable threshold.
 #[cfg(test)]
 pub(crate) const MIN_BLOCKS_FOR_PIPELINE_RUN: u64 = DEFAULT_MIN_BLOCKS_FOR_PIPELINE_RUN;
 
@@ -1453,9 +1453,7 @@ where
                                 debug!(target: "engine::tree", number=?number, hash=?hash, "querying header and TD by engine message");
                                 let output = self.query_header_with_td(number, hash);
 
-                                if let Err(err) =
-                                    tx.send(output.map(|o| o.1).map_err(Into::into))
-                                {
+                                if let Err(err) = tx.send(output.map(|o| o.1).map_err(Into::into)) {
                                     error!(target: "engine::tree", "Failed to send event: {err:?}");
                                 }
                             }
@@ -2539,14 +2537,8 @@ where
             .engine
             .block_insert_total_duration
             .record(block_insert_start.elapsed().as_secs_f64());
-        self.metrics
-            .engine
-            .block_insert_mgasps
-            .set(gas_used as f64 / elapsed.as_secs_f64());
-        self.metrics
-            .engine
-            .block_insert_timestamp_delay
-            .record(timestamp_delay_nanos);
+        self.metrics.engine.block_insert_mgasps.set(gas_used as f64 / elapsed.as_secs_f64());
+        self.metrics.engine.block_insert_timestamp_delay.record(timestamp_delay_nanos);
         debug!(target: "engine::tree", block=?block_num_hash, "Finished inserting block");
         Ok(InsertPayloadOk::Inserted(BlockStatus::Valid))
     }
@@ -2833,12 +2825,18 @@ where
 
     /// Query the header and TD of the given block number and hash.
     /// If the block is not found, the header and TD of the last block will be returned.
-    pub fn query_header_with_td(&self, number: BlockNumber, hash: BlockHash) -> ProviderResult<(N::BlockHeader, Option<U256>)> {
+    pub fn query_header_with_td(
+        &self,
+        number: BlockNumber,
+        hash: BlockHash,
+    ) -> ProviderResult<(N::BlockHeader, Option<U256>)> {
         // query header td from canonical chain
         if let Some(block_number) = self.provider.block_number(hash)? {
             tracing::debug!(target: "engine::tree", number=?number, hash=?hash, "querying TD from canonical chain");
-            let header = self.provider.header_by_number(block_number)?.
-                ok_or(ProviderError::HeaderNotFound(block_number.into()))?;
+            let header = self
+                .provider
+                .header_by_number(block_number)?
+                .ok_or(ProviderError::HeaderNotFound(block_number.into()))?;
             let td = self.provider.header_td_by_number(block_number)?;
             return Ok((header, td))
         }

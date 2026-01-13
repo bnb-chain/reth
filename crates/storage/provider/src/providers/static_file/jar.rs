@@ -11,8 +11,8 @@ use alloy_eips::{eip2718::Encodable2718, BlockHashOrNumber};
 use alloy_primitives::{Address, BlockHash, BlockNumber, TxHash, TxNumber, B256, U256};
 use reth_chainspec::ChainInfo;
 use reth_db::static_file::{
-    BlockHashMask, HeaderMask, HeaderWithHashMask, ReceiptMask, StaticFileCursor,
-    TDWithHashMask, TotalDifficultyMask, TransactionMask,
+    BlockHashMask, HeaderMask, HeaderWithHashMask, ReceiptMask, StaticFileCursor, TDWithHashMask,
+    TotalDifficultyMask, TransactionMask,
 };
 use reth_db_api::table::{Decompress, Value};
 use reth_node_types::NodePrimitives;

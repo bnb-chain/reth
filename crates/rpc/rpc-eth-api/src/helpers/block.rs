@@ -8,7 +8,6 @@ use crate::{
 use alloy_consensus::{transaction::TxHashRef, TxReceipt};
 use alloy_eips::{BlockId, BlockNumberOrTag};
 use alloy_rlp::Encodable;
-use tracing::{trace, warn};
 use alloy_rpc_types_eth::{Block, BlockTransactions, Index};
 use futures::Future;
 use reth_node_api::BlockBody;
@@ -19,6 +18,7 @@ use reth_storage_api::{
 };
 use reth_transaction_pool::{PoolTransaction, TransactionPool};
 use std::sync::Arc;
+use tracing::{trace, warn};
 
 /// Result type of the fetched block receipts.
 pub type BlockReceiptsResult<N, E> = Result<Option<Vec<RpcReceipt<N>>>, E>;
@@ -84,10 +84,10 @@ pub trait EthBlocks:
 
                                     trace!(
                                         target: "rpc::eth", 
-                                        ?block_id, 
-                                        block_number, 
+                                        ?block_id,
+                                        block_number,
                                         parent_number,
-                                        ?parent_td, 
+                                        ?parent_td,
                                         ?current_difficulty,
                                         ?calculated_td,
                                         "Calculated TD from parent"
@@ -164,19 +164,17 @@ pub trait EthBlocks:
     ) -> impl Future<Output = Result<Option<usize>, Self::Error>> + Send {
         async move {
             if block_id.is_pending() {
-                if let Some(block) = self
-                    .provider()
-                    .pending_block()
-                    .map_err(Self::Error::from_eth_err)?
+                if let Some(block) =
+                    self.provider().pending_block().map_err(Self::Error::from_eth_err)?
                 {
                     return Ok(Some(block.body().transaction_count()));
                 }
-                
+
                 // 2. local pending block
                 if let Some(pending) = self.local_pending_block().await? {
                     return Ok(Some(pending.block.body().transaction_count()));
                 }
-                
+
                 return Ok(None);
             }
 

@@ -92,7 +92,10 @@ impl HashedPostState {
                     None => HashedStorage::new(false),
                     Some(_) => HashedStorage::from_plain_storage(
                         AccountStatus::Changed,
-                        account.storage.iter().map(|(slot, value)| (slot, &value.previous_or_original_value)),
+                        account
+                            .storage
+                            .iter()
+                            .map(|(slot, value)| (slot, &value.previous_or_original_value)),
                     ),
                 };
                 (hashed_address, (hashed_account, hashed_storage))
@@ -119,7 +122,7 @@ impl HashedPostState {
                 Some(account) => {
                     let code_hash = match account.bytecode_hash {
                         Some(code_hash) => code_hash,
-                        None => KECCAK_EMPTY
+                        None => KECCAK_EMPTY,
                     };
                     let acc = StateAccount::default()
                         .with_nonce(account.nonce)

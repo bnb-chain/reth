@@ -752,7 +752,7 @@ where
         &self,
         tx_hash: TxHash,
         blob: BlobTransactionSidecarVariant,
-    ) ->  Result<(), BlobStoreError> {
+    ) -> Result<(), BlobStoreError> {
         self.pool.blob_store().insert(tx_hash, blob)
     }
 

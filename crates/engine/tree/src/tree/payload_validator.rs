@@ -280,7 +280,9 @@ where
     }
 
     /// Validates a block that has already been converted from a payload with triedb.
-    pub fn validate_block_with_state_with_triedb<T: PayloadTypes<BuiltPayload: BuiltPayload<Primitives = N>>>(
+    pub fn validate_block_with_state_with_triedb<
+        T: PayloadTypes<BuiltPayload: BuiltPayload<Primitives = N>>,
+    >(
         &mut self,
         input: BlockOrPayload<T>,
         mut ctx: TreeCtx<'_, N>,
@@ -289,8 +291,8 @@ where
         V: PayloadValidator<T, Block = N::Block>,
         Evm: ConfigureEngineEvm<T::ExecutionData, Primitives = N>,
     {
-         /// A helper macro that returns the block in case there was an error
-         macro_rules! ensure_ok {
+        /// A helper macro that returns the block in case there was an error
+        macro_rules! ensure_ok {
             ($expr:expr) => {
                 match $expr {
                     Ok(val) => val,
@@ -334,11 +336,8 @@ where
         let env = ExecutionEnv { evm_env, hash: input.hash(), parent_hash: input.parent_hash() };
 
         let txs = self.tx_iterator_for(&input)?;
-        let mut handle = self.payload_processor.spawn_cache_exclusive(
-            env.clone(),
-            txs,
-            provider_builder,
-        );
+        let mut handle =
+            self.payload_processor.spawn_cache_exclusive(env.clone(), txs, provider_builder);
 
         // Use cached state provider before executing, used in execution after prewarming threads
         // complete
@@ -659,10 +658,7 @@ where
                         target: "engine::tree::payload_validator",
                         "Failed to compute state root in parallel"
                     );
-                    self.metrics
-                        .block_validation
-                        .state_root_parallel_fallback_total
-                        .increment(1);
+                    self.metrics.block_validation.state_root_parallel_fallback_total.increment(1);
                 }
 
                 let (root, updates) = ensure_ok_post_block!(
@@ -1032,13 +1028,14 @@ where
     /// Determines the state root computation strategy based on configuration.
     #[instrument(level = "debug", target = "engine::tree::payload_validator", skip_all)]
     fn plan_state_root_computation(&self) -> StateRootStrategy {
-        let strategy = if self.config.skip_state_root_validation() || self.config.state_root_fallback() {
-            StateRootStrategy::Synchronous
-        } else if self.config.use_state_root_task() {
-            StateRootStrategy::StateRootTask
-        } else {
-            StateRootStrategy::Parallel
-        };
+        let strategy =
+            if self.config.skip_state_root_validation() || self.config.state_root_fallback() {
+                StateRootStrategy::Synchronous
+            } else if self.config.use_state_root_task() {
+                StateRootStrategy::StateRootTask
+            } else {
+                StateRootStrategy::Parallel
+            };
 
         debug!(
             target: "engine::tree::payload_validator",
