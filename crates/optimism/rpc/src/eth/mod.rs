@@ -27,6 +27,7 @@ use reth_optimism_flashblocks::{
     FlashBlockService, FlashblocksListeners, PendingBlockRx, PendingFlashBlock, WsFlashBlockStream,
 };
 use reth_rpc::eth::core::EthApiInner;
+use reth_rpc_convert::CustomHeaderConverter;
 use reth_rpc_eth_api::{
     helpers::{
         pending_block::BuildPendingEnv, EthApiSpec, EthFees, EthState, LoadFee, LoadPendingBlock,
@@ -380,7 +381,7 @@ pub type OpRpcConvert<N, NetworkT> = RpcConverter<
     NetworkT,
     <N as FullNodeComponents>::Evm,
     OpReceiptConverter<<N as FullNodeTypes>::Provider>,
-    (),
+    CustomHeaderConverter,
     OpTxInfoMapper<<N as FullNodeTypes>::Provider>,
 >;
 
@@ -461,6 +462,10 @@ where
         >,
         Types: NodeTypes<ChainSpec: Hardforks + EthereumHardforks>,
     >,
+    // OP-specific requirements for the node configuration.
+    <<N as FullNodeTypes>::Types as NodeTypes>::ChainSpec: reth_optimism_forks::OpHardforks,
+    <<<N as FullNodeTypes>::Types as NodeTypes>::Primitives as reth_node_api::NodePrimitives>::Receipt:
+        reth_optimism_primitives::DepositReceipt,
     NetworkT: RpcTypes,
     OpRpcConvert<N, NetworkT>: RpcConvert<Network = NetworkT>,
     OpEthApi<N, OpRpcConvert<N, NetworkT>>:
@@ -476,8 +481,9 @@ where
             flashblocks_url,
             ..
         } = self;
-        let rpc_converter =
+        let rpc_converter: OpRpcConvert<N, NetworkT> =
             RpcConverter::new(OpReceiptConverter::new(ctx.components.provider().clone()))
+                .with_header_converter(CustomHeaderConverter)
                 .with_mapper(OpTxInfoMapper::new(ctx.components.provider().clone()));
 
         let sequencer_client = if let Some(url) = sequencer_url {
