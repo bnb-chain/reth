@@ -512,7 +512,13 @@ alloy-rpc-types-debug = { version = "1.0.30", default-features = false }
 alloy-rpc-types-engine = { version = "1.0.30", default-features = false }
 alloy-rpc-types-eth = { version = "1.0.30", default-features = false }
 alloy-rpc-types-mev = { version = "1.0.30", default-features = false }
-alloy-rpc-types-trace = { version = "1.0.30", default-features = false }
+# NOTE: `revm-inspectors` v0.29.x has exhaustive matches over some `alloy-rpc-types-trace`
+# enums. Newer `alloy-rpc-types-trace` releases may add new enum variants (e.g.
+# `Erc7562Tracer`) and break compilation.
+#
+# We pin to a known-good version to keep `reth` (and downstream users like `reth-bsc`)
+# building without requiring a crates.io patch.
+alloy-rpc-types-trace = { version = "=1.0.30", default-features = false }
 alloy-rpc-types-txpool = { version = "1.0.30", default-features = false }
 alloy-serde = { version = "1.0.30", default-features = false }
 alloy-signer = { version = "1.0.30", default-features = false }
