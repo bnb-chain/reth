@@ -117,7 +117,7 @@ impl HashedPostState {
     pub fn to_triedb_hashed_post_state(&self) -> TrieDBHashedPostState {
         let mut triedb_hashed_post_state = TrieDBHashedPostState::default();
 
-        for (hashed_address, account) in self.accounts.iter() {
+        for (hashed_address, account) in &self.accounts {
             match account {
                 Some(account) => {
                     let code_hash = match account.bytecode_hash {
@@ -131,11 +131,11 @@ impl HashedPostState {
                     triedb_hashed_post_state.states.insert(*hashed_address, Some(acc));
 
                     // check if the account is being rebuilt
-                    if let Some(storages) = self.storages.get(hashed_address) {
-                        if storages.wiped {
+                    if let Some(storages) = self.storages.get(hashed_address) 
+                        && storages.wiped {
                             triedb_hashed_post_state.states_rebuild.insert(*hashed_address);
                         }
-                    }
+                    
                 }
                 None => {
                     triedb_hashed_post_state.states.insert(*hashed_address, None);
@@ -143,7 +143,7 @@ impl HashedPostState {
             }
         }
 
-        for (hashed_address, storages) in self.storages.iter() {
+        for (hashed_address, storages) in &self.storages {
             if storages.storage.is_empty() {
                 continue;
             }
