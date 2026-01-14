@@ -131,11 +131,11 @@ impl HashedPostState {
                     triedb_hashed_post_state.states.insert(*hashed_address, Some(acc));
 
                     // check if the account is being rebuilt
-                    if let Some(storages) = self.storages.get(hashed_address) 
-                        && storages.wiped {
-                            triedb_hashed_post_state.states_rebuild.insert(*hashed_address);
-                        }
-                    
+                    if let Some(storages) = self.storages.get(hashed_address) &&
+                        storages.wiped
+                    {
+                        triedb_hashed_post_state.states_rebuild.insert(*hashed_address);
+                    }
                 }
                 None => {
                     triedb_hashed_post_state.states.insert(*hashed_address, None);
@@ -148,7 +148,7 @@ impl HashedPostState {
                 continue;
             }
             let mut kvs = HashMap::new();
-            for (hashed_key, value) in storages.storage.iter() {
+            for (hashed_key, value) in &storages.storage {
                 if value.is_zero() {
                     // if the value is zero, it means the storage is being deleted
                     kvs.insert(*hashed_key, None);
