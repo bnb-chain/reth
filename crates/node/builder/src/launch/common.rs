@@ -254,12 +254,12 @@ impl LaunchContext {
                 }
 
                 // Check if path needs to be updated
-                if existing_config.path != expected_path {
+                if existing_config.path == expected_path {
+                    None
+                } else {
                     let mut updated_config = existing_config.clone();
                     updated_config.path = expected_path.clone();
                     Some((expected_path, updated_config))
-                } else {
-                    None
                 }
             }
             None => {
@@ -269,7 +269,7 @@ impl LaunchContext {
                     let triedb_path = data_dir.data_dir().join("rust_eth_triedb");
                     let path_str = triedb_path.to_string_lossy().to_string();
                     let statedb_config =
-                        StateDbConfig { r#type: "triedb".to_string(), path: triedb_path.clone() };
+                        StateDbConfig { r#type: "triedb".to_string(), path: triedb_path };
                     reth_config.update_statedb_config(statedb_config);
                     info!(target: "reth::cli", "Saving state database config (triedb) to toml file");
                     reth_config.save(config_path.as_ref())?;
@@ -1061,7 +1061,7 @@ where
         Ok(None)
     }
 
-    /// Check if the pipeline is consistent under TrieDB.
+    /// Check if the pipeline is consistent under `TrieDB`.
     pub fn check_pipeline_consistency_under_triedb(&self) -> ProviderResult<Option<B256>> {
         // If no target was provided, check if the stages are congruent - check if the
         // checkpoint of the last stage matches the checkpoint of the first.
@@ -1077,7 +1077,7 @@ where
 
         // Skip the first stage as we've already retrieved it and comparing all other checkpoints
         // against it.
-        for stage_id in StageId::ALL.iter() {
+        for stage_id in &StageId::ALL {
             let stage_checkpoint = self
                 .blockchain_db()
                 .get_stage_checkpoint(*stage_id)?
@@ -1155,26 +1155,25 @@ where
     where
         T: FullNodeTypes<Provider: StaticFileProviderFactory>,
     {
-        if self.node_config().pruning.bodies_pre_merge {
-            if let Some(merge_block) =
-                self.chain_spec().ethereum_fork_activation(EthereumHardfork::Paris).block_number()
-            {
-                // Ensure we only expire transactions after we synced past the merge block.
-                let Some(latest) = self.blockchain_db().latest_header()? else { return Ok(()) };
-                if latest.number() > merge_block {
-                    let provider = self.blockchain_db().static_file_provider();
-                    if provider
-                        .get_lowest_transaction_static_file_block()
-                        .is_some_and(|lowest| lowest < merge_block)
-                    {
-                        info!(target: "reth::cli", merge_block, "Expiring pre-merge transactions");
-                        provider.delete_segment_below_block(
-                            StaticFileSegment::Transactions,
-                            merge_block,
-                        )?;
-                    } else {
-                        debug!(target: "reth::cli", merge_block, "No pre-merge transactions to expire");
-                    }
+        if self.node_config().pruning.bodies_pre_merge &&
+            let Some(merge_block) = self
+                .chain_spec()
+                .ethereum_fork_activation(EthereumHardfork::Paris)
+                .block_number()
+        {
+            // Ensure we only expire transactions after we synced past the merge block.
+            let Some(latest) = self.blockchain_db().latest_header()? else { return Ok(()) };
+            if latest.number() > merge_block {
+                let provider = self.blockchain_db().static_file_provider();
+                if provider
+                    .get_lowest_transaction_static_file_block()
+                    .is_some_and(|lowest| lowest < merge_block)
+                {
+                    info!(target: "reth::cli", merge_block, "Expiring pre-merge transactions");
+                    provider
+                        .delete_segment_below_block(StaticFileSegment::Transactions, merge_block)?;
+                } else {
+                    debug!(target: "reth::cli", merge_block, "No pre-merge transactions to expire");
                 }
             }
         }

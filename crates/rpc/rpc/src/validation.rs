@@ -211,8 +211,7 @@ where
         if is_triedb_active() {
             return Err(ValidationApiError::MethodNotAvailable(
                 "validation_validateMessageAgainstBlock".to_string(),
-            )
-            .into());
+            ));
         }
 
         let state_root =
@@ -361,8 +360,7 @@ where
         if is_triedb_active() {
             return Err(ValidationApiError::MethodNotAvailable(
                 "validation_validateBlobsBundle".to_string(),
-            )
-            .into());
+            ));
         }
 
         if blobs_bundle.commitments.len() != blobs_bundle.proofs.len() ||
@@ -391,8 +389,7 @@ where
         if is_triedb_active() {
             return Err(ValidationApiError::MethodNotAvailable(
                 "validation_validateBlobsBundleV2".to_string(),
-            )
-            .into());
+            ));
         }
         let versioned_hashes = blobs_bundle
             .commitments
@@ -416,8 +413,7 @@ where
         if is_triedb_active() {
             return Err(ValidationApiError::MethodNotAvailable(
                 "validation_validateBuilderSubmissionV3".to_string(),
-            )
-            .into());
+            ));
         }
 
         let block = self.payload_validator.ensure_well_formed_payload(ExecutionData {
@@ -444,8 +440,7 @@ where
         if is_triedb_active() {
             return Err(ValidationApiError::MethodNotAvailable(
                 "validation_validateBuilderSubmissionV4".to_string(),
-            )
-            .into());
+            ));
         }
 
         let block = self.payload_validator.ensure_well_formed_payload(ExecutionData {
@@ -479,8 +474,7 @@ where
         if is_triedb_active() {
             return Err(ValidationApiError::MethodNotAvailable(
                 "validation_validateBuilderSubmissionV5".to_string(),
-            )
-            .into());
+            ));
         }
         let block = self.payload_validator.ensure_well_formed_payload(ExecutionData {
             payload: ExecutionPayload::V3(request.request.execution_payload),
