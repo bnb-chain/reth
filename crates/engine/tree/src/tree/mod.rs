@@ -2944,11 +2944,20 @@ where
         number: BlockNumber,
         hash: BlockHash,
     ) -> ProviderResult<(N::BlockHeader, Option<U256>)> {
+        // Highest persisted canonical block number. Values above this are not guaranteed to have
+        // consistent `Header -> TD` mappings (canonical headers may be tracked in-memory while TD
+        // is still read from disk), so we must not use `header_td_by_number()` above this anchor.
+        let last_persisted_number = self.provider.last_block_number()?;
+
         // Helper: return canonical (number, td) for a hash only if the canonical header at that
         // height matches the hash. This avoids mixing "hash->number" indexes with a different
         // canonical header at the same height.
         let canonical_td_for_hash = |h: B256| -> ProviderResult<Option<(u64, U256)>> {
             let Some(n) = self.provider.block_number(h)? else { return Ok(None) };
+            // Only trust TD for persisted canonical heights.
+            if n > last_persisted_number {
+                return Ok(None)
+            }
             let Some(canon_header) = self.provider.header_by_number(n)? else { return Ok(None) };
             if canon_header.hash_slow() != h {
                 return Ok(None)
@@ -2963,6 +2972,7 @@ where
                 number=?number,
                 hash=?hash,
                 block_number=?block_number,
+                last_persisted_number=?last_persisted_number,
                 "querying TD from canonical chain"
             );
 
@@ -2975,8 +2985,8 @@ where
                 .ok_or(ProviderError::HeaderNotFound(block_number.into()))?;
             let canonical_hash: B256 = canonical_header.hash_slow();
             let requested_hash: B256 = hash;
-            if canonical_hash == requested_hash {
-                let td = self.provider.header_td_by_number(block_number)?;
+            if canonical_hash == requested_hash && block_number <= last_persisted_number {
+            let td = self.provider.header_td_by_number(block_number)?;
                 return Ok((canonical_header, td));
             }
 
@@ -2985,12 +2995,19 @@ where
                 requested_hash=?hash,
                 resolved_number=?block_number,
                 canonical_hash=?canonical_hash,
+                last_persisted_number=?last_persisted_number,
                 "hash resolved to a number but is not the canonical header at that height; falling back to fork TD computation"
             );
         }
 
         // query header td from last block number
-        tracing::debug!(target: "engine::tree", number=?number, hash=?hash, "querying TD from fork headers");
+        tracing::debug!(
+            target: "engine::tree",
+            number=?number,
+            hash=?hash,
+            last_persisted_number=?last_persisted_number,
+            "querying TD from fork headers"
+        );
         let mut ret_td = U256::ZERO;
         let ret_header = self
             .state
@@ -3001,7 +3018,6 @@ where
             .ok_or(ProviderError::HeaderNotFound(hash.into()))?;
         ret_td = ret_td.wrapping_add(ret_header.difficulty());
 
-        let last_block_number = self.provider.last_block_number()?;
         let (mut current_number, mut current_hash) = (number - 1, ret_header.parent_hash());
 
         // If debug is enabled, capture a small, bounded sample of the fork-walk so operators can
@@ -3022,13 +3038,13 @@ where
             fork_steps.push((number, B256::from(hash), ret_header.difficulty()));
         }
 
-        while current_number >= last_block_number {
+        while current_number >= last_persisted_number {
             walked += 1;
             match canonical_td_for_hash(current_hash)? {
                 Some((block_number, td)) => {
                     // add canonical chain td (only if `current_hash` is truly canonical at
                     // `block_number`)
-                    ret_td = ret_td.wrapping_add(td);
+                            ret_td = ret_td.wrapping_add(td);
 
                     // If we know the canonical parent TD and this is a direct child, then TD must
                     // not be less than parent_td + difficulty.
@@ -3108,9 +3124,14 @@ where
             current_number -= 1;
         }
 
-        if current_number < last_block_number {
-            tracing::warn!(target: "engine::tree", current_number=?current_number, current_hash=?current_hash, last_block_number=?last_block_number,
-                 "cannot find header td for block number, query beyond last block number, just return none");
+        if current_number < last_persisted_number {
+            tracing::warn!(
+                target: "engine::tree",
+                current_number=?current_number,
+                current_hash=?current_hash,
+                last_persisted_number=?last_persisted_number,
+                "cannot find canonical TD anchor; fork-walk went beyond last persisted number"
+            );
             return Ok((ret_header, None));
         }
         Ok((ret_header, Some(ret_td)))
