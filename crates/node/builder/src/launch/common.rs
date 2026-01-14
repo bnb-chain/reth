@@ -1136,14 +1136,13 @@ where
             triedb_checkpoint_state_root = ?triedb_checkpoint_state_root,
             "Last persisted state is behind of the TrieDB state, start pipeline sync to align");
             return self.blockchain_db().block_hash(last_persisted_block_number);
-        } else {
-            info!(target: "consensus::engine",
-            last_persisted_block_number,
-            last_persisted_state_root = ?last_persisted_state_root,
-            triedb_checkpoint_block_number,
-            triedb_checkpoint_state_root = ?triedb_checkpoint_state_root,
-            "Last persisted state equal TrieDB state, start live sync");
         }
+        info!(target: "consensus::engine",
+        last_persisted_block_number,
+        last_persisted_state_root = ?last_persisted_state_root,
+        triedb_checkpoint_block_number,
+        triedb_checkpoint_state_root = ?triedb_checkpoint_state_root,
+        "Last persisted state equal TrieDB state, start live sync");
 
         Ok(None)
     }
