@@ -117,7 +117,7 @@ impl<N: NetworkPrimitives> NetworkHandle<N> {
     /// Instead they are sent to the node by CL and can be requested over devp2p.
     /// Broadcasting new blocks is considered a protocol violation.
     ///
-    /// For BSC and other PoW-based chains, the total_difficulty parameter is essential.
+    /// For BSC and other PoW-based chains, the `total_difficulty` parameter is essential.
     pub fn announce_block(
         &self,
         block: N::NewBlockPayload,

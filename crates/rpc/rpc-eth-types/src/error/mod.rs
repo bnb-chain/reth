@@ -136,7 +136,7 @@ pub enum EthApiError {
     /// When the percentile array is invalid
     #[error("invalid reward percentiles")]
     InvalidRewardPercentiles,
-    /// Method not available error (used when TrieDB is active)
+    /// Method not available error (used when `TrieDB` is active)
     #[error("The method {0} does not exist/is not available")]
     MethodNotAvailable(String),
     /// Error thrown when a spawned blocking task failed to deliver an anticipated response.
