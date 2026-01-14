@@ -287,15 +287,15 @@ where
                     ));
                 }
                 // Reject blob transactions with zero max_fee_per_blob_gas
-                if let Some(blob_fee) = transaction.max_fee_per_blob_gas() {
-                    if blob_fee == 0 {
-                        return Err(TransactionValidationOutcome::Invalid(
-                            transaction,
-                            InvalidPoolTransactionError::Eip4844(
-                                Eip4844PoolTransactionError::ZeroBlobFee,
-                            ),
-                        ));
-                    }
+                if let Some(blob_fee) = transaction.max_fee_per_blob_gas() &&
+                    blob_fee == 0
+                {
+                    return Err(TransactionValidationOutcome::Invalid(
+                        transaction,
+                        InvalidPoolTransactionError::Eip4844(
+                            Eip4844PoolTransactionError::ZeroBlobFee,
+                        ),
+                    ));
                 }
             }
             EIP7702_TX_TYPE_ID => {
