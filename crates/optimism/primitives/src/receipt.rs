@@ -540,7 +540,7 @@ pub(super) mod serde_bincode_compat {
     ///
     /// Intended to use with the [`serde_with::serde_as`] macro in the following way:
     /// ```rust
-    /// use reth_optimism_primitives::{serde_bincode_compat, OpReceipt};
+    /// use reth_optimism_primitives::serde_bincode_compat;
     /// use serde::{de::DeserializeOwned, Deserialize, Serialize};
     /// use serde_with::serde_as;
     ///
@@ -548,7 +548,7 @@ pub(super) mod serde_bincode_compat {
     /// #[derive(Serialize, Deserialize)]
     /// struct Data {
     ///     #[serde_as(as = "serde_bincode_compat::OpReceipt<'_>")]
-    ///     receipt: OpReceipt,
+    ///     receipt: reth_optimism_primitives::OpReceipt,
     /// }
     /// ```
     #[derive(Debug, Serialize, Deserialize)]
