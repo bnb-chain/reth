@@ -60,8 +60,7 @@ use reth_storage_api::{
     BlockBodyIndicesProvider, BlockBodyReader, NodePrimitivesProvider, StateProvider,
     StorageChangeSetReader, TryIntoHistoricalStateProvider,
 };
-use reth_storage_errors::db::DatabaseError;
-use reth_storage_errors::provider::ProviderResult;
+use reth_storage_errors::{db::DatabaseError, provider::ProviderResult};
 use reth_trie::{
     trie_cursor::{
         InMemoryTrieCursor, InMemoryTrieCursorFactory, TrieCursor, TrieCursorFactory,
@@ -986,12 +985,12 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> HeaderProvider for DatabasePro
     }
 
     fn header_td_by_number(&self, number: BlockNumber) -> ProviderResult<Option<U256>> {
-        if self.chain_spec.is_paris_active_at_block(number) {
-            if let Some(td) = self.chain_spec.final_paris_total_difficulty() {
-                // if this block is higher than the final paris(merge) block, return the final paris
-                // difficulty
-                return Ok(Some(td));
-            }
+        if self.chain_spec.is_paris_active_at_block(number) &&
+            let Some(td) = self.chain_spec.final_paris_total_difficulty()
+        {
+            // if this block is higher than the final paris(merge) block, return the final paris
+            // difficulty
+            return Ok(Some(td));
         }
 
         self.static_file_provider.get_with_static_file_or_database(
@@ -2395,7 +2394,9 @@ impl<TX: DbTxMut + DbTx + 'static, N: NodeTypes> StorageTrieWriter for DatabaseP
     ) -> ProviderResult<usize> {
         if rust_eth_triedb::triedb_manager::is_triedb_active() {
             tracing::error!("write_storage_trie_updates is not supported triedb");
-            return Err(ProviderError::Database(DatabaseError::Other("write_trie_updates is not supported triedb".to_string())));
+            return Err(ProviderError::Database(DatabaseError::Other(
+                "write_trie_updates is not supported triedb".to_string(),
+            )));
         }
 
         let mut num_entries = 0;
