@@ -10,7 +10,7 @@ use crate::{
 };
 use futures::{stream_select, StreamExt};
 use alloy_consensus::BlockHeader;
-use reth_chainspec::{EthChainSpec, EthereumHardforks};
+use reth_chainspec::EthChainSpec;
 use reth_db_api::{database_metrics::DatabaseMetrics, Database};
 use reth_engine_service::service::{ChainEvent, EngineService};
 use reth_engine_tree::{
@@ -24,6 +24,7 @@ use reth_network_api::BlockDownloaderProvider;
 use reth_node_api::{
     BuiltPayload, ConsensusEngineHandle, FullNodeTypes, NodeTypes, NodeTypesWithDBAdapter,
 };
+use reth_provider::HeaderProvider;
 use reth_node_core::{
     dirs::{ChainPath, DataDirPath},
     exit::NodeExitFuture,
@@ -280,7 +281,7 @@ where
             .into_built_payload_stream()
             .fuse();
 
-        let chainspec = ctx.chain_spec();
+        let _chainspec = ctx.chain_spec();
         let provider = ctx.blockchain_db().clone();
         let (exit, rx) = oneshot::channel();
         let terminate_after_backfill = ctx.terminate_after_initial_backfill();
@@ -330,12 +331,21 @@ where
                                 if let Some(head) = ev.canonical_header() {
                                     // Once we're progressing via live sync, we can consider the node is not syncing anymore
                                     network_handle.update_sync_state(SyncState::Idle);
-                                                                        let head_block = Head {
+                                    // For PoW-based chains (e.g. BSC), total difficulty must reflect the real TD of the
+                                    // canonical head; using Paris/TTD logic here can incorrectly set TD=0 and break
+                                    // downstream peer selection (e.g. geth-bsc picks sync peer by highest TD).
+                                    let total_difficulty = provider
+                                        .header_td_by_number(head.number())
+                                        .ok()
+                                        .flatten()
+                                        .unwrap_or_default();
+
+                                    let head_block = Head {
                                         number: head.number(),
                                         hash: head.hash(),
                                         difficulty: head.difficulty(),
                                         timestamp: head.timestamp(),
-                                        total_difficulty: chainspec.final_paris_total_difficulty().filter(|_| chainspec.is_paris_active_at_block(head.number())).unwrap_or_default(),
+                                        total_difficulty,
                                     };
                                     network_handle.update_status(head_block);
 
