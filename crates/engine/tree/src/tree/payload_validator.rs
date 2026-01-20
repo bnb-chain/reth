@@ -286,8 +286,8 @@ where
         V: PayloadValidator<T, Block = N::Block>,
         Evm: ConfigureEngineEvm<T::ExecutionData, Primitives = N>,
     {
-        /// A helper macro that returns the block in case there was an error
-        macro_rules! ensure_ok {
+         /// A helper macro that returns the block in case there was an error
+         macro_rules! ensure_ok {
             ($expr:expr) => {
                 match $expr {
                     Ok(val) => val,
@@ -645,11 +645,40 @@ where
         Evm: ConfigureEngineEvm<T::ExecutionData, Primitives = N>,
     {
         if rust_eth_triedb::triedb_manager::is_triedb_active() {
-            if self.use_triedb_sync_validate {
-                return self.validate_block_with_state_with_triedb_sync_validate(input, ctx);
+            // Track which triedb validation path is used and how long it takes.
+            let block_num_hash = input.num_hash();
+            let start = Instant::now();
+            self.metrics.block_validation.triedb_validate_entry_total.increment(1);
+
+            let (mode, res) = if self.use_triedb_sync_validate {
+                self.metrics
+                    .block_validation
+                    .triedb_validate_entry_sync_total
+                    .increment(1);
+                ("sync", self.validate_block_with_state_with_triedb_sync_validate(input, ctx))
             } else {
-                return self.validate_block_with_state_with_triedb_async_validate(input, ctx);
-            }
+                self.metrics
+                    .block_validation
+                    .triedb_validate_entry_async_total
+                    .increment(1);
+                ("async", self.validate_block_with_state_with_triedb_async_validate(input, ctx))
+            };
+
+            let elapsed = start.elapsed().as_secs_f64();
+            self.metrics
+                .block_validation
+                .triedb_validate_entry_duration
+                .record(elapsed);
+
+            tracing::debug!(
+                target: "engine::tree",
+                block = ?block_num_hash,
+                mode,
+                elapsed_ms = (elapsed * 1000.0),
+                "Triedb validate_block_with_state completed"
+            );
+
+            return res;
         }
 
         /// A helper macro that returns the block in case there was an error
