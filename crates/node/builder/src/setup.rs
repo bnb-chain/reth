@@ -128,6 +128,7 @@ where
             .builder()
             .disable(reth_stages::StageId::MerkleExecute)
             .disable(reth_stages::StageId::MerkleUnwind)
+            .disable(reth_stages::StageId::MerkleChangeSets)
             .set(ExecutionStage::new(
                 evm_config,
                 consensus,
