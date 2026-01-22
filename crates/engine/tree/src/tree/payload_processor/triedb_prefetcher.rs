@@ -1,11 +1,12 @@
 //! TrieDBPrefetchTask is a task that is responsible for prefetching the triedb from the database.
 
-use std::collections::{HashMap};
+use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc::{self, Receiver, RecvError, Sender, TryRecvError},
-    Arc,
+    Arc, Mutex,
 };
+use std::time::Duration;
 
 use alloy_consensus::EMPTY_ROOT_HASH;
 use alloy_primitives::{hex, keccak256, map::B256Set, B256};
@@ -60,6 +61,93 @@ pub fn evm_state_to_trie_db_prefetch_state(evm_state: &EvmState) -> MultiProofTa
         state.insert(hashed_address, slots);
     }
     state
+}
+
+/// A direct TrieDB prefetcher that can be driven from `EvmState` updates (e.g. miner-side).
+///
+/// This is a small public wrapper around the internal triedb prefetch tasks used by the engine.
+/// Unlike [`TrieDBPrefetchHandle`], this does **not** require wiring the multiproof channel; users
+/// can call [`TrieDBStatePrefetcher::on_state_update`] directly.
+#[derive(Debug, Clone)]
+pub struct TrieDBStatePrefetcher {
+    inner: Arc<TrieDBStatePrefetcherInner>,
+}
+
+#[derive(Debug)]
+struct TrieDBStatePrefetcherInner {
+    state_tx: Sender<TrieDBPrefetchMessage>,
+    result_rx: Mutex<Option<Receiver<TrieDBPrefetchResult>>>,
+    cancel_flag: Arc<AtomicBool>,
+}
+
+impl TrieDBStatePrefetcher {
+    /// Creates and starts the prefetcher task(s).
+    pub fn new(
+        root_hash: B256,
+        path_db: PathDB,
+        difflayers: Option<DiffLayers>,
+    ) -> Result<Self, TrieDBPrefetchError> {
+        let executor = WorkloadExecutor::default();
+        let spawn_exec = executor.clone();
+
+        let (state_tx, state_rx) = mpsc::channel();
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+
+        let (account_task, prefetch_result_rx) = TrieDBPrefetchAccountTask::new(
+            root_hash,
+            path_db,
+            difflayers,
+            executor,
+            state_rx,
+            cancel_flag.clone(),
+        )?;
+
+        // Spawn the account task (which in turn spawns per-account storage tasks).
+        // This uses the internal workload executor's tokio runtime.
+        spawn_exec.spawn_blocking(move || {
+            account_task.run();
+        });
+
+        Ok(Self {
+            inner: Arc::new(TrieDBStatePrefetcherInner {
+                state_tx,
+                result_rx: Mutex::new(Some(prefetch_result_rx)),
+                cancel_flag,
+            }),
+        })
+    }
+
+    /// Feed a state update into the prefetcher (typically called from an `OnStateHook`).
+    pub fn on_state_update(&self, update: &EvmState) {
+        if self.inner.cancel_flag.load(Ordering::Relaxed) {
+            return;
+        }
+
+        let targets = evm_state_to_trie_db_prefetch_state(update);
+        if let Err(e) = self.inner.state_tx.send(TrieDBPrefetchMessage::PrefetchState(targets)) {
+            warn!(
+                target: "engine::trie_db_prefetch",
+                "TrieDBStatePrefetcher failed to send prefetch targets: {e:?}"
+            );
+        }
+    }
+
+    /// Finishes the prefetcher and returns the produced prefetch state, if available.
+    ///
+    /// This will signal all tasks to stop and then block until the final `PrefetchAccountResult`
+    /// is received (or the channel is dropped).
+    pub fn finish(self) -> Option<Arc<TrieDBPrefetchState<PathDB>>> {
+        self.inner.cancel_flag.store(true, Ordering::Relaxed);
+        let _ = self.inner.state_tx.send(TrieDBPrefetchMessage::PrefetchFinished());
+
+        let rx = self.inner.result_rx.lock().ok()?.take()?;
+        // Never block forever in miner/block-production paths: if the background task fails to
+        // respond, we fall back to "no prefetch".
+        match rx.recv_timeout(Duration::from_secs(2)).ok()? {
+            TrieDBPrefetchResult::PrefetchAccountResult(state) => Some(state),
+            TrieDBPrefetchResult::PrefetchStorageResult((_, _, _)) => None,
+        }
+    }
 }
 
 /// Handle for TrieDB prefetch operations.
@@ -268,6 +356,7 @@ impl TrieDBPrefetchAccountTask {
 
     /// Wait for all storage_results and write them to storage_tries.
     /// Returns (successful_count, failed_addresses).
+    #[allow(dead_code)]
     pub(super) fn receive_prefetch_storage_results(&mut self) -> usize {
         if self.storage_results.is_empty() {
             return 0;
