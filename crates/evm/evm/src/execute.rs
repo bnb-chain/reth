@@ -21,6 +21,7 @@ use reth_primitives_traits::{
 use reth_storage_api::StateProvider;
 pub use reth_storage_errors::provider::ProviderError;
 use reth_trie_common::{updates::TrieUpdates, HashedPostState};
+use rust_eth_triedb_common::DiffLayer;
 use revm::{
     context::result::ExecutionResult,
     database::{states::bundle_state::BundleRetention, BundleState, State},
@@ -318,6 +319,16 @@ pub struct BlockBuilderOutcome<N: NodePrimitives> {
     pub block: RecoveredBlock<N::Block>,
 }
 
+/// Extended output of block building that can carry a triedb difflayer (if produced by the
+/// block builder).
+#[derive(Debug, Clone)]
+pub struct BlockBuilderOutcomeWithDiffLayer<N: NodePrimitives> {
+    /// The standard block builder outcome.
+    pub inner: BlockBuilderOutcome<N>,
+    /// Triedb difflayer produced during state root computation (if any).
+    pub difflayer: Option<Arc<DiffLayer>>,
+}
+
 /// A type that knows how to execute and build a block.
 ///
 /// It wraps an inner [`BlockExecutor`] and provides a way to execute transactions and
@@ -374,6 +385,20 @@ pub trait BlockBuilder {
         self,
         state_provider: impl StateProvider,
     ) -> Result<BlockBuilderOutcome<Self::Primitives>, BlockExecutionError>;
+
+    /// Completes the block building process and also returns an optional triedb difflayer if the
+    /// builder produced one.
+    ///
+    /// Default implementation returns no difflayer.
+    fn finish_with_difflayer(
+        self,
+        state_provider: impl StateProvider,
+    ) -> Result<BlockBuilderOutcomeWithDiffLayer<Self::Primitives>, BlockExecutionError>
+    where
+        Self: Sized,
+    {
+        Ok(BlockBuilderOutcomeWithDiffLayer { inner: self.finish(state_provider)?, difflayer: None })
+    }
 
     /// Provides mutable access to the inner [`BlockExecutor`].
     fn executor_mut(&mut self) -> &mut Self::Executor;
