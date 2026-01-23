@@ -8528,6 +8528,7 @@ dependencies = [
  "reth-storage-errors",
  "reth-trie-common",
  "revm",
+ "rust-eth-triedb-common",
 ]
 
 [[package]]
