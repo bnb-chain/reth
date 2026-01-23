@@ -478,6 +478,7 @@ where
                 None
             }
         };
+        let had_prefetch_state = prefetch_state.is_some();
         self.metrics
             .block_validation
             .triedb_prefetch_duration
@@ -506,6 +507,35 @@ where
             .record(validate_start.elapsed().as_secs_f64());
 
         if new_root != block_state_root {
+            // Diagnostic: if we used a triedb prefetch state, recompute the root without it to
+            // determine whether the prefetch inputs are affecting correctness.
+            //
+            // IMPORTANT: use the non-committing API to avoid mutating the underlying DB/difflayers.
+            let diag_start = Instant::now();
+            let got_no_prefetch = if had_prefetch_state {
+                match triedb.intermediate_hashed_post_state(
+                    parent_block.state_root(),
+                    difflayers.as_ref(),
+                    &trie_hashed_state,
+                    None,
+                ) {
+                    Ok(root) => Some(root),
+                    Err(e) => {
+                        warn!(
+                            target: "engine::tree",
+                            error = ?e,
+                            "Failed to recompute triedb state root without prefetch_state"
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            let diag_elapsed_ms = diag_start.elapsed().as_millis();
+            // Ensure the global triedb doesn't retain large intermediate state from diagnostics.
+            triedb.clean();
+
             // Emit a high-signal warning before we mark the block invalid so operators can quickly
             // correlate mismatches with execution inputs and chain context.
             //
@@ -518,6 +548,7 @@ where
                 parent_hash = ?parent_block.hash(),
                 parent_state_root = ?parent_block.state_root(),
                 got = ?new_root,
+                got_no_prefetch = ?got_no_prefetch,
                 expected = ?block_state_root,
                 tx_count = block.body().transaction_count(),
                 hashed_accounts = hashed_state.accounts.len(),
@@ -528,6 +559,7 @@ where
                     .map(|s| s.storage.len())
                     .sum::<usize>(),
                 has_difflayers = difflayers.is_some(),
+                recompute_no_prefetch_ms = diag_elapsed_ms,
                 "mismatched block state root (triedb validate)"
             );
             // call post-block hook
