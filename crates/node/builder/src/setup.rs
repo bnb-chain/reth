@@ -138,7 +138,10 @@ where
             )
             .build(provider_factory, static_file_producer);
 
-        info!(target: "reth::builder", "Pipeline built with TrieDB, without merkle execute and merkle unwind");
+        info!(
+            target: "reth::builder",
+            "Pipeline built with TrieDB, without merkle execute/unwind/changesets"
+        );
         pipeline
     } else {
         builder
