@@ -1531,14 +1531,39 @@ where
         &mut self,
         msg: FromEngine<EngineApiRequest<T, N, P, C>, N::Block>,
     ) -> Result<ops::ControlFlow<()>, InsertBlockFatalError> {
+        const SLOW_HANDLER_WARN_THRESHOLD: std::time::Duration = std::time::Duration::from_millis(300);
+
+        #[inline]
+        fn log_handler_duration(kind: &'static str, elapsed: std::time::Duration) {
+            tracing::debug!(
+                target: "engine::tree",
+                handler = kind,
+                elapsed_ms = elapsed.as_millis(),
+                "engine-tree handler finished"
+            );
+            if elapsed >= SLOW_HANDLER_WARN_THRESHOLD {
+                tracing::warn!(
+                    target: "engine::tree",
+                    handler = kind,
+                    elapsed_ms = elapsed.as_millis(),
+                    "engine-tree handler is slow"
+                );
+            }
+        }
+
+
         match msg {
             FromEngine::Event(event) => match event {
                 FromOrchestrator::BackfillSyncStarted => {
+                    let start = Instant::now();
                     debug!(target: "engine::tree", "received backfill sync started event");
                     self.backfill_sync_state = BackfillSyncState::Active;
+                    log_handler_duration("event.backfill_sync_started", start.elapsed());
                 }
                 FromOrchestrator::BackfillSyncFinished(ctrl) => {
+                    let start = Instant::now();
                     self.on_backfill_sync_finished(ctrl)?;
+                    log_handler_duration("event.backfill_sync_finished", start.elapsed());
                 }
                 FromOrchestrator::Terminate { tx } => {
                     debug!(target: "engine::tree", "received terminate request");
@@ -1551,9 +1576,11 @@ where
             FromEngine::Request(request) => {
                 match request {
                     EngineApiRequest::InsertExecutedBlock(block) => {
+                        let start = Instant::now();
                         let block_num_hash = block.recovered_block().num_hash();
                         if block_num_hash.number <= self.state.tree_state.canonical_block_number() {
                             // outdated block that can be skipped
+                            log_handler_duration("request.insert_executed_block(outdated)", start.elapsed());
                             return Ok(ops::ControlFlow::Continue(()))
                         }
 
@@ -1575,6 +1602,7 @@ where
                         self.emit_event(EngineApiEvent::BeaconConsensus(
                             ConsensusEngineEvent::CanonicalBlockAdded(block, now.elapsed()),
                         ));
+                        log_handler_duration("request.insert_executed_block", start.elapsed());
                     }
                     EngineApiRequest::Beacon(request) => {
                         match request {
@@ -1622,6 +1650,7 @@ where
                                         .increment(1);
                                     error!(target: "engine::tree", ?state, elapsed=?start.elapsed(), "Failed to send event: {err:?}");
                                 }
+                                log_handler_duration("request.beacon.forkchoice_updated", start.elapsed());
                             }
                             BeaconEngineMessage::NewPayload { payload, tx } => {
                                 let start = Instant::now();
@@ -1651,14 +1680,17 @@ where
 
                                 // handle the event if any
                                 self.on_maybe_tree_event(maybe_event)?;
+                                log_handler_duration("request.beacon.new_payload", start.elapsed());
                             }
                             BeaconEngineMessage::QueryTd { number, hash, tx } => {
+                                let start = Instant::now();
                                 debug!(target: "engine::tree", number=?number, hash=?hash, "querying header and TD by engine message");
                                 let output = self.query_header_with_td(number, hash);
 
                                 if let Err(err) = tx.send(output.map(|o| o.1).map_err(Into::into)) {
                                     error!(target: "engine::tree", "Failed to send event: {err:?}");
                                 }
+                                log_handler_duration("request.beacon.query_td", start.elapsed());
                             }
                         }
                     }
@@ -1687,9 +1719,11 @@ where
                 }
             }
             FromEngine::DownloadedBlocks(blocks) => {
+                let start = Instant::now();
                 if let Some(event) = self.on_downloaded(blocks)? {
                     self.on_tree_event(event)?;
                 }
+                log_handler_duration("downloaded_blocks", start.elapsed());
             }
         }
         Ok(ops::ControlFlow::Continue(()))
