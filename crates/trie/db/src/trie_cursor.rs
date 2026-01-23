@@ -1,4 +1,6 @@
 use alloy_primitives::B256;
+use std::backtrace::Backtrace;
+use std::sync::atomic::{AtomicBool, Ordering};
 use reth_db_api::{
     cursor::{DbCursorRO, DbCursorRW, DbDupCursorRO, DbDupCursorRW},
     tables,
@@ -36,8 +38,15 @@ where
         Self: 'a;
 
     fn account_trie_cursor(&self) -> Result<Self::AccountTrieCursor<'_>, DatabaseError> {
-        if rust_eth_triedb::triedb_manager::is_triedb_active() {
-            tracing::warn!("account_trie_cursor should be called under triedb");
+        static WARNED_ACCOUNT_CURSOR: AtomicBool = AtomicBool::new(false);
+        if rust_eth_triedb::triedb_manager::is_triedb_active()
+            && !WARNED_ACCOUNT_CURSOR.swap(true, Ordering::Relaxed)
+        {
+            tracing::warn!(
+                target: "reth_trie_db::trie_cursor",
+                backtrace = ?Backtrace::force_capture(),
+                "account_trie_cursor called while triedb is active"
+            );
         }
         Ok(DatabaseAccountTrieCursor::new(self.0.cursor_read::<tables::AccountsTrie>()?))
     }
@@ -46,8 +55,16 @@ where
         &self,
         hashed_address: B256,
     ) -> Result<Self::StorageTrieCursor<'_>, DatabaseError> {
-        if rust_eth_triedb::triedb_manager::is_triedb_active() {
-            tracing::warn!("storage_trie_cursor should be called under triedb");
+        static WARNED_STORAGE_CURSOR: AtomicBool = AtomicBool::new(false);
+        if rust_eth_triedb::triedb_manager::is_triedb_active()
+            && !WARNED_STORAGE_CURSOR.swap(true, Ordering::Relaxed)
+        {
+            tracing::warn!(
+                target: "reth_trie_db::trie_cursor",
+                backtrace = ?Backtrace::force_capture(),
+                hashed_address = ?hashed_address,
+                "storage_trie_cursor called while triedb is active"
+            );
         }
         Ok(DatabaseStorageTrieCursor::new(
             self.0.cursor_dup_read::<tables::StoragesTrie>()?,

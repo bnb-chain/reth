@@ -111,34 +111,38 @@ where
 
     let pipeline = if is_triedb_active() {
         let pipeline = builder
-        .with_tip_sender(tip_tx)
-        .with_metrics_tx(metrics_tx)
-        .add_stages(
-            DefaultStages::new(
-                provider_factory.clone(),
-                tip_rx,
-                Arc::clone(&consensus),
-                header_downloader,
-                body_downloader,
-                evm_config.clone(),
-                stage_config.clone(),
-                prune_modes,
-                era_import_source,
+            .with_tip_sender(tip_tx)
+            .with_metrics_tx(metrics_tx)
+            .add_stages(
+                DefaultStages::new(
+                    provider_factory.clone(),
+                    tip_rx,
+                    Arc::clone(&consensus),
+                    header_downloader,
+                    body_downloader,
+                    evm_config.clone(),
+                    stage_config.clone(),
+                    prune_modes,
+                    era_import_source,
+                )
+                .builder()
+                .disable(reth_stages::StageId::MerkleExecute)
+                .disable(reth_stages::StageId::MerkleUnwind)
+                .disable(reth_stages::StageId::MerkleChangeSets)
+                .set(ExecutionStage::new(
+                    evm_config,
+                    consensus,
+                    stage_config.execution.into(),
+                    stage_config.execution_external_clean_threshold(),
+                    exex_manager_handle,
+                )),
             )
-            .builder()
-            .disable(reth_stages::StageId::MerkleExecute)
-            .disable(reth_stages::StageId::MerkleUnwind)
-            .set(ExecutionStage::new(
-                evm_config,
-                consensus,
-                stage_config.execution.into(),
-                stage_config.execution_external_clean_threshold(),
-                exex_manager_handle,
-            )),
-        )
-        .build(provider_factory, static_file_producer);
+            .build(provider_factory, static_file_producer);
 
-        info!(target: "reth::builder", "Pipeline built with TrieDB, without merkle execute and merkle unwind");
+        info!(
+            target: "reth::builder",
+            "Pipeline built with TrieDB, without merkle execute/unwind/changesets"
+        );
         pipeline
     } else {
         let pipeline = builder

@@ -164,6 +164,11 @@ where
             let state_root = recovered_block.state_root();
             let hashed_state_clone = hashed_state.clone();
 
+            if triedb_opt.is_none() && is_triedb_active() {
+                // TrieDB became active mid-call; switch to TrieDB path for remaining blocks.
+                triedb_opt = Some(get_global_triedb());
+            }
+
             // Only check latest_persist_state if TrieDB is active
             let latest_state_root_opt = if let Some(ref mut triedb) = triedb_opt {
                 let (latest_block_number, latest_state_root) = triedb.latest_persist_state()
