@@ -286,6 +286,108 @@ where
         V: PayloadValidator<T, Block = N::Block>,
         Evm: ConfigureEngineEvm<T::ExecutionData, Primitives = N>,
     {
+        struct TriedbSyncValidateTimings {
+            start: Instant,
+            ok: bool,
+            parent_hash: B256,
+            block_num_hash: crate::tree::BlockNumHash,
+            difflayers_lookup: Option<std::time::Duration>,
+            get_global_triedb: Option<std::time::Duration>,
+            state_provider_builder: Option<std::time::Duration>,
+            state_provider_build: Option<std::time::Duration>,
+            sealed_header_by_hash: Option<std::time::Duration>,
+            spawn_cache_with_prefetcher: Option<std::time::Duration>,
+            cached_state_provider_wrap: Option<std::time::Duration>,
+            execute_block: Option<std::time::Duration>,
+            stop_prewarming_execution: Option<std::time::Duration>,
+            convert_to_block: Option<std::time::Duration>,
+            validate_block_inner: Option<std::time::Duration>,
+            validate_header_against_parent: Option<std::time::Duration>,
+            validate_block_post_execution: Option<std::time::Duration>,
+            hashed_post_state: Option<std::time::Duration>,
+            validate_block_post_exec_with_hashed_state: Option<std::time::Duration>,
+            terminate_caching: Option<std::time::Duration>,
+            triedb_prefetch_wait: Option<std::time::Duration>,
+            triedb_calc_root_and_commit: Option<std::time::Duration>,
+            mismatch_diag_recompute_no_prefetch: Option<std::time::Duration>,
+            mismatch_triedb_clean: Option<std::time::Duration>,
+            on_invalid_block: Option<std::time::Duration>,
+        }
+
+        impl TriedbSyncValidateTimings {
+            fn new(parent_hash: B256, block_num_hash: crate::tree::BlockNumHash) -> Self {
+                Self {
+                    start: Instant::now(),
+                    ok: false,
+                    parent_hash,
+                    block_num_hash,
+                    difflayers_lookup: None,
+                    get_global_triedb: None,
+                    state_provider_builder: None,
+                    state_provider_build: None,
+                    sealed_header_by_hash: None,
+                    spawn_cache_with_prefetcher: None,
+                    cached_state_provider_wrap: None,
+                    execute_block: None,
+                    stop_prewarming_execution: None,
+                    convert_to_block: None,
+                    validate_block_inner: None,
+                    validate_header_against_parent: None,
+                    validate_block_post_execution: None,
+                    hashed_post_state: None,
+                    validate_block_post_exec_with_hashed_state: None,
+                    terminate_caching: None,
+                    triedb_prefetch_wait: None,
+                    triedb_calc_root_and_commit: None,
+                    mismatch_diag_recompute_no_prefetch: None,
+                    mismatch_triedb_clean: None,
+                    on_invalid_block: None,
+                }
+            }
+        }
+
+        impl Drop for TriedbSyncValidateTimings {
+            fn drop(&mut self) {
+                // Only format/emit this verbose log when debug is enabled.
+                if !tracing::enabled!(tracing::Level::DEBUG) {
+                    return;
+                }
+
+                let total_ms = self.start.elapsed().as_millis();
+                tracing::debug!(
+                    target: "engine::tree",
+                    block = ?self.block_num_hash,
+                    parent = ?self.parent_hash,
+                    ok = self.ok,
+                    total_ms = total_ms,
+                    difflayers_lookup_ms = self.difflayers_lookup.map(|d| d.as_millis()),
+                    get_global_triedb_ms = self.get_global_triedb.map(|d| d.as_millis()),
+                    state_provider_builder_ms = self.state_provider_builder.map(|d| d.as_millis()),
+                    state_provider_build_ms = self.state_provider_build.map(|d| d.as_millis()),
+                    sealed_header_by_hash_ms = self.sealed_header_by_hash.map(|d| d.as_millis()),
+                    spawn_cache_with_prefetcher_ms = self.spawn_cache_with_prefetcher.map(|d| d.as_millis()),
+                    cached_state_provider_wrap_ms = self.cached_state_provider_wrap.map(|d| d.as_millis()),
+                    execute_block_ms = self.execute_block.map(|d| d.as_millis()),
+                    stop_prewarming_execution_ms = self.stop_prewarming_execution.map(|d| d.as_millis()),
+                    convert_to_block_ms = self.convert_to_block.map(|d| d.as_millis()),
+                    validate_block_inner_ms = self.validate_block_inner.map(|d| d.as_millis()),
+                    validate_header_against_parent_ms = self.validate_header_against_parent.map(|d| d.as_millis()),
+                    validate_block_post_execution_ms = self.validate_block_post_execution.map(|d| d.as_millis()),
+                    hashed_post_state_ms = self.hashed_post_state.map(|d| d.as_millis()),
+                    validate_block_post_exec_with_hashed_state_ms =
+                        self.validate_block_post_exec_with_hashed_state.map(|d| d.as_millis()),
+                    terminate_caching_ms = self.terminate_caching.map(|d| d.as_millis()),
+                    triedb_prefetch_wait_ms = self.triedb_prefetch_wait.map(|d| d.as_millis()),
+                    triedb_calc_root_and_commit_ms = self.triedb_calc_root_and_commit.map(|d| d.as_millis()),
+                    mismatch_diag_recompute_no_prefetch_ms =
+                        self.mismatch_diag_recompute_no_prefetch.map(|d| d.as_millis()),
+                    mismatch_triedb_clean_ms = self.mismatch_triedb_clean.map(|d| d.as_millis()),
+                    on_invalid_block_ms = self.on_invalid_block.map(|d| d.as_millis()),
+                    "validate_block_with_state_with_triedb_sync_validate timings"
+                );
+            }
+        }
+
          /// A helper macro that returns the block in case there was an error
          macro_rules! ensure_ok {
             ($expr:expr) => {
@@ -303,11 +405,19 @@ where
 
         let parent_hash = input.parent_hash();
         let block_num_hash = input.num_hash();
+        let mut timings = TriedbSyncValidateTimings::new(parent_hash, block_num_hash);
+
+        let difflayers_start = Instant::now();
         let difflayers = ctx.state().merged_difflayer_by_hash(parent_hash);
+        timings.difflayers_lookup = Some(difflayers_start.elapsed());
+
+        let triedb_start = Instant::now();
         let mut triedb = get_global_triedb();
+        timings.get_global_triedb = Some(triedb_start.elapsed());
         let path_db = triedb.get_mut_path_db_ref();
 
         trace!(target: "engine::tree", block=?block_num_hash, parent=?parent_hash, "Fetching block state provider");
+        let provider_builder_start = Instant::now();
         let Some(provider_builder) =
             ensure_ok!(self.state_provider_builder(parent_hash, ctx.state()))
         else {
@@ -318,10 +428,14 @@ where
             )
             .into());
         };
+        timings.state_provider_builder = Some(provider_builder_start.elapsed());
 
+        let provider_build_start = Instant::now();
         let state_provider = ensure_ok!(provider_builder.build());
+        timings.state_provider_build = Some(provider_build_start.elapsed());
 
         // fetch parent block
+        let parent_header_start = Instant::now();
         let Some(parent_block) = ensure_ok!(self.sealed_header_by_hash(parent_hash, ctx.state()))
         else {
             return Err(InsertBlockError::new(
@@ -330,12 +444,14 @@ where
             )
             .into());
         };
+        timings.sealed_header_by_hash = Some(parent_header_start.elapsed());
 
         let evm_env = self.evm_env_for(&input);
 
         let env = ExecutionEnv { evm_env, hash: input.hash(), parent_hash: input.parent_hash() };
 
         let txs = self.tx_iterator_for(&input)?;
+        let spawn_handle_start = Instant::now();
         let mut handle = self.payload_processor.spawn_cache_with_triedb_prefetcher(
             parent_block.state_root(),
             path_db.clone(),
@@ -344,15 +460,19 @@ where
             txs,
             provider_builder,
         );
+        timings.spawn_cache_with_prefetcher = Some(spawn_handle_start.elapsed());
 
         // Use cached state provider before executing, used in execution after prewarming threads
         // complete
+        let cached_wrap_start = Instant::now();
         let state_provider = CachedStateProvider::new_with_caches(
             state_provider,
             handle.caches(),
             handle.cache_metrics(),
         );
+        timings.cached_state_provider_wrap = Some(cached_wrap_start.elapsed());
 
+        let execute_start = Instant::now();
         let output = if self.config.state_provider_metrics() {
             let state_provider = InstrumentedStateProvider::from_state_provider(&state_provider);
             let output = ensure_ok!(self.execute_block(&state_provider, env, &input, &mut handle));
@@ -361,10 +481,15 @@ where
         } else {
             ensure_ok!(self.execute_block(&state_provider, env, &input, &mut handle))
         };
+        timings.execute_block = Some(execute_start.elapsed());
         // after executing the block we can stop executing transactions
+        let stop_prewarm_start = Instant::now();
         handle.stop_prewarming_execution();
+        timings.stop_prewarming_execution = Some(stop_prewarm_start.elapsed());
 
+        let convert_start = Instant::now();
         let block = self.convert_to_block(input)?;
+        timings.convert_to_block = Some(convert_start.elapsed());
 
         // A helper macro that returns the block in case there was an error
         macro_rules! ensure_ok {
@@ -378,24 +503,33 @@ where
 
         trace!(target: "engine::tree", block=?block_num_hash, "Validating block consensus");
         // validate block consensus rules
+        let validate_inner_start = Instant::now();
         ensure_ok!(self.validate_block_inner(&block));
+        timings.validate_block_inner = Some(validate_inner_start.elapsed());
 
         // now validate against the parent
+        let validate_against_parent_start = Instant::now();
         if let Err(e) =
             self.consensus.validate_header_against_parent(block.sealed_header(), &parent_block)
         {
             warn!(target: "engine::tree", ?block, "Failed to validate header {} against parent: {e}", block.hash());
             return Err(InsertBlockError::new(block.into_sealed_block(), e.into()).into());
         }
+        timings.validate_header_against_parent = Some(validate_against_parent_start.elapsed());
 
+        let validate_post_exec_start = Instant::now();
         if let Err(err) = self.consensus.validate_block_post_execution(&block, &output) {
             // call post-block hook
             self.on_invalid_block(&parent_block, &block, &output, None, ctx.state_mut());
             return Err(InsertBlockError::new(block.into_sealed_block(), err.into()).into());
         }
+        timings.validate_block_post_execution = Some(validate_post_exec_start.elapsed());
 
+        let hashed_post_state_start = Instant::now();
         let hashed_state = self.provider.hashed_post_state(&output.state);
+        timings.hashed_post_state = Some(hashed_post_state_start.elapsed());
 
+        let validate_with_hashed_state_start = Instant::now();
         if let Err(err) =
             self.validator.validate_block_post_execution_with_hashed_state(&hashed_state, &block)
         {
@@ -403,8 +537,12 @@ where
             self.on_invalid_block(&parent_block, &block, &output, None, ctx.state_mut());
             return Err(InsertBlockError::new(block.into_sealed_block(), err.into()).into());
         }
+        timings.validate_block_post_exec_with_hashed_state =
+            Some(validate_with_hashed_state_start.elapsed());
         // terminate prewarming task with good state output
+        let terminate_caching_start = Instant::now();
         handle.terminate_caching(Some(output.state.clone()));
+        timings.terminate_caching = Some(terminate_caching_start.elapsed());
 
         let prefetch_start = Instant::now();
         let prefetch_state = match handle.triedb_preftch_result() {
@@ -418,6 +556,7 @@ where
                 None
             }
         };
+        timings.triedb_prefetch_wait = Some(prefetch_start.elapsed());
         let had_prefetch_state = prefetch_state.is_some();
         self.metrics
             .block_validation
@@ -427,6 +566,7 @@ where
         let validate_start = Instant::now();
         let trie_hashed_state = hashed_state.to_triedb_hashed_post_state();
         let block_state_root: revm_primitives::FixedBytes<32> = block.state_root();
+        let triedb_calc_start = Instant::now();
         let (new_root, difflayer) = triedb
             .intermediate_and_commit_hashed_post_state(
                 parent_block.state_root(),
@@ -441,6 +581,7 @@ where
                 );
                 InsertPayloadError::<N::Block>::from(err)
             })?;
+        timings.triedb_calc_root_and_commit = Some(triedb_calc_start.elapsed());
         self.metrics
             .block_validation
             .triedb_validate_duration
@@ -473,8 +614,11 @@ where
                 None
             };
             let diag_elapsed_ms = diag_start.elapsed().as_millis();
+            timings.mismatch_diag_recompute_no_prefetch = Some(diag_start.elapsed());
             // Ensure the global triedb doesn't retain large intermediate state from diagnostics.
+            let clean_start = Instant::now();
             triedb.clean();
+            timings.mismatch_triedb_clean = Some(clean_start.elapsed());
 
             // Emit a high-signal warning before we mark the block invalid so operators can quickly
             // correlate mismatches with execution inputs and chain context.
@@ -503,7 +647,9 @@ where
                 "mismatched block state root (triedb validate)"
             );
             // call post-block hook
+            let on_invalid_start = Instant::now();
             self.on_invalid_block(&parent_block, &block, &output, None, ctx.state_mut());
+            timings.on_invalid_block = Some(on_invalid_start.elapsed());
             let block_state_root = block.header().state_root();
             return Err(InsertBlockError::new(
                 block.into_sealed_block(),
@@ -515,6 +661,8 @@ where
             .into());
         }
 
+        // Mark successful completion so the timing log can report outcome.
+        timings.ok = true;
         Ok(ExecutedBlockWithTrieUpdates {
             block: ExecutedBlock {
                 recovered_block: Arc::new(block),
