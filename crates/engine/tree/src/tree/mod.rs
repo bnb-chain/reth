@@ -1551,6 +1551,31 @@ where
             }
         }
 
+        #[inline]
+        fn log_handler_duration_with_block<B: core::fmt::Debug>(
+            kind: &'static str,
+            block: &B,
+            elapsed: std::time::Duration,
+        ) {
+            tracing::debug!(
+                target: "engine::tree",
+                handler = kind,
+                block = ?block,
+                elapsed_ms = elapsed.as_millis(),
+                "engine-tree handler finished"
+            );
+            if elapsed >= SLOW_HANDLER_WARN_THRESHOLD {
+                tracing::warn!(
+                    target: "engine::tree",
+                    handler = kind,
+                    block = ?block,
+                    elapsed_ms = elapsed.as_millis(),
+                    "engine-tree handler is slow"
+                );
+            }
+        }
+
+
 
         match msg {
             FromEngine::Event(event) => match event {
@@ -1653,6 +1678,7 @@ where
                                 log_handler_duration("request.beacon.forkchoice_updated", start.elapsed());
                             }
                             BeaconEngineMessage::NewPayload { payload, tx } => {
+                                let block_num_hash = payload.num_hash();
                                 let start = Instant::now();
                                 let gas_used = payload.gas_used();
                                 let num_hash = payload.num_hash();
@@ -1680,7 +1706,11 @@ where
 
                                 // handle the event if any
                                 self.on_maybe_tree_event(maybe_event)?;
-                                log_handler_duration("request.beacon.new_payload", start.elapsed());
+                                log_handler_duration_with_block(
+                                    "request.beacon.new_payload",
+                                    &block_num_hash,
+                                    start.elapsed(),
+                                );
                             }
                             BeaconEngineMessage::QueryTd { number, hash, tx } => {
                                 let start = Instant::now();
