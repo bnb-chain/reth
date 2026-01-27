@@ -325,14 +325,28 @@ where
         V: PayloadValidator<T, Block = N::Block>,
         Evm: ConfigureEngineEvm<T::ExecutionData, Primitives = N>,
     {
-         /// A helper macro that returns the block in case there was an error
-         macro_rules! ensure_ok {
+        /// A helper macro that returns the block in case there was an error.
+        macro_rules! ensure_ok {
             ($expr:expr) => {
                 match $expr {
                     Ok(val) => val,
                     Err(e) => {
                         let block = self.convert_to_block(input)?;
-                        return Err(InsertBlockError::new(block.into_sealed_block(), e.into()).into())
+                        return Err(InsertBlockError::new(block, e.into()).into())
+                    }
+                }
+            };
+        }
+
+        /// A helper macro for handling errors after the input has been converted to a block.
+        macro_rules! ensure_ok_post_block {
+            ($expr:expr, $block:expr) => {
+                match $expr {
+                    Ok(val) => val,
+                    Err(e) => {
+                        return Err(
+                            InsertBlockError::new($block.into_sealed_block(), e.into()).into()
+                        )
                     }
                 }
             };
@@ -347,19 +361,19 @@ where
         else {
             // this is pre-validated in the tree
             return Err(InsertBlockError::new(
-                self.convert_to_block(input)?.into_sealed_block(),
+                self.convert_to_block(input)?,
                 ProviderError::HeaderNotFound(parent_hash.into()).into(),
             )
             .into())
         };
 
-        let state_provider = ensure_ok!(provider_builder.build());
+        let mut state_provider = ensure_ok!(provider_builder.build());
 
         // fetch parent block
         let Some(parent_block) = ensure_ok!(self.sealed_header_by_hash(parent_hash, ctx.state()))
         else {
             return Err(InsertBlockError::new(
-                self.convert_to_block(input)?.into_sealed_block(),
+                self.convert_to_block(input)?,
                 ProviderError::HeaderNotFound(parent_hash.into()).into(),
             )
             .into())
@@ -369,80 +383,86 @@ where
 
         let env = ExecutionEnv { evm_env, hash: input.hash(), parent_hash: input.parent_hash() };
 
+        // Use the simplest state root strategy for triedb to avoid merkle tasks.
+        let strategy = StateRootStrategy::Synchronous;
+
+        // Get an iterator over the transactions in the payload.
         let txs = self.tx_iterator_for(&input)?;
-        let mut handle = self.payload_processor.spawn_cache_exclusive(
+
+        // Extract the BAL, if valid and available.
+        let block_access_list = ensure_ok!(input
+            .block_access_list()
+            .transpose()
+            .map_err(Box::<dyn std::error::Error + Send + Sync>::from))
+        .map(Arc::new);
+
+        // Create lazy overlay from ancestors.
+        let (lazy_overlay, anchor_hash) = Self::get_parent_lazy_overlay(parent_hash, ctx.state());
+
+        // Create overlay factory for payload processor.
+        let overlay_factory =
+            OverlayStateProviderFactory::new(self.provider.clone(), self.changeset_cache.clone())
+                .with_block_hash(Some(anchor_hash))
+                .with_lazy_overlay(lazy_overlay);
+
+        // Spawn the payload processor.
+        let mut handle = ensure_ok!(self.spawn_payload_processor(
             env.clone(),
             txs,
             provider_builder,
-        );
+            overlay_factory.clone(),
+            strategy,
+            block_access_list,
+        ));
 
         // Use cached state provider before executing, used in execution after prewarming threads
-        // complete
-        let state_provider = CachedStateProvider::new_with_caches(
-            state_provider,
-            handle.caches(),
-            handle.cache_metrics(),
-        );
-
-        let output = if self.config.state_provider_metrics() {
-            let state_provider = InstrumentedStateProvider::from_state_provider(&state_provider);
-            let output = ensure_ok!(self.execute_block(&state_provider, env, &input, &mut handle));
-            state_provider.record_total_latency();
-            output
-        } else {
-            ensure_ok!(self.execute_block(&state_provider, env, &input, &mut handle))
+        // complete.
+        if let Some((caches, cache_metrics)) = handle.caches().zip(handle.cache_metrics()) {
+            state_provider = Box::new(CachedStateProvider::new(state_provider, caches, cache_metrics));
         };
-        // after executing the block we can stop executing transactions
+
+        if self.config.state_provider_metrics() {
+            state_provider = Box::new(InstrumentedStateProvider::new(state_provider, "engine"));
+        }
+
+        // Execute the block and handle any execution errors.
+        let (output, senders, receipt_root_rx) =
+            match self.execute_block(state_provider, env, &input, &mut handle) {
+                Ok(output) => output,
+                Err(err) => return self.handle_execution_error(input, err, &parent_block),
+            };
+
+        // After executing the block we can stop prewarming transactions.
         handle.stop_prewarming_execution();
 
-        let block = self.convert_to_block(input)?;
+        let block = self.convert_to_block(input)?.with_senders(senders);
 
-        // A helper macro that returns the block in case there was an error
-        macro_rules! ensure_ok {
-            ($expr:expr) => {
-                match $expr {
-                    Ok(val) => val,
-                    Err(e) => return Err(InsertBlockError::new(block.into_sealed_block(), e.into()).into()),
-                }
-            };
+        // Wait for the receipt root computation to complete.
+        let receipt_root_bloom = receipt_root_rx.blocking_recv().ok();
+
+        let hashed_state = ensure_ok_post_block!(
+            self.validate_post_execution(&block, &parent_block, &output, &mut ctx, receipt_root_bloom),
+            block
+        );
+
+        let output = Arc::new(output);
+        let valid_block_tx = handle.terminate_caching(Some(output.clone()));
+
+        // TrieDB manages trie data; skip state root verification here.
+        let trie_output = TrieUpdates::default();
+
+        if let Some(valid_block_tx) = valid_block_tx {
+            let _ = valid_block_tx.send(());
         }
 
-        trace!(target: "engine::tree", block=?block_num_hash, "Validating block consensus");
-        // validate block consensus rules
-        ensure_ok!(self.validate_block_inner(&block));
-
-        // now validate against the parent
-        if let Err(e) =
-            self.consensus.validate_header_against_parent(block.sealed_header(), &parent_block)
-        {
-            warn!(target: "engine::tree", ?block, "Failed to validate header {} against parent: {e}", block.hash());
-            return Err(InsertBlockError::new(block.into_sealed_block(), e.into()).into())
-        }
-
-        if let Err(err) = self.consensus.validate_block_post_execution(&block, &output) {
-            // call post-block hook
-            self.on_invalid_block(&parent_block, &block, &output, None, ctx.state_mut());
-            return Err(InsertBlockError::new(block.into_sealed_block(), err.into()).into())
-        }
-
-        let hashed_state = self.provider.hashed_post_state(&output.state);
-
-        if let Err(err) =
-            self.validator.validate_block_post_execution_with_hashed_state(&hashed_state, &block)
-        {
-            // call post-block hook
-            self.on_invalid_block(&parent_block, &block, &output, None, ctx.state_mut());
-            return Err(InsertBlockError::new(block.into_sealed_block(), err.into()).into())
-        }
-        // terminate prewarming task with good state output
-        handle.terminate_caching(Some(&output.state));
-
-        Ok(ExecutedBlock {
-            recovered_block: Arc::new(block),
-            execution_output: Arc::new(ExecutionOutcome::from((output, block_num_hash.number))),
-            hashed_state: Arc::new(hashed_state),
-            trie_updates: Arc::new(TrieUpdates::default()),
-        })
+        Ok(self.spawn_deferred_trie_task(
+            block,
+            output,
+            &ctx,
+            hashed_state,
+            trie_output,
+            overlay_factory,
+        ))
     }
 
     /// Validates a block that has already been converted from a payload.
@@ -875,12 +895,23 @@ where
 
         let execution_start = Instant::now();
         let state_hook = Box::new(handle.state_hook());
+        // Some executors may execute transactions that do not append receipts during the
+        // main loop (e.g., system transactions whose receipts are added during finalization).
+        // In that case, invoking the callback on every transaction would resend the previous
+        // receipt with the same index and can panic the ordered root builder.
+        let mut last_sent_len = 0usize;
         let (output, senders) = self.metrics.execute_metered(
             executor,
             handle.iter_transactions().map(|res| res.map_err(BlockExecutionError::other)),
             input.transaction_count(),
             state_hook,
             |receipts| {
+                let current_len = receipts.len();
+                if current_len <= last_sent_len {
+                    // No new receipt was appended for this transaction.
+                    return;
+                }
+                last_sent_len = current_len;
                 // Send the latest receipt to the background task for incremental root computation.
                 // The receipt is cloned here; encoding happens in the background thread.
                 if let Some(receipt) = receipts.last() {
@@ -890,6 +921,19 @@ where
                 }
             },
         )?;
+
+        // Some receipts may be appended during post-execution finalization rather than during the
+        // main transaction loop. Ensure the background receipt-root task sees the full receipt set.
+        if output.receipts.len() > last_sent_len {
+            for (tx_index, receipt) in output
+                .receipts
+                .iter()
+                .enumerate()
+                .skip(last_sent_len)
+            {
+                let _ = receipt_tx.send(IndexedReceipt::new(tx_index, receipt.clone()));
+            }
+        }
         drop(receipt_tx);
 
         let execution_finish = Instant::now();

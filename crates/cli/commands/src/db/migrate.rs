@@ -229,7 +229,7 @@ impl Command {
         dst_tx.inner.clear_db(dst_db.dbi())?;
         
         // Get total number of entries for progress calculation
-        let total_entries = src_tx.inner.db_stat(&src_db)?.entries();
+        let total_entries = src_tx.inner.db_stat(src_db.dbi())?.entries();
         
         if !self.quiet {
             info!(
@@ -241,8 +241,8 @@ impl Command {
         }
         
         // Get cursor for source and destination
-        let src_cursor = src_tx.inner.cursor(&src_db)?;
-        let mut dst_cursor = dst_tx.inner.cursor(&dst_db)?;
+        let src_cursor = src_tx.inner.cursor(src_db.dbi())?;
+        let mut dst_cursor = dst_tx.inner.cursor(dst_db.dbi())?;
         
         let mut copied = 0usize;
         let mut batch_count = 0usize;
@@ -268,7 +268,7 @@ impl Command {
                 dst_tx = dst_env.tx_mut()?;
                 // Re-open destination table (already created, but need handle in new transaction)
                 let dst_db = dst_tx.inner.open_db(Some(table_name))?;
-                dst_cursor = dst_tx.inner.cursor(&dst_db)?;
+                dst_cursor = dst_tx.inner.cursor(dst_db.dbi())?;
                 batch_count = 0;
                 
                 // Progress logging
@@ -326,4 +326,3 @@ impl Command {
         Ok(copied)
     }
 }
-

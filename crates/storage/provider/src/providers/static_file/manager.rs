@@ -22,7 +22,7 @@ use reth_db::{
     lockfile::StorageLock,
     static_file::{
         iter_static_files, BlockHashMask, HeaderMask, HeaderWithHashMask, ReceiptMask,
-        StaticFileCursor, TDWithHashMask, TransactionMask, TransactionSenderMask,
+        StaticFileCursor, TransactionMask, TransactionSenderMask,
     },
 };
 use reth_db_api::{
@@ -55,7 +55,7 @@ use std::{
     sync::{atomic::AtomicU64, mpsc, Arc},
     thread,
 };
-use tracing::{debug, instrument, trace, warn};
+use tracing::{debug, info, instrument, trace, warn};
 
 /// Alias type for a map that can be queried for block or transaction ranges. It uses `u64` to
 /// represent either a block or a transaction number end of a static file range.
@@ -2262,16 +2262,13 @@ impl<N: NodePrimitives<BlockHeader: Value>> HeaderProvider for StaticFileProvide
     }
 
     fn header_td(&self, block_hash: &BlockHash) -> ProviderResult<Option<U256>> {
-        self.find_static_file(StaticFileSegment::Headers, |jar_provider| {
-            Ok(jar_provider
-                .cursor()?
-                .get_two::<TDWithHashMask>(block_hash.into())?
-                .and_then(|(td, hash)| (&hash == block_hash).then_some(td.0)))
-        })
+        // Static file cursors do not support key-based lookups and would panic here.
+        let _ = block_hash;
+        Ok(None)
     }
 
     fn header_td_by_number(&self, num: BlockNumber) -> ProviderResult<Option<U256>> {
-        self.get_segment_provider_from_block(StaticFileSegment::Headers, num, None)
+        self.get_segment_provider_for_block(StaticFileSegment::Headers, num, None)
             .and_then(|provider| provider.header_td_by_number(num))
             .or_else(|err| {
                 if let ProviderError::MissingStaticFileBlock(_, _) = err {

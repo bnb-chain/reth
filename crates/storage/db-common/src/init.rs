@@ -388,6 +388,7 @@ where
     provider.write_state(
         &execution_outcome,
         OriginalValuesKnown::Yes,
+        StateWriteConfig::default(),
     )?;
 
     trace!(target: "reth::cli", "Inserted state");

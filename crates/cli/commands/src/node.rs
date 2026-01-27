@@ -197,7 +197,6 @@ where
             era,
             static_files,
             statedb,
-            statedb,
         };
 
         let data_dir = node_config.datadir();

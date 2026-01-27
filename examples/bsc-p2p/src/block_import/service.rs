@@ -225,7 +225,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{B256, U128};
+    use alloy_primitives::{B256, U128, U256};
     use alloy_rpc_types::engine::PayloadStatus;
     use reth_chainspec::ChainInfo;
     use reth_engine_primitives::{BeaconEngineMessage, OnForkChoiceUpdated};
@@ -404,7 +404,11 @@ mod tests {
     fn create_test_block() -> NewBlockMessage<NewBlock<Block>> {
         let block: reth_primitives::Block = Block::default();
         let new_block = NewBlock { block: block.clone(), td: U128::ZERO };
-        NewBlockMessage { hash: block.header.hash_slow(), block: Arc::new(new_block) }
+        NewBlockMessage {
+            hash: block.header.hash_slow(),
+            block: Arc::new(new_block),
+            td: Some(U256::from(U128::ZERO)),
+        }
     }
 
     /// Helper function to handle engine messages with specified payload statuses

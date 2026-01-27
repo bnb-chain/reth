@@ -115,7 +115,6 @@ impl PeersManager {
             incoming_ip_throttle_duration,
             ip_filter,
             proxyed_node_ids,
-            ip_filter,
         } = config;
         let (manager_tx, handle_rx) = mpsc::unbounded_channel();
         let now = Instant::now();

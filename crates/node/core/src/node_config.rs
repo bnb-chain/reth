@@ -551,7 +551,6 @@ impl<ChainSpec> NodeConfig<ChainSpec> {
             era: self.era,
             static_files: self.static_files,
             statedb: self.statedb,
-            static_files: self.static_files,
         }
     }
 
@@ -594,7 +593,6 @@ impl<ChainSpec> Clone for NodeConfig<ChainSpec> {
             era: self.era.clone(),
             static_files: self.static_files,
             statedb: self.statedb.clone(),
-            static_files: self.static_files,
         }
     }
 }

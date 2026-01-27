@@ -378,17 +378,17 @@ where
                             .spawn_with_call_at(call, at, overrides, move |db, mut evm_env, tx_env| {
                                 // wrapper is hack to get around 'higher-ranked lifetime error',
                                 // see <https://github.com/rust-lang/rust/issues/100013>
-                                let db = db.0;
+                                let db = &mut db.database;
 
                                 Self::handle_bsc_system_transaction(&mut evm_env, &tx_env);
 
                                 let gas_limit = tx_env.gas_limit();
-                                let res = this.eth_api().inspect(
-                                    &mut *db,
-                                    evm_env,
-                                    tx_env,
-                                    &mut inspector,
-                                )?;
+                                let res = {
+                                    let mut bal_db =
+                                        reth_revm::db::bal::BalDatabase::new(&mut *db);
+                                    this.eth_api()
+                                        .inspect(&mut bal_db, evm_env, tx_env, &mut inspector)?
+                                };
                                 let frame = inspector
                                     .with_transaction_gas_limit(gas_limit)
                                     .into_geth_builder()
@@ -414,7 +414,7 @@ where
                             .spawn_with_call_at(call, at, overrides, move |db, mut evm_env, tx_env| {
                                 // wrapper is hack to get around 'higher-ranked lifetime error', see
                                 // <https://github.com/rust-lang/rust/issues/100013>
-                                let db = db.0;
+                                let db = &mut db.database;
 
                                 let tx_info = TransactionInfo {
                                     block_number: Some(evm_env.block_env.number().saturating_to()),
@@ -426,12 +426,12 @@ where
 
                                 Self::handle_bsc_system_transaction(&mut evm_env, &tx_env);
 
-                                let res = this.eth_api().inspect(
-                                    &mut *db,
-                                    evm_env,
-                                    tx_env,
-                                    &mut inspector,
-                                )?;
+                                let res = {
+                                    let mut bal_db =
+                                        reth_revm::db::bal::BalDatabase::new(&mut *db);
+                                    this.eth_api()
+                                        .inspect(&mut bal_db, evm_env, tx_env, &mut inspector)?
+                                };
                                 let frame = inspector
                                     .try_into_mux_frame(&res, db, tx_info)
                                     .map_err(Eth::Error::from_eth_err)?;
@@ -486,22 +486,21 @@ where
 
                     let res = self
                         .eth_api()
-                        .spawn_with_call_at(call, at, overrides, move |db, evm_env, tx_env| {
+                        .spawn_with_call_at(call, at, overrides, move |mut db, mut evm_env, tx_env| {
+                            Self::handle_bsc_system_transaction(&mut evm_env, &tx_env);
                             // wrapper is hack to get around 'higher-ranked lifetime error', see
                             // <https://github.com/rust-lang/rust/issues/100013>
-                            let db = db.0;
-
                             let mut inspector =
                                 revm_inspectors::tracing::js::JsInspector::new(code, config)
                                     .map_err(Eth::Error::from_eth_err)?;
                             let res = this.eth_api().inspect(
-                                &mut *db,
+                                &mut db,
                                 evm_env.clone(),
                                 tx_env.clone(),
                                 &mut inspector,
                             )?;
                             inspector
-                                .json_result(res, &tx_env, &evm_env.block_env, db)
+                                .json_result(res, &tx_env, &evm_env.block_env, &db)
                                 .map_err(Eth::Error::from_eth_err)
                         })
                         .await?;
@@ -853,7 +852,7 @@ where
         opts: &GethDebugTracingOptions,
         mut evm_env: EvmEnvFor<Eth::Evm>,
         tx_env: TxEnvFor<Eth::Evm>,
-        db: &mut StateCacheDb<'_>,
+        db: &mut StateCacheDb,
         transaction_context: Option<TransactionContext>,
         fused_inspector: &mut Option<TracingInspector>,
     ) -> Result<(GethTrace, EvmState), Eth::Error> {
@@ -1147,7 +1146,7 @@ where
                 .clone_into_rpc_block(
                     BlockTransactionsKind::Full,
                     |tx, tx_info| self.eth_api().converter().fill(tx, tx_info),
-                    |header, size| self.eth_api().converter().convert_header(header, size),
+                    |header, size| self.eth_api().converter().convert_header(header, size, None),
                 )
                 .map_err(|err| Eth::Error::from(err).into())?;
 

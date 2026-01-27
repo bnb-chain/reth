@@ -164,7 +164,7 @@ impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> Command<C>
             Subcommands::Migrate(command) => {
                 // Get database arguments from system configuration
                 let db_args = self.env.db.database_args();
-                db_ro_exec!(self.env, tool, N, {
+                db_exec!(self.env, tool, N, AccessRights::RO, {
                     command.execute(tool.provider_factory.db_ref(), &db_args)?;
                 });
             }

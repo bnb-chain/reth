@@ -67,8 +67,8 @@ use reth_node_metrics::{
 };
 use reth_provider::{
     providers::{NodeTypesForProvider, ProviderNodeTypes, RocksDBProvider, StaticFileProvider},
-    BlockHashReader, BlockNumReader, DatabaseProviderFactory, ProviderError, ProviderFactory,
-    HeaderProvider, ProviderResult, RocksDBProviderFactory, StageCheckpointReader,
+    BlockHashReader, BlockNumReader, BlockReaderIdExt, DatabaseProviderFactory, HeaderProvider,
+    ProviderError, ProviderFactory, ProviderResult, RocksDBProviderFactory, StageCheckpointReader,
     StaticFileProviderBuilder,
     StaticFileProviderFactory,
 };
@@ -1233,12 +1233,13 @@ where
             if let Some(merge_block) =
                 self.chain_spec().ethereum_fork_activation(EthereumHardfork::Paris).block_number()
             {
+                let merge_block = BlockNumber::from(merge_block);
                 // Ensure we only expire transactions after we synced past the merge block.
                 let Some(latest) = self.blockchain_db().latest_header()? else { return Ok(()) };
                 if latest.number() > merge_block {
                     let provider = self.blockchain_db().static_file_provider();
                     if provider
-                        .get_lowest_transaction_static_file_block()
+                        .get_lowest_range_end(StaticFileSegment::Transactions)
                         .is_some_and(|lowest| lowest < merge_block)
                     {
                         info!(target: "reth::cli", merge_block, "Expiring pre-merge transactions");

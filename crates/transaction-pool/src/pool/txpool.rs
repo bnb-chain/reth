@@ -739,7 +739,8 @@ impl<T: TransactionOrdering> TxPool<T> {
         }
         
         let sender_id = tx.sender_id();
-        let current_nonce = self.sender_info.get(&sender_id).map(|i| i.state_nonce).unwrap_or(0);
+        let current_nonce =
+            self.all_transactions.sender_info.get(&sender_id).map(|i| i.state_nonce).unwrap_or(0);
         trace!(target: "txpool", "add transaction: txhash: {}, sender: {}, on_chain_nonce: {}, current_nonce: {}, tx_nonce: {}", tx.hash(), tx.sender(), on_chain_nonce, current_nonce, tx.nonce());
         // TODO: temporarily add a nonce double check to prevent the transaction from being added to the pool if the nonce is lower than the current nonce
         if tx.nonce() < current_nonce {
@@ -1117,7 +1118,8 @@ impl<T: TransactionOrdering> TxPool<T> {
             // is generic and it would not be possible to distinguish whether a transaction is
             // being removed from the `BaseFee` pool, or the `Queued` pool.
             let sender_id = tx.sender_id();
-            let current_nonce = self.sender_info.get(&sender_id).map(|i| i.state_nonce).unwrap_or(0);
+            let current_nonce =
+                self.all_transactions.sender_info.get(&sender_id).map(|i| i.state_nonce).unwrap_or(0);
             trace!(target: "txpool", hash=%tx.transaction.hash(), ?pool, "Removed transaction from a subpool, sender: {}, current_nonce: {}, tx_nonce: {}", tx.sender(), current_nonce, tx.nonce());
         }
 

@@ -27,7 +27,7 @@ use alloy_consensus::{
 use alloy_eips::BlockHashOrNumber;
 use alloy_primitives::{
     keccak256,
-    map::{hash_map, B256Map, HashMap, HashSet},
+    map::{hash_map, HashMap, HashSet},
     Address, BlockHash, BlockNumber, TxHash, TxNumber, B256, U256,
 };
 use itertools::Itertools;

@@ -2,8 +2,8 @@ use alloy_primitives::{hex, BlockHash};
 use clap::Parser;
 use reth_db::{
     static_file::{
-        AccountChangesetMask, HeaderWithHashMask, ReceiptMask, TransactionMask,
-        TransactionSenderMask,
+        AccountChangesetMask, ColumnSelectorOne, ColumnSelectorTwo, HeaderWithHashMask,
+        ReceiptMask, TransactionMask, TransactionSenderMask,
     },
     RawDupSort,
 };

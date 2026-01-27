@@ -194,7 +194,6 @@ impl Default for PeersConfig {
             incoming_ip_throttle_duration: INBOUND_IP_THROTTLE_DURATION,
             ip_filter: IpFilter::default(),
             proxyed_node_ids: Vec::new(),
-            ip_filter: IpFilter::default(),
         }
     }
 }
