@@ -11310,7 +11310,7 @@ checksum = "48fd7bd8a6377e15ad9d42a8ec25371b94ddc67abe7c8b9127bec79bebaaae18"
 [[package]]
 name = "rust-eth-triedb"
 version = "0.1.0"
-source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?branch=triedb_opt#3a0a095a01e1a2ebd8f85085d98af8382c00f4bc"
+source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?branch=debug-triedb#2a8e36763d29f28fad019e619cdb43434cb7f1ec"
 dependencies = [
  "alloy-primitives",
  "alloy-trie",
@@ -11331,7 +11331,7 @@ dependencies = [
 [[package]]
 name = "rust-eth-triedb-common"
 version = "0.1.0"
-source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?branch=triedb_opt#3a0a095a01e1a2ebd8f85085d98af8382c00f4bc"
+source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?branch=debug-triedb#2a8e36763d29f28fad019e619cdb43434cb7f1ec"
 dependencies = [
  "alloy-primitives",
  "auto_impl",
@@ -11342,7 +11342,7 @@ dependencies = [
 [[package]]
 name = "rust-eth-triedb-pathdb"
 version = "0.1.0"
-source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?branch=triedb_opt#3a0a095a01e1a2ebd8f85085d98af8382c00f4bc"
+source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?branch=debug-triedb#2a8e36763d29f28fad019e619cdb43434cb7f1ec"
 dependencies = [
  "alloy-primitives",
  "alloy-trie",
@@ -11361,7 +11361,7 @@ dependencies = [
 [[package]]
 name = "rust-eth-triedb-state-trie"
 version = "0.1.0"
-source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?branch=triedb_opt#3a0a095a01e1a2ebd8f85085d98af8382c00f4bc"
+source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?branch=debug-triedb#2a8e36763d29f28fad019e619cdb43434cb7f1ec"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
