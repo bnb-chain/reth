@@ -95,6 +95,10 @@ pub struct EthTransactionValidator<Client, T> {
     validation_metrics: TxPoolValidationMetrics,
     /// Bitmap of custom transaction types that are allowed.
     other_tx_types: U256,
+    /// Whether EIP-7594 blob sidecars are accepted.
+    /// When false, EIP-7594 (v1) sidecars are always rejected and EIP-4844 (v0) sidecars
+    /// are always accepted, regardless of Osaka fork activation.
+    eip7594: bool,
 }
 
 impl<Client, Tx> EthTransactionValidator<Client, Tx> {
@@ -701,16 +705,27 @@ where
                 EthBlobTransactionSidecar::Present(sidecar) => {
                     let now = Instant::now();
 
-                    if self.fork_tracker.is_osaka_activated() {
-                        if sidecar.is_eip4844() {
+                    // EIP-7594 sidecar version handling
+                    if !self.eip7594 {
+                        // EIP-7594 disabled: always reject v1 sidecars, accept v0
+                        if sidecar.is_eip7594() {
                             return Err(InvalidPoolTransactionError::Eip4844(
-                                Eip4844PoolTransactionError::UnexpectedEip4844SidecarAfterOsaka,
+                                Eip4844PoolTransactionError::UnexpectedEip7594SidecarBeforeOsaka,
                             ));
                         }
-                    } else if sidecar.is_eip7594() && !self.allow_7594_sidecars() {
-                        return Err(InvalidPoolTransactionError::Eip4844(
-                            Eip4844PoolTransactionError::UnexpectedEip7594SidecarBeforeOsaka,
-                        ));
+                    } else {
+                        // Standard Ethereum behavior
+                        if self.fork_tracker.is_osaka_activated() {
+                            if sidecar.is_eip4844() {
+                                return Err(InvalidPoolTransactionError::Eip4844(
+                                    Eip4844PoolTransactionError::UnexpectedEip4844SidecarAfterOsaka,
+                                ));
+                            }
+                        } else if sidecar.is_eip7594() && !self.allow_7594_sidecars() {
+                            return Err(InvalidPoolTransactionError::Eip4844(
+                                Eip4844PoolTransactionError::UnexpectedEip7594SidecarBeforeOsaka,
+                            ));
+                        }
                     }
 
                     // validate the blob
@@ -902,6 +917,10 @@ pub struct EthTransactionValidatorBuilder<Client> {
     disable_balance_check: bool,
     /// Bitmap of custom transaction types that are allowed.
     other_tx_types: U256,
+    /// Whether EIP-7594 blob sidecars are accepted.
+    /// When false, EIP-7594 (v1) sidecars are always rejected and EIP-4844 (v0) sidecars
+    /// are always accepted, regardless of Osaka fork activation.
+    eip7594: bool,
 }
 
 impl<Client> EthTransactionValidatorBuilder<Client> {
@@ -953,6 +972,9 @@ impl<Client> EthTransactionValidatorBuilder<Client> {
 
             // no custom transaction types by default
             other_tx_types: U256::ZERO,
+
+            // EIP-7594 sidecars are accepted by default (standard Ethereum behavior)
+            eip7594: true,
         }
     }
 
@@ -1006,6 +1028,25 @@ impl<Client> EthTransactionValidatorBuilder<Client> {
     /// Set the Osaka fork.
     pub const fn set_osaka(mut self, osaka: bool) -> Self {
         self.osaka = osaka;
+        self
+    }
+
+    /// Disables EIP-7594 blob sidecar support.
+    ///
+    /// When disabled, EIP-7594 (v1) blob sidecars are always rejected and EIP-4844 (v0)
+    /// sidecars are always accepted, regardless of Osaka fork activation.
+    ///
+    /// Use this for chains that do not adopt EIP-7594 (PeerDAS).
+    pub const fn no_eip7594(self) -> Self {
+        self.set_eip7594(false)
+    }
+
+    /// Set EIP-7594 blob sidecar support.
+    ///
+    /// When true (default), standard Ethereum behavior applies: v0 sidecars before Osaka,
+    /// v1 sidecars after Osaka. When false, v1 sidecars are always rejected.
+    pub const fn set_eip7594(mut self, eip7594: bool) -> Self {
+        self.eip7594 = eip7594;
         self
     }
 
@@ -1149,6 +1190,7 @@ impl<Client> EthTransactionValidatorBuilder<Client> {
             max_blob_count,
             additional_tasks: _,
             other_tx_types,
+            eip7594,
         } = self;
 
         let fork_tracker = ForkTracker {
@@ -1179,6 +1221,7 @@ impl<Client> EthTransactionValidatorBuilder<Client> {
             _marker: Default::default(),
             validation_metrics: TxPoolValidationMetrics::default(),
             other_tx_types,
+            eip7594,
         }
     }
 
