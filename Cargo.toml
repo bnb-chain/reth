@@ -722,10 +722,10 @@ tracing-logfmt = "0.3.3"
 tracing-subscriber = { version = "0.3", default-features = false }
 triehash = "0.8"
 typenum = "1.15.0"
-vergen = "9.0.4"
+vergen = "=9.0.6"
 visibility = "0.1.1"
 walkdir = "2.3.3"
-vergen-git2 = "1.0.5"
+vergen-git2 = "=1.0.7"
 
 # Patch rust-eth-triedb's dependencies to use local reth crates
 [patch."https://github.com/bnb-chain/reth-bsc-triedb.git"]
