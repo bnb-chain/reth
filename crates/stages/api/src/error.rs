@@ -102,6 +102,15 @@ pub enum StageError {
     /// Post Execute Commit error
     #[error("post execute commit error occurred: {_0}")]
     PostExecuteCommit(&'static str),
+    /// TrieDB is behind the execution stage checkpoint.
+    /// This indicates a gap between triedb state and execution state that requires an unwind.
+    #[error("TrieDB is behind execution stage: triedb_block={triedb_block}, execution_start_block={execution_start_block}. Unwinding to triedb checkpoint.")]
+    TrieDBBehind {
+        /// The block number at which triedb checkpoint is.
+        triedb_block: u64,
+        /// The block number at which execution stage wants to start.
+        execution_start_block: u64,
+    },
     /// Internal error
     #[error(transparent)]
     Internal(#[from] RethError),
