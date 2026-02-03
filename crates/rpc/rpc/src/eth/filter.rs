@@ -23,7 +23,7 @@ use reth_rpc_eth_api::{
     RpcNodeCoreExt, RpcTransaction,
 };
 use reth_rpc_eth_types::{
-    logs_utils::{self, append_matching_block_logs, ProviderOrBlock},
+    logs_utils::{self, append_matching_block_logs_with_tx_filter, ProviderOrBlock},
     EthApiError, EthFilterConfig, EthStateCache, EthSubscriptionIdProvider,
 };
 use reth_rpc_server_types::{result::rpc_error_with_code, ToRpcResult};
@@ -486,7 +486,7 @@ where
                 let block_num_hash = BlockNumHash::new(header.number(), block_hash);
 
                 let mut all_logs = Vec::new();
-                append_matching_block_logs(
+                append_matching_block_logs_with_tx_filter(
                     &mut all_logs,
                     maybe_block
                         .map(ProviderOrBlock::Block)
@@ -496,6 +496,7 @@ where
                     &receipts,
                     false,
                     header.timestamp(),
+                    Some(header.beneficiary()),
                 )?;
 
                 Ok(all_logs)
@@ -523,7 +524,8 @@ where
                             let mut all_logs = Vec::new();
                             let timestamp = pending_block.block.timestamp();
                             let block_num_hash = pending_block.block.num_hash();
-                            append_matching_block_logs(
+                            let beneficiary = pending_block.block.beneficiary();
+                            append_matching_block_logs_with_tx_filter(
                                 &mut all_logs,
                                 ProviderOrBlock::<Eth::Provider>::Block(pending_block.block),
                                 &filter,
@@ -531,6 +533,7 @@ where
                                 &pending_block.receipts,
                                 false, // removed = false for pending blocks
                                 timestamp,
+                                Some(beneficiary),
                             )?;
                             return Ok(all_logs);
                         }
@@ -697,7 +700,7 @@ where
             range_mode.next().await?
         {
             let num_hash = header.num_hash();
-            append_matching_block_logs(
+            append_matching_block_logs_with_tx_filter(
                 &mut all_logs,
                 recovered_block
                     .map(ProviderOrBlock::Block)
@@ -707,6 +710,7 @@ where
                 &receipts,
                 false,
                 header.timestamp(),
+                Some(header.beneficiary()),
             )?;
 
             // size check but only if range is multiple blocks, so we always return all
