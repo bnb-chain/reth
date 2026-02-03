@@ -2,16 +2,41 @@
 //!
 //! Log parsing for building filter.
 
-use alloy_consensus::TxReceipt;
+use alloy_consensus::{Transaction, TxReceipt};
 use alloy_eips::{eip2718::Encodable2718, BlockNumHash};
-use alloy_primitives::TxHash;
+use alloy_primitives::{address, Address, TxHash};
 use alloy_rpc_types_eth::{Filter, Log};
 use reth_chainspec::ChainInfo;
 use reth_errors::ProviderError;
-use reth_primitives_traits::{BlockBody, RecoveredBlock, SignedTransaction};
+use reth_primitives_traits::{BlockBody, RecoveredBlock, SignedTransaction, SignerRecoverable};
 use reth_storage_api::{BlockReader, ProviderBlock};
 use std::sync::Arc;
 use thiserror::Error;
+
+/// BSC system contract addresses that are used for system transactions.
+/// These match the systemContracts map in geth-bsc's consensus/parlia/parlia.go.
+pub const BSC_SYSTEM_CONTRACTS: &[Address] = &[
+    address!("0000000000000000000000000000000000001000"), // ValidatorContract
+    address!("0000000000000000000000000000000000001001"), // SlashContract
+    address!("0000000000000000000000000000000000001002"), // SystemRewardContract
+    address!("0000000000000000000000000000000000001003"), // LightClientContract
+    address!("0000000000000000000000000000000000001004"), // TokenHubContract
+    address!("0000000000000000000000000000000000001005"), // RelayerIncentivizeContract
+    address!("0000000000000000000000000000000000001006"), // RelayerHubContract
+    address!("0000000000000000000000000000000000001007"), // GovHubContract
+    address!("0000000000000000000000000000000000002000"), // CrossChainContract
+    address!("0000000000000000000000000000000000002002"), // StakeHubContract
+    address!("0000000000000000000000000000000000002004"), // GovernorContract
+    address!("0000000000000000000000000000000000002005"), // GovTokenContract
+    address!("0000000000000000000000000000000000002006"), // TimelockContract
+    address!("0000000000000000000000000000000000003000"), // TokenRecoverPortalContract
+];
+
+/// Checks if the given address is a BSC system contract.
+#[inline]
+pub fn is_bsc_system_contract(addr: &Address) -> bool {
+    BSC_SYSTEM_CONTRACTS.contains(addr)
+}
 
 /// Returns all matching of a block's receipts when the transaction hashes are known.
 pub fn matching_block_logs_with_tx_hashes<'a, I, R>(
@@ -67,6 +92,9 @@ pub enum ProviderOrBlock<'a, P: BlockReader> {
 
 /// Appends all matching logs of a block's receipts.
 /// If the log matches, look up the corresponding transaction hash.
+///
+/// This is a convenience wrapper around [`append_matching_block_logs_with_tx_filter`]
+/// that includes all transaction logs (no filtering).
 pub fn append_matching_block_logs<P>(
     all_logs: &mut Vec<Log>,
     provider_or_block: ProviderOrBlock<'_, P>,
@@ -75,6 +103,39 @@ pub fn append_matching_block_logs<P>(
     receipts: &[P::Receipt],
     removed: bool,
     block_timestamp: u64,
+) -> Result<(), ProviderError>
+where
+    P: BlockReader<Transaction: SignedTransaction>,
+{
+    append_matching_block_logs_with_tx_filter(
+        all_logs,
+        provider_or_block,
+        filter,
+        block_num_hash,
+        receipts,
+        removed,
+        block_timestamp,
+        None, // No beneficiary - include all logs
+    )
+}
+
+/// Appends all matching logs of a block's receipts with optional system transaction filtering.
+///
+/// If `beneficiary` is provided, transactions where the signer equals the beneficiary and
+/// `max_fee_per_gas == 0` are considered system transactions and their logs are skipped.
+/// This is useful for BSC and similar chains that have system transactions which should
+/// not appear in `eth_getLogs` responses.
+///
+/// If `beneficiary` is `None`, all transaction logs are included (same as [`append_matching_block_logs`]).
+pub fn append_matching_block_logs_with_tx_filter<P>(
+    all_logs: &mut Vec<Log>,
+    provider_or_block: ProviderOrBlock<'_, P>,
+    filter: &Filter,
+    block_num_hash: BlockNumHash,
+    receipts: &[P::Receipt],
+    removed: bool,
+    block_timestamp: u64,
+    beneficiary: Option<Address>,
 ) -> Result<(), ProviderError>
 where
     P: BlockReader<Transaction: SignedTransaction>,
@@ -89,6 +150,57 @@ where
 
     // Iterate over receipts and append matching logs.
     for (receipt_idx, receipt) in receipts.iter().enumerate() {
+        // Check if this transaction should be skipped (system transaction filtering)
+        let should_skip = if let Some(beneficiary) = beneficiary {
+            match &provider_or_block {
+                ProviderOrBlock::Block(block) => {
+                    if let Some(tx) = block.body().transactions().get(receipt_idx) {
+                        // System transaction: to is system contract && gas_price == 0 && signer == beneficiary
+                        tx.to().is_some_and(|to| is_bsc_system_contract(&to))
+                            && tx.max_fee_per_gas() == 0
+                            && block
+                                .senders()
+                                .get(receipt_idx)
+                                .is_some_and(|signer| *signer == beneficiary)
+                    } else {
+                        false
+                    }
+                }
+                ProviderOrBlock::Provider(provider) => {
+                    let first_tx_num = match loaded_first_tx_num {
+                        Some(num) => num,
+                        None => {
+                            let block_body_indices = provider
+                                .block_body_indices(block_num_hash.number)?
+                                .ok_or(ProviderError::BlockBodyIndicesNotFound(
+                                    block_num_hash.number,
+                                ))?;
+                            loaded_first_tx_num = Some(block_body_indices.first_tx_num);
+                            block_body_indices.first_tx_num
+                        }
+                    };
+                    let transaction_id = first_tx_num + receipt_idx as u64;
+                    if let Some(tx) = provider.transaction_by_id(transaction_id)? {
+                        // System transaction: to is system contract && gas_price == 0 && signer == beneficiary
+                        tx.to().is_some_and(|to| is_bsc_system_contract(&to))
+                            && tx.max_fee_per_gas() == 0
+                            && tx.recover_signer().is_ok_and(|signer| signer == beneficiary)
+                    } else {
+                        false
+                    }
+                }
+            }
+        } else {
+            false
+        };
+
+        // Skip logs from system transactions
+        if should_skip {
+            // Still need to count logs for correct log_index
+            log_index += receipt.logs().len() as u64;
+            continue;
+        }
+
         // The transaction hash of the current receipt.
         let mut transaction_hash = None;
 
@@ -286,5 +398,216 @@ mod tests {
         .unwrap();
         assert_eq!(from_block_number, 16022082);
         assert_eq!(to_block_number, best_number);
+    }
+
+    #[test]
+    fn test_is_bsc_system_contract() {
+        use alloy_primitives::address;
+
+        // All BSC system contracts should be recognized
+        assert!(is_bsc_system_contract(&address!(
+            "0000000000000000000000000000000000001000"
+        ))); // Validator
+        assert!(is_bsc_system_contract(&address!(
+            "0000000000000000000000000000000000001001"
+        ))); // Slash
+        assert!(is_bsc_system_contract(&address!(
+            "0000000000000000000000000000000000001002"
+        ))); // SystemReward
+        assert!(is_bsc_system_contract(&address!(
+            "0000000000000000000000000000000000001003"
+        ))); // LightClient
+        assert!(is_bsc_system_contract(&address!(
+            "0000000000000000000000000000000000001004"
+        ))); // TokenHub
+        assert!(is_bsc_system_contract(&address!(
+            "0000000000000000000000000000000000001005"
+        ))); // RelayerIncentivize
+        assert!(is_bsc_system_contract(&address!(
+            "0000000000000000000000000000000000001006"
+        ))); // RelayerHub
+        assert!(is_bsc_system_contract(&address!(
+            "0000000000000000000000000000000000001007"
+        ))); // GovHub
+        assert!(is_bsc_system_contract(&address!(
+            "0000000000000000000000000000000000002000"
+        ))); // CrossChain
+        assert!(is_bsc_system_contract(&address!(
+            "0000000000000000000000000000000000002002"
+        ))); // StakeHub
+        assert!(is_bsc_system_contract(&address!(
+            "0000000000000000000000000000000000002004"
+        ))); // Governor
+        assert!(is_bsc_system_contract(&address!(
+            "0000000000000000000000000000000000002005"
+        ))); // GovToken
+        assert!(is_bsc_system_contract(&address!(
+            "0000000000000000000000000000000000002006"
+        ))); // Timelock
+        assert!(is_bsc_system_contract(&address!(
+            "0000000000000000000000000000000000003000"
+        ))); // TokenRecoverPortal
+
+        // Non-system contracts should NOT be recognized
+        assert!(!is_bsc_system_contract(&address!(
+            "0000000000000000000000000000000000001008"
+        ))); // TokenManager - not in systemContracts
+        assert!(!is_bsc_system_contract(&address!(
+            "0000000000000000000000000000000000002001"
+        ))); // Staking - not in systemContracts
+        assert!(!is_bsc_system_contract(&address!(
+            "0000000000000000000000000000000000002003"
+        ))); // StakeCredit - not in systemContracts
+        assert!(!is_bsc_system_contract(&Address::ZERO));
+        assert!(!is_bsc_system_contract(&address!(
+            "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+        )));
+    }
+
+    #[test]
+    fn test_bsc_system_contracts_count() {
+        // Ensure we have exactly 14 system contracts (matching geth-bsc)
+        assert_eq!(BSC_SYSTEM_CONTRACTS.len(), 14);
+    }
+
+    /// Helper function that mirrors the system transaction detection logic used in
+    /// `append_matching_block_logs_with_tx_filter`. This allows us to test the logic
+    /// independently without needing full block/receipt structures.
+    fn is_system_transaction(
+        to: Option<Address>,
+        max_fee_per_gas: u128,
+        signer: Address,
+        beneficiary: Address,
+    ) -> bool {
+        // System transaction conditions (all must be true):
+        // 1. Transaction target is a BSC system contract
+        // 2. max_fee_per_gas (gas price) is 0
+        // 3. Transaction signer equals block beneficiary (coinbase)
+        to.is_some_and(|addr| is_bsc_system_contract(&addr))
+            && max_fee_per_gas == 0
+            && signer == beneficiary
+    }
+
+    #[test]
+    fn test_system_transaction_detection() {
+        use alloy_primitives::address;
+
+        let validator_contract = address!("0000000000000000000000000000000000001000");
+        let regular_contract = address!("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
+        let coinbase = address!("1234567890123456789012345678901234567890");
+        let user_address = address!("abcdefabcdefabcdefabcdefabcdefabcdefabcd");
+
+        // Case 1: True system transaction - all conditions met
+        // to=system_contract, gas_price=0, signer=coinbase
+        assert!(
+            is_system_transaction(Some(validator_contract), 0, coinbase, coinbase),
+            "Should be detected as system tx: system contract, gas_price=0, signer=coinbase"
+        );
+
+        // Case 2: NOT system tx - target is NOT a system contract
+        assert!(
+            !is_system_transaction(Some(regular_contract), 0, coinbase, coinbase),
+            "Should NOT be system tx: target is not a system contract"
+        );
+
+        // Case 3: NOT system tx - gas_price is NOT 0
+        assert!(
+            !is_system_transaction(Some(validator_contract), 1, coinbase, coinbase),
+            "Should NOT be system tx: gas_price > 0"
+        );
+
+        // Case 4: NOT system tx - signer is NOT coinbase
+        assert!(
+            !is_system_transaction(Some(validator_contract), 0, user_address, coinbase),
+            "Should NOT be system tx: signer != coinbase"
+        );
+
+        // Case 5: NOT system tx - contract creation (to=None)
+        assert!(
+            !is_system_transaction(None, 0, coinbase, coinbase),
+            "Should NOT be system tx: contract creation (to=None)"
+        );
+
+        // Case 6: Regular user transaction to system contract with gas
+        // (e.g., user calling staking contract)
+        assert!(
+            !is_system_transaction(Some(validator_contract), 1_000_000_000, user_address, coinbase),
+            "Should NOT be system tx: user tx to system contract with gas"
+        );
+    }
+
+    #[test]
+    fn test_system_transaction_all_system_contracts() {
+        use alloy_primitives::address;
+
+        let coinbase = address!("1234567890123456789012345678901234567890");
+
+        // Verify ALL 14 system contracts are filtered when conditions are met
+        for system_contract in BSC_SYSTEM_CONTRACTS {
+            assert!(
+                is_system_transaction(Some(*system_contract), 0, coinbase, coinbase),
+                "System contract {:?} should be detected as system tx",
+                system_contract
+            );
+        }
+    }
+
+    #[test]
+    fn test_non_system_contracts_never_filtered() {
+        use alloy_primitives::address;
+
+        let coinbase = address!("1234567890123456789012345678901234567890");
+
+        // These contracts are NOT in the BSC systemContracts map (per geth-bsc)
+        // Even with gas_price=0 and signer=coinbase, they should NOT be filtered
+        let non_system_contracts = [
+            address!("0000000000000000000000000000000000001008"), // TokenManager
+            address!("0000000000000000000000000000000000002001"), // Staking
+            address!("0000000000000000000000000000000000002003"), // StakeCredit
+            address!("0000000000000000000000000000000000000000"), // Zero address
+            address!("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"), // Random
+        ];
+
+        for contract in non_system_contracts {
+            assert!(
+                !is_system_transaction(Some(contract), 0, coinbase, coinbase),
+                "Contract {:?} is NOT a system contract, should NOT be filtered",
+                contract
+            );
+        }
+    }
+
+    #[test]
+    fn test_user_txs_to_system_contracts_not_filtered() {
+        use alloy_primitives::address;
+
+        let validator_contract = address!("0000000000000000000000000000000000001000");
+        let stake_hub = address!("0000000000000000000000000000000000002002");
+        let coinbase = address!("1234567890123456789012345678901234567890");
+        let user = address!("abcdefabcdefabcdefabcdefabcdefabcdefabcd");
+
+        // User transactions to system contracts (e.g., staking, voting) should NOT be filtered
+        // These have gas_price > 0 and signer != coinbase
+        assert!(
+            !is_system_transaction(Some(validator_contract), 5_000_000_000, user, coinbase),
+            "User tx to ValidatorContract should NOT be filtered"
+        );
+
+        assert!(
+            !is_system_transaction(Some(stake_hub), 5_000_000_000, user, coinbase),
+            "User tx to StakeHub should NOT be filtered"
+        );
+
+        // Edge case: User tx with gas_price=0 but signer != coinbase
+        assert!(
+            !is_system_transaction(Some(validator_contract), 0, user, coinbase),
+            "User tx with gas_price=0 but signer != coinbase should NOT be filtered"
+        );
+
+        // Edge case: Coinbase tx to system contract with gas_price > 0
+        assert!(
+            !is_system_transaction(Some(validator_contract), 1, coinbase, coinbase),
+            "Coinbase tx with gas_price > 0 should NOT be filtered"
+        );
     }
 }
