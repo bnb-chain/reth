@@ -6,9 +6,13 @@ use alloy_primitives::{BlockNumber, B256};
 pub use event::*;
 use futures_util::Future;
 use reth_primitives_traits::constants::BEACON_CONSENSUS_REORG_UNWIND_DEPTH;
+use alloy_eips::eip1898::BlockWithParent;
+use alloy_primitives::Sealable;
+use reth_errors::ProviderError;
+use reth_primitives_traits::AlloyBlockHeader as _;
 use reth_provider::{
     providers::ProviderNodeTypes, BlockHashReader, BlockNumReader, ChainStateBlockReader,
-    ChainStateBlockWriter, DBProvider, DatabaseProviderFactory, ProviderFactory,
+    ChainStateBlockWriter, DBProvider, DatabaseProviderFactory, HeaderProvider, ProviderFactory,
     PruneCheckpointReader, StageCheckpointReader, StageCheckpointWriter,
 };
 use reth_prune::PrunerBuilder;
@@ -625,6 +629,32 @@ impl<N: ProviderNodeTypes> Pipeline<N> {
             Ok(Some(ControlFlow::Unwind {
                 target: block.block.number.saturating_sub(1),
                 bad_block: block,
+            }))
+        } else if let StageError::TrieDBBehind { triedb_block, execution_start_block } = err {
+            error!(
+                target: "sync::pipeline",
+                stage = %stage_id,
+                triedb_block = %triedb_block,
+                execution_start_block = %execution_start_block,
+                "TrieDB is behind execution stage. Unwinding to triedb checkpoint."
+            );
+
+            // Construct a BlockWithParent for the execution_start_block
+            // to identify the block that triggered the unwind
+            let header = self.provider_factory.header_by_number(execution_start_block)?
+                .ok_or(ProviderError::HeaderNotFound(execution_start_block.into()))?;
+            let bad_block = Box::new(BlockWithParent {
+                block: alloy_eips::eip1898::BlockNumHash {
+                    number: execution_start_block,
+                    hash: header.hash_slow(),
+                },
+                parent: header.parent_hash(),
+            });
+
+            // Unwind to the triedb checkpoint so execution can resume from there
+            Ok(Some(ControlFlow::Unwind {
+                target: triedb_block,
+                bad_block,
             }))
         } else if err.is_fatal() {
             error!(target: "sync::pipeline", stage = %stage_id, "Stage encountered a fatal error: {err}");
