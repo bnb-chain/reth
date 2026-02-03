@@ -580,16 +580,19 @@ where
             let mut writer = static_file_provider
                 .get_writer(genesis_block_number, StaticFileSegment::Headers)?;
 
+            // For genesis blocks, total_difficulty equals the block's difficulty
+            let total_difficulty = difficulty;
+
             // For non-zero genesis blocks, we need to set block range to genesis_block_number and
             // append header without increment block
             if genesis_block_number > 0 {
                 writer
                     .user_header_mut()
                     .set_block_range(genesis_block_number, genesis_block_number);
-                writer.append_header_direct(header, difficulty, &block_hash)?;
+                writer.append_header_direct(header, total_difficulty, &block_hash)?;
             } else {
-                // For zero genesis blocks, use normal append_header
-                writer.append_header(header, &block_hash)?;
+                // For zero genesis blocks, use append_header_with_td with genesis difficulty as TD
+                writer.append_header_with_td(header, total_difficulty, &block_hash)?;
             }
         }
         Ok(Some(_)) => {}
