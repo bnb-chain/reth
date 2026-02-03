@@ -530,14 +530,20 @@ impl<N: NodePrimitives> StaticFileProvider<N> {
     }
 
     /// Writes headers for all blocks to the static file segment.
+    ///
+    /// `starting_td` is the total difficulty of the parent block (block before the first block).
     #[instrument(level = "debug", target = "providers::db", skip_all)]
     fn write_headers(
         w: &mut StaticFileProviderRWRefMut<'_, N>,
         blocks: &[ExecutedBlock<N>],
+        starting_td: U256,
     ) -> ProviderResult<()> {
+        let mut current_td = starting_td;
         for block in blocks {
             let b = block.recovered_block();
-            w.append_header(b.header(), &b.hash())?;
+            // Calculate new TD: parent_td + block_difficulty
+            current_td = current_td.saturating_add(b.header().difficulty());
+            w.append_header_with_td(b.header(), current_td, &b.hash())?;
         }
         Ok(())
     }
@@ -655,17 +661,27 @@ impl<N: NodePrimitives> StaticFileProvider<N> {
         blocks: &[ExecutedBlock<N>],
         tx_nums: &[TxNumber],
         ctx: StaticFileWriteCtx,
-    ) -> ProviderResult<()> {
+    ) -> ProviderResult<()>
+    where
+        N::BlockHeader: Value,
+    {
         if blocks.is_empty() {
             return Ok(());
         }
 
         let first_block_number = blocks[0].recovered_block().number();
 
+        // Get the TD of the parent block (block before first_block_number) to continue accumulating
+        let starting_td = if first_block_number > 0 {
+            self.header_td_by_number(first_block_number - 1)?.unwrap_or(U256::ZERO)
+        } else {
+            U256::ZERO
+        };
+
         thread::scope(|s| {
             let h_headers =
                 self.spawn_segment_writer(s, StaticFileSegment::Headers, first_block_number, |w| {
-                    Self::write_headers(w, blocks)
+                    Self::write_headers(w, blocks, starting_td)
                 });
 
             let h_txs = self.spawn_segment_writer(

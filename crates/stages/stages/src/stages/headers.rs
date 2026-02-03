@@ -17,9 +17,10 @@ use reth_network_p2p::headers::{
 use reth_primitives_traits::{
     serde_bincode_compat, FullBlockHeader, HeaderTy, NodePrimitives, SealedHeader,
 };
+use alloy_primitives::U256;
 use reth_provider::{
-    providers::StaticFileWriter, BlockHashReader, DBProvider, HeaderSyncGapProvider,
-    StaticFileProviderFactory,
+    providers::StaticFileWriter, BlockHashReader, DBProvider, HeaderProvider,
+    HeaderSyncGapProvider, StaticFileProviderFactory,
 };
 use reth_stages_api::{
     CheckpointBlockRange, EntitiesCheckpoint, ExecInput, ExecOutput, HeadersCheckpoint, Stage,
@@ -108,6 +109,11 @@ where
             .get_highest_static_file_block(StaticFileSegment::Headers)
             .unwrap_or_default();
 
+        // Get the total difficulty of the last header to continue accumulating TD
+        let mut current_td = static_file_provider
+            .header_td_by_number(last_header_number)?
+            .unwrap_or(U256::ZERO);
+
         // Although headers were downloaded in reverse order, the collector iterates it in ascending
         // order
         let mut writer = static_file_provider.latest_writer(StaticFileSegment::Headers)?;
@@ -130,8 +136,11 @@ where
             }
             last_header_number = header.number();
 
-            // Append to Headers segment
-            writer.append_header(header, header_hash)?;
+            // Calculate the new total difficulty: parent_td + block_difficulty
+            current_td = current_td.saturating_add(header.difficulty());
+
+            // Append to Headers segment with total difficulty
+            writer.append_header_with_td(header, current_td, header_hash)?;
         }
 
         info!(target: "sync::stages::headers", total = total_headers, "Writing headers hash index");
