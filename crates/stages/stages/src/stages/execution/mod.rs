@@ -516,12 +516,26 @@ where
             let (latest_block_number, latest_state_root) =
                 triedb.latest_persist_state().map_err(|e| StageError::Fatal(Box::new(e)))?;
 
+            // Check for gap between triedb checkpoint and execution start block.
+            // If triedb is behind where we're starting execution, we can't compute
+            // correct state roots. Trigger an unwind to the triedb checkpoint.
+            if start_block > 0 && latest_block_number < start_block - 1 {
+                warn!(target: "sync::stages::execution",
+                    "TrieDB is behind execution stage: triedb_block={}, execution_start_block={}. \
+                    This indicates a gap that requires unwinding to triedb checkpoint.",
+                    latest_block_number, start_block);
+                return Err(StageError::TrieDBBehind {
+                    triedb_block: latest_block_number,
+                    execution_start_block: start_block,
+                });
+            }
+
             if latest_block_number < stage_progress {
                 let root_hash = if start_block == 0 {
                     alloy_trie::EMPTY_ROOT_HASH
                 } else {
-                    // latest_block_number < start_block
-                    // use the latest state root, maybe empty block
+                    // latest_block_number == start_block - 1 (guaranteed by check above)
+                    // use the latest state root as parent for computing new states
                     latest_state_root
                 };
 
