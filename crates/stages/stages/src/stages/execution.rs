@@ -23,6 +23,8 @@ use reth_stages_api::{
     UnwindInput, UnwindOutput,
 };
 use reth_static_file_types::StaticFileSegment;
+use reth_trie_common::{HashedPostState, KeccakKeyHasher};
+use rust_eth_triedb::{get_global_triedb, triedb_manager::is_triedb_active};
 use std::{
     cmp::{max, Ordering},
     collections::BTreeMap,
@@ -31,9 +33,6 @@ use std::{
     task::{ready, Context, Poll},
     time::{Duration, Instant},
 };
-use reth_trie_common::{HashedPostState, KeccakKeyHasher};
-use rust_eth_triedb::triedb_manager::is_triedb_active;
-use rust_eth_triedb::get_global_triedb;
 use tracing::*;
 
 use super::missing_static_data_error;
@@ -482,15 +481,28 @@ where
             let merkle_time = Instant::now();
 
             let mut triedb = get_global_triedb();
-            let (latest_block_number, latest_state_root) = triedb.latest_persist_state()
-                .map_err(|e| StageError::Fatal(Box::new(e)))?;
+            let (latest_block_number, latest_state_root) =
+                triedb.latest_persist_state().map_err(|e| StageError::Fatal(Box::new(e)))?;
 
             if latest_block_number < stage_progress {
+                // Validate that triedb state is consistent with execution start block.
+                // The triedb's latest block must be exactly start_block - 1 to ensure
+                // we're applying state changes on top of the correct parent state root.
+                if start_block > 0 && latest_block_number != start_block - 1 {
+                    return Err(StageError::Fatal(Box::new(ProviderError::Database(
+                        DatabaseError::Other(format!(
+                            "triedb state gap detected: latest_block_number={}, expected={} (start_block - 1), start_block={}",
+                            latest_block_number,
+                            start_block - 1,
+                            start_block
+                        ))
+                    ))));
+                }
+
                 let root_hash = if start_block == 0 {
                     alloy_trie::EMPTY_ROOT_HASH
                 } else {
-                    // latest_block_number < start_block
-                    // use the latest state root, maybe empty block
+                    // Use the latest state root as parent root
                     latest_state_root
                 };
 
@@ -504,9 +516,8 @@ where
                     block.header().state_root()
                 };
 
-                let hashed_post_state = HashedPostState::from_bundle_state::<KeccakKeyHasher>(
-                    state.bundle.state(),
-                );
+                let hashed_post_state =
+                    HashedPostState::from_bundle_state::<KeccakKeyHasher>(state.bundle.state());
                 let triedb_hashed_post_state = hashed_post_state.to_triedb_hashed_post_state();
 
                 info!(target: "sync::stages::execution",
@@ -519,13 +530,15 @@ where
                     hashed_post_state.storages.len(),
                 );
 
-                let (new_root, difflayer) = triedb.commit_hashed_post_state(root_hash, None, &triedb_hashed_post_state)
+                let (new_root, difflayer) = triedb
+                    .commit_hashed_post_state(root_hash, None, &triedb_hashed_post_state)
                     .map_err(|e| StageError::Fatal(Box::new(e)))?;
 
                 if new_root != validate_root {
                     return Err(StageError::Fatal(Box::new(ProviderError::Database(DatabaseError::Other(format!("execution update triedb, start={}, end={}, new_root({:?}) != validate_root({:?})", start_block, stage_progress, new_root, validate_root))))));
                 }
-                triedb.flush(stage_progress, new_root, &difflayer)
+                triedb
+                    .flush(stage_progress, new_root, &difflayer)
                     .map_err(|e| StageError::Fatal(Box::new(e)))?;
 
                 info!(target: "sync::stages::execution",
@@ -584,13 +597,13 @@ where
 
         if is_triedb_active() {
             let mut triedb = get_global_triedb();
-            let (latest_block_number, latest_state_root) = triedb.latest_persist_state()
-                .map_err(|e| StageError::Fatal(Box::new(e)))?;
+            let (latest_block_number, latest_state_root) =
+                triedb.latest_persist_state().map_err(|e| StageError::Fatal(Box::new(e)))?;
 
             if latest_block_number > unwind_to {
-                let hashed_post_state = HashedPostState::from_bundle_state_to_unwind::<KeccakKeyHasher>(
-                    bundle_state_with_receipts.bundle.state()
-                );
+                let hashed_post_state = HashedPostState::from_bundle_state_to_unwind::<
+                    KeccakKeyHasher,
+                >(bundle_state_with_receipts.bundle.state());
 
                 let triedb_hashed_post_state = hashed_post_state.to_triedb_hashed_post_state();
                 let validate_root = if unwind_to == 0 {
@@ -604,7 +617,8 @@ where
                 };
 
                 info!(target: "sync::stages::execution", "Begin unwind execution update triedb, latest_block_number={}, unwind_to={}, latest_state_root={:?}, target_root={:?}, accounts={}, storages={}", latest_block_number, unwind_to, latest_state_root, validate_root, hashed_post_state.accounts.len(), hashed_post_state.storages.len());
-                let (new_root, difflayer) = triedb.commit_hashed_post_state(latest_state_root, None, &triedb_hashed_post_state)
+                let (new_root, difflayer) = triedb
+                    .commit_hashed_post_state(latest_state_root, None, &triedb_hashed_post_state)
                     .map_err(|e| StageError::Fatal(Box::new(e)))?;
                 info!(target: "sync::stages::execution", "End unwind execution update triedb, new_root={:?}, target_root={:?}", new_root, validate_root);
 
@@ -612,10 +626,14 @@ where
                     return Err(StageError::Fatal(Box::new(ProviderError::Database(DatabaseError::Other(format!("unwind execution update triedb, unwind_to={}, new_root({:?}) != validate_root({:?}), hashed_post_state={:?}", unwind_to, new_root, validate_root, hashed_post_state))))));
                 }
 
-                triedb.flush(latest_block_number, new_root, &difflayer)
+                triedb
+                    .flush(latest_block_number, new_root, &difflayer)
                     .map_err(|e| StageError::Fatal(Box::new(e)))?;
             } else {
-                warn!("latest_block_number <= unwind_to, latest_triedb_block_number={}, unwind_to={}", latest_block_number, unwind_to);
+                warn!(
+                    "latest_block_number <= unwind_to, latest_triedb_block_number={}, unwind_to={}",
+                    latest_block_number, unwind_to
+                );
             }
         }
 
