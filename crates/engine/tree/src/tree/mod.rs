@@ -2127,17 +2127,27 @@ where
             .ok_or_else(|| ProviderError::StateForNumberNotFound(block.header().number()))?;
         let hashed_state = self.provider.hashed_post_state(execution_output.state());
 
-        debug!(
-            target: "engine::tree",
-            number = ?block.number(),
-            "computing block trie updates",
-        );
-        let db_provider = self.provider.database_provider_ro()?;
-        let trie_updates = reth_trie_db::compute_block_trie_updates(
-            &self.changeset_cache,
-            &db_provider,
-            block.number(),
-        )?;
+        // In TrieDB mode, skip computing trie updates from MDBX - TrieDB manages its own trie data
+        let trie_updates = if rust_eth_triedb::triedb_manager::is_triedb_active() {
+            debug!(
+                target: "engine::tree",
+                number = ?block.number(),
+                "skipping block trie updates computation in TrieDB mode",
+            );
+            reth_trie::updates::TrieUpdatesSorted::default()
+        } else {
+            debug!(
+                target: "engine::tree",
+                number = ?block.number(),
+                "computing block trie updates",
+            );
+            let db_provider = self.provider.database_provider_ro()?;
+            reth_trie_db::compute_block_trie_updates(
+                &self.changeset_cache,
+                &db_provider,
+                block.number(),
+            )?
+        };
 
         let sorted_hashed_state = Arc::new(hashed_state.into_sorted());
         let sorted_trie_updates = Arc::new(trie_updates);

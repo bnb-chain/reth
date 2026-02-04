@@ -1834,31 +1834,34 @@ where
                 }
 
                 // Compute and cache changesets using the computed trie_updates.
+                // Skip in TrieDB mode — TrieDB manages its own trie data.
                 // Use the pre-created provider to avoid races with changeset cache
                 // eviction that can happen between task spawn and execution.
-                let changeset_start = Instant::now();
+                if !rust_eth_triedb::triedb_manager::is_triedb_active() {
+                    let changeset_start = Instant::now();
 
-                match reth_trie::changesets::compute_trie_changesets(
-                    &changeset_provider,
-                    &computed.trie_updates,
-                ) {
-                    Ok(changesets) => {
-                        debug!(
-                            target: "engine::tree::changeset",
-                            ?block_number,
-                            elapsed = ?changeset_start.elapsed(),
-                            "Computed and caching changesets"
-                        );
+                    match reth_trie::changesets::compute_trie_changesets(
+                        &changeset_provider,
+                        &computed.trie_updates,
+                    ) {
+                        Ok(changesets) => {
+                            debug!(
+                                target: "engine::tree::changeset",
+                                ?block_number,
+                                elapsed = ?changeset_start.elapsed(),
+                                "Computed and caching changesets"
+                            );
 
-                        pending_changeset_guard.resolve(block_number, Arc::new(changesets));
-                    }
-                    Err(e) => {
-                        warn!(
-                            target: "engine::tree::changeset",
-                            ?block_number,
-                            ?e,
-                            "Failed to compute changesets in deferred trie task"
-                        );
+                            pending_changeset_guard.resolve(block_number, Arc::new(changesets));
+                        }
+                        Err(e) => {
+                            warn!(
+                                target: "engine::tree::changeset",
+                                ?block_number,
+                                ?e,
+                                "Failed to compute changesets in deferred trie task"
+                            );
+                        }
                     }
                 }
             }));
