@@ -1325,36 +1325,39 @@ where
                 }
 
                 // Compute and cache changesets using the computed trie_updates
-                let changeset_start = Instant::now();
+                // Skip in TrieDB mode - TrieDB manages its own trie data
+                if !rust_eth_triedb::triedb_manager::is_triedb_active() {
+                    let changeset_start = Instant::now();
 
-                // Get a provider from the overlay factory for trie cursor access
-                let changeset_result =
-                    overlay_factory.database_provider_ro().and_then(|provider| {
-                        reth_trie::changesets::compute_trie_changesets(
-                            &provider,
-                            &computed.trie_updates,
-                        )
-                        .map_err(ProviderError::Database)
-                    });
+                    // Get a provider from the overlay factory for trie cursor access
+                    let changeset_result =
+                        overlay_factory.database_provider_ro().and_then(|provider| {
+                            reth_trie::changesets::compute_trie_changesets(
+                                &provider,
+                                &computed.trie_updates,
+                            )
+                            .map_err(ProviderError::Database)
+                        });
 
-                match changeset_result {
-                    Ok(changesets) => {
-                        debug!(
-                            target: "engine::tree::changeset",
-                            ?block_number,
-                            elapsed = ?changeset_start.elapsed(),
-                            "Computed and caching changesets"
-                        );
+                    match changeset_result {
+                        Ok(changesets) => {
+                            debug!(
+                                target: "engine::tree::changeset",
+                                ?block_number,
+                                elapsed = ?changeset_start.elapsed(),
+                                "Computed and caching changesets"
+                            );
 
-                        changeset_cache.insert(block_hash, block_number, Arc::new(changesets));
-                    }
-                    Err(e) => {
-                        warn!(
-                            target: "engine::tree::changeset",
-                            ?block_number,
-                            ?e,
-                            "Failed to compute changesets in deferred trie task"
-                        );
+                            changeset_cache.insert(block_hash, block_number, Arc::new(changesets));
+                        }
+                        Err(e) => {
+                            warn!(
+                                target: "engine::tree::changeset",
+                                ?block_number,
+                                ?e,
+                                "Failed to compute changesets in deferred trie task"
+                            );
+                        }
                     }
                 }
             }));

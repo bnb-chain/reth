@@ -74,6 +74,7 @@ use reth_trie_db::{ChangesetCache, DatabaseAccountTrieCursor, DatabaseStorageTri
 use revm_database::states::{
     PlainStateReverts, PlainStorageChangeset, PlainStorageRevert, StateChangeset,
 };
+use rust_eth_triedb::{get_global_triedb, triedb_manager::is_triedb_active};
 use std::{
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet},
@@ -523,8 +524,14 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
                 );
             }
 
+            // Get TrieDB instance if active
+            let triedb_active = is_triedb_active();
+            let mut triedb_opt = if triedb_active { Some(get_global_triedb()) } else { None };
+
             for (i, block) in blocks.iter().enumerate() {
                 let recovered_block = block.recovered_block();
+                let block_number = recovered_block.number();
+                let state_root = recovered_block.state_root();
 
                 let start = Instant::now();
                 self.insert_block_mdbx_only(recovered_block, tx_nums[i])?;
@@ -552,17 +559,78 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
 
                     let trie_data = block.trie_data();
 
-                    // insert hashes and intermediate merkle nodes
-                    let start = Instant::now();
-                    self.write_hashed_state(&trie_data.hashed_state)?;
-                    timings.write_hashed_state += start.elapsed();
+                    if let Some(ref mut triedb) = triedb_opt {
+                        // TrieDB mode: update TrieDB instead of writing hashed state to MDBX
+                        let start = Instant::now();
+
+                        let (latest_block_number, latest_state_root) =
+                            triedb.latest_persist_state().map_err(|e| ProviderError::other(e))?;
+
+                        // Validate that triedb state is consistent
+                        if block_number > 0 && latest_block_number != block_number - 1 {
+                            return Err(ProviderError::Database(DatabaseError::Other(format!(
+                                "triedb state gap in save_blocks: latest_block_number={}, expected={}, block_number={}",
+                                latest_block_number,
+                                block_number - 1,
+                                block_number
+                            ))));
+                        }
+
+                        let triedb_hashed_post_state =
+                            trie_data.hashed_state.to_triedb_hashed_post_state();
+
+                        debug!(
+                            target: "providers::db",
+                            "Begin update triedb in save_blocks, block_number={}, latest_triedb_block={}, parent_root={:?}, expected_root={:?}",
+                            block_number,
+                            latest_block_number,
+                            latest_state_root,
+                            state_root,
+                        );
+
+                        let (new_root, difflayer) = triedb
+                            .commit_hashed_post_state(
+                                latest_state_root,
+                                None,
+                                &triedb_hashed_post_state,
+                            )
+                            .map_err(|e| ProviderError::other(e))?;
+
+                        if new_root != state_root {
+                            return Err(ProviderError::Database(DatabaseError::Other(format!(
+                                "triedb update failed in save_blocks: new_root({:?}) != expected_root({:?}), block_number={}",
+                                new_root,
+                                state_root,
+                                block_number
+                            ))));
+                        }
+
+                        triedb
+                            .flush(block_number, new_root, &difflayer)
+                            .map_err(|e| ProviderError::other(e))?;
+
+                        debug!(
+                            target: "providers::db",
+                            "End update triedb in save_blocks, block_number={}, new_root={:?}",
+                            block_number,
+                            new_root
+                        );
+
+                        timings.write_hashed_state += start.elapsed();
+                    } else {
+                        // Non-TrieDB mode: write hashed state to MDBX
+                        let start = Instant::now();
+                        self.write_hashed_state(&trie_data.hashed_state)?;
+                        timings.write_hashed_state += start.elapsed();
+                    }
                 }
             }
 
             // Write all trie updates in a single batch.
             // This reduces cursor open/close overhead from N calls to 1.
             // Uses hybrid algorithm: extend_ref for small batches, k-way merge for large.
-            if save_mode.with_state() {
+            // Skip this in TrieDB mode - TrieDB manages its own trie data.
+            if save_mode.with_state() && !triedb_active {
                 const MERGE_BATCH_THRESHOLD: usize = 30;
 
                 let start = Instant::now();
@@ -735,21 +803,24 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
         self.unwind_storage_history_indices(changed_storages.iter().copied())?;
 
         // Unwind accounts/storages trie tables using the revert.
-        // Get the database tip block number
-        let db_tip_block = self
-            .get_stage_checkpoint(reth_stages_types::StageId::Finish)?
-            .as_ref()
-            .map(|chk| chk.block_number)
-            .ok_or_else(|| ProviderError::InsufficientChangesets {
-                requested: from,
-                available: 0..=0,
-            })?;
+        // Skip in TrieDB mode - TrieDB manages its own trie data.
+        if !is_triedb_active() {
+            // Get the database tip block number
+            let db_tip_block = self
+                .get_stage_checkpoint(reth_stages_types::StageId::Finish)?
+                .as_ref()
+                .map(|chk| chk.block_number)
+                .ok_or_else(|| ProviderError::InsufficientChangesets {
+                    requested: from,
+                    available: 0..=0,
+                })?;
 
-        let trie_revert = self.changeset_cache.get_or_compute_range(self, from..=db_tip_block)?;
-        self.write_trie_updates_sorted(&trie_revert)?;
+            let trie_revert = self.changeset_cache.get_or_compute_range(self, from..=db_tip_block)?;
+            self.write_trie_updates_sorted(&trie_revert)?;
 
-        // Clear trie changesets which have been unwound.
-        self.clear_trie_changesets_from(from)?;
+            // Clear trie changesets which have been unwound.
+            self.clear_trie_changesets_from(from)?;
+        }
 
         Ok(())
     }
