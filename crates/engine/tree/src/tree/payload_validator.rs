@@ -481,7 +481,12 @@ where
         } else {
             ensure_ok!(self.execute_block(&state_provider, env, &input, &mut handle))
         };
-        timings.execute_block = Some(execute_start.elapsed());
+        let execute_elapsed = execute_start.elapsed();
+        timings.execute_block = Some(execute_elapsed);
+        self.metrics
+            .block_validation
+            .triedb_execution_duration
+            .record(execute_elapsed.as_secs_f64());
         // after executing the block we can stop executing transactions
         let stop_prewarm_start = Instant::now();
         handle.stop_prewarming_execution();
@@ -847,7 +852,7 @@ where
             let elapsed = start.elapsed().as_secs_f64();
             self.metrics
                 .block_validation
-                .triedb_validate_entry_duration
+                .triedb_process_duration
                 .record(elapsed);
 
             tracing::debug!(

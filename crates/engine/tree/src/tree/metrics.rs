@@ -181,15 +181,17 @@ pub(crate) struct BlockValidationMetrics {
     pub(crate) triedb_prefetch_duration: Histogram,
     /// triedb validate duration
     pub(crate) triedb_validate_duration: Histogram,
+    /// triedb execution duration (block execution on triedb validation path)
+    pub(crate) triedb_execution_duration: Histogram,
     /// Total number of triedb validation calls dispatched from `validate_block_with_state`
     pub(crate) triedb_validate_entry_total: Counter,
     /// Total number of triedb sync-validate calls dispatched from `validate_block_with_state`
     pub(crate) triedb_validate_entry_sync_total: Counter,
     /// Total number of triedb async-validate calls dispatched from `validate_block_with_state`
     pub(crate) triedb_validate_entry_async_total: Counter,
-    /// Histogram of total time spent in triedb validation (sync or async) as measured at the
-    /// `validate_block_with_state` entry point.
-    pub(crate) triedb_validate_entry_duration: Histogram,
+    /// Histogram of total time spent processing triedb validation (sync or async) as measured at
+    /// the `validate_block_with_state` entry point.
+    pub(crate) triedb_process_duration: Histogram,
 }
 
 impl BlockValidationMetrics {
