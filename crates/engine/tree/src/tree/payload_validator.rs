@@ -619,6 +619,8 @@ where
                 .sum::<usize>();
             debug!(
                 target: "engine::tree",
+                block = ?block_num_hash,
+                parent = ?parent_hash,
                 accounts = trie_hashed_state.states.len(),
                 expected_storage_accounts,
                 expected_storage_slots,
@@ -626,6 +628,14 @@ where
                 got_storage_tries = state.storage_tries.len(),
                 prefetch_wait_ms = prefetch_wait.as_millis(),
                 "TrieDB prefetch coverage"
+            );
+        } else {
+            debug!(
+                target: "engine::tree",
+                block = ?block_num_hash,
+                parent = ?parent_hash,
+                prefetch_wait_ms = prefetch_wait.as_millis(),
+                "TrieDB prefetch coverage (no prefetch state)"
             );
         }
         timings.triedb_prefetch_wait = Some(prefetch_wait);
@@ -652,6 +662,19 @@ where
                 );
                 InsertPayloadError::<N::Block>::from(err)
             })?;
+        debug!(
+            target: "engine::tree",
+            block = ?block_num_hash,
+            parent = ?parent_hash,
+            prefetch_wait_ms = prefetch_wait.as_millis(),
+            triedb_total_ms = triedb_calc_start.elapsed().as_millis(),
+            had_prefetch_state,
+            accounts = trie_hashed_state.states.len(),
+            storage_accounts = trie_hashed_state.storage_states.len(),
+            storage_slots = trie_hashed_state.storage_states.values().map(|m| m.len()).sum::<usize>(),
+            has_difflayers = difflayers.is_some(),
+            "Triedb validate timings"
+        );
         timings.triedb_calc_root_and_commit = Some(triedb_calc_start.elapsed());
         self.metrics
             .block_validation
