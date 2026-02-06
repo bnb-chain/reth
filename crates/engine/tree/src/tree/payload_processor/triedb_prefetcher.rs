@@ -821,6 +821,19 @@ impl TrieDBPrefetchAccountTask {
                 }
             };
 
+            // Publish a clone of the freshly built storage trie into the prefetch state.
+            //
+            // This allows trie-root calculation to reuse the `StateTrie` instance immediately
+            // (without waiting for the storage task to finish), even though the storage task will
+            // continue to warm caches on its own clone.
+            //
+            // Correctness: the trie is identified by `(storage_root, owner)` and is read-only until
+            // root calc applies updates. Sharing a *clone* avoids cross-thread mutation.
+            self.prefetch_state
+                .storage_tries
+                .entry(hashed_address)
+                .or_insert_with(|| storage_trie.clone());
+
             let (state_message_tx, state_message_rx) = mpsc::channel();
             let (storage_task, storage_result_rx) = TrieDBPrefetchStorageTask::new(
                 hashed_address,
