@@ -102,6 +102,12 @@ impl<Factory> MultiProofConfig<Factory> {
 pub(super) enum MultiProofMessage {
     /// Prefetch proof targets
     PrefetchProofs(MultiProofTargets),
+    /// Signals the triedb prefetch task to finalize and return its prefetch state.
+    ///
+    /// Note: this is intentionally separate from [`MultiProofMessage::FinishedStateUpdates`].
+    /// The latter is emitted by the EVM state hook on drop, while triedb prefetching may want to
+    /// ingest additional one-shot targets (derived from the final hashed state) after execution.
+    TriedbPrefetchFinished,
     /// New state update from transaction execution with its source
     StateUpdate(StateChangeSource, EvmState),
     /// State update that can be applied to the sparse trie without any new proofs.
@@ -958,6 +964,14 @@ where
                             storage_targets,
                             prefetch_proofs_requested,
                             "Prefetching proofs"
+                        );
+                    }
+                    MultiProofMessage::TriedbPrefetchFinished => {
+                        // This message is used by triedb prefetching only. It's not expected on the
+                        // state-root multiproof channel, so we ignore it.
+                        trace!(
+                            target: "engine::root",
+                            "ignoring MultiProofMessage::TriedbPrefetchFinished"
                         );
                     }
                     MultiProofMessage::StateUpdate(source, update) => {

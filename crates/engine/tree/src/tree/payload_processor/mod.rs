@@ -26,7 +26,7 @@ use reth_provider::{
     StateReader,
 };
 use reth_revm::{db::BundleState, state::EvmState};
-use reth_trie::TrieInput;
+use reth_trie::{MultiProofTargets, TrieInput};
 use reth_trie_parallel::{
     proof_task::{ProofTaskCtx, ProofTaskManager},
     root::ParallelStateRootError,
@@ -457,12 +457,28 @@ pub struct PayloadHandle<Tx, Err> {
 }
 
 impl<Tx, Err> PayloadHandle<Tx, Err> {
+    /// Sends one-shot prefetch proof targets for triedb prefetching, if enabled.
+    ///
+    /// This is intended to be used after execution, once the final hashed post state is known.
+    pub fn triedb_prefetch_proofs(&self, targets: MultiProofTargets) {
+        if let Some(sender) = &self.to_multi_proof {
+            let _ = sender.send(MultiProofMessage::PrefetchProofs(targets));
+        }
+    }
+
     /// Receives the trie db prefetch result
     ///
     /// # Panics
     ///
     /// If payload processing was started without background prefetch task.
     pub fn triedb_preftch_result(&mut self) -> Result<Option<Arc<TrieDBPrefetchState<PathDB>>>, ParallelStateRootError> {
+        // Explicitly finalize the triedb prefetch task. This allows callers to send an additional
+        // one-shot `PrefetchProofs` after execution (derived from final hashed state) before we
+        // stop the prefetch tasks and await the result.
+        if let Some(sender) = &self.to_multi_proof {
+            let _ = sender.send(MultiProofMessage::TriedbPrefetchFinished);
+        }
+
         let result = self.trie_db_prefetch_result_rx
             .take()
             .expect("trie_db_prefetch_result_rx is None")

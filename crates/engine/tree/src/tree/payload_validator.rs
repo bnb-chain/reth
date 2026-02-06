@@ -544,6 +544,50 @@ where
         }
         timings.validate_block_post_exec_with_hashed_state =
             Some(validate_with_hashed_state_start.elapsed());
+
+        // Build the final triedb hashed post state now, and feed one-shot prefetch targets based on
+        // the *final* account+storage set. This complements the streaming `StateUpdate` targets and
+        // improves prefetch coverage for slots that were not observed during execution hooks.
+        let trie_hashed_state = hashed_state.to_triedb_hashed_post_state();
+        {
+            use alloy_primitives::map::B256Set;
+            use reth_trie::MultiProofTargets;
+            use std::time::Instant;
+
+            let one_shot_started = Instant::now();
+            let mut targets = MultiProofTargets::with_capacity(trie_hashed_state.states.len());
+            let mut one_shot_storage_accounts: usize = 0;
+            let mut one_shot_storage_slots: usize = 0;
+
+            // Include all storage slots we will update/delete.
+            for (hashed_address, slots) in trie_hashed_state.storage_states.iter() {
+                let mut storage_set =
+                    B256Set::with_capacity_and_hasher(slots.len(), Default::default());
+                for (hashed_slot, _) in slots.iter() {
+                    storage_set.insert(*hashed_slot);
+                }
+                if !storage_set.is_empty() {
+                    one_shot_storage_accounts += 1;
+                    one_shot_storage_slots += storage_set.len();
+                }
+                targets.insert(*hashed_address, storage_set);
+            }
+
+            // Ensure accounts without storage slots are still included.
+            for hashed_address in trie_hashed_state.states.keys() {
+                targets.entry(*hashed_address).or_insert_with(B256Set::default);
+            }
+
+            handle.triedb_prefetch_proofs(targets);
+            debug!(
+                target: "engine::tree",
+                one_shot_build_ms = one_shot_started.elapsed().as_millis(),
+                one_shot_accounts = trie_hashed_state.states.len(),
+                one_shot_storage_accounts,
+                one_shot_storage_slots,
+                "Submitted one-shot triedb prefetch targets"
+            );
+        }
         // terminate prewarming task with good state output
         let terminate_caching_start = Instant::now();
         handle.terminate_caching(Some(output.state.clone()));
@@ -561,15 +605,37 @@ where
                 None
             }
         };
-        timings.triedb_prefetch_wait = Some(prefetch_start.elapsed());
+        let prefetch_wait = prefetch_start.elapsed();
+        if let Some(state) = &prefetch_state {
+            let expected_storage_accounts = trie_hashed_state
+                .storage_states
+                .values()
+                .filter(|slots| !slots.is_empty())
+                .count();
+            let expected_storage_slots = trie_hashed_state
+                .storage_states
+                .values()
+                .map(|slots| slots.len())
+                .sum::<usize>();
+            debug!(
+                target: "engine::tree",
+                accounts = trie_hashed_state.states.len(),
+                expected_storage_accounts,
+                expected_storage_slots,
+                got_storage_roots = state.storage_roots.len(),
+                got_storage_tries = state.storage_tries.len(),
+                prefetch_wait_ms = prefetch_wait.as_millis(),
+                "TrieDB prefetch coverage"
+            );
+        }
+        timings.triedb_prefetch_wait = Some(prefetch_wait);
         let had_prefetch_state = prefetch_state.is_some();
         self.metrics
             .block_validation
             .triedb_prefetch_duration
-            .record(prefetch_start.elapsed().as_secs_f64());
+            .record(prefetch_wait.as_secs_f64());
 
         let validate_start = Instant::now();
-        let trie_hashed_state = hashed_state.to_triedb_hashed_post_state();
         let block_state_root: revm_primitives::FixedBytes<32> = block.state_root();
         let triedb_calc_start = Instant::now();
         let (new_root, difflayer) = triedb

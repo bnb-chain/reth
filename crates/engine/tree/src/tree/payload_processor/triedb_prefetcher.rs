@@ -132,21 +132,47 @@ impl TrieDBStatePrefetcher {
         }
     }
 
+    /// Feed one-shot proof targets into the prefetcher.
+    ///
+    /// This is useful when the full set of account/storage targets is known (e.g. final
+    /// `TrieDBHashedPostState`) and we want to ensure prefetch coverage beyond streaming state
+    /// updates.
+    pub fn prefetch_targets(&self, targets: MultiProofTargets) {
+        if self.inner.cancel_flag.load(Ordering::Relaxed) {
+            return;
+        }
+
+        if let Err(e) = self
+            .inner
+            .state_tx
+            .send(TrieDBPrefetchMessage::PrefetchState(targets))
+        {
+            warn!(
+                target: "engine::trie_db_prefetch",
+                "TrieDBStatePrefetcher failed to send one-shot prefetch targets: {e:?}"
+            );
+        }
+    }
+
     /// Finishes the prefetcher and returns the produced prefetch state, if available.
     ///
     /// This will signal all tasks to stop and then block until the final `PrefetchAccountResult`
     /// is received (or the channel is dropped).
     pub fn finish(self) -> Option<Arc<TrieDBPrefetchState<PathDB>>> {
-        self.inner.cancel_flag.store(true, Ordering::Relaxed);
+        // Do not set `cancel_flag` before finishing: the account/storage tasks consult this flag
+        // and may exit early, dropping queued prefetch targets. We rely on `PrefetchFinished` to
+        // shut down cleanly, and only mark cancelled after we receive the result.
         let _ = self.inner.state_tx.send(TrieDBPrefetchMessage::PrefetchFinished());
 
         let rx = self.inner.result_rx.lock().ok()?.take()?;
         // Never block forever in miner/block-production paths: if the background task fails to
         // respond, we fall back to "no prefetch".
-        match rx.recv_timeout(Duration::from_secs(2)).ok()? {
+        let res = match rx.recv_timeout(Duration::from_secs(2)).ok()? {
             TrieDBPrefetchResult::PrefetchAccountResult(state) => Some(state),
             TrieDBPrefetchResult::PrefetchStorageResult((_, _, _)) => None,
-        }
+        };
+        self.inner.cancel_flag.store(true, Ordering::Relaxed);
+        res
     }
 }
 
@@ -219,6 +245,22 @@ impl TrieDBPrefetchHandle {
                                 );
                             }
                         }
+                        MultiProofMessage::TriedbPrefetchFinished => {
+                            // Explicit finalization signal from the caller. This allows the caller
+                            // to send an additional one-shot `PrefetchProofs` (derived from the
+                            // final hashed post state) after EVM execution, but before we stop the
+                            // triedb prefetch tasks.
+                            if let Err(e) = self
+                                .state_message_tx
+                                .send(TrieDBPrefetchMessage::PrefetchFinished())
+                            {
+                                trace!(
+                                    target: "engine::trie_db_prefetch",
+                                    "Triedb prefetch handle failed to send prefetch state finished message to account task: {:?}", e.to_string()
+                                );
+                            }
+                            break;
+                        }
                         MultiProofMessage::StateUpdate(_, update) => {
                             let state = evm_state_to_trie_db_prefetch_state(&update);
                             if let Err(e) = self.state_message_tx.send(TrieDBPrefetchMessage::PrefetchState(state)) {
@@ -229,16 +271,13 @@ impl TrieDBPrefetchHandle {
                             }
                         }
                         MultiProofMessage::FinishedStateUpdates => {
-                            // Set cancellation flag to immediately stop all tasks
-                            self.cancel_flag.store(true, Ordering::Relaxed);
-                            // Send PrefetchFinished message to account task
-                            if let Err(e) = self.state_message_tx.send(TrieDBPrefetchMessage::PrefetchFinished()) {
-                                trace!(
-                                    target: "engine::trie_db_prefetch",
-                                    "Triedb prefetch handle failed to send prefetch state finished message to account task: {:?}", e.to_string()
-                                );
-                            }
-                            break;
+                            // Execution finished (state hook dropped). We keep the prefetch task
+                            // alive until we receive an explicit `TriedbPrefetchFinished` signal,
+                            // so callers can still send one-shot `PrefetchProofs` after execution.
+                            trace!(
+                                target: "engine::trie_db_prefetch",
+                                "Received FinishedStateUpdates; awaiting TriedbPrefetchFinished"
+                            );
                         }
                         _ => {
                             warn!(
