@@ -593,57 +593,19 @@ where
         handle.terminate_caching(Some(output.state.clone()));
         timings.terminate_caching = Some(terminate_caching_start.elapsed());
 
-        let prefetch_start = Instant::now();
-        let prefetch_state = match handle.triedb_preftch_result() {
-            Ok(state) => state,
-            Err(e) => {
-                warn!(
-                    target: "engine::tree",
-                    "Failed to get triedb prefetch result: {:?}, continuing without prefetcher",
-                    e
-                );
-                None
-            }
-        };
-        let prefetch_wait = prefetch_start.elapsed();
-        if let Some(state) = &prefetch_state {
-            let expected_storage_accounts = trie_hashed_state
-                .storage_states
-                .values()
-                .filter(|slots| !slots.is_empty())
-                .count();
-            let expected_storage_slots = trie_hashed_state
-                .storage_states
-                .values()
-                .map(|slots| slots.len())
-                .sum::<usize>();
-            debug!(
-                target: "engine::tree",
-                block = ?block_num_hash,
-                parent = ?parent_hash,
-                accounts = trie_hashed_state.states.len(),
-                expected_storage_accounts,
-                expected_storage_slots,
-                got_storage_roots = state.storage_roots.len(),
-                got_storage_tries = state.storage_tries.len(),
-                prefetch_wait_ms = prefetch_wait.as_millis(),
-                "TrieDB prefetch coverage"
-            );
-        } else {
-            debug!(
-                target: "engine::tree",
-                block = ?block_num_hash,
-                parent = ?parent_hash,
-                prefetch_wait_ms = prefetch_wait.as_millis(),
-                "TrieDB prefetch coverage (no prefetch state)"
-            );
-        }
-        timings.triedb_prefetch_wait = Some(prefetch_wait);
+        // IMPORTANT: do NOT stop the triedb prefetcher before we calculate the root.
+        //
+        // The prefetcher is most effective when it can keep warming RocksDB block cache / OS page
+        // cache while we traverse the trie during root calculation. Therefore we do not await a
+        // `TrieDBPrefetchState` here; we will stop the prefetcher after root calculation.
+        //
+        // However, we *can* opportunistically reuse a best-effort snapshot published by the
+        // prefetcher without waiting. This allows `TrieDB` to reuse the pre-built account trie
+        // and any storage roots/tries already fetched, while still being non-blocking.
+        let prefetch_state =
+            handle.triedb_prefetch_try_snapshot_for_root(parent_block.state_root());
         let had_prefetch_state = prefetch_state.is_some();
-        self.metrics
-            .block_validation
-            .triedb_prefetch_duration
-            .record(prefetch_wait.as_secs_f64());
+        let prefetch_state_for_log = prefetch_state.as_ref().map(Arc::clone);
 
         let validate_start = Instant::now();
         let block_state_root: revm_primitives::FixedBytes<32> = block.state_root();
@@ -662,11 +624,32 @@ where
                 );
                 InsertPayloadError::<N::Block>::from(err)
             })?;
+        // Stop triedb prefetching after root calculation (no wait).
+        //
+        // We intentionally do this after the root is computed so the prefetcher can overlap with
+        // trie traversal. We also don't block here: this is best-effort cache warming.
+        handle.triedb_prefetch_stop_no_wait();
+        if let Some(state) = prefetch_state_for_log.as_ref() {
+            debug!(
+                target: "engine::tree",
+                block = ?block_num_hash,
+                prefetch_snapshot_storage_roots = state.storage_roots.len(),
+                prefetch_snapshot_storage_tries = state.storage_tries.len(),
+                "Using triedb prefetch snapshot for root computation"
+            );
+        } else {
+            debug!(
+                target: "engine::tree",
+                block = ?block_num_hash,
+                "No triedb prefetch snapshot available for root computation"
+            );
+        }
+
         debug!(
             target: "engine::tree",
             block = ?block_num_hash,
             parent = ?parent_hash,
-            prefetch_wait_ms = prefetch_wait.as_millis(),
+            prefetch_mode = "overlap_no_wait",
             triedb_total_ms = triedb_calc_start.elapsed().as_millis(),
             had_prefetch_state,
             accounts = trie_hashed_state.states.len(),

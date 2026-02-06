@@ -54,7 +54,7 @@ pub mod sparse_trie;
 pub mod triedb_prefetcher;
 
 use configured_sparse_trie::ConfiguredSparseTrie;
-use triedb_prefetcher::TrieDBPrefetchHandle;
+use triedb_prefetcher::{TrieDBPrefetchHandle, TrieDBPrefetchSnapshot};
 
 /// Entrypoint for executing the payload.
 #[derive(Debug)]
@@ -239,6 +239,7 @@ where
             state_root: Some(state_root_rx),
             transactions: execution_rx,
             trie_db_prefetch_result_rx: None,
+            triedb_prefetch_snapshot: None,
         }
     }
 
@@ -262,6 +263,7 @@ where
             state_root: None,
             transactions: execution_rx,
             trie_db_prefetch_result_rx: None,
+            triedb_prefetch_snapshot: None,
         }
     }
 
@@ -291,6 +293,7 @@ where
             root_hash, path_db, difflayers, self.executor.clone(), rev_multi_proof)
             .expect("Failed to create TrieDBPrefetchHandle");
 
+        let prefetch_snapshot = prefetch_handle.snapshot_handle();
         self.executor.spawn_blocking(move || {
             prefetch_handle.run();
         });
@@ -301,6 +304,7 @@ where
             state_root: None,
             transactions: execution_rx,
             trie_db_prefetch_result_rx: Some(prefetch_result_rx),
+            triedb_prefetch_snapshot: Some(prefetch_snapshot),
         }
     }
 
@@ -454,6 +458,8 @@ pub struct PayloadHandle<Tx, Err> {
     transactions: mpsc::Receiver<Result<Tx, Err>>,
     /// Receiver for the trie db prefetch results
     trie_db_prefetch_result_rx: Option<mpsc::Receiver<triedb_prefetcher::TrieDBPrefetchResult>>,
+    /// Best-effort snapshot of triedb prefetch state.
+    triedb_prefetch_snapshot: Option<TrieDBPrefetchSnapshot>,
 }
 
 impl<Tx, Err> PayloadHandle<Tx, Err> {
@@ -491,6 +497,39 @@ impl<Tx, Err> PayloadHandle<Tx, Err> {
                 panic!("received prefetch storage result, but expected prefetch account result");
             }
         }
+    }
+
+    /// Signals the triedb prefetcher to stop, without waiting for the result.
+    ///
+    /// This is intended for latency-sensitive paths where we want the prefetcher to keep running
+    /// concurrently with trie-root calculation (warming caches), and only stop it *after* the root
+    /// is computed.
+    ///
+    /// Note: This drops the result receiver, so the background task may fail to deliver the final
+    /// `PrefetchAccountResult`. This is fine if callers are not consuming `TrieDBPrefetchState`.
+    pub fn triedb_prefetch_stop_no_wait(&mut self) {
+        if let Some(sender) = &self.to_multi_proof {
+            let _ = sender.send(MultiProofMessage::TriedbPrefetchFinished);
+        }
+        // Drop the receiver so we don't block on shutdown.
+        self.trie_db_prefetch_result_rx.take();
+    }
+
+    /// Returns the most recently published triedb prefetch snapshot, if any.
+    ///
+    /// This is non-blocking and may be `None` if the prefetch task hasn't published yet.
+    pub fn triedb_prefetch_try_snapshot(&self) -> Option<Arc<TrieDBPrefetchState<PathDB>>> {
+        self.triedb_prefetch_snapshot.as_ref()?.load()
+    }
+
+    /// Returns the most recently published triedb prefetch snapshot if it matches `root_hash`.
+    pub fn triedb_prefetch_try_snapshot_for_root(
+        &self,
+        root_hash: B256,
+    ) -> Option<Arc<TrieDBPrefetchState<PathDB>>> {
+        self.triedb_prefetch_snapshot
+            .as_ref()?
+            .load_for_root(root_hash)
     }
 
     /// Awaits the state root

@@ -6,7 +6,9 @@ use std::sync::{
     mpsc::{self, Receiver, RecvError, Sender, TryRecvError},
     Arc, Mutex,
 };
+use std::sync::RwLock;
 use std::time::Duration;
+use std::sync::OnceLock;
 
 use alloy_consensus::EMPTY_ROOT_HASH;
 use alloy_primitives::{hex, keccak256, map::B256Set, B256};
@@ -21,6 +23,94 @@ use rayon::prelude::*;
 
 use crate::tree::payload_processor::executor::WorkloadExecutor;
 use crate::tree::payload_processor::multiproof::MultiProofMessage;
+
+/// A best-effort, non-blocking snapshot of the current triedb prefetch state.
+///
+/// This is used to pass a *partial* `prefetch_state` into trie-root computation without waiting
+/// for the prefetcher to finish. Missing entries simply fall back to DB/difflayer reads, so this
+/// only affects performance.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct TrieDBPrefetchSnapshot {
+    inner: Arc<RwLock<Option<PublishedPrefetchSnapshot>>>,
+}
+
+#[derive(Debug, Clone)]
+struct PublishedPrefetchSnapshot {
+    root_hash: B256,
+    state: Arc<TrieDBPrefetchState<PathDB>>,
+}
+
+impl TrieDBPrefetchSnapshot {
+    /// Loads the latest published snapshot (without validating root hash).
+    pub(crate) fn load(&self) -> Option<Arc<TrieDBPrefetchState<PathDB>>> {
+        self.inner.read().ok().and_then(|g| g.as_ref().map(|s| s.state.clone()))
+    }
+
+    /// Loads the latest snapshot only if it matches the expected parent root hash.
+    pub(crate) fn load_for_root(&self, expected_root: B256) -> Option<Arc<TrieDBPrefetchState<PathDB>>> {
+        self.inner
+            .read()
+            .ok()
+            .and_then(|g| g.as_ref().and_then(|s| (s.root_hash == expected_root).then(|| s.state.clone())))
+    }
+
+    fn store(&self, root_hash: B256, state: Arc<TrieDBPrefetchState<PathDB>>) {
+        if let Ok(mut g) = self.inner.write() {
+            *g = Some(PublishedPrefetchSnapshot { root_hash, state });
+        }
+    }
+}
+
+/// Best-effort storage root lookup for a hashed address.
+///
+/// This is performance-critical in the prefetcher and must be safe to call from multiple threads.
+/// It never mutates state and falls back to `EMPTY_ROOT_HASH` when the account has no storage.
+fn lookup_storage_root(
+    path_db: &PathDB,
+    difflayers: Option<&DiffLayers>,
+    hashed_address: B256,
+) -> Option<B256> {
+    if let Some(difflayers) = difflayers {
+        if let Some(storage_root) = difflayers.get_storage_root(hashed_address) {
+            return Some(storage_root)
+        }
+    }
+
+    match path_db.get_storage_root(hashed_address) {
+        Ok(Some(storage_root)) => Some(storage_root),
+        Ok(None) => Some(EMPTY_ROOT_HASH),
+        Err(e) => {
+            error!(
+                target: "engine::trie_db_prefetch",
+                "Failed to get storage root for hashed_address: 0x{}, error: {:?}",
+                hex::encode(hashed_address),
+                e
+            );
+            None
+        }
+    }
+}
+
+/// Dedicated rayon thread-pool for triedb prefetch work.
+///
+/// We keep this separate from any other global rayon usage so cache-warming doesn't contend with
+/// trie-root calculation or other parallel subsystems.
+fn triedb_prefetch_rayon_pool() -> &'static rayon::ThreadPool {
+    static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
+    POOL.get_or_init(|| {
+        // Conservative default: a few threads are usually enough to saturate RocksDB reads.
+        let num_threads = std::env::var("TRIEDB_PREFETCH_RAYON_THREADS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(4);
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(num_threads)
+            .thread_name(|i| format!("triedb-prefetch-{i}"))
+            .build()
+            .expect("failed to build triedb prefetch rayon thread pool")
+    })
+}
 
 /// Error type for TrieDB prefetch operations.
 #[derive(Debug, thiserror::Error)]
@@ -78,6 +168,8 @@ struct TrieDBStatePrefetcherInner {
     state_tx: Sender<TrieDBPrefetchMessage>,
     result_rx: Mutex<Option<Receiver<TrieDBPrefetchResult>>>,
     cancel_flag: Arc<AtomicBool>,
+    snapshot: TrieDBPrefetchSnapshot,
+    root_hash: B256,
 }
 
 impl TrieDBStatePrefetcher {
@@ -92,6 +184,7 @@ impl TrieDBStatePrefetcher {
 
         let (state_tx, state_rx) = mpsc::channel();
         let cancel_flag = Arc::new(AtomicBool::new(false));
+        let snapshot = TrieDBPrefetchSnapshot::default();
 
         let (account_task, prefetch_result_rx) = TrieDBPrefetchAccountTask::new(
             root_hash,
@@ -100,6 +193,7 @@ impl TrieDBStatePrefetcher {
             executor,
             state_rx,
             cancel_flag.clone(),
+            snapshot.clone(),
         )?;
 
         // Spawn the account task (which in turn spawns per-account storage tasks).
@@ -113,6 +207,8 @@ impl TrieDBStatePrefetcher {
                 state_tx,
                 result_rx: Mutex::new(Some(prefetch_result_rx)),
                 cancel_flag,
+                snapshot,
+                root_hash,
             }),
         })
     }
@@ -154,6 +250,18 @@ impl TrieDBStatePrefetcher {
         }
     }
 
+    /// Returns the most recent published prefetch snapshot, if any.
+    ///
+    /// This is non-blocking and may return `None` if the background task hasn't published yet.
+    pub fn try_snapshot(&self) -> Option<Arc<TrieDBPrefetchState<PathDB>>> {
+        self.inner.snapshot.load()
+    }
+
+    /// Returns the most recent snapshot, only if it matches the given `root_hash`.
+    pub fn try_snapshot_for_root(&self, root_hash: B256) -> Option<Arc<TrieDBPrefetchState<PathDB>>> {
+        self.inner.snapshot.load_for_root(root_hash)
+    }
+
     /// Finishes the prefetcher and returns the produced prefetch state, if available.
     ///
     /// This will signal all tasks to stop and then block until the final `PrefetchAccountResult`
@@ -172,7 +280,23 @@ impl TrieDBStatePrefetcher {
             TrieDBPrefetchResult::PrefetchStorageResult((_, _, _)) => None,
         };
         self.inner.cancel_flag.store(true, Ordering::Relaxed);
+        // Publish the final state as well, in case callers want to reuse it.
+        if let Some(state) = res.as_ref() {
+            // Note: `TrieDBStatePrefetcher` is created for a single parent root.
+            // Use the root passed at construction time to tag the snapshot.
+            self.inner.snapshot.store(self.inner.root_hash, state.clone());
+        }
         res
+    }
+
+    /// Stop the prefetcher without waiting for the final `TrieDBPrefetchState`.
+    ///
+    /// This is intended for miner / validation hot paths where we only want best-effort cache
+    /// warming during trie-root calculation, and don't want to block on collecting results.
+    pub fn stop_no_wait(&self) {
+        // Best-effort signal to shut down tasks.
+        let _ = self.inner.state_tx.send(TrieDBPrefetchMessage::PrefetchFinished());
+        self.inner.cancel_flag.store(true, Ordering::Relaxed);
     }
 }
 
@@ -187,6 +311,8 @@ pub(super) struct TrieDBPrefetchHandle {
     state_message_tx: Sender<TrieDBPrefetchMessage>,
     /// Cancellation flag shared across all prefetch tasks.
     cancel_flag: Arc<AtomicBool>,
+    /// Best-effort snapshot published by the account task.
+    snapshot: TrieDBPrefetchSnapshot,
 }
 
 impl TrieDBPrefetchHandle {
@@ -204,6 +330,7 @@ impl TrieDBPrefetchHandle {
 
         // Create a shared cancellation flag for all prefetch tasks.
         let cancel_flag = Arc::new(AtomicBool::new(false));
+        let snapshot = TrieDBPrefetchSnapshot::default();
 
         // Create the account task.
         let (account_task, prefetch_result_rx) = TrieDBPrefetchAccountTask::new(
@@ -213,6 +340,7 @@ impl TrieDBPrefetchHandle {
             executor.clone(),
             state_message_rx,
             cancel_flag.clone(),
+            snapshot.clone(),
         )?;
 
         // Create the handle for the trie db prefetch task.
@@ -221,6 +349,7 @@ impl TrieDBPrefetchHandle {
             message_rx,
             state_message_tx,
             cancel_flag,
+            snapshot,
         };
 
         // Spawn the account task.
@@ -229,6 +358,21 @@ impl TrieDBPrefetchHandle {
         });
 
         return Ok((handle, prefetch_result_rx));
+    }
+
+    /// Returns the most recently published prefetch snapshot, if any.
+    pub(super) fn try_snapshot(&self) -> Option<Arc<TrieDBPrefetchState<PathDB>>> {
+        self.snapshot.load()
+    }
+
+    /// Returns the most recent snapshot if it matches the expected root.
+    pub(super) fn try_snapshot_for_root(&self, root_hash: B256) -> Option<Arc<TrieDBPrefetchState<PathDB>>> {
+        self.snapshot.load_for_root(root_hash)
+    }
+
+    /// Returns a clone of the snapshot handle.
+    pub(super) fn snapshot_handle(&self) -> TrieDBPrefetchSnapshot {
+        self.snapshot.clone()
     }
 
     #[allow(dead_code)]
@@ -326,6 +470,12 @@ pub(super) struct TrieDBPrefetchAccountTask {
 
     /// Cancellation flag shared across all prefetch tasks.
     cancel_flag: Arc<AtomicBool>,
+
+    /// Best-effort snapshot publisher.
+    snapshot: TrieDBPrefetchSnapshot,
+
+    /// Throttle snapshot publishing to avoid cloning too frequently.
+    last_snapshot_at: std::time::Instant,
 }
 
 impl TrieDBPrefetchAccountTask {
@@ -335,7 +485,8 @@ impl TrieDBPrefetchAccountTask {
         difflayers: Option<DiffLayers>,
         executor: WorkloadExecutor,
         state_message_rx: Receiver<TrieDBPrefetchMessage>,
-        cancel_flag: Arc<AtomicBool>)
+        cancel_flag: Arc<AtomicBool>,
+        snapshot: TrieDBPrefetchSnapshot)
         -> Result<(Self, Receiver<TrieDBPrefetchResult>), TrieDBPrefetchError> {
 
         let id = SecureTrieId::new(root_hash);
@@ -362,6 +513,8 @@ impl TrieDBPrefetchAccountTask {
             storage_results: HashMap::new(),
             prefetch_state,
             cancel_flag,
+            snapshot,
+            last_snapshot_at: std::time::Instant::now(),
         };
 
         Ok((task, prefetch_result_rx))
@@ -370,13 +523,16 @@ impl TrieDBPrefetchAccountTask {
     /// Concurrently send PrefetchFinished message to all storage tasks.
     /// Returns (successful_addresses, failed_addresses) and removes failed ones from storage_tasks.
     pub(super) fn send_prefetch_finished_to_all_storage_tasks(&mut self) {
-        let results: Vec<(B256, Result<(), mpsc::SendError<TrieDBPrefetchMessage>>)> = self.storage_tasks
-            .par_iter()
-            .map(|(hashed_address, storage_task)| {
-                let result = storage_task.send(TrieDBPrefetchMessage::PrefetchFinished());
-                (*hashed_address, result)
-            })
-            .collect();
+        let results: Vec<(B256, Result<(), mpsc::SendError<TrieDBPrefetchMessage>>)> =
+            triedb_prefetch_rayon_pool().install(|| {
+                self.storage_tasks
+                    .par_iter()
+                    .map(|(hashed_address, storage_task)| {
+                        let result = storage_task.send(TrieDBPrefetchMessage::PrefetchFinished());
+                        (*hashed_address, result)
+                    })
+                    .collect()
+            });
 
         for (hashed_address, result) in results {
             match result {
@@ -478,9 +634,13 @@ impl TrieDBPrefetchAccountTask {
     pub(super) fn terminate_all_tasks(&mut self) {
         self.send_prefetch_finished_to_all_storage_tasks();
         self.receive_prefetch_storage_results();
-        if let Err(e) = self.prefetch_result_tx.send(TrieDBPrefetchResult::PrefetchAccountResult(
-            Arc::from(self.prefetch_state.clone())
-        )) {
+        let state: Arc<TrieDBPrefetchState<PathDB>> = Arc::from(self.prefetch_state.clone());
+        // Publish final snapshot.
+        self.snapshot.store(self.root_hash, state.clone());
+
+        if let Err(e) =
+            self.prefetch_result_tx.send(TrieDBPrefetchResult::PrefetchAccountResult(state))
+        {
             error!(
                 target: "engine::trie_db_prefetch",
                 "Failed to send prefetch account result: {:?}", e
@@ -489,6 +649,14 @@ impl TrieDBPrefetchAccountTask {
     }
 
     pub(super) fn run(mut self) {
+        // Publish interval (ms) for snapshot cloning. Keep this modest: we only need occasional
+        // snapshots to be useful for the upcoming trie-root calculation.
+        let publish_interval = std::env::var("TRIEDB_PREFETCH_SNAPSHOT_INTERVAL_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(Duration::from_millis)
+            .unwrap_or_else(|| Duration::from_millis(50));
+
         loop {
             match self.state_message_rx.recv() {
                 Ok(message) => {
@@ -499,25 +667,112 @@ impl TrieDBPrefetchAccountTask {
                                 self.terminate_all_tasks();
                                 return;
                             }
-                            for (address, slots) in targets.iter() {
+
+                            // Fast path: split into (already-known roots) and (need root lookup).
+                            //
+                            // Root lookup can be expensive (RocksDB), so we do it in parallel.
+                            let mut known: Vec<(B256, B256, B256Set)> = Vec::new();
+                            let mut need_lookup: Vec<(B256, B256Set)> = Vec::new();
+
+                            for (hashed_address, slots) in targets.into_iter() {
                                 if self.cancel_flag.load(Ordering::Relaxed) {
                                     self.terminate_all_tasks();
                                     return;
                                 }
-                                if let Some(storage_root) = self.get_storage_root(*address) {
-                                    if !slots.is_empty() {
-                                        self.prefetch_slots(storage_root, *address, slots.clone());
-                                    }
-                                    if !self.prefetch_state.storage_roots.contains_key(address) {
-                                        self.prefetch_state.storage_roots.insert(*address, storage_root);
-                                        if let Err(e) = self.prefetch_state.account_trie.touch_account_with_hash_state(*address) {
-                                            warn!(
-                                                target: "engine::trie_db_prefetch",
-                                                "Failed to get account trie for address 0x{:x}: {:?}", address, e
-                                            );
-                                        }
+
+                                // If we already know the storage root (from previous messages),
+                                // avoid doing any DB work.
+                                if let Some(root) = self.prefetch_state.storage_roots.get(&hashed_address).copied() {
+                                    known.push((hashed_address, root, slots));
+                                    continue;
+                                }
+
+                                // If difflayers can answer, also avoid DB hits (cheap, in-memory).
+                                if let Some(root) = self
+                                    .difflayers
+                                    .as_ref()
+                                    .and_then(|dl| dl.get_storage_root(hashed_address))
+                                {
+                                    known.push((hashed_address, root, slots));
+                                    continue;
+                                }
+
+                                need_lookup.push((hashed_address, slots));
+                            }
+
+                            // Parallel storage-root lookup for remaining accounts.
+                            if !need_lookup.is_empty() {
+                                let path_db = self.path_db.clone();
+                                let difflayers = self.difflayers.clone();
+                                let cancel_flag = self.cancel_flag.clone();
+
+                                let mut looked_up: Vec<(B256, B256, B256Set)> =
+                                    triedb_prefetch_rayon_pool().install(|| {
+                                        need_lookup
+                                            .into_par_iter()
+                                            .filter_map(|(hashed_address, slots)| {
+                                                if cancel_flag.load(Ordering::Relaxed) {
+                                                    return None
+                                                }
+
+                                                let root = lookup_storage_root(
+                                                    &path_db,
+                                                    difflayers.as_ref(),
+                                                    hashed_address,
+                                                )?;
+                                                Some((hashed_address, root, slots))
+                                            })
+                                            .collect()
+                                    });
+
+                                known.append(&mut looked_up);
+                            }
+
+                            // Apply results sequentially:
+                            // - update our local root cache
+                            // - touch account paths (best-effort cache warming)
+                            // - enqueue storage slot prefetching
+                            for (hashed_address, storage_root, slots) in known {
+                                if self.cancel_flag.load(Ordering::Relaxed) {
+                                    self.terminate_all_tasks();
+                                    return;
+                                }
+
+                                // Spawn/drive per-account storage prefetch task (best-effort).
+                                if !slots.is_empty() {
+                                    self.prefetch_slots(storage_root, hashed_address, slots);
+                                }
+
+                                // Only touch account trie + cache the root once per address.
+                                if !self.prefetch_state.storage_roots.contains_key(&hashed_address) {
+                                    self.prefetch_state
+                                        .storage_roots
+                                        .insert(hashed_address, storage_root);
+                                    if let Err(e) = self
+                                        .prefetch_state
+                                        .account_trie
+                                        .touch_account_with_hash_state(hashed_address)
+                                    {
+                                        warn!(
+                                            target: "engine::trie_db_prefetch",
+                                            "Failed to touch account trie for address 0x{:x}: {:?}",
+                                            hashed_address,
+                                            e
+                                        );
                                     }
                                 }
+                            }
+
+                            // Opportunistically collect any completed storage tries.
+                            self.receive_prefetch_storage_results_non_blocking();
+
+                            // Best-effort publish snapshot (throttled).
+                            let should_publish = self.snapshot.load().is_none()
+                                || self.last_snapshot_at.elapsed() >= publish_interval;
+                            if should_publish {
+                                self.last_snapshot_at = std::time::Instant::now();
+                                self.snapshot
+                                    .store(self.root_hash, Arc::from(self.prefetch_state.clone()));
                             }
                         }
                         TrieDBPrefetchMessage::PrefetchSlots(_) => {
@@ -541,30 +796,6 @@ impl TrieDBPrefetchAccountTask {
                     );
                     break;
                 }
-            }
-        }
-    }
-
-    pub(super) fn get_storage_root(&mut self, hashed_address: B256) -> Option<B256> {
-        if let Some(storage_root) = self.prefetch_state.storage_roots.get(&hashed_address) {
-            return Some(*storage_root);
-        }
-
-        if let Some(difflayers) = &self.difflayers {
-            if let Some(storage_root) = difflayers.get_storage_root(hashed_address) {
-                return Some(storage_root);
-            }
-        }
-
-        match self.path_db.get_storage_root(hashed_address) {
-            Ok(Some(storage_root)) => Some(storage_root),
-            Ok(None) => Some (EMPTY_ROOT_HASH),
-            Err(e) => {
-                error!(
-                    target: "engine::trie_db_prefetch",
-                    "Failed to get storage root for hashed_address: 0x{}, error: {:?}", hex::encode(hashed_address), e
-                );
-                None
             }
         }
     }
@@ -676,21 +907,49 @@ impl TrieDBPrefetchStorageTask {
                                 self.terminate();
                                 return;
                             }
+                            // Dedup and materialize the new slots to be fetched.
+                            let mut new_slots: Vec<B256> = Vec::with_capacity(slots.len());
                             for slot in slots.iter() {
-                                if self.cancel_flag.load(Ordering::Relaxed) {
-                                    self.terminate();
-                                    return;
-                                }
                                 if self.touched_slots.contains(slot) {
                                     continue;
                                 }
-                                if let Err(e) = self.storage_trie.touch_storage_with_hash_state(*slot) {
-                                    error!(
-                                        target: "engine::trie_db_prefetch",
-                                        "Failed to touch storage trie for slot 0x{:x}: {:?}", slot, e
-                                    );
-                                } else {
-                                    self.touched_slots.insert(*slot);
+                                self.touched_slots.insert(*slot);
+                                new_slots.push(*slot);
+                            }
+                            if new_slots.is_empty() {
+                                continue;
+                            }
+
+                            // For large batches, split work across a few cloned tries in parallel.
+                            // This improves cache-warming efficiency for accounts with many slots.
+                            const PARALLEL_SLOT_THRESHOLD: usize = 64;
+                            if new_slots.len() >= PARALLEL_SLOT_THRESHOLD {
+                                let workers = (new_slots.len() / PARALLEL_SLOT_THRESHOLD)
+                                    .clamp(2, 8);
+                                let chunk_size = (new_slots.len() + workers - 1) / workers;
+                                let base_trie = self.storage_trie.clone();
+
+                                triedb_prefetch_rayon_pool().install(|| {
+                                    new_slots.par_chunks(chunk_size).for_each(|chunk| {
+                                        let mut trie = base_trie.clone();
+                                        for slot in chunk {
+                                            // Best-effort: errors don't affect correctness.
+                                            let _ = trie.touch_storage_with_hash_state(*slot);
+                                        }
+                                    });
+                                });
+                            } else {
+                                for slot in new_slots {
+                                    if self.cancel_flag.load(Ordering::Relaxed) {
+                                        self.terminate();
+                                        return;
+                                    }
+                                    if let Err(e) = self.storage_trie.touch_storage_with_hash_state(slot) {
+                                        error!(
+                                            target: "engine::trie_db_prefetch",
+                                            "Failed to touch storage trie for slot 0x{:x}: {:?}", slot, e
+                                        );
+                                    }
                                 }
                             }
                         }
