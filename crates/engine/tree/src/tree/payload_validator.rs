@@ -633,8 +633,8 @@ where
             debug!(
                 target: "engine::tree",
                 block = ?block_num_hash,
-                prefetch_snapshot_storage_roots = state.storage_roots.len(),
-                prefetch_snapshot_storage_tries = state.storage_tries.len(),
+                prefetch_snapshot_storage_roots = state.storage_roots_len(),
+                prefetch_snapshot_storage_tries = state.storage_tries_len(),
                 "Using triedb prefetch snapshot for root computation"
             );
         } else {
