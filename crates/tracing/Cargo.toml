@@ -20,7 +20,7 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt", "ansi", "json"] }
 tracing-appender.workspace = true
 tracing-journald.workspace = true
-tracing-logfmt.workspace = true
+tracing-logfmt = { workspace = true, optional = true }
 tracing-samply = { workspace = true, optional = true }
 tracing-tracy = { workspace = true, optional = true }
 tracy-client = { workspace = true, optional = true, features = ["demangle"] }
@@ -34,5 +34,6 @@ rolling-file.workspace = true
 default = ["otlp"]
 otlp = ["reth-tracing-otlp"]
 otlp-logs = ["reth-tracing-otlp/otlp-logs"]
+logfmt = ["tracing-logfmt"]
 samply = ["tracing-samply"]
 tracy = ["tracing-tracy", "tracy-client"]

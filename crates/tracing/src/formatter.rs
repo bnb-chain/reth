@@ -18,6 +18,7 @@ pub enum LogFormat {
     /// Represents logfmt (key=value) formatting for logs.
     /// This format is concise and human-readable,
     /// typically used in command-line applications.
+    #[cfg(feature = "logfmt")]
     LogFmt,
 
     /// Represents terminal-friendly formatting for logs.
@@ -67,6 +68,7 @@ impl LogFormat {
                     layer.with_filter(filter).boxed()
                 }
             }
+            #[cfg(feature = "logfmt")]
             Self::LogFmt => tracing_logfmt::layer().with_filter(filter).boxed(),
             Self::Terminal => {
                 let layer = tracing_subscriber::fmt::layer().with_ansi(ansi).with_target(target);
@@ -85,6 +87,7 @@ impl Display for LogFormat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Json => write!(f, "json"),
+            #[cfg(feature = "logfmt")]
             Self::LogFmt => write!(f, "logfmt"),
             Self::Terminal => write!(f, "terminal"),
         }
