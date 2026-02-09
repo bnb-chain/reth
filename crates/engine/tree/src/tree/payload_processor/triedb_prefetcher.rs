@@ -50,14 +50,14 @@ pub(crate) enum TrieDBPrefetchResult {
 
 /// Convert EVM state to TrieDB prefetch state.
 pub fn evm_state_to_trie_db_prefetch_state(evm_state: &EvmState) -> MultiProofTargets {
-    let mut state = MultiProofTargets::default();
+    let mut state = MultiProofTargets::with_capacity(evm_state.len());
     for (address, account) in evm_state {
         let hashed_address = keccak256(address.as_slice());
-        let mut slots = B256Set::default();
-        for (slot, _) in account.storage.iter() {
-            let hashed_key = keccak256(B256::from(*slot));
-            slots.insert(hashed_key);
-        }
+        let slots: B256Set = account
+            .storage
+            .iter()
+            .map(|(slot, _)| keccak256(B256::from(*slot)))
+            .collect();
         state.insert(hashed_address, slots);
     }
     state
