@@ -2,7 +2,7 @@
 
 use super::{LoadPendingBlock, LoadReceipt, SpawnBlocking};
 use crate::{
-    node::RpcNodeCoreExt, EthApiError, EthApiTypes, FromEthApiError, FullEthApiTypes, RpcBlock,
+    node::RpcNodeCoreExt, EthApiTypes, FromEthApiError, FullEthApiTypes, RpcBlock,
     RpcNodeCore, RpcReceipt,
 };
 use alloy_consensus::{transaction::TxHashRef, TxReceipt};
@@ -14,8 +14,10 @@ use futures::Future;
 use reth_node_api::BlockBody;
 use reth_primitives_traits::{AlloyBlockHeader, RecoveredBlock, SealedHeader, TransactionMeta};
 use reth_rpc_convert::{transaction::ConvertReceiptInput, RpcConvert, RpcHeader};
+use reth_rpc_eth_types::EthApiError;
 use reth_storage_api::{
-    BlockIdReader, BlockReader, HeaderProvider, ProviderHeader, ProviderReceipt, ProviderTx,
+    BlockIdReader, BlockReader, BlockReaderIdExt, HeaderProvider, ProviderHeader, ProviderReceipt,
+    ProviderTx,
 };
 use reth_transaction_pool::{PoolTransaction, TransactionPool};
 use std::collections::HashSet;
@@ -39,9 +41,9 @@ fn resolved_validators_threshold(
     active_validator_count: Option<usize>,
 ) -> Result<usize, EthApiError> {
     let missing_validator_count = || -> EthApiError {
-        Err(EthApiError::InvalidParams(format!(
+        EthApiError::InvalidParams(format!(
             "Unable to derive validator-count from request value {verified_validator_num} without chain validator set"
-        )))
+        ))
     };
 
     match verified_validator_num {

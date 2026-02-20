@@ -25,7 +25,6 @@ use std::{fmt, sync::Arc, time::Duration};
 ///
 /// This builder type contains all settings to create an [`EthApiInner`] or an [`EthApi`] instance
 /// directly.
-#[derive(Debug)]
 pub struct EthApiBuilder<N: RpcNodeCore, Rpc, NextEnv = ()> {
     components: N,
     rpc_converter: Rpc,
