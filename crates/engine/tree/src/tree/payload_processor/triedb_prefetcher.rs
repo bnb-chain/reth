@@ -610,13 +610,13 @@ impl TrieDBPrefetchStorageTask {
     fn max_parallel_touch_workers() -> usize {
         // Conservative default. We want to raise prefetch throughput for hotspot accounts without
         // overwhelming RocksDB with random reads.
-        8
+        2
     }
 
     #[inline]
     fn min_parallel_touch_slots() -> usize {
         // Only parallelize when a batch is large enough to amortize clone/dispatch overhead.
-        64
+        4
     }
 
     pub(super) fn new(
@@ -654,7 +654,9 @@ impl TrieDBPrefetchStorageTask {
             .first_message_at
             .map(|first| self.last_message_at.saturating_duration_since(first).as_secs_f64() * 1000.0)
             .unwrap_or(0.0);
-        debug!(
+        // NOTE: This can be very chatty (one per storage trie task). Keep it at `trace` to avoid
+        // skewing performance measurements.
+        trace!(
             target: "engine::trie_db_prefetch",
             address = %format!("0x{:x}", self.hashed_address),
             touched_slots = self.touched_slots.len(),
@@ -721,12 +723,13 @@ impl TrieDBPrefetchStorageTask {
                                 continue;
                             }
 
+                            let slots_new = new_slots.len();
                             let touch_started = Instant::now();
 
                             // Parallelize within a single account when the incoming batch is large.
                             // This mirrors geth-bsc's "parallel subfetchers" behavior for hotspot accounts,
                             // but we only rely on warming PathDB/RocksDB caches for correctness.
-                            let use_parallel = new_slots.len() >= Self::min_parallel_touch_slots();
+                            let use_parallel = slots_new >= Self::min_parallel_touch_slots();
                             let mut touch_ok = 0u64;
                             let mut touch_err = 0u64;
                             let mut parallel_workers = 1usize;
@@ -808,6 +811,7 @@ impl TrieDBPrefetchStorageTask {
                             }
 
                             let touch_elapsed = touch_started.elapsed();
+                            let touch_ms = touch_elapsed.as_secs_f64() * 1000.0;
                             let touch_us_u64 =
                                 (touch_elapsed.as_micros().min(u64::MAX as u128)) as u64;
                             self.total_touch_us =
@@ -827,31 +831,34 @@ impl TrieDBPrefetchStorageTask {
                                     parallel = use_parallel,
                                     parallel_workers,
                                     chunk_size,
-                                    touch_ms = touch_elapsed.as_secs_f64() * 1000.0,
+                                    touch_ms,
                                     "Triedb prefetch had slot touch errors"
                                 );
                             }
 
-                            debug!(
-                                target: "engine::trie_db_prefetch",
-                                address = %format!("0x{:x}", self.hashed_address),
-                                slots_received = slots.len(),
-                                slots_new = slots.len().saturating_sub(slots_already_touched),
-                                slots_already_touched,
-                                touch_ok,
-                                touch_err,
-                                touched_slots_total = self.touched_slots.len(),
-                                parallel = use_parallel,
-                                parallel_workers,
-                                chunk_size,
-                                touch_ms = touch_elapsed.as_secs_f64() * 1000.0,
-                                avg_touch_us = if touch_ok + touch_err == 0 {
-                                    0.0
-                                } else {
-                                    (touch_elapsed.as_micros() as f64) / ((touch_ok + touch_err) as f64)
-                                },
-                                "Triedb prefetch touched storage slots"
-                            );
+                            // Avoid spamming logs: only emit debug when this batch is unexpectedly slow.
+                            if touch_ms >= 10.0 {
+                                debug!(
+                                    target: "engine::trie_db_prefetch",
+                                    address = %format!("0x{:x}", self.hashed_address),
+                                    slots_received = slots.len(),
+                                    slots_new,
+                                    slots_already_touched,
+                                    touch_ok,
+                                    touch_err,
+                                    touched_slots_total = self.touched_slots.len(),
+                                    parallel = use_parallel,
+                                    parallel_workers,
+                                    chunk_size,
+                                    touch_ms,
+                                    avg_touch_us = if touch_ok + touch_err == 0 {
+                                        0.0
+                                    } else {
+                                        (touch_elapsed.as_micros() as f64) / ((touch_ok + touch_err) as f64)
+                                    },
+                                    "Triedb prefetch touched storage slots (slow batch)"
+                                );
+                            }
                         }
                         TrieDBPrefetchMessage::PrefetchFinished() => {
                             self.terminate();
