@@ -6,7 +6,7 @@ use std::sync::{
     mpsc::{self, Receiver, RecvError, Sender, TryRecvError},
     Arc, Mutex,
 };
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use alloy_consensus::EMPTY_ROOT_HASH;
 use alloy_primitives::{hex, keccak256, map::B256Set, B256};
@@ -16,7 +16,7 @@ use rust_eth_triedb_state_trie::{SecureTrieId, SecureTrieBuilder, SecureTrieErro
 use rust_eth_triedb::{triedb_reth::TrieDBPrefetchState};
 use reth_revm::state::EvmState;
 use reth_trie::MultiProofTargets;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{error, warn, info, trace};
 use rayon::prelude::*;
 
 use crate::tree::payload_processor::executor::WorkloadExecutor;
@@ -591,34 +591,9 @@ pub(super) struct TrieDBPrefetchStorageTask {
 
     /// Cancellation flag shared across all prefetch tasks.
     cancel_flag: Arc<AtomicBool>,
-
-    // Stats for observability/debugging (debug-level logs).
-    created_at: Instant,
-    first_message_at: Option<Instant>,
-    last_message_at: Instant,
-    total_slots_received: u64,
-    total_slots_already_touched: u64,
-    total_slots_touch_ok: u64,
-    total_slots_touch_err: u64,
-    total_batches: u64,
-    total_parallel_batches: u64,
-    total_touch_us: u64,
 }
 
 impl TrieDBPrefetchStorageTask {
-    #[inline]
-    fn max_parallel_touch_workers() -> usize {
-        // Conservative default. We want to raise prefetch throughput for hotspot accounts without
-        // overwhelming RocksDB with random reads.
-        8
-    }
-
-    #[inline]
-    fn min_parallel_touch_slots() -> usize {
-        // Only parallelize when a batch is large enough to amortize clone/dispatch overhead.
-        64
-    }
-
     pub(super) fn new(
         hashed_address: B256,
         storage_trie: StateTrie<PathDB>,
@@ -626,7 +601,6 @@ impl TrieDBPrefetchStorageTask {
         cancel_flag: Arc<AtomicBool>)
         -> (Self, Receiver<TrieDBPrefetchResult>) {
         let (prefetch_result_tx, prefetch_result_rx) = mpsc::channel();
-        let now = Instant::now();
         let task = Self {
             hashed_address,
             storage_trie,
@@ -634,41 +608,11 @@ impl TrieDBPrefetchStorageTask {
             state_message_rx,
             prefetch_result_tx,
             cancel_flag,
-            created_at: now,
-            first_message_at: None,
-            last_message_at: now,
-            total_slots_received: 0,
-            total_slots_already_touched: 0,
-            total_slots_touch_ok: 0,
-            total_slots_touch_err: 0,
-            total_batches: 0,
-            total_parallel_batches: 0,
-            total_touch_us: 0,
         };
         (task, prefetch_result_rx)
     }
 
     pub(super) fn terminate(&mut self) {
-        let lifetime_ms = self.created_at.elapsed().as_secs_f64() * 1000.0;
-        let first_to_last_ms = self
-            .first_message_at
-            .map(|first| self.last_message_at.saturating_duration_since(first).as_secs_f64() * 1000.0)
-            .unwrap_or(0.0);
-        debug!(
-            target: "engine::trie_db_prefetch",
-            address = %format!("0x{:x}", self.hashed_address),
-            touched_slots = self.touched_slots.len(),
-            lifetime_ms,
-            first_to_last_ms,
-            total_slots_received = self.total_slots_received,
-            total_slots_already_touched = self.total_slots_already_touched,
-            total_slots_touch_ok = self.total_slots_touch_ok,
-            total_slots_touch_err = self.total_slots_touch_err,
-            total_batches = self.total_batches,
-            total_parallel_batches = self.total_parallel_batches,
-            total_touch_ms = (self.total_touch_us as f64) / 1000.0,
-            "Triedb prefetch storage task terminating"
-        );
         if let Err(e) = self.prefetch_result_tx.send(TrieDBPrefetchResult::PrefetchStorageResult((
             self.hashed_address,
             self.storage_trie.clone(),
@@ -686,11 +630,6 @@ impl TrieDBPrefetchStorageTask {
         loop {
             match self.state_message_rx.recv() {
                 Ok(message) => {
-                    let now = Instant::now();
-                    if self.first_message_at.is_none() {
-                        self.first_message_at = Some(now);
-                    }
-                    self.last_message_at = now;
                     match message {
                         TrieDBPrefetchMessage::PrefetchSlots(slots) => {
                             // Check cancellation before processing
@@ -698,160 +637,23 @@ impl TrieDBPrefetchStorageTask {
                                 self.terminate();
                                 return;
                             }
-
-                            self.total_batches = self.total_batches.saturating_add(1);
-                            self.total_slots_received =
-                                self.total_slots_received.saturating_add(slots.len() as u64);
-
-                            // Fast path: filter out already touched slots.
-                            let mut new_slots: Vec<B256> = Vec::new();
-                            new_slots.reserve(slots.len());
                             for slot in slots.iter() {
-                                if self.touched_slots.contains(slot) {
-                                    continue;
-                                }
-                                new_slots.push(*slot);
-                            }
-                            let slots_already_touched = slots.len().saturating_sub(new_slots.len());
-                            self.total_slots_already_touched = self
-                                .total_slots_already_touched
-                                .saturating_add(slots_already_touched as u64);
-
-                            if new_slots.is_empty() {
-                                continue;
-                            }
-
-                            let touch_started = Instant::now();
-
-                            // Parallelize within a single account when the incoming batch is large.
-                            // This mirrors geth-bsc's "parallel subfetchers" behavior for hotspot accounts,
-                            // but we only rely on warming PathDB/RocksDB caches for correctness.
-                            let use_parallel = new_slots.len() >= Self::min_parallel_touch_slots();
-                            let mut touch_ok = 0u64;
-                            let mut touch_err = 0u64;
-                            let mut parallel_workers = 1usize;
-                            let mut chunk_size = new_slots.len();
-
-                            if use_parallel {
-                                self.total_parallel_batches = self.total_parallel_batches.saturating_add(1);
-                                parallel_workers = Self::max_parallel_touch_workers().max(1);
-                                // Distribute work roughly evenly across workers.
-                                chunk_size = (new_slots.len() + parallel_workers - 1) / parallel_workers;
-                                if chunk_size == 0 {
-                                    chunk_size = 1;
-                                }
-
-                                let base_trie = self.storage_trie.clone();
-                                let cancel_flag = self.cancel_flag.clone();
-                                // Touch slots in parallel using cloned trie instances (not shared mutably).
-                                // Note: This does not "merge" expanded nodes back into `self.storage_trie`, but it
-                                // warms PathDB's node cache and RocksDB block cache which is what we primarily need.
-                                let touched: Vec<Vec<B256>> = new_slots
-                                    .par_chunks(chunk_size)
-                                    .map(|chunk| {
-                                        let mut trie = base_trie.clone();
-                                        let mut ok_slots = Vec::with_capacity(chunk.len());
-                                        for slot in chunk {
-                                            if cancel_flag.load(Ordering::Relaxed) {
-                                                break;
-                                            }
-                                            if let Err(e) = trie.touch_storage_with_hash_state(*slot) {
-                                                // Keep errors visible but avoid per-slot spam in common cases.
-                                                trace!(
-                                                    target: "engine::trie_db_prefetch",
-                                                    address = %format!("0x{:x}", self.hashed_address),
-                                                    slot = %format!("0x{:x}", slot),
-                                                    "touch_storage_with_hash_state failed: {e:?}"
-                                                );
-                                            } else {
-                                                ok_slots.push(*slot);
-                                            }
-                                        }
-                                        ok_slots
-                                    })
-                                    .collect();
-
                                 if self.cancel_flag.load(Ordering::Relaxed) {
                                     self.terminate();
                                     return;
                                 }
-
-                                for ok_slots in touched {
-                                    let ok_len = ok_slots.len() as u64;
-                                    touch_ok = touch_ok.saturating_add(ok_len);
-                                    for slot in ok_slots {
-                                        self.touched_slots.insert(slot);
-                                    }
+                                if self.touched_slots.contains(slot) {
+                                    continue;
                                 }
-                                touch_err = (new_slots.len() as u64).saturating_sub(touch_ok);
-                            } else {
-                                // Sequential touch keeps the mutated/warmed nodes in `self.storage_trie` itself,
-                                // which can help when we later return this trie in `PrefetchStorageResult`.
-                                for slot in new_slots {
-                                    if self.cancel_flag.load(Ordering::Relaxed) {
-                                        self.terminate();
-                                        return;
-                                    }
-                                    if let Err(e) = self.storage_trie.touch_storage_with_hash_state(slot) {
-                                        trace!(
-                                            target: "engine::trie_db_prefetch",
-                                            address = %format!("0x{:x}", self.hashed_address),
-                                            slot = %format!("0x{:x}", slot),
-                                            "touch_storage_with_hash_state failed: {e:?}"
-                                        );
-                                        touch_err = touch_err.saturating_add(1);
-                                    } else {
-                                        self.touched_slots.insert(slot);
-                                        touch_ok = touch_ok.saturating_add(1);
-                                    }
-                                }
-                            }
-
-                            let touch_elapsed = touch_started.elapsed();
-                            let touch_us_u64 =
-                                (touch_elapsed.as_micros().min(u64::MAX as u128)) as u64;
-                            self.total_touch_us =
-                                self.total_touch_us.saturating_add(touch_us_u64);
-                            self.total_slots_touch_ok = self.total_slots_touch_ok.saturating_add(touch_ok);
-                            self.total_slots_touch_err = self.total_slots_touch_err.saturating_add(touch_err);
-
-                            if touch_err > 0 {
-                                warn!(
-                                    target: "engine::trie_db_prefetch",
-                                    address = %format!("0x{:x}", self.hashed_address),
-                                    slots_received = slots.len(),
-                                    slots_already_touched,
-                                    slots_attempted = touch_ok + touch_err,
-                                    touch_ok,
-                                    touch_err,
-                                    parallel = use_parallel,
-                                    parallel_workers,
-                                    chunk_size,
-                                    touch_ms = touch_elapsed.as_secs_f64() * 1000.0,
-                                    "Triedb prefetch had slot touch errors"
-                                );
-                            }
-
-                            debug!(
-                                target: "engine::trie_db_prefetch",
-                                address = %format!("0x{:x}", self.hashed_address),
-                                slots_received = slots.len(),
-                                slots_new = slots.len().saturating_sub(slots_already_touched),
-                                slots_already_touched,
-                                touch_ok,
-                                touch_err,
-                                touched_slots_total = self.touched_slots.len(),
-                                parallel = use_parallel,
-                                parallel_workers,
-                                chunk_size,
-                                touch_ms = touch_elapsed.as_secs_f64() * 1000.0,
-                                avg_touch_us = if touch_ok + touch_err == 0 {
-                                    0.0
+                                if let Err(e) = self.storage_trie.touch_storage_with_hash_state(*slot) {
+                                    error!(
+                                        target: "engine::trie_db_prefetch",
+                                        "Failed to touch storage trie for slot 0x{:x}: {:?}", slot, e
+                                    );
                                 } else {
-                                    (touch_elapsed.as_micros() as f64) / ((touch_ok + touch_err) as f64)
-                                },
-                                "Triedb prefetch touched storage slots"
-                            );
+                                    self.touched_slots.insert(*slot);
+                                }
+                            }
                         }
                         TrieDBPrefetchMessage::PrefetchFinished() => {
                             self.terminate();
