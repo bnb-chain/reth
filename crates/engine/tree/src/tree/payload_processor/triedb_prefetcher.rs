@@ -778,12 +778,12 @@ impl TrieDBPrefetchStorageTask {
     #[inline]
     fn min_dryrun_prefetch_slots() -> usize {
         // Only apply the more expensive update-shaped dry-run prefetch for hotspot accounts.
-        256
+        4
     }
 
     #[inline]
     fn dryrun_prefetch_budget_ms() -> u64 {
-        10
+        50
     }
 
     #[inline]
