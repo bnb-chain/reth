@@ -9,18 +9,21 @@ use std::sync::{
 use std::time::Duration;
 
 use alloy_consensus::EMPTY_ROOT_HASH;
-use alloy_primitives::{hex, keccak256, map::B256Set, B256};
+use alloy_primitives::{hex, keccak256, map::B256Set, B256, U256};
 use rust_eth_triedb_common::{DiffLayers, TrieDatabase};
 use rust_eth_triedb_pathdb::PathDB;
-use rust_eth_triedb_state_trie::{SecureTrieId, SecureTrieBuilder, SecureTrieError, SecureTrieTrait, StateTrie};
+use rust_eth_triedb_state_trie::{SecureTrieBuilder, SecureTrieError, SecureTrieId, SecureTrieTrait, StateTrie};
 use rust_eth_triedb::{triedb_reth::TrieDBPrefetchState};
 use reth_revm::state::EvmState;
 use reth_trie::MultiProofTargets;
-use tracing::{error, warn, info, trace};
+use tracing::{debug, error, info, trace, warn};
 use rayon::prelude::*;
 
 use crate::tree::payload_processor::executor::WorkloadExecutor;
 use crate::tree::payload_processor::multiproof::MultiProofMessage;
+use crate::tree::payload_processor::triedb_hash_preheater::{
+    update_shaped_preheat_storage_trie,
+};
 
 /// Error type for TrieDB prefetch operations.
 #[derive(Debug, thiserror::Error)]
@@ -37,7 +40,13 @@ pub enum TrieDBPrefetchError {
 /// Message type for TrieDB prefetch operations.
 pub(super) enum TrieDBPrefetchMessage {
     PrefetchState(MultiProofTargets),
+    /// Hot-path variant that includes the full `EvmState` (slot values) to enable update-shaped preheating.
+    PrefetchEvmState(EvmState),
     PrefetchSlots(B256Set),
+    /// Hot-path variant for storage tries: includes (hashed_slot, value) pairs for changed slots.
+    ///
+    /// Note: `value == 0` is treated as a best-effort delete during preheating.
+    PrefetchSlotsWithValues(Vec<(B256, U256)>),
     PrefetchFinished(),
 }
 
@@ -123,8 +132,27 @@ impl TrieDBStatePrefetcher {
             return;
         }
 
+        // Always send both:
+        // - `PrefetchState`: drives touch/read prefetch for all slots (including read-only).
+        // - `PrefetchEvmState`: carries changed slot values for update-shaped preheating.
         let targets = evm_state_to_trie_db_prefetch_state(update);
-        if let Err(e) = self.inner.state_tx.send(TrieDBPrefetchMessage::PrefetchState(targets)) {
+        if let Err(e) = self
+            .inner
+            .state_tx
+            .send(TrieDBPrefetchMessage::PrefetchState(targets))
+        {
+            warn!(
+                target: "engine::trie_db_prefetch",
+                "TrieDBStatePrefetcher failed to send prefetch targets: {e:?}"
+            );
+            return;
+        }
+
+        if let Err(e) = self
+            .inner
+            .state_tx
+            .send(TrieDBPrefetchMessage::PrefetchEvmState(update.clone()))
+        {
             warn!(
                 target: "engine::trie_db_prefetch",
                 "TrieDBStatePrefetcher failed to send prefetch targets: {e:?}"
@@ -220,11 +248,26 @@ impl TrieDBPrefetchHandle {
                             }
                         }
                         MultiProofMessage::StateUpdate(_, update) => {
-                            let state = evm_state_to_trie_db_prefetch_state(&update);
-                            if let Err(e) = self.state_message_tx.send(TrieDBPrefetchMessage::PrefetchState(state)) {
+                            // Always send both messages (see `TrieDBStatePrefetcher::on_state_update`).
+                            let targets = evm_state_to_trie_db_prefetch_state(&update);
+                            if let Err(e) = self
+                                .state_message_tx
+                                .send(TrieDBPrefetchMessage::PrefetchState(targets))
+                            {
                                 error!(
                                     target: "engine::trie_db_prefetch",
                                     "Triedb prefetch handle failed to send prefetch state message(state update) to account task: {:?}", e.to_string()
+                                );
+                                continue;
+                            }
+
+                            if let Err(e) = self
+                                .state_message_tx
+                                .send(TrieDBPrefetchMessage::PrefetchEvmState(update))
+                            {
+                                error!(
+                                    target: "engine::trie_db_prefetch",
+                                    "Triedb prefetch handle failed to send prefetch evm-state message(state update) to account task: {:?}", e.to_string()
                                 );
                             }
                         }
@@ -460,11 +503,13 @@ impl TrieDBPrefetchAccountTask {
                                 self.terminate_all_tasks();
                                 return;
                             }
+                            let mut slots_total: usize = 0;
                             for (address, slots) in targets.iter() {
                                 if self.cancel_flag.load(Ordering::Relaxed) {
                                     self.terminate_all_tasks();
                                     return;
                                 }
+                                slots_total = slots_total.saturating_add(slots.len());
                                 if let Some(storage_root) = self.get_storage_root(*address) {
                                     if !slots.is_empty() {
                                         self.prefetch_slots(storage_root, *address, slots.clone());
@@ -481,10 +526,67 @@ impl TrieDBPrefetchAccountTask {
                                 }
                             }
                         }
+                        TrieDBPrefetchMessage::PrefetchEvmState(update) => {
+                            // Check cancellation before processing
+                            if self.cancel_flag.load(Ordering::Relaxed) {
+                                self.terminate_all_tasks();
+                                return;
+                            }
+
+                            // Extract changed slot values (hashed_slot -> value) and forward them to storage tasks.
+                            // NOTE: slot touching/read prefetch is handled by `PrefetchState` (sent separately).
+                            for (address, account) in update.iter() {
+                                if self.cancel_flag.load(Ordering::Relaxed) {
+                                    self.terminate_all_tasks();
+                                    return;
+                                }
+
+                                let hashed_address = keccak256(address.as_slice());
+                                let mut values: Vec<(B256, U256)> = Vec::new();
+                                for (slot, value) in account.storage.iter() {
+                                    if !value.is_changed() {
+                                        continue;
+                                    }
+                                    let hashed_slot = keccak256(B256::from(*slot));
+                                    values.push((hashed_slot, value.present_value));
+                                }
+
+                                if values.is_empty() {
+                                    continue;
+                                }
+
+                                // Ensure a storage task exists (PrefetchState should have created it first, but
+                                // be defensive in case of message reordering).
+                                if !self.storage_tasks.contains_key(&hashed_address) {
+                                    if let Some(storage_root) = self.get_storage_root(hashed_address) {
+                                        self.prefetch_slots(storage_root, hashed_address, B256Set::default());
+                                    }
+                                }
+
+                                if let Some(storage_task) = self.storage_tasks.get(&hashed_address) {
+                                    if let Err(e) =
+                                        storage_task.send(TrieDBPrefetchMessage::PrefetchSlotsWithValues(values))
+                                    {
+                                        trace!(
+                                            target: "engine::trie_db_prefetch",
+                                            "Failed to send PrefetchSlotsWithValues to storage task (0x{:x}): {:?}",
+                                            hashed_address,
+                                            e
+                                        );
+                                    }
+                                }
+                            }
+                        }
                         TrieDBPrefetchMessage::PrefetchSlots(_) => {
                             error!(
                                 target: "engine::trie_db_prefetch",
                                 "Triedb prefetch account task received unexpected message, prefetch slots"
+                            );
+                        }
+                        TrieDBPrefetchMessage::PrefetchSlotsWithValues(_) => {
+                            error!(
+                                target: "engine::trie_db_prefetch",
+                                "Triedb prefetch account task received unexpected message, prefetch slots with values"
                             );
                         }
                         TrieDBPrefetchMessage::PrefetchFinished() => {
@@ -555,6 +657,7 @@ impl TrieDBPrefetchAccountTask {
             let (storage_task, storage_result_rx) = TrieDBPrefetchStorageTask::new(
                 hashed_address,
                 storage_trie,
+                self.executor.clone(),
                 state_message_rx,
                 self.cancel_flag.clone(),
             );
@@ -586,17 +689,25 @@ pub(super) struct TrieDBPrefetchStorageTask {
     storage_trie: StateTrie<PathDB>,
     touched_slots: B256Set,
 
+    executor: WorkloadExecutor,
+
     state_message_rx: Receiver<TrieDBPrefetchMessage>,
     prefetch_result_tx: Sender<TrieDBPrefetchResult>,
 
     /// Cancellation flag shared across all prefetch tasks.
     cancel_flag: Arc<AtomicBool>,
+
+    /// Number of update+hash-shaped preheats performed for this storage trie.
+    ///
+    /// Note: kept only for observability; preheat is triggered for every `PrefetchSlotsWithValues`.
+    storage_update_hash_preheat_runs: u64,
 }
 
 impl TrieDBPrefetchStorageTask {
     pub(super) fn new(
         hashed_address: B256,
         storage_trie: StateTrie<PathDB>,
+        executor: WorkloadExecutor,
         state_message_rx: Receiver<TrieDBPrefetchMessage>,
         cancel_flag: Arc<AtomicBool>)
         -> (Self, Receiver<TrieDBPrefetchResult>) {
@@ -605,9 +716,11 @@ impl TrieDBPrefetchStorageTask {
             hashed_address,
             storage_trie,
             touched_slots: B256Set::default(),
+            executor,
             state_message_rx,
             prefetch_result_tx,
             cancel_flag,
+            storage_update_hash_preheat_runs: 0,
         };
         (task, prefetch_result_rx)
     }
@@ -655,6 +768,56 @@ impl TrieDBPrefetchStorageTask {
                                 }
                             }
                         }
+                        TrieDBPrefetchMessage::PrefetchSlotsWithValues(changed_slots) => {
+                            // Check cancellation before processing
+                            if self.cancel_flag.load(Ordering::Relaxed) {
+                                self.terminate();
+                                return;
+                            }
+
+                            if changed_slots.is_empty() {
+                                continue;
+                            }
+
+                            // Track these slots as touched as well (best-effort accounting).
+                            for (hashed_slot, _value) in changed_slots.iter() {
+                                self.touched_slots.insert(*hashed_slot);
+                            }
+
+                            // Update+hash-shaped preheat: always trigger on receipt.
+                            self.storage_update_hash_preheat_runs =
+                                self.storage_update_hash_preheat_runs.saturating_add(1);
+
+                            let mut storage_trie = self.storage_trie.clone();
+                            let cancel = self.cancel_flag.clone();
+                            let addr = self.hashed_address;
+                            let changed = changed_slots.len();
+                            let run_idx = self.storage_update_hash_preheat_runs;
+                            let changed_slots_owned = changed_slots;
+
+                            let pool = self.executor.rayon_pool().clone();
+                            pool.spawn(move || {
+                                let stats = update_shaped_preheat_storage_trie(
+                                    &mut storage_trie,
+                                    addr,
+                                    &changed_slots_owned,
+                                    &cancel,
+                                );
+                                debug!(
+                                    target: "engine::trie_db_prefetch",
+                                    trie = "storage",
+                                    mode = "update_preheat",
+                                    address = %format!("0x{:x}", addr),
+                                    run = run_idx,
+                                    changed_slots = changed,
+                                    updates_applied = stats.updates_applied,
+                                    deletes_applied = stats.deletes_applied,
+                                    update_errors = stats.update_errors,
+                                    preheat_ms = stats.elapsed.as_secs_f64() * 1000.0,
+                                    "Triedb update-shaped preheat finished"
+                                );
+                            });
+                        }
                         TrieDBPrefetchMessage::PrefetchFinished() => {
                             self.terminate();
                             return;
@@ -680,4 +843,5 @@ impl TrieDBPrefetchStorageTask {
             }
         }
     }
+
 }

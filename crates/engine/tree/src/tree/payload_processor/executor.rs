@@ -53,7 +53,6 @@ impl WorkloadExecutor {
     }
 
     /// Returns access to the rayon pool
-    #[expect(unused)]
     pub(super) const fn rayon_pool(&self) -> &Arc<rayon::ThreadPool> {
         &self.inner.rayon_pool
     }
