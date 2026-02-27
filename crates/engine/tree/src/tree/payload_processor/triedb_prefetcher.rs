@@ -12,16 +12,7 @@ use alloy_consensus::EMPTY_ROOT_HASH;
 use alloy_primitives::{hex, keccak256, map::B256Set, B256};
 use rust_eth_triedb_common::{DiffLayers, TrieDatabase};
 use rust_eth_triedb_pathdb::PathDB;
-use rust_eth_triedb_state_trie::{
-    encoding::key_to_nibbles,
-    node::Node,
-    trie::Trie,
-    SecureTrieBuilder,
-    SecureTrieError,
-    SecureTrieId,
-    SecureTrieTrait,
-    StateTrie,
-};
+use rust_eth_triedb_state_trie::{SecureTrieId, SecureTrieBuilder, SecureTrieError, SecureTrieTrait, StateTrie};
 use rust_eth_triedb::{triedb_reth::TrieDBPrefetchState};
 use reth_revm::state::EvmState;
 use reth_trie::MultiProofTargets;
@@ -55,153 +46,6 @@ pub(crate) enum TrieDBPrefetchResult {
     #[allow(dead_code)]
     PrefetchAccountResult(Arc<TrieDBPrefetchState<PathDB>>),
     PrefetchStorageResult((B256, StateTrie<PathDB>, usize)),
-}
-
-#[derive(Clone, Debug)]
-struct DryRunPrefetchOpts {
-    max_duration: Duration,
-    max_resolves: u64,
-    max_sibling_hash_resolves_per_fullnode: u8,
-}
-
-#[derive(Clone, Debug, Default)]
-struct DryRunPrefetchStats {
-    resolved_path_hashes: u64,
-    resolved_sibling_hashes: u64,
-    resolve_errors: u64,
-    stopped_by_budget: bool,
-    elapsed: Duration,
-}
-
-fn dry_run_prefetch_update_shape<DB>(
-    trie: &mut Trie<DB>,
-    keys: &[B256],
-    cancel_flag: &AtomicBool,
-    opts: &DryRunPrefetchOpts,
-) -> DryRunPrefetchStats
-where
-    DB: TrieDatabase + Clone + Send + Sync,
-    DB::Error: std::fmt::Debug,
-{
-    let started = Instant::now();
-    let mut stats = DryRunPrefetchStats::default();
-
-    // Best-effort dedup across the batch: if multiple keys reference the same hash,
-    // only resolve it once.
-    let mut visited: B256Set = B256Set::default();
-    let mut resolves: u64 = 0;
-
-    for key in keys {
-        if cancel_flag.load(Ordering::Relaxed) {
-            break;
-        }
-        if resolves >= opts.max_resolves || started.elapsed() >= opts.max_duration {
-            stats.stopped_by_budget = true;
-            break;
-        }
-
-        // NOTE: Keys are already hashed for storage trie prefetch. We still traverse in nibble space.
-        let nibbles_key = key_to_nibbles(key.as_slice());
-
-        let mut node: Arc<Node> = trie.root().clone();
-        let mut pos: usize = 0;
-
-        loop {
-            if cancel_flag.load(Ordering::Relaxed) {
-                break;
-            }
-            if resolves >= opts.max_resolves || started.elapsed() >= opts.max_duration {
-                stats.stopped_by_budget = true;
-                break;
-            }
-
-            match node.as_ref() {
-                Node::Empty | Node::Value(_) => break,
-                Node::Hash(hash) => {
-                    if !visited.insert(*hash) {
-                        // Already warmed in this batch.
-                        break;
-                    }
-                    match trie.resolve_and_track(hash, &nibbles_key[..pos]) {
-                        Ok(resolved) => {
-                            resolves = resolves.saturating_add(1);
-                            stats.resolved_path_hashes = stats.resolved_path_hashes.saturating_add(1);
-                            node = resolved;
-                        }
-                        Err(_) => {
-                            resolves = resolves.saturating_add(1);
-                            stats.resolve_errors = stats.resolve_errors.saturating_add(1);
-                            break;
-                        }
-                    }
-                }
-                Node::Short(short) => {
-                    if pos > nibbles_key.len() {
-                        break;
-                    }
-                    if !nibbles_key[pos..].starts_with(&short.key) {
-                        break;
-                    }
-                    pos = pos.saturating_add(short.key.len());
-                    node = short.val.clone();
-                }
-                Node::Full(full) => {
-                    if pos >= nibbles_key.len() {
-                        break;
-                    }
-
-                    // Sibling prefetch: resolve hash children for nearby branches.
-                    // This approximates the extra nodes `update()` may touch during
-                    // split/collapse operations, without mutating trie state.
-                    let mut sibling_resolves: u8 = 0;
-                    let target = nibbles_key[pos] as usize;
-                    let prefix = &nibbles_key[..pos];
-
-                    if opts.max_sibling_hash_resolves_per_fullnode > 0 {
-                        for (idx, child) in full.children.iter().enumerate() {
-                            if idx == target {
-                                continue;
-                            }
-                            if sibling_resolves >= opts.max_sibling_hash_resolves_per_fullnode {
-                                break;
-                            }
-                            let Node::Hash(child_hash) = child.as_ref() else {
-                                continue;
-                            };
-                            if !visited.insert(*child_hash) {
-                                continue;
-                            }
-
-                            let mut child_prefix = Vec::with_capacity(prefix.len() + 1);
-                            child_prefix.extend_from_slice(prefix);
-                            child_prefix.push(idx as u8);
-
-                            match trie.resolve_and_track(child_hash, &child_prefix) {
-                                Ok(_) => {
-                                    resolves = resolves.saturating_add(1);
-                                    sibling_resolves = sibling_resolves.saturating_add(1);
-                                    stats.resolved_sibling_hashes =
-                                        stats.resolved_sibling_hashes.saturating_add(1);
-                                }
-                                Err(_) => {
-                                    resolves = resolves.saturating_add(1);
-                                    sibling_resolves = sibling_resolves.saturating_add(1);
-                                    stats.resolve_errors = stats.resolve_errors.saturating_add(1);
-                                }
-                            }
-                        }
-                    }
-
-                    // Continue down the key's path.
-                    node = full.get_child(target);
-                    pos = pos.saturating_add(1);
-                }
-            }
-        }
-    }
-
-    stats.elapsed = started.elapsed();
-    stats
 }
 
 /// Convert EVM state to TrieDB prefetch state.
@@ -775,27 +619,6 @@ impl TrieDBPrefetchStorageTask {
         4
     }
 
-    #[inline]
-    fn min_dryrun_prefetch_slots() -> usize {
-        // Only apply the more expensive update-shaped dry-run prefetch for hotspot accounts.
-        256
-    }
-
-    #[inline]
-    fn dryrun_prefetch_budget_ms() -> u64 {
-        10
-    }
-
-    #[inline]
-    fn dryrun_prefetch_max_resolves() -> u64 {
-        50_000
-    }
-
-    #[inline]
-    fn dryrun_prefetch_max_sibling_hash_resolves_per_fullnode() -> u8 {
-        8
-    }
-
     pub(super) fn new(
         hashed_address: B256,
         storage_trie: StateTrie<PathDB>,
@@ -902,66 +725,6 @@ impl TrieDBPrefetchStorageTask {
 
                             let slots_new = new_slots.len();
                             let touch_started = Instant::now();
-
-                            // For hotspot accounts, prefer an update-shaped dry-run prefetch that resolves
-                            // the key path plus sibling branches at FullNodes. This more closely matches
-                            // the node access pattern of trie updates (split/collapse), and can significantly
-                            // reduce RocksDB reads during the subsequent `update_state_objects`.
-                            if slots_new >= Self::min_dryrun_prefetch_slots() {
-                                let opts = DryRunPrefetchOpts {
-                                    max_duration: Duration::from_millis(Self::dryrun_prefetch_budget_ms()),
-                                    max_resolves: Self::dryrun_prefetch_max_resolves(),
-                                    max_sibling_hash_resolves_per_fullnode:
-                                        Self::dryrun_prefetch_max_sibling_hash_resolves_per_fullnode(),
-                                };
-
-                                let stats = dry_run_prefetch_update_shape(
-                                    self.storage_trie.trie_mut(),
-                                    &new_slots,
-                                    &self.cancel_flag,
-                                    &opts,
-                                );
-
-                                if self.cancel_flag.load(Ordering::Relaxed) {
-                                    self.terminate();
-                                    return;
-                                }
-
-                                for slot in &new_slots {
-                                    self.touched_slots.insert(*slot);
-                                }
-
-                                let touch_elapsed = touch_started.elapsed();
-                                let touch_ms = touch_elapsed.as_secs_f64() * 1000.0;
-                                let touch_us_u64 =
-                                    (touch_elapsed.as_micros().min(u64::MAX as u128)) as u64;
-                                self.total_touch_us =
-                                    self.total_touch_us.saturating_add(touch_us_u64);
-                                self.total_slots_touch_ok =
-                                    self.total_slots_touch_ok.saturating_add(slots_new as u64);
-                                // We can't attribute errors to individual slots here; treat as batch-level.
-                                self.total_slots_touch_err = self
-                                    .total_slots_touch_err
-                                    .saturating_add(stats.resolve_errors);
-
-                                // Only log when this batch is slow or had resolve errors.
-                                if touch_ms >= 10.0 || stats.resolve_errors > 0 {
-                                    debug!(
-                                        target: "engine::trie_db_prefetch",
-                                        address = %format!("0x{:x}", self.hashed_address),
-                                        slots_received = slots.len(),
-                                        slots_new,
-                                        resolved_path_hashes = stats.resolved_path_hashes,
-                                        resolved_sibling_hashes = stats.resolved_sibling_hashes,
-                                        resolve_errors = stats.resolve_errors,
-                                        stopped_by_budget = stats.stopped_by_budget,
-                                        prefetch_ms = (stats.elapsed.as_secs_f64() * 1000.0),
-                                        touch_ms,
-                                        "Triedb prefetch dry-run warmed trie nodes"
-                                    );
-                                }
-                                continue;
-                            }
 
                             // Parallelize within a single account when the incoming batch is large.
                             // This mirrors geth-bsc's "parallel subfetchers" behavior for hotspot accounts,
