@@ -146,9 +146,8 @@ impl DeferredTrieData {
     ///
     /// # Process
     /// 1. Sort the current block's hashed state and trie updates
-    /// 2. Reuse parent's cached overlay if available (O(1) - the common case)
-    /// 3. Otherwise, rebuild overlay from ancestors (rare fallback)
-    /// 4. Extend the overlay with this block's sorted data
+    /// 2. Rebuild overlay from ancestors' per-block data
+    /// 3. Extend the overlay with this block's sorted data
     ///
     /// Used by both the async background task and the synchronous fallback path.
     ///
@@ -172,46 +171,25 @@ impl DeferredTrieData {
             Err(arc) => arc.clone_into_sorted(),
         };
 
-        // Reuse parent's overlay if available and anchors match.
-        // We can only reuse the parent's overlay if it was built on top of the same
-        // persisted anchor. If the anchor has changed (e.g., due to persistence),
-        // the parent's overlay is relative to an old state and cannot be used.
-        let overlay = if let Some(parent) = ancestors.last() {
-            let parent_data = parent.wait_cloned();
-
-            match &parent_data.anchored_trie_input {
-                // Case 1: Parent has cached overlay AND anchors match.
-                Some(AnchoredTrieInput { anchor_hash: parent_anchor, trie_input })
-                    if *parent_anchor == anchor_hash =>
-                {
-                    // O(1): Reuse parent's overlay, extend with current block's data.
-                    let mut overlay = TrieInputSorted::new(
-                        Arc::clone(&trie_input.nodes),
-                        Arc::clone(&trie_input.state),
-                        Default::default(), // prefix_sets are per-block, not cumulative
-                    );
-                    // Only trigger COW clone if there's actually data to add.
-                    if !sorted_hashed_state.is_empty() {
-                        Arc::make_mut(&mut overlay.state).extend_ref_and_sort(&sorted_hashed_state);
-                    }
-                    if !sorted_trie_updates.is_empty() {
-                        Arc::make_mut(&mut overlay.nodes).extend_ref_and_sort(&sorted_trie_updates);
-                    }
-                    overlay
-                }
-                // Case 2: Parent exists but anchor mismatch or no cached overlay.
-                // We must rebuild from the ancestors list (which only contains unpersisted blocks).
-                _ => Self::merge_ancestors_into_overlay(
-                    ancestors,
-                    &sorted_hashed_state,
-                    &sorted_trie_updates,
-                ),
-            }
-        } else {
-            // Case 3: No in-memory ancestors (first block after persisted anchor).
-            // Build overlay with just this block's data.
-            Self::merge_ancestors_into_overlay(&[], &sorted_hashed_state, &sorted_trie_updates)
-        };
+        // Always rebuild the overlay from ancestors' per-block data instead of reusing
+        // the parent's cached cumulative overlay.
+        //
+        // The previous approach cloned the parent's overlay via Arc and then called
+        // Arc::make_mut to extend it. Because the parent's cached ComputedTrieData also
+        // holds a reference to the same Arc, strong_count is always >= 2, forcing
+        // Arc::make_mut to deep-copy the entire cumulative overlay on every block.
+        // For high-throughput chains with large state (e.g., BSC with 3-second blocks),
+        // this causes uncontrollable memory growth and OOM.
+        //
+        // The rebuild path starts with a fresh TrieInputSorted (strong_count == 1) and
+        // extends it with each ancestor's per-block hashed_state and trie_updates.
+        // This is O(sum of ancestors' per-block state) which is bounded by
+        // persistence_threshold * per_block_state_size, and avoids deep copies entirely.
+        let overlay = Self::merge_ancestors_into_overlay(
+            ancestors,
+            &sorted_hashed_state,
+            &sorted_trie_updates,
+        );
 
         ComputedTrieData::with_trie_input(
             Arc::new(sorted_hashed_state),
@@ -223,13 +201,12 @@ impl DeferredTrieData {
 
     /// Merge all ancestors and current block's data into a single overlay.
     ///
-    /// This is a rare fallback path, only used when no ancestor has a cached
-    /// `anchored_trie_input` (e.g., blocks created via alternative constructors).
-    /// In normal operation, the parent always has a cached overlay and this
-    /// function is never called.
+    /// Builds a fresh [`TrieInputSorted`] by iterating ancestors oldest -> newest,
+    /// extending with each ancestor's per-block `hashed_state` and `trie_updates`,
+    /// then extending with the current block's sorted data (so later state wins).
     ///
-    /// Iterates ancestors oldest -> newest, then extends with current block's data,
-    /// so later state takes precedence.
+    /// Starts from `TrieInputSorted::default()` whose inner `Arc`s have
+    /// `strong_count == 1`, so `Arc::make_mut` never triggers a deep copy.
     fn merge_ancestors_into_overlay(
         ancestors: &[Self],
         sorted_hashed_state: &HashedPostStateSorted,
