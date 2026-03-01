@@ -1275,14 +1275,7 @@ where
             .map(|b| b.recovered_block().num_hash())
             .expect("Checked non-empty persisting blocks");
 
-        warn!(
-            target: "engine::tree",
-            count = blocks_to_persist.len(),
-            first_block = blocks_to_persist.first().map(|b| b.recovered_block().number()).unwrap_or(0),
-            last_block = blocks_to_persist.last().map(|b| b.recovered_block().number()).unwrap_or(0),
-            in_memory_blocks = self.state.tree_state.block_count(),
-            "Starting persistence task"
-        );
+        debug!(target: "engine::tree", count=blocks_to_persist.len(), blocks = ?blocks_to_persist.iter().map(|block| block.recovered_block().num_hash()).collect::<Vec<_>>(), "Persisting blocks");
         let (tx, rx) = crossbeam_channel::bounded(1);
         let _ = self.persistence.save_blocks(blocks_to_persist, tx);
 
@@ -1891,28 +1884,11 @@ where
         // If we have an on-disk reorg, we need to handle it first before touching the in-memory
         // state.
         if let Some(remove_above) = self.find_disk_reorg()? {
-            warn!(
-                target: "engine::tree",
-                remove_above,
-                last_persisted = self.persistence_state.last_persisted_block.number,
-                canonical_head = self.state.tree_state.canonical_block_number(),
-                "Disk reorg detected in on_new_persisted_block, skipping normal cleanup"
-            );
             self.remove_blocks(remove_above);
             return Ok(())
         }
 
         let finalized = self.state.forkchoice_state_tracker.last_valid_finalized();
-        let persisted = self.persistence_state.last_persisted_block;
-        let is_canonical = self.state.tree_state.is_canonical(persisted.hash);
-        warn!(
-            target: "engine::tree",
-            persisted_number = persisted.number,
-            ?finalized,
-            is_persisted_hash_canonical = is_canonical,
-            "on_new_persisted_block: about to remove_before"
-        );
-
         self.remove_before(self.persistence_state.last_persisted_block, finalized)?;
         self.canonical_in_memory_state.remove_persisted_blocks(BlockNumHash {
             number: self.persistence_state.last_persisted_block.number,
