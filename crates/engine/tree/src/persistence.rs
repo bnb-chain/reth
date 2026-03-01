@@ -130,19 +130,15 @@ where
                             .sync_metrics_tx
                             .send(MetricEvent::SyncHeight { height: block_number });
 
+                        // BSC: skip inline pruning to prevent persistence service stall.
+                        // The pruner can hang on large BSC mainnet data, blocking all
+                        // subsequent SaveBlocks and causing unbounded memory growth (OOM).
+                        // Pruning should be handled externally or in a non-blocking way.
                         if self.pruner.is_pruning_needed(block_number) {
                             tracing::warn!(
                                 target: "engine::persistence",
                                 block_number,
-                                "SaveBlocks: pruning needed, starting prune"
-                            );
-                            let prune_start = Instant::now();
-                            let _ = self.prune_before(block_number)?;
-                            tracing::warn!(
-                                target: "engine::persistence",
-                                block_number,
-                                elapsed = ?prune_start.elapsed(),
-                                "SaveBlocks: pruning completed"
+                                "SaveBlocks: pruning needed but SKIPPED to avoid persistence stall"
                             );
                         }
                     }
