@@ -1275,7 +1275,14 @@ where
             .map(|b| b.recovered_block().num_hash())
             .expect("Checked non-empty persisting blocks");
 
-        debug!(target: "engine::tree", count=blocks_to_persist.len(), blocks = ?blocks_to_persist.iter().map(|block| block.recovered_block().num_hash()).collect::<Vec<_>>(), "Persisting blocks");
+        warn!(
+            target: "engine::tree",
+            count = blocks_to_persist.len(),
+            first_block = blocks_to_persist.first().map(|b| b.recovered_block().number()).unwrap_or(0),
+            last_block = blocks_to_persist.last().map(|b| b.recovered_block().number()).unwrap_or(0),
+            in_memory_blocks = self.state.tree_state.block_count(),
+            "Starting persistence task"
+        );
         let (tx, rx) = crossbeam_channel::bounded(1);
         let _ = self.persistence.save_blocks(blocks_to_persist, tx);
 
@@ -1287,6 +1294,19 @@ where
     /// This checks if we need to remove blocks (disk reorg) or save new blocks to disk.
     /// Persistence completion is handled separately via the `wait_for_event` method.
     fn advance_persistence(&mut self) -> Result<(), AdvancePersistenceError> {
+        let block_count = self.state.tree_state.block_count();
+        if block_count > 64 {
+            warn!(
+                target: "engine::tree",
+                block_count,
+                persistence_in_progress = self.persistence_state.in_progress(),
+                canonical_head = self.state.tree_state.canonical_block_number(),
+                last_persisted = self.persistence_state.last_persisted_block.number,
+                backfill_idle = self.backfill_sync_state.is_idle(),
+                "In-memory block count exceeds 64, possible persistence stall"
+            );
+        }
+
         if !self.persistence_state.in_progress() {
             if let Some(new_tip_num) = self.find_disk_reorg()? {
                 self.remove_blocks(new_tip_num)
@@ -1366,7 +1386,9 @@ where
         last_persisted_hash_num: Option<BlockNumHash>,
         start_time: Instant,
     ) -> Result<(), AdvancePersistenceError> {
-        self.metrics.engine.persistence_duration.record(start_time.elapsed());
+        let elapsed = start_time.elapsed();
+        self.metrics.engine.persistence_duration.record(elapsed);
+        let block_count_before = self.state.tree_state.block_count();
 
         let Some(BlockNumHash {
             hash: last_persisted_block_hash,
@@ -1378,7 +1400,15 @@ where
             return Ok(())
         };
 
-        debug!(target: "engine::tree", ?last_persisted_block_hash, ?last_persisted_block_number, elapsed=?start_time.elapsed(), "Finished persisting, calling finish");
+        warn!(
+            target: "engine::tree",
+            ?last_persisted_block_hash,
+            last_persisted_block_number,
+            ?elapsed,
+            block_count_before,
+            canonical_head = self.state.tree_state.canonical_block_number(),
+            "Persistence completed, starting cleanup"
+        );
         self.persistence_state.finish(last_persisted_block_hash, last_persisted_block_number);
 
         // Evict trie changesets for blocks below the finalized block, but keep at least 64 blocks
@@ -1396,6 +1426,16 @@ where
         }
 
         self.on_new_persisted_block()?;
+
+        let block_count_after = self.state.tree_state.block_count();
+        warn!(
+            target: "engine::tree",
+            block_count_after,
+            blocks_removed = block_count_before.saturating_sub(block_count_after),
+            last_persisted = self.persistence_state.last_persisted_block.number,
+            "Cleanup after persistence completed"
+        );
+
         Ok(())
     }
 
@@ -1851,11 +1891,28 @@ where
         // If we have an on-disk reorg, we need to handle it first before touching the in-memory
         // state.
         if let Some(remove_above) = self.find_disk_reorg()? {
+            warn!(
+                target: "engine::tree",
+                remove_above,
+                last_persisted = self.persistence_state.last_persisted_block.number,
+                canonical_head = self.state.tree_state.canonical_block_number(),
+                "Disk reorg detected in on_new_persisted_block, skipping normal cleanup"
+            );
             self.remove_blocks(remove_above);
             return Ok(())
         }
 
         let finalized = self.state.forkchoice_state_tracker.last_valid_finalized();
+        let persisted = self.persistence_state.last_persisted_block;
+        let is_canonical = self.state.tree_state.is_canonical(persisted.hash);
+        warn!(
+            target: "engine::tree",
+            persisted_number = persisted.number,
+            ?finalized,
+            is_persisted_hash_canonical = is_canonical,
+            "on_new_persisted_block: about to remove_before"
+        );
+
         self.remove_before(self.persistence_state.last_persisted_block, finalized)?;
         self.canonical_in_memory_state.remove_persisted_blocks(BlockNumHash {
             number: self.persistence_state.last_persisted_block.number,

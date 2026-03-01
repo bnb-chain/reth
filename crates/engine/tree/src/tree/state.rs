@@ -177,6 +177,14 @@ impl<N: NodePrimitives> TreeState<N> {
         // If the last persisted hash is not canonical, then we don't want to remove any canonical
         // blocks yet.
         if !self.is_canonical(last_persisted_hash) {
+            tracing::warn!(
+                target: "engine::tree",
+                ?upper_bound,
+                ?last_persisted_hash,
+                block_count = self.blocks_by_hash.len(),
+                canonical_head = ?self.current_canonical_head,
+                "Skipping canonical block removal: last_persisted_hash is NOT canonical"
+            );
             return
         }
 

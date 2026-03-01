@@ -323,8 +323,15 @@ impl<N: NodePrimitives> CanonicalInMemoryState<N> {
         //
         // This can happen if the persistence task takes a long time, while a reorg is happening.
         {
-            if self.inner.in_memory_state.blocks.read().get(&persisted_num_hash.hash).is_none() {
-                // do nothing
+            let blocks = self.inner.in_memory_state.blocks.read();
+            if blocks.get(&persisted_num_hash.hash).is_none() {
+                tracing::warn!(
+                    target: "engine::tree",
+                    persisted_hash = ?persisted_num_hash.hash,
+                    persisted_number = persisted_num_hash.number,
+                    in_memory_block_count = blocks.len(),
+                    "Skipping remove_persisted_blocks: persisted hash NOT found in canonical in-memory state"
+                );
                 return
             }
         }

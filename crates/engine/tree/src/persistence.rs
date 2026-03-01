@@ -75,8 +75,22 @@ where
     /// This is the main loop, that will listen to database events and perform the requested
     /// database actions
     pub fn run(mut self) -> Result<(), PersistenceError> {
+        tracing::warn!(target: "engine::persistence", "Persistence service thread started, waiting for actions");
+
         // If the receiver errors then senders have disconnected, so the loop should then end.
         while let Ok(action) = self.incoming.recv() {
+            let action_name = match &action {
+                PersistenceAction::RemoveBlocksAbove(_, _) => "RemoveBlocksAbove",
+                PersistenceAction::SaveBlocks(_, _) => "SaveBlocks",
+                PersistenceAction::SaveFinalizedBlock(_) => "SaveFinalizedBlock",
+                PersistenceAction::SaveSafeBlock(_) => "SaveSafeBlock",
+            };
+            tracing::warn!(
+                target: "engine::persistence",
+                action = action_name,
+                "Persistence service: received action"
+            );
+
             match action {
                 PersistenceAction::RemoveBlocksAbove(new_tip_num, sender) => {
                     let result = self.on_remove_blocks_above(new_tip_num)?;
@@ -87,8 +101,25 @@ where
                     let _ = sender.send(result);
                 }
                 PersistenceAction::SaveBlocks(blocks, sender) => {
+                    let block_count = blocks.len();
+                    let first = blocks.first().map(|b| b.recovered_block.num_hash());
+                    let last = blocks.last().map(|b| b.recovered_block.num_hash());
+                    tracing::warn!(
+                        target: "engine::persistence",
+                        block_count,
+                        first = ?first,
+                        last = ?last,
+                        "SaveBlocks: starting on_save_blocks"
+                    );
+                    let save_start = Instant::now();
                     let result = self.on_save_blocks(blocks)?;
                     let result_number = result.map(|r| r.number);
+                    tracing::warn!(
+                        target: "engine::persistence",
+                        ?result,
+                        elapsed = ?save_start.elapsed(),
+                        "SaveBlocks: on_save_blocks completed"
+                    );
 
                     // we ignore the error because the caller may or may not care about the result
                     let _ = sender.send(result);
@@ -100,20 +131,67 @@ where
                             .send(MetricEvent::SyncHeight { height: block_number });
 
                         if self.pruner.is_pruning_needed(block_number) {
-                            // We log `PrunerOutput` inside the `Pruner`
+                            tracing::warn!(
+                                target: "engine::persistence",
+                                block_number,
+                                "SaveBlocks: pruning needed, starting prune"
+                            );
+                            let prune_start = Instant::now();
                             let _ = self.prune_before(block_number)?;
+                            tracing::warn!(
+                                target: "engine::persistence",
+                                block_number,
+                                elapsed = ?prune_start.elapsed(),
+                                "SaveBlocks: pruning completed"
+                            );
                         }
                     }
                 }
                 PersistenceAction::SaveFinalizedBlock(finalized_block) => {
+                    tracing::warn!(
+                        target: "engine::persistence",
+                        finalized_block,
+                        "SaveFinalizedBlock: acquiring write lock"
+                    );
+                    let rw_start = Instant::now();
                     let provider = self.provider.database_provider_rw()?;
+                    tracing::warn!(
+                        target: "engine::persistence",
+                        finalized_block,
+                        elapsed = ?rw_start.elapsed(),
+                        "SaveFinalizedBlock: write lock acquired, saving"
+                    );
                     provider.save_finalized_block_number(finalized_block)?;
                     provider.commit()?;
+                    tracing::warn!(
+                        target: "engine::persistence",
+                        finalized_block,
+                        total_elapsed = ?rw_start.elapsed(),
+                        "SaveFinalizedBlock: completed"
+                    );
                 }
                 PersistenceAction::SaveSafeBlock(safe_block) => {
+                    tracing::warn!(
+                        target: "engine::persistence",
+                        safe_block,
+                        "SaveSafeBlock: acquiring write lock"
+                    );
+                    let rw_start = Instant::now();
                     let provider = self.provider.database_provider_rw()?;
+                    tracing::warn!(
+                        target: "engine::persistence",
+                        safe_block,
+                        elapsed = ?rw_start.elapsed(),
+                        "SaveSafeBlock: write lock acquired, saving"
+                    );
                     provider.save_safe_block_number(safe_block)?;
                     provider.commit()?;
+                    tracing::warn!(
+                        target: "engine::persistence",
+                        safe_block,
+                        total_elapsed = ?rw_start.elapsed(),
+                        "SaveSafeBlock: completed"
+                    );
                 }
             }
         }
@@ -144,18 +222,42 @@ where
         let first_block = blocks.first().map(|b| b.recovered_block.num_hash());
         let last_block = blocks.last().map(|b| b.recovered_block.num_hash());
         let block_count = blocks.len();
-        debug!(target: "engine::persistence", ?block_count, first=?first_block, last=?last_block, "Saving range of blocks");
 
         let start_time = Instant::now();
 
         if last_block.is_some() {
+            tracing::warn!(
+                target: "engine::persistence",
+                block_count,
+                first = ?first_block,
+                last = ?last_block,
+                "on_save_blocks: acquiring database_provider_rw"
+            );
+            let rw_start = Instant::now();
             let provider_rw = self.provider.database_provider_rw()?;
+            tracing::warn!(
+                target: "engine::persistence",
+                elapsed = ?rw_start.elapsed(),
+                "on_save_blocks: database_provider_rw acquired"
+            );
 
+            let save_start = Instant::now();
             provider_rw.save_blocks(blocks, SaveBlocksMode::Full)?;
-            provider_rw.commit()?;
-        }
+            tracing::warn!(
+                target: "engine::persistence",
+                elapsed = ?save_start.elapsed(),
+                "on_save_blocks: save_blocks completed, committing"
+            );
 
-        debug!(target: "engine::persistence", first=?first_block, last=?last_block, "Saved range of blocks");
+            let commit_start = Instant::now();
+            provider_rw.commit()?;
+            tracing::warn!(
+                target: "engine::persistence",
+                commit_elapsed = ?commit_start.elapsed(),
+                total_elapsed = ?start_time.elapsed(),
+                "on_save_blocks: commit completed"
+            );
+        }
 
         self.metrics.save_blocks_block_count.record(block_count as f64);
         self.metrics.save_blocks_duration_seconds.record(start_time.elapsed());
