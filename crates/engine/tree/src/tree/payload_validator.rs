@@ -551,7 +551,17 @@ where
 
         let prefetch_start = Instant::now();
         let prefetch_state = match handle.triedb_preftch_result() {
-            Ok(state) => state,
+            Ok(Some((state, evm_state_count))) => {
+                let block_tx_count = block.body().transaction_count();
+                info!(
+                    target: "engine::trie_db_prefetch",
+                    evm_state_count,
+                    block_tx_count,
+                    "triedb prefetcher stop (fullnode): state trie evm_state updates vs block tx count (best case equal)"
+                );
+                Some(state)
+            }
+            Ok(None) => None,
             Err(e) => {
                 warn!(
                     target: "engine::tree",
