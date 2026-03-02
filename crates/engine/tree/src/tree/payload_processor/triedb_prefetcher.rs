@@ -9,20 +9,21 @@ use std::sync::{
 use std::time::Duration;
 
 use alloy_consensus::EMPTY_ROOT_HASH;
-use alloy_primitives::{hex, keccak256, map::B256Set, B256, U256};
+use alloy_primitives::{hex, keccak256, B256, U256};
 use rust_eth_triedb_common::{DiffLayers, TrieDatabase};
 use rust_eth_triedb_pathdb::PathDB;
 use rust_eth_triedb_state_trie::{SecureTrieBuilder, SecureTrieError, SecureTrieId, SecureTrieTrait, StateTrie};
 use rust_eth_triedb::{triedb_reth::TrieDBPrefetchState};
 use reth_revm::state::EvmState;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{error, info, trace, warn};
 use rayon::prelude::*;
 
 use crate::tree::payload_processor::executor::WorkloadExecutor;
 use crate::tree::payload_processor::multiproof::MultiProofMessage;
-use crate::tree::payload_processor::triedb_hash_preheater::{
-    update_shaped_preheat_storage_trie,
-};
+// Commented out while update-shaped preheat is disabled:
+// use crate::tree::payload_processor::triedb_hash_preheater::{
+//     update_shaped_preheat_storage_trie,
+// };
 
 /// Error type for TrieDB prefetch operations.
 #[derive(Debug, thiserror::Error)]
@@ -135,15 +136,9 @@ impl TrieDBStatePrefetcher {
     /// This will signal all tasks to stop and then block until the final `PrefetchAccountResult`
     /// is received (or the channel is dropped).
     ///
-    /// When `block_tx_count` is provided, logs evm_state count and block tx count at stop (best case they are equal).
+    /// When `block_tx_count` is provided, logs evm_state sent/processed and block tx count at stop (best case all equal).
     pub fn finish(self, block_tx_count: Option<u32>) -> Option<Arc<TrieDBPrefetchState<PathDB>>> {
-        let evm_state_count = self.inner.evm_state_updates_sent.load(Ordering::Relaxed);
-        info!(
-            target: "engine::trie_db_prefetch",
-            evm_state_count,
-            block_tx_count = ?block_tx_count,
-            "triedb prefetcher stop (miner/fullnode): state trie evm_state updates vs block tx count (best case equal)"
-        );
+        let evm_state_updates_sent = self.inner.evm_state_updates_sent.load(Ordering::Relaxed);
 
         self.inner.cancel_flag.store(true, Ordering::Relaxed);
         let _ = self.inner.state_tx.send(TrieDBPrefetchMessage::PrefetchFinished());
@@ -152,7 +147,16 @@ impl TrieDBStatePrefetcher {
         // Never block forever in miner/block-production paths: if the background task fails to
         // respond, we fall back to "no prefetch".
         match rx.recv_timeout(Duration::from_secs(2)).ok()? {
-            TrieDBPrefetchResult::PrefetchAccountResult(state, _) => Some(state),
+            TrieDBPrefetchResult::PrefetchAccountResult(state, evm_state_processed) => {
+                info!(
+                    target: "engine::trie_db_prefetch",
+                    evm_state_updates_sent,
+                    evm_state_processed,
+                    block_tx_count = ?block_tx_count,
+                    "triedb prefetcher stop (miner/fullnode): sent vs processed vs block tx (best case all equal)"
+                );
+                Some(state)
+            }
             TrieDBPrefetchResult::PrefetchStorageResult((_, _, _)) => None,
         }
     }
@@ -602,8 +606,8 @@ impl TrieDBPrefetchAccountTask {
 pub(super) struct TrieDBPrefetchStorageTask {
     hashed_address: B256,
     storage_trie: StateTrie<PathDB>,
-    touched_slots: B256Set,
 
+    #[allow(dead_code)] // used when update-shaped preheat is enabled
     executor: WorkloadExecutor,
 
     state_message_rx: Receiver<TrieDBPrefetchMessage>,
@@ -613,8 +617,7 @@ pub(super) struct TrieDBPrefetchStorageTask {
     cancel_flag: Arc<AtomicBool>,
 
     /// Number of update+hash-shaped preheats performed for this storage trie.
-    ///
-    /// Note: kept only for observability; preheat is triggered for every `PrefetchSlotsWithValues`.
+    #[allow(dead_code)] // used when update-shaped preheat is enabled
     storage_update_hash_preheat_runs: u64,
 }
 
@@ -630,7 +633,6 @@ impl TrieDBPrefetchStorageTask {
         let task = Self {
             hashed_address,
             storage_trie,
-            touched_slots: B256Set::default(),
             executor,
             state_message_rx,
             prefetch_result_tx,
@@ -644,7 +646,7 @@ impl TrieDBPrefetchStorageTask {
         if let Err(e) = self.prefetch_result_tx.send(TrieDBPrefetchResult::PrefetchStorageResult((
             self.hashed_address,
             self.storage_trie.clone(),
-            self.touched_slots.len()
+            0usize,
         ))) {
             error!(
                 target: "engine::trie_db_prefetch",
@@ -669,55 +671,49 @@ impl TrieDBPrefetchStorageTask {
                                     self.terminate();
                                     return;
                                 }
-                                if self.touched_slots.contains(hashed_slot) {
-                                    continue;
-                                }
                                 if let Err(e) = self.storage_trie.touch_storage_with_hash_state(*hashed_slot) {
                                     error!(
                                         target: "engine::trie_db_prefetch",
                                         "Failed to touch storage trie for slot 0x{:x}: {:?}", hashed_slot, e
                                     );
-                                } else {
-                                    self.touched_slots.insert(*hashed_slot);
                                 }
                             }
                             if changed_slots.is_empty() {
                                 continue;
                             }
 
-                            // Update+hash-shaped preheat: always trigger on receipt.
-                            self.storage_update_hash_preheat_runs =
-                                self.storage_update_hash_preheat_runs.saturating_add(1);
-
-                            let mut storage_trie = self.storage_trie.clone();
-                            let cancel = self.cancel_flag.clone();
-                            let addr = self.hashed_address;
-                            let changed = changed_slots.len();
-                            let run_idx = self.storage_update_hash_preheat_runs;
-                            let changed_slots_owned = changed_slots;
-
-                            let pool = self.executor.rayon_pool().clone();
-                            pool.spawn(move || {
-                                let stats = update_shaped_preheat_storage_trie(
-                                    &mut storage_trie,
-                                    addr,
-                                    &changed_slots_owned,
-                                    &cancel,
-                                );
-                                debug!(
-                                    target: "engine::trie_db_prefetch",
-                                    trie = "storage",
-                                    mode = "update_preheat",
-                                    address = %format!("0x{:x}", addr),
-                                    run = run_idx,
-                                    changed_slots = changed,
-                                    updates_applied = stats.updates_applied,
-                                    deletes_applied = stats.deletes_applied,
-                                    update_errors = stats.update_errors,
-                                    preheat_ms = stats.elapsed.as_secs_f64() * 1000.0,
-                                    "Triedb update-shaped preheat finished"
-                                );
-                            });
+                            // Commented out: update-shaped preheat (to isolate bottleneck)
+                            // self.storage_update_hash_preheat_runs =
+                            //     self.storage_update_hash_preheat_runs.saturating_add(1);
+                            // let mut storage_trie = self.storage_trie.clone();
+                            // let cancel = self.cancel_flag.clone();
+                            // let addr = self.hashed_address;
+                            // let changed = changed_slots.len();
+                            // let run_idx = self.storage_update_hash_preheat_runs;
+                            // let changed_slots_owned = changed_slots;
+                            // let pool = self.executor.rayon_pool().clone();
+                            // pool.spawn(move || {
+                            //     let stats = update_shaped_preheat_storage_trie(
+                            //         &mut storage_trie,
+                            //         addr,
+                            //         &changed_slots_owned,
+                            //         &cancel,
+                            //     );
+                            //     debug!(
+                            //         target: "engine::trie_db_prefetch",
+                            //         trie = "storage",
+                            //         mode = "update_preheat",
+                            //         address = %format!("0x{:x}", addr),
+                            //         run = run_idx,
+                            //         changed_slots = changed,
+                            //         updates_applied = stats.updates_applied,
+                            //         deletes_applied = stats.deletes_applied,
+                            //         update_errors = stats.update_errors,
+                            //         preheat_ms = stats.elapsed.as_secs_f64() * 1000.0,
+                            //         "Triedb update-shaped preheat finished"
+                            //     );
+                            // });
+                            let _ = changed_slots;
                         }
                         TrieDBPrefetchMessage::PrefetchFinished() => {
                             self.terminate();
