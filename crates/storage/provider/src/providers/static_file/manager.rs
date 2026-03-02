@@ -890,18 +890,32 @@ impl<N: NodePrimitives> StaticFileProvider<N> {
         }
 
         let highest_block = self.get_highest_static_file_block(segment);
-        let mut deleted_headers = Vec::new();
 
-        loop {
-            let Some(block_height) = self.get_lowest_range_end(segment) else {
-                return Ok(deleted_headers);
+        // Collect all block heights to delete upfront from the index so we don't depend on
+        // re-indexing between deletions.
+        let block_heights: Vec<BlockNumber> = {
+            let indexes = self.indexes.read();
+            let Some(index) = indexes.get(segment) else {
+                return Ok(Vec::new());
             };
+            index
+                .expected_block_ranges_by_max_block
+                .keys()
+                .copied()
+                .take_while(|&end_block| {
+                    end_block < block && Some(end_block) != highest_block
+                })
+                .collect()
+        };
 
-            // Stop if we've reached the target block or the highest static file
-            if block_height >= block || Some(block_height) == highest_block {
-                return Ok(deleted_headers);
-            }
+        if block_heights.is_empty() {
+            return Ok(Vec::new());
+        }
 
+        let mut deleted_headers = Vec::with_capacity(block_heights.len());
+        let mut deletion_error = None;
+
+        for block_height in block_heights {
             debug!(
                 target: "provider::static_file",
                 ?segment,
@@ -909,14 +923,61 @@ impl<N: NodePrimitives> StaticFileProvider<N> {
                 "Deleting static file below block"
             );
 
-            // now we need to wipe the static file, this will take care of updating the index and
-            // advance the lowest tracked block height for the segment.
-            let header = self.delete_jar(segment, block_height).inspect_err(|err| {
-                warn!( target: "provider::static_file", ?segment, %block_height, ?err, "Failed to delete static file below block")
-            })?;
-
-            deleted_headers.push(header);
+            match self.delete_jar_without_reindex(segment, block_height) {
+                Ok(header) => deleted_headers.push(header),
+                Err(err) => {
+                    warn!(target: "provider::static_file", ?segment, %block_height, ?err, "Failed to delete static file below block");
+                    deletion_error = Some(err);
+                    break;
+                }
+            }
         }
+
+        // Incrementally update the in-memory index for all deleted jars instead of
+        // doing a full directory rescan via initialize_index().
+        if !deleted_headers.is_empty() {
+            let mut indexes = self.indexes.write();
+            if let Some(index) = indexes.get_mut(segment) {
+                for header in &deleted_headers {
+                    // Remove from block index (keyed by expected_block_end)
+                    index.expected_block_ranges_by_max_block.remove(&header.expected_block_end());
+
+                    // Remove from tx index (keyed by tx_range end)
+                    if let Some(tx_range) = header.tx_range() {
+                        if let Some(tx_index) = &mut index.available_block_ranges_by_max_tx {
+                            tx_index.remove(&tx_range.end());
+                            if tx_index.is_empty() {
+                                index.available_block_ranges_by_max_tx = None;
+                            }
+                        }
+                    }
+                }
+
+                // Update min_block_range to the new lowest entry
+                index.min_block_range = index
+                    .expected_block_ranges_by_max_block
+                    .first_key_value()
+                    .map(|(_, range)| *range);
+
+                // Keep earliest_history_height in sync when pruning Transactions
+                if segment == StaticFileSegment::Transactions {
+                    let new_start =
+                        index.min_block_range.map(|r| r.start()).unwrap_or_default();
+                    self.earliest_history_height
+                        .store(new_start, std::sync::atomic::Ordering::Relaxed);
+                }
+
+                if index.expected_block_ranges_by_max_block.is_empty() {
+                    indexes.remove(segment);
+                }
+            }
+        }
+
+        if let Some(err) = deletion_error {
+            return Err(err);
+        }
+
+        Ok(deleted_headers)
     }
 
     /// Given a segment and block, it deletes the jar and all files from the respective block range.
@@ -927,6 +988,23 @@ impl<N: NodePrimitives> StaticFileProvider<N> {
     ///
     /// Returns the `SegmentHeader` of the deleted jar.
     pub fn delete_jar(
+        &self,
+        segment: StaticFileSegment,
+        block: BlockNumber,
+    ) -> ProviderResult<SegmentHeader> {
+        let header = self.delete_jar_without_reindex(segment, block)?;
+
+        // SAFETY: this is currently necessary to ensure that certain indexes like
+        // `static_files_min_block` have the correct values after pruning.
+        self.initialize_index()?;
+
+        Ok(header)
+    }
+
+    /// Deletes a jar without updating the index. Callers are responsible for updating
+    /// the index after all deletions are complete, either via [`Self::initialize_index`]
+    /// or by incrementally removing the deleted entries.
+    fn delete_jar_without_reindex(
         &self,
         segment: StaticFileSegment,
         block: BlockNumber,
@@ -949,10 +1027,6 @@ impl<N: NodePrimitives> StaticFileProvider<N> {
 
         let header = jar.user_header().clone();
         jar.delete().map_err(ProviderError::other)?;
-
-        // SAFETY: this is currently necessary to ensure that certain indexes like
-        // `static_files_min_block` have the correct values after pruning.
-        self.initialize_index()?;
 
         Ok(header)
     }
@@ -2753,11 +2827,14 @@ where
 mod tests {
     use std::collections::BTreeMap;
 
+    use alloy_consensus::{Header, SignableTransaction, TxLegacy};
+    use alloy_primitives::{BlockHash, Signature};
     use reth_chain_state::EthPrimitives;
     use reth_db::test_utils::create_test_static_files_dir;
+    use reth_ethereum_primitives::TransactionSigned;
     use reth_static_file_types::{SegmentRangeInclusive, StaticFileSegment};
 
-    use crate::{providers::StaticFileProvider, StaticFileProviderBuilder};
+    use crate::{providers::StaticFileProvider, StaticFileProviderBuilder, StaticFileWriter};
 
     #[test]
     fn test_find_fixed_range_with_block_index() -> eyre::Result<()> {
@@ -2875,6 +2952,180 @@ mod tests {
             sf_rw.find_fixed_range_with_block_index(segment, Some(&mixed_size_index), 550),
             SegmentRangeInclusive::new(550, 649)
         );
+
+        Ok(())
+    }
+
+    /// Helper: creates a static file provider with transaction files spanning multiple ranges.
+    ///
+    /// Returns the provider and the number of files created.
+    /// Each range has `blocks_per_file` blocks with 1 transaction per block.
+    fn setup_transaction_files(
+        static_dir: impl AsRef<std::path::Path>,
+        blocks_per_file: u64,
+        file_count: u64,
+    ) -> StaticFileProvider<EthPrimitives> {
+        let sf: StaticFileProvider<EthPrimitives> =
+            StaticFileProviderBuilder::read_write(&static_dir)
+                .with_blocks_per_file(blocks_per_file)
+                .build()
+                .expect("Failed to build static file provider");
+
+        {
+            let mut writer = sf.latest_writer(StaticFileSegment::Transactions).unwrap();
+            let mut tx_num = 0u64;
+            let total_blocks = blocks_per_file * file_count;
+
+            for block in 0..total_blocks {
+                writer.increment_block(block).unwrap();
+                let tx = TxLegacy { nonce: tx_num, ..Default::default() };
+                let signed: TransactionSigned =
+                    tx.into_signed(Signature::test_signature()).into();
+                writer.append_transaction(tx_num, &signed).unwrap();
+                tx_num += 1;
+            }
+            writer.commit().unwrap();
+        }
+
+        // Re-initialize so the index is fully populated.
+        sf.initialize_index().unwrap();
+        sf
+    }
+
+    #[test]
+    fn test_delete_segment_below_block_index_consistency() -> eyre::Result<()> {
+        let (static_dir, _) = create_test_static_files_dir();
+        let blocks_per_file = 10;
+        let file_count = 5; // files: 0..=9, 10..=19, 20..=29, 30..=39, 40..=49
+
+        let sf = setup_transaction_files(&static_dir, blocks_per_file, file_count);
+
+        // Sanity: 5 entries in the block index
+        let idx = sf.expected_block_index(StaticFileSegment::Transactions).unwrap();
+        assert_eq!(idx.len(), file_count as usize);
+
+        // Delete the two lowest files (0..=9, 10..=19)
+        let deleted = sf.delete_segment_below_block(StaticFileSegment::Transactions, 20)?;
+        assert_eq!(deleted.len(), 2);
+
+        // Block index should now have 3 entries, starting at the 20..=29 file
+        let idx = sf.expected_block_index(StaticFileSegment::Transactions).unwrap();
+        assert_eq!(idx.len(), 3);
+        // Lowest range should now be the third file
+        assert_eq!(
+            sf.get_lowest_range(StaticFileSegment::Transactions),
+            Some(SegmentRangeInclusive::new(20, 29))
+        );
+
+        // Tx index should also be updated (2 files removed = 2 tx-range entries removed)
+        let tx_idx = sf.tx_index(StaticFileSegment::Transactions).unwrap();
+        assert_eq!(tx_idx.len(), 3);
+
+        // Highest block should be unchanged
+        assert_eq!(sf.get_highest_static_file_block(StaticFileSegment::Transactions), Some(49));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_delete_segment_below_block_earliest_history_height() -> eyre::Result<()> {
+        let (static_dir, _) = create_test_static_files_dir();
+        let blocks_per_file = 10;
+        let file_count = 4; // files: 0..=9, 10..=19, 20..=29, 30..=39
+
+        let sf = setup_transaction_files(&static_dir, blocks_per_file, file_count);
+
+        // Initial earliest_history_height should be 0 (start of first file)
+        assert_eq!(sf.earliest_history_height(), 0);
+
+        // Delete first file (0..=9), target block 10
+        sf.delete_segment_below_block(StaticFileSegment::Transactions, 10)?;
+        assert_eq!(sf.earliest_history_height(), 10, "should advance to start of second file");
+
+        // Delete second file (10..=19), target block 20
+        sf.delete_segment_below_block(StaticFileSegment::Transactions, 20)?;
+        assert_eq!(sf.earliest_history_height(), 20, "should advance to start of third file");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_delete_segment_below_block_never_deletes_highest() -> eyre::Result<()> {
+        let (static_dir, _) = create_test_static_files_dir();
+        let blocks_per_file = 10;
+        let file_count = 3; // files: 0..=9, 10..=19, 20..=29
+
+        let sf = setup_transaction_files(&static_dir, blocks_per_file, file_count);
+
+        // Try to delete everything up to block 100 — should keep the highest file
+        let deleted = sf.delete_segment_below_block(StaticFileSegment::Transactions, 100)?;
+        assert_eq!(deleted.len(), 2, "should delete 2 files, keeping the highest");
+
+        assert_eq!(sf.get_highest_static_file_block(StaticFileSegment::Transactions), Some(29));
+        assert_eq!(
+            sf.get_lowest_range(StaticFileSegment::Transactions),
+            Some(SegmentRangeInclusive::new(20, 29))
+        );
+        assert_eq!(sf.earliest_history_height(), 20);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_delete_segment_below_block_noop_cases() -> eyre::Result<()> {
+        let (static_dir, _) = create_test_static_files_dir();
+        let blocks_per_file = 10;
+        let file_count = 3;
+
+        let sf = setup_transaction_files(&static_dir, blocks_per_file, file_count);
+
+        // block=0 should be a no-op
+        let deleted = sf.delete_segment_below_block(StaticFileSegment::Transactions, 0)?;
+        assert!(deleted.is_empty());
+
+        // Target below or equal to lowest range end should be a no-op
+        let deleted = sf.delete_segment_below_block(StaticFileSegment::Transactions, 5)?;
+        assert!(deleted.is_empty());
+
+        // Segment with no files should be a no-op
+        let deleted = sf.delete_segment_below_block(StaticFileSegment::Headers, 100)?;
+        assert!(deleted.is_empty());
+
+        // earliest_history_height unchanged
+        assert_eq!(sf.earliest_history_height(), 0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_delete_segment_below_block_headers_no_earliest_height_change() -> eyre::Result<()> {
+        let (static_dir, _) = create_test_static_files_dir();
+        let blocks_per_file = 10;
+        let file_count = 3; // files: 0..=9, 10..=19, 20..=29
+
+        let sf: StaticFileProvider<EthPrimitives> =
+            StaticFileProviderBuilder::read_write(&static_dir)
+                .with_blocks_per_file(blocks_per_file)
+                .build()?;
+
+        // Create header files only (no transactions)
+        {
+            let mut writer = sf.latest_writer(StaticFileSegment::Headers).unwrap();
+            let mut header = Header::default();
+            for num in 0..(blocks_per_file * file_count) {
+                header.number = num;
+                writer.append_header(&header, &BlockHash::default()).unwrap();
+            }
+            writer.commit().unwrap();
+        }
+        sf.initialize_index()?;
+
+        // earliest_history_height is only tied to Transactions, so deleting Headers
+        // should not change it
+        assert_eq!(sf.earliest_history_height(), 0);
+
+        sf.delete_segment_below_block(StaticFileSegment::Headers, 20)?;
+        assert_eq!(sf.earliest_history_height(), 0, "header deletion should not affect earliest_history_height");
 
         Ok(())
     }
