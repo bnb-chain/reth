@@ -436,11 +436,14 @@ impl TrieDBPrefetchAccountTask {
         }
     }
 
-    pub(super) fn terminate_all_tasks(&mut self) {
+    pub(super) fn terminate_all_tasks(mut self) {
         self.send_prefetch_finished_to_all_storage_tasks();
         self.receive_prefetch_storage_results();
+        let evm_state_processed = self.evm_state_processed;
+        let prefetch_state = Arc::new(*self.prefetch_state);
         if let Err(e) = self.prefetch_result_tx.send(TrieDBPrefetchResult::PrefetchAccountResult(
-            Arc::from(self.prefetch_state.clone())
+            prefetch_state,
+            evm_state_processed,
         )) {
             error!(
                 target: "engine::trie_db_prefetch",
