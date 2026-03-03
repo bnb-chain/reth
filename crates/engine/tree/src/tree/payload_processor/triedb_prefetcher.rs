@@ -641,12 +641,18 @@ impl TrieDBPrefetchStorageTask {
                 Ok(message) => {
                     match message {
                         TrieDBPrefetchMessage::PrefetchSlots(slots) => {
-                            // Check cancellation before processing
                             if self.cancel_flag.load(Ordering::Relaxed) {
                                 self.terminate();
                                 return;
                             }
-                            for slot in slots.iter() {
+                            // Sort by hashed slot for better trie traversal locality:
+                            // adjacent hashed keys share trie path prefixes, so earlier
+                            // CoW resolutions are reused by subsequent touches.
+                            let mut sorted_slots: Vec<B256> = slots.iter().copied().collect();
+                            if sorted_slots.len() > 1 {
+                                sorted_slots.sort_unstable();
+                            }
+                            for slot in sorted_slots.iter() {
                                 if self.cancel_flag.load(Ordering::Relaxed) {
                                     self.terminate();
                                     return;
