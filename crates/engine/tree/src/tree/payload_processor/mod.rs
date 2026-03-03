@@ -51,7 +51,6 @@ pub mod executor;
 pub mod multiproof;
 pub mod prewarm;
 pub mod sparse_trie;
-mod triedb_hash_preheater;
 pub mod triedb_prefetcher;
 
 use configured_sparse_trie::ConfiguredSparseTrie;
