@@ -463,10 +463,7 @@ impl<Tx, Err> PayloadHandle<Tx, Err> {
     /// # Panics
     ///
     /// If payload processing was started without background prefetch task.
-    /// Returns prefetch state and the number of EvmState updates processed (best case equals block tx count).
-    pub fn triedb_preftch_result(
-        &mut self,
-    ) -> Result<Option<(Arc<TrieDBPrefetchState<PathDB>>, u64)>, ParallelStateRootError> {
+    pub fn triedb_preftch_result(&mut self) -> Result<Option<Arc<TrieDBPrefetchState<PathDB>>>, ParallelStateRootError> {
         let result = self.trie_db_prefetch_result_rx
             .take()
             .expect("trie_db_prefetch_result_rx is None")
@@ -474,9 +471,7 @@ impl<Tx, Err> PayloadHandle<Tx, Err> {
             .map_err(|_| ParallelStateRootError::Other("trie db prefetch result receiver dropped".to_string()))?;
 
         match result {
-            triedb_prefetcher::TrieDBPrefetchResult::PrefetchAccountResult(state, evm_state_count) => {
-                Ok(Some((state, evm_state_count)))
-            }
+            triedb_prefetcher::TrieDBPrefetchResult::PrefetchAccountResult(state) => Ok(Some(state)),
             triedb_prefetcher::TrieDBPrefetchResult::PrefetchStorageResult((_, _, _)) => {
                 panic!("received prefetch storage result, but expected prefetch account result");
             }
