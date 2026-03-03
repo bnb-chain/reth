@@ -615,16 +615,18 @@ impl TrieDBPrefetchStorageTask {
         (task, prefetch_result_rx)
     }
 
-    pub(super) fn terminate(&mut self) {
+    pub(super) fn terminate(self) {
+        let hashed_address = self.hashed_address;
+        let storage_trie = self.storage_trie;
         if let Err(e) = self.prefetch_result_tx.send(TrieDBPrefetchResult::PrefetchStorageResult((
-            self.hashed_address,
-            self.storage_trie.clone(),
-            self.touched_slots.len()
+            hashed_address,
+            storage_trie,
+            0usize,
         ))) {
             error!(
                 target: "engine::trie_db_prefetch",
                 "Failed to send PrefetchStorageResult for address 0x{:x}: {:?}",
-                self.hashed_address, e
+                hashed_address, e
             );
         }
     }
