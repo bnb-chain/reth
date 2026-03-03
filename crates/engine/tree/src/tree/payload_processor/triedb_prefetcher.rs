@@ -287,6 +287,16 @@ pub(super) struct TrieDBPrefetchAccountTask {
 
     /// Cancellation flag shared across all prefetch tasks.
     cancel_flag: Arc<AtomicBool>,
+
+    /// Number of PrefetchEvmState messages processed (best case equals block tx count).
+    evm_state_processed: u64,
+
+    /// Timestamp when the account task was created.
+    creation_time: std::time::Instant,
+    /// Number of storage tries spawned.
+    storage_tries_created: usize,
+    /// Number of unique accounts touched in the account trie.
+    accounts_touched: usize,
 }
 
 impl TrieDBPrefetchAccountTask {
@@ -324,6 +334,10 @@ impl TrieDBPrefetchAccountTask {
             storage_results: HashMap::new(),
             prefetch_state,
             cancel_flag,
+            evm_state_processed: 0,
+            creation_time: std::time::Instant::now(),
+            storage_tries_created: 0,
+            accounts_touched: 0,
         };
 
         Ok((task, prefetch_result_rx))
@@ -454,6 +468,17 @@ impl TrieDBPrefetchAccountTask {
         self.receive_prefetch_storage_results();
         // Clear account trie tracer — not needed for prefetch reuse, only for commit
         self.prefetch_state.account_trie.trie_mut().tracer = Default::default();
+        let total_prefetch_ms = self.creation_time.elapsed().as_secs_f64() * 1000.0;
+        info!(
+            target: "engine::trie_db_prefetch",
+            evm_state_processed = self.evm_state_processed,
+            accounts_touched = self.accounts_touched,
+            storage_tries_created = self.storage_tries_created,
+            storage_tries_collected = self.prefetch_state.storage_tries.len(),
+            storage_roots_collected = self.prefetch_state.storage_roots.len(),
+            total_prefetch_ms,
+            "Account prefetch task finished"
+        );
         let evm_state_processed = self.evm_state_processed;
         let prefetch_state = Arc::new(*self.prefetch_state);
         if let Err(e) = self.prefetch_result_tx.send(TrieDBPrefetchResult::PrefetchAccountResult(
@@ -489,7 +514,12 @@ impl TrieDBPrefetchAccountTask {
                                     }
                                     if !self.prefetch_state.storage_roots.contains_key(address) {
                                         self.prefetch_state.storage_roots.insert(*address, storage_root);
-                                        if let Err(e) = self.prefetch_state.account_trie.touch_account_with_hash_state(*address) {
+                                        self.accounts_touched += 1;
+                                        if let Err(e) = self
+                                            .prefetch_state
+                                            .account_trie
+                                            .touch_account_with_hash_state(*address)
+                                        {
                                             warn!(
                                                 target: "engine::trie_db_prefetch",
                                                 "Failed to get account trie for address 0x{:x}: {:?}", address, e
@@ -578,6 +608,7 @@ impl TrieDBPrefetchAccountTask {
             );
 
             self.storage_results.insert(hashed_address, storage_result_rx);
+            self.storage_tries_created += 1;
 
             self.executor.spawn_blocking(move || {
                 storage_task.run();
@@ -609,6 +640,17 @@ pub(super) struct TrieDBPrefetchStorageTask {
 
     /// Cancellation flag shared across all prefetch tasks.
     cancel_flag: Arc<AtomicBool>,
+
+    /// Number of update+hash-shaped preheats performed for this storage trie.
+    #[allow(dead_code)] // used when update-shaped preheat is enabled
+    storage_update_hash_preheat_runs: u64,
+
+    /// Number of slots touched in this storage trie.
+    touch_count: usize,
+    /// Total time spent in touch operations.
+    touch_duration: std::time::Duration,
+    /// Number of PrefetchSlotsWithValues messages received.
+    messages_received: usize,
 }
 
 impl TrieDBPrefetchStorageTask {
@@ -626,6 +668,10 @@ impl TrieDBPrefetchStorageTask {
             state_message_rx,
             prefetch_result_tx,
             cancel_flag,
+            storage_update_hash_preheat_runs: 0,
+            touch_count: 0,
+            touch_duration: std::time::Duration::ZERO,
+            messages_received: 0,
         };
         (task, prefetch_result_rx)
     }
@@ -633,6 +679,14 @@ impl TrieDBPrefetchStorageTask {
     pub(super) fn terminate(mut self) {
         // Clear tracer — not needed for prefetch reuse, only for commit
         self.storage_trie.trie_mut().tracer = Default::default();
+        trace!(
+            target: "engine::trie_db_prefetch",
+            address = %format!("0x{:x}", self.hashed_address),
+            touch_count = self.touch_count,
+            touch_ms = self.touch_duration.as_secs_f64() * 1000.0,
+            messages_received = self.messages_received,
+            "Storage prefetch task finished"
+        );
         let hashed_address = self.hashed_address;
         let storage_trie = self.storage_trie;
         if let Err(e) = self.prefetch_result_tx.send(TrieDBPrefetchResult::PrefetchStorageResult((
@@ -666,6 +720,7 @@ impl TrieDBPrefetchStorageTask {
                                 sorted_slots.sort_unstable();
                             }
                             for slot in sorted_slots.iter() {
+                            self.messages_received += 1;
                                 if self.cancel_flag.load(Ordering::Relaxed) {
                                     self.terminate();
                                     return;
@@ -673,6 +728,7 @@ impl TrieDBPrefetchStorageTask {
                                 if self.touched_slots.contains(slot) {
                                     continue;
                                 }
+                                let touch_start = std::time::Instant::now();
                                 if let Err(e) = self.storage_trie.touch_storage_with_hash_state(*slot) {
                                     error!(
                                         target: "engine::trie_db_prefetch",
@@ -681,6 +737,8 @@ impl TrieDBPrefetchStorageTask {
                                 } else {
                                     self.touched_slots.insert(*slot);
                                 }
+                                self.touch_duration += touch_start.elapsed();
+                                self.touch_count += 1;
                             }
                         }
                         TrieDBPrefetchMessage::PrefetchFinished() => {
