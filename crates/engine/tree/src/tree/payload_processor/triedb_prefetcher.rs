@@ -439,6 +439,8 @@ impl TrieDBPrefetchAccountTask {
     pub(super) fn terminate_all_tasks(mut self) {
         self.send_prefetch_finished_to_all_storage_tasks();
         self.receive_prefetch_storage_results();
+        // Clear account trie tracer — not needed for prefetch reuse, only for commit
+        self.prefetch_state.account_trie.trie_mut().tracer = Default::default();
         let evm_state_processed = self.evm_state_processed;
         let prefetch_state = Arc::new(*self.prefetch_state);
         if let Err(e) = self.prefetch_result_tx.send(TrieDBPrefetchResult::PrefetchAccountResult(
@@ -615,7 +617,9 @@ impl TrieDBPrefetchStorageTask {
         (task, prefetch_result_rx)
     }
 
-    pub(super) fn terminate(self) {
+    pub(super) fn terminate(mut self) {
+        // Clear tracer — not needed for prefetch reuse, only for commit
+        self.storage_trie.trie_mut().tracer = Default::default();
         let hashed_address = self.hashed_address;
         let storage_trie = self.storage_trie;
         if let Err(e) = self.prefetch_result_tx.send(TrieDBPrefetchResult::PrefetchStorageResult((
