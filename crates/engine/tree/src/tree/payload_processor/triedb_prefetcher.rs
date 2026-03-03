@@ -269,7 +269,7 @@ pub(super) struct TrieDBPrefetchAccountTask {
     #[allow(dead_code)]
     root_hash: B256,
     path_db: PathDB,
-    difflayers: Option<DiffLayers>,
+    difflayers: Option<Arc<DiffLayers>>,
     executor: WorkloadExecutor,
 
     /// Receiver for the trie db prefetch messages from account task.
@@ -299,14 +299,15 @@ impl TrieDBPrefetchAccountTask {
         cancel_flag: Arc<AtomicBool>)
         -> Result<(Self, Receiver<TrieDBPrefetchResult>), TrieDBPrefetchError> {
 
+        let difflayers = difflayers.map(Arc::new);
         let id = SecureTrieId::new(root_hash);
         let account_trie = SecureTrieBuilder::new(path_db.clone())
             .with_id(id)
-            .build_with_difflayer(difflayers.as_ref())
+            .build_with_difflayer(difflayers.as_deref())
             .map_err(|e| TrieDBPrefetchError::BuildAccountTrie(format!("Failed to build account trie for root hash: 0x{}, error: {}", hex::encode(root_hash), e)))?;
 
         let prefetch_state = Box::new(TrieDBPrefetchState {
-            account_trie: account_trie,
+            account_trie,
             storage_roots: HashMap::new(),
             storage_tries: HashMap::new(),
         });
@@ -553,7 +554,7 @@ impl TrieDBPrefetchAccountTask {
                 .with_owner(hashed_address);
             let storage_trie = match SecureTrieBuilder::new(self.path_db.clone())
                 .with_id(id)
-                .build_with_difflayer(self.difflayers.as_ref())
+                .build_with_difflayer(self.difflayers.as_deref())
             {
                 Ok(trie) => trie,
                 Err(e) => {
