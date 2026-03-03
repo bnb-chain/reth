@@ -355,43 +355,55 @@ impl TrieDBPrefetchAccountTask {
     }
 
     /// Wait for all storage_results and write them to storage_tries.
-    /// Returns (successful_count, failed_addresses).
-    #[allow(dead_code)]
+    /// Receives results in parallel via rayon, then inserts serially.
     pub(super) fn receive_prefetch_storage_results(&mut self) -> usize {
         if self.storage_results.is_empty() {
             return 0;
         }
 
         let start = std::time::Instant::now();
-        // Iterate over all storage_results and receive results serially
         let receivers: Vec<(B256, Receiver<TrieDBPrefetchResult>)> = self.storage_results.drain().collect();
-        let mut slot_count = 0;
-        for (hashed_address, receiver) in receivers {
-            match receiver.recv() {
-                Ok(TrieDBPrefetchResult::PrefetchStorageResult((addr, storage_trie, touched_slot_count))) => {
-                    if addr == hashed_address {
-                        slot_count += touched_slot_count;
-                        self.prefetch_state.storage_tries.insert(hashed_address, storage_trie);
-                    } else {
-                        warn!(
+
+        // Receive from all storage tasks in parallel — each recv() blocks
+        // until its task finishes, so parallelism avoids head-of-line blocking.
+        let results: Vec<Option<(B256, StateTrie<PathDB>, usize)>> = receivers
+            .into_par_iter()
+            .map(|(hashed_address, receiver)| {
+                match receiver.recv() {
+                    Ok(TrieDBPrefetchResult::PrefetchStorageResult((addr, storage_trie, touched_slot_count))) => {
+                        if addr == hashed_address {
+                            Some((hashed_address, storage_trie, touched_slot_count))
+                        } else {
+                            warn!(
+                                target: "engine::trie_db_prefetch",
+                                "Address mismatch in storage result: expected 0x{:x}, got 0x{:x}", hashed_address, addr
+                            );
+                            None
+                        }
+                    }
+                    Ok(_) => {
+                        error!(
                             target: "engine::trie_db_prefetch",
-                            "Address mismatch in storage result: expected 0x{:x}, got 0x{:x}", hashed_address, addr
+                            "Unexpected result type for address 0x{:x}, prefetch account result", hashed_address
                         );
+                        None
+                    }
+                    Err(e) => {
+                        error!(
+                            target: "engine::trie_db_prefetch",
+                            "Failed to receive prefetch storage result for address 0x{:x}: {:?}", hashed_address, e
+                        );
+                        None
                     }
                 }
-                Ok(_) => {
-                    error!(
-                        target: "engine::trie_db_prefetch",
-                        "Unexpected result type for address 0x{:x}, prefetch account result", hashed_address
-                    );
-                }
-                Err(e) => {
-                    error!(
-                        target: "engine::trie_db_prefetch",
-                        "Failed to receive prefetch storage result for address 0x{:x}: {:?}", hashed_address, e
-                    );
-                }
-            }
+            })
+            .collect();
+
+        // Insert collected results serially
+        let mut slot_count = 0;
+        for (hashed_address, storage_trie, touched_slot_count) in results.into_iter().flatten() {
+            slot_count += touched_slot_count;
+            self.prefetch_state.storage_tries.insert(hashed_address, storage_trie);
         }
         let duration = start.elapsed();
         info!(
