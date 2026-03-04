@@ -121,7 +121,11 @@ impl<N: ProviderNodeTypes> BlockchainProvider<N> {
     /// [`BlockHashReader`]. This may fail if the inner read database transaction fails to open.
     #[track_caller]
     pub fn consistent_provider(&self) -> ProviderResult<ConsistentProvider<N>> {
-        ConsistentProvider::new(self.chain_spec(), self.database.clone(), self.canonical_in_memory_state())
+        ConsistentProvider::new(
+            self.chain_spec(),
+            self.database.clone(),
+            self.canonical_in_memory_state(),
+        )
     }
 
     /// This uses a given [`BlockState`] to initialize a state provider for that block.
@@ -569,7 +573,12 @@ impl<N: ProviderNodeTypes> StateProviderFactory for BlockchainProvider<N> {
 
     fn history_by_block_hash(&self, block_hash: BlockHash) -> ProviderResult<StateProviderBox> {
         trace!(target: "providers::blockchain", ?block_hash, "Getting history by block hash");
-        self.consistent_provider()?.into_state_provider_at_block_hash(block_hash)
+        let provider = self.consistent_provider()?;
+        let block_number = provider
+            .block_number(block_hash)?
+            .ok_or(ProviderError::BlockHashNotFound(block_hash))?;
+        provider.ensure_canonical_block(block_number)?;
+        provider.into_state_provider_at_block_hash(block_hash)
     }
 
     fn state_by_block_hash(&self, hash: BlockHash) -> ProviderResult<StateProviderBox> {
@@ -2596,6 +2605,79 @@ mod tests {
                 )
                 .unwrap(),
                 Some(to_be_persisted_tx)
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Tests that during staged sync, querying state for blocks whose headers exist
+    /// but haven't been executed yet returns an error instead of stale data.
+    ///
+    /// This reproduces the scenario from bnb-chain/reth-bsc#273 where:
+    /// - Headers are downloaded up to block N (e.g., 83,599,716)
+    /// - Execution has only completed up to block M < N (e.g., 82,757,511)
+    /// - Querying state at block N should fail, not return stale data from block M
+    #[test]
+    fn test_staged_sync_state_query_rejects_unexecuted_blocks() -> eyre::Result<()> {
+        use reth_stages_types::{StageCheckpoint, StageId};
+        use reth_storage_api::StageCheckpointWriter;
+
+        let mut rng = generators::rng();
+        let total_blocks: usize = 10;
+        let executed_blocks: u64 = 5;
+
+        // Create provider with all blocks in database (no in-memory blocks = staged sync)
+        let (provider, database_blocks, _, _) = provider_with_random_blocks(
+            &mut rng,
+            total_blocks,
+            0, // no in-memory blocks, simulating staged sync
+            BlockRangeParams::default(),
+        )?;
+
+        // Set the Finish checkpoint to only cover the first `executed_blocks` blocks.
+        // This simulates the state where headers are downloaded for all blocks but
+        // execution has only completed up to `executed_blocks`.
+        {
+            let provider_rw = provider.database.database_provider_rw()?;
+            provider_rw
+                .save_stage_checkpoint(StageId::Finish, StageCheckpoint::new(executed_blocks))?;
+            provider_rw.commit()?;
+        }
+
+        // Verify: querying executed blocks should succeed
+        for block in &database_blocks[..=executed_blocks as usize] {
+            assert!(
+                provider.history_by_block_number(block.number).is_ok(),
+                "history_by_block_number should succeed for executed block {}",
+                block.number
+            );
+            assert!(
+                provider.history_by_block_hash(block.hash()).is_ok(),
+                "history_by_block_hash should succeed for executed block {}",
+                block.number
+            );
+        }
+
+        // Verify: querying unexecuted blocks should fail
+        for block in &database_blocks[(executed_blocks + 1) as usize..] {
+            assert!(
+                provider.history_by_block_number(block.number).is_err(),
+                "history_by_block_number should fail for unexecuted block {}",
+                block.number
+            );
+            assert!(
+                provider.history_by_block_hash(block.hash()).is_err(),
+                "history_by_block_hash should fail for unexecuted block {}",
+                block.number
+            );
+            // Also test the RPC entry point
+            assert!(
+                provider
+                    .state_by_block_number_or_tag(BlockNumberOrTag::Number(block.number))
+                    .is_err(),
+                "state_by_block_number_or_tag should fail for unexecuted block {}",
+                block.number
             );
         }
 
