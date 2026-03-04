@@ -2,6 +2,17 @@
 
 This guide provides comprehensive instructions for AI agents working on the Reth codebase. It covers the architecture, development workflows, and critical guidelines for effective contributions.
 
+## Relationship: reth-bsc and reth
+
+`bnb-chain/reth` (this repo) is the **core library layer** — a fork of upstream `paradigmxyz/reth` with BSC-specific modifications (Parlia consensus, TrieDB, system transactions, custom RPC, etc.).
+
+`bnb-chain/reth-bsc` is the **application layer** that depends on this repo. It is the actual BSC node binary that imports crates from `bnb-chain/reth` as git dependencies. Issues reported in `reth-bsc` (e.g., RPC returning wrong data during staged sync) often have root causes in this repo's provider/storage layer.
+
+When fixing issues from `reth-bsc`:
+1. Trace the call path from RPC through the provider layer in this repo
+2. Apply fixes here in `bnb-chain/reth`
+3. The `reth-bsc` project will pick up fixes via git dependency updates
+
 ## Project Overview
 
 Reth is a high-performance Ethereum execution client written in Rust, focusing on modularity, performance, and contributor-friendliness. The codebase is organized into well-defined crates with clear boundaries and responsibilities.
