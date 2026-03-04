@@ -470,7 +470,7 @@ impl<Tx, Err> PayloadHandle<Tx, Err> {
             .map_err(|_| ParallelStateRootError::Other("trie db prefetch result receiver dropped".to_string()))?;
 
         match result {
-            triedb_prefetcher::TrieDBPrefetchResult::PrefetchAccountResult(state) => Ok(Some(state)),
+            triedb_prefetcher::TrieDBPrefetchResult::PrefetchAccountResult(state, _) => Ok(Some(state)),
             triedb_prefetcher::TrieDBPrefetchResult::PrefetchStorageResult((_, _, _)) => {
                 panic!("received prefetch storage result, but expected prefetch account result");
             }

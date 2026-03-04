@@ -44,7 +44,7 @@ pub(super) enum TrieDBPrefetchMessage {
 /// Result type for TrieDB prefetch operations.
 pub(crate) enum TrieDBPrefetchResult {
     #[allow(dead_code)]
-    PrefetchAccountResult(Arc<TrieDBPrefetchState<PathDB>>),
+    PrefetchAccountResult(Arc<TrieDBPrefetchState<PathDB>>, u64),
     PrefetchStorageResult((B256, StateTrie<PathDB>, usize)),
 }
 
@@ -144,7 +144,7 @@ impl TrieDBStatePrefetcher {
         // Never block forever in miner/block-production paths: if the background task fails to
         // respond, we fall back to "no prefetch".
         match rx.recv_timeout(Duration::from_secs(2)).ok()? {
-            TrieDBPrefetchResult::PrefetchAccountResult(state) => Some(state),
+            TrieDBPrefetchResult::PrefetchAccountResult(state, _) => Some(state),
             TrieDBPrefetchResult::PrefetchStorageResult((_, _, _)) => None,
         }
     }
@@ -311,10 +311,14 @@ impl TrieDBPrefetchAccountTask {
 
         let difflayers = difflayers.map(Arc::new);
         let id = SecureTrieId::new(root_hash);
-        let account_trie = SecureTrieBuilder::new(path_db.clone())
+        let mut account_trie = SecureTrieBuilder::new(path_db.clone())
             .with_id(id)
             .build_with_difflayer(difflayers.as_deref())
             .map_err(|e| TrieDBPrefetchError::BuildAccountTrie(format!("Failed to build account trie for root hash: 0x{}, error: {}", hex::encode(root_hash), e)))?;
+
+        // Skip tracer tracking during prefetch — the tracer data is discarded
+        // at termination, so recording on_read/on_insert/on_delete is wasted work.
+        account_trie.trie_mut().set_skip_tracer(true);
 
         let prefetch_state = Box::new(TrieDBPrefetchState {
             account_trie,
@@ -582,7 +586,7 @@ impl TrieDBPrefetchAccountTask {
         if !self.storage_tasks.contains_key(&hashed_address) {
             let id = SecureTrieId::new(storage_root)
                 .with_owner(hashed_address);
-            let storage_trie = match SecureTrieBuilder::new(self.path_db.clone())
+            let mut storage_trie = match SecureTrieBuilder::new(self.path_db.clone())
                 .with_id(id)
                 .build_with_difflayer(self.difflayers.as_deref())
             {
@@ -598,6 +602,9 @@ impl TrieDBPrefetchAccountTask {
                     return;
                 }
             };
+
+            // Skip tracer tracking during prefetch — discarded at termination.
+            storage_trie.trie_mut().set_skip_tracer(true);
 
             let (state_message_tx, state_message_rx) = mpsc::channel();
             let (storage_task, storage_result_rx) = TrieDBPrefetchStorageTask::new(
