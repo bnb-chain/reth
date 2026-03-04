@@ -641,15 +641,11 @@ pub(super) struct TrieDBPrefetchStorageTask {
     /// Cancellation flag shared across all prefetch tasks.
     cancel_flag: Arc<AtomicBool>,
 
-    /// Number of update+hash-shaped preheats performed for this storage trie.
-    #[allow(dead_code)] // used when update-shaped preheat is enabled
-    storage_update_hash_preheat_runs: u64,
-
     /// Number of slots touched in this storage trie.
     touch_count: usize,
     /// Total time spent in touch operations.
     touch_duration: std::time::Duration,
-    /// Number of PrefetchSlotsWithValues messages received.
+    /// Number of PrefetchSlots messages received.
     messages_received: usize,
 }
 
@@ -668,7 +664,6 @@ impl TrieDBPrefetchStorageTask {
             state_message_rx,
             prefetch_result_tx,
             cancel_flag,
-            storage_update_hash_preheat_runs: 0,
             touch_count: 0,
             touch_duration: std::time::Duration::ZERO,
             messages_received: 0,
