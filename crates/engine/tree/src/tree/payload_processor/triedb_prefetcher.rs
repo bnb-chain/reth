@@ -479,11 +479,9 @@ impl TrieDBPrefetchAccountTask {
             total_prefetch_ms,
             "Account prefetch task finished"
         );
-        let evm_state_processed = self.evm_state_processed;
         let prefetch_state = Arc::new(*self.prefetch_state);
         if let Err(e) = self.prefetch_result_tx.send(TrieDBPrefetchResult::PrefetchAccountResult(
             prefetch_state,
-            evm_state_processed,
         )) {
             error!(
                 target: "engine::trie_db_prefetch",
