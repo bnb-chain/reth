@@ -211,7 +211,7 @@ where
                         .map_err(|e| ProviderError::other(e))?;
                 } else {
                     let triedb_hashed_post_state = hashed_state_clone.as_ref().to_triedb_hashed_post_state();
-                    let (new_root, difflayer) = triedb.intermediate_and_commit_hashed_post_state(
+                    let (new_root, difflayer) = triedb.intermediate_and_commit_hashed_post_state_v2(
                         latest_state_root, None, &triedb_hashed_post_state, None)
                         .map_err(|e| ProviderError::other(e))?;
                     if new_root != state_root {
