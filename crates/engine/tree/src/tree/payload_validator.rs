@@ -576,7 +576,7 @@ where
             .intermediate_and_commit_hashed_post_state(
                 parent_block.state_root(),
                 difflayers.as_ref(),
-                &trie_hashed_state,
+                trie_hashed_state.clone(),
                 prefetch_state,
             )
             .map_err(|e: TrieDBError| {
@@ -602,7 +602,7 @@ where
                 match triedb.intermediate_hashed_post_state(
                     parent_block.state_root(),
                     difflayers.as_ref(),
-                    &trie_hashed_state,
+                    trie_hashed_state.clone(),
                     None,
                 ) {
                     Ok(root) => Some(root),
