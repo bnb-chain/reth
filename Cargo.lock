@@ -6961,6 +6961,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "quick_cache"
+version = "0.6.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ada44a88ef953a3294f6eb55d2007ba44646015e18613d2f213016379203ef3"
+dependencies = [
+ "ahash",
+ "equivalent",
+ "hashbrown 0.16.1",
+ "parking_lot",
+]
+
+[[package]]
 name = "quinn"
 version = "0.11.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11374,7 +11386,7 @@ checksum = "48fd7bd8a6377e15ad9d42a8ec25371b94ddc67abe7c8b9127bec79bebaaae18"
 [[package]]
 name = "rust-eth-triedb"
 version = "0.1.0"
-source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?rev=cd5ce04#cd5ce047b358178f5a8dd49515ae8ef1d8b0a191"
+source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?rev=b5aee2aafc6527a223c018a8a3ee90ed5556e157#b5aee2aafc6527a223c018a8a3ee90ed5556e157"
 dependencies = [
  "alloy-primitives",
  "alloy-trie",
@@ -11395,7 +11407,7 @@ dependencies = [
 [[package]]
 name = "rust-eth-triedb-common"
 version = "0.1.0"
-source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?rev=cd5ce04#cd5ce047b358178f5a8dd49515ae8ef1d8b0a191"
+source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?rev=b5aee2aafc6527a223c018a8a3ee90ed5556e157#b5aee2aafc6527a223c018a8a3ee90ed5556e157"
 dependencies = [
  "alloy-primitives",
  "auto_impl",
@@ -11406,13 +11418,13 @@ dependencies = [
 [[package]]
 name = "rust-eth-triedb-pathdb"
 version = "0.1.0"
-source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?rev=cd5ce04#cd5ce047b358178f5a8dd49515ae8ef1d8b0a191"
+source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?rev=b5aee2aafc6527a223c018a8a3ee90ed5556e157#b5aee2aafc6527a223c018a8a3ee90ed5556e157"
 dependencies = [
  "alloy-primitives",
  "alloy-trie",
  "metrics",
- "mini-moka",
  "parking_lot",
+ "quick_cache",
  "reth-metrics",
  "rocksdb",
  "rust-eth-triedb-common",
@@ -11426,7 +11438,7 @@ dependencies = [
 [[package]]
 name = "rust-eth-triedb-state-trie"
 version = "0.1.0"
-source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?rev=cd5ce04#cd5ce047b358178f5a8dd49515ae8ef1d8b0a191"
+source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?rev=b5aee2aafc6527a223c018a8a3ee90ed5556e157#b5aee2aafc6527a223c018a8a3ee90ed5556e157"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
