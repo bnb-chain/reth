@@ -573,7 +573,7 @@ where
         let block_state_root: revm_primitives::FixedBytes<32> = block.state_root();
         let triedb_calc_start = Instant::now();
         let (new_root, difflayer) = triedb
-            .intermediate_and_commit_hashed_post_state_v2(
+            .intermediate_and_commit_hashed_post_state(
                 parent_block.state_root(),
                 difflayers.as_ref(),
                 &trie_hashed_state,
