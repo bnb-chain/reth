@@ -33,6 +33,26 @@ use tracing::{debug, error, trace};
 /// The size of proof targets chunk to spawn in one calculation.
 const MULTIPROOF_TARGETS_CHUNK_SIZE: usize = 10;
 
+/// Convert prewarm EvmState to [`MultiProofTargets`] (touched, non-selfdestructed accounts; changed slots only).
+pub(super) fn evm_state_to_multiproof_targets(state: EvmState) -> MultiProofTargets {
+    let mut targets = MultiProofTargets::with_capacity(state.len());
+    for (addr, account) in state {
+        if !account.is_touched() || account.is_selfdestructed() {
+            continue;
+        }
+        let mut storage_set =
+            B256Set::with_capacity_and_hasher(account.storage.len(), Default::default());
+        for (key, slot) in account.storage {
+            if !slot.is_changed() {
+                continue;
+            }
+            storage_set.insert(keccak256(B256::new(key.to_be_bytes())));
+        }
+        targets.insert(keccak256(addr), storage_set);
+    }
+    targets
+}
+
 /// A trie update that can be applied to sparse trie alongside the proofs for touched parts of the
 /// state.
 #[derive(Default, Debug)]
@@ -100,8 +120,8 @@ impl<Factory> MultiProofConfig<Factory> {
 /// Messages used internally by the multi proof task and by TrieDB prefetch (miner + fullnode).
 #[derive(Debug)]
 pub enum MultiProofMessage {
-    /// Prefetch proof targets
-    PrefetchProofs(MultiProofTargets),
+    /// Prefetch proof targets from prewarm (EVM state; prefetcher converts to targets as needed).
+    PrefetchProofs(EvmState),
     /// New state update from transaction execution with its source
     StateUpdate(StateChangeSource, EvmState),
     /// State update that can be applied to the sparse trie without any new proofs.
@@ -937,7 +957,7 @@ where
             trace!(target: "engine::root", "entering main channel receiving loop");
             match self.rx.recv() {
                 Ok(message) => match message {
-                    MultiProofMessage::PrefetchProofs(targets) => {
+                    MultiProofMessage::PrefetchProofs(state) => {
                         trace!(target: "engine::root", "processing MultiProofMessage::PrefetchProofs");
                         if first_update_time.is_none() {
                             // record the wait time
@@ -948,6 +968,7 @@ where
                             debug!(target: "engine::root", "Started state root calculation");
                         }
 
+                        let targets = evm_state_to_multiproof_targets(state);
                         let account_targets = targets.len();
                         let storage_targets =
                             targets.values().map(|slots| slots.len()).sum::<usize>();

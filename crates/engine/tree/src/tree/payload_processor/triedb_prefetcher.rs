@@ -9,7 +9,7 @@ use std::sync::{
 use std::time::Duration;
 
 use alloy_consensus::EMPTY_ROOT_HASH;
-use alloy_primitives::{hex, keccak256, map::B256Set, B256};
+use alloy_primitives::{hex, keccak256, map::B256Set, B256, U256};
 use rust_eth_triedb_common::{DiffLayers, TrieDatabase};
 use rust_eth_triedb_pathdb::PathDB;
 use rust_eth_triedb_state_trie::{SecureTrieId, SecureTrieBuilder, SecureTrieError, SecureTrieTrait, StateTrie};
@@ -49,7 +49,7 @@ pub(crate) enum TrieDBPrefetchResult {
     PrefetchStorageResult((B256, StateTrie<PathDB>, usize)),
 }
 
-/// Convert EVM state to TrieDB prefetch state.
+/// Convert EVM state to TrieDB prefetch state (all accounts and storage).
 pub fn evm_state_to_trie_db_prefetch_state(evm_state: &EvmState) -> MultiProofTargets {
     let mut state = MultiProofTargets::with_capacity(evm_state.len());
     for (address, account) in evm_state {
@@ -62,6 +62,138 @@ pub fn evm_state_to_trie_db_prefetch_state(evm_state: &EvmState) -> MultiProofTa
         state.insert(hashed_address, slots);
     }
     state
+}
+
+/// Convert prewarm EvmState to prefetch targets (touched, non-selfdestructed accounts; changed slots only).
+/// Same semantics as prewarm's multiproof_targets_from_state so prefetcher sees the same set.
+fn evm_state_to_prefetch_targets(state: EvmState) -> MultiProofTargets {
+    let mut targets = MultiProofTargets::with_capacity(state.len());
+    for (addr, account) in state {
+        if !account.is_touched() || account.is_selfdestructed() {
+            continue;
+        }
+        let mut storage_set =
+            B256Set::with_capacity_and_hasher(account.storage.len(), Default::default());
+        for (key, slot) in account.storage {
+            if !slot.is_changed() {
+                continue;
+            }
+            storage_set.insert(keccak256(B256::new(key.to_be_bytes())));
+        }
+        targets.insert(keccak256(addr), storage_set);
+    }
+    targets
+}
+
+/// Prewarm trie shape: best-effort simulation of trie update & hash from prewarm EvmState.
+/// Not accurate; for cache/trie warming only. Receives EvmState, updates internal trie with 4-way concurrency, computes hash.
+pub(super) struct PrewarmTrieShape {
+    /// Sender to feed EvmState from PrefetchProofs; receiver runs in a dedicated task.
+    pub(super) state_tx: Sender<EvmState>,
+}
+
+impl std::fmt::Debug for PrewarmTrieShape {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PrewarmTrieShape").finish_non_exhaustive()
+    }
+}
+
+const PREWARM_TRIE_COUNT: usize = 4;
+
+/// Apply a full EvmState to a single trie: account CRUD (delete/touch) and storage slot update/delete for changed slots.
+fn apply_state_to_trie(trie: &mut StateTrie<PathDB>, state: EvmState) {
+    for (addr, account) in state {
+        let hashed_addr = keccak256(addr.as_slice());
+        if account.is_selfdestructed() {
+            let _ = trie.delete_account_with_hash_state(hashed_addr);
+            continue;
+        }
+        if account.is_touched() {
+            let _ = trie.touch_account_with_hash_state(hashed_addr);
+        }
+        // Apply storage slot changes: update or delete per changed slot.
+        for (key, slot) in account.storage.iter() {
+            if !slot.is_changed() {
+                continue;
+            }
+            let hashed_key = keccak256(B256::new(key.to_be_bytes()));
+            let present: U256 = slot.present_value().into();
+            if present == U256::ZERO {
+                let _ = trie.delete_storage_with_hash_state(hashed_addr, hashed_key);
+            } else {
+                let _ = trie.update_storage_u256_with_hash_state(hashed_addr, hashed_key, present);
+            }
+        }
+    }
+}
+
+/// Starts 4 independent prewarm tasks and 1 dispatcher. Each EvmState is routed to exactly one task by counter % 4.
+/// Returns `Ok(())` and the caller keeps `prewarm_state_tx`; tasks are spawned via `executor`.
+///
+/// Shutdown: when `prewarm_state_tx` is dropped (handle drop), the dispatcher's `recv()` returns
+/// and it exits; dropping the 4 out senders causes the 4 runners' `recv()` to return and exit.
+/// Channels are unbounded; slow runners can cause queue buildup (memory vs throughput trade-off).
+fn start_prewarm_trie_shape(
+    root_hash: B256,
+    path_db: PathDB,
+    difflayers: Option<DiffLayers>,
+    prewarm_state_rx: Receiver<EvmState>,
+    cancel_flag: Arc<AtomicBool>,
+    executor: &WorkloadExecutor,
+) -> Result<(), TrieDBPrefetchError> {
+    let difflayers = difflayers.map(Arc::new);
+    let id = SecureTrieId::new(root_hash);
+    let build_one = || {
+        SecureTrieBuilder::new(path_db.clone())
+            .with_id(id.clone())
+            .build_with_difflayer(difflayers.as_deref())
+            .map_err(|e| TrieDBPrefetchError::BuildAccountTrie(format!("prewarm trie: {}", e)))
+    };
+    let t0 = build_one()?;
+    let t1 = build_one()?;
+    let t2 = build_one()?;
+    let t3 = build_one()?;
+
+    let (tx0, rx0) = mpsc::channel();
+    let (tx1, rx1) = mpsc::channel();
+    let (tx2, rx2) = mpsc::channel();
+    let (tx3, rx3) = mpsc::channel();
+    let out_txs = [tx0, tx1, tx2, tx3];
+
+    // Dispatcher: receive from single channel, route each state to one of 4 by counter % 4.
+    let cancel = cancel_flag.clone();
+    let exec_d = executor.clone();
+    exec_d.spawn_blocking(move || {
+        let mut counter: u64 = 0;
+        while !cancel.load(Ordering::Relaxed) {
+            let Ok(state) = prewarm_state_rx.recv() else { break };
+            let idx = (counter % PREWARM_TRIE_COUNT as u64) as usize;
+            counter = counter.wrapping_add(1);
+            if out_txs[idx].send(state).is_err() {
+                break;
+            }
+        }
+    });
+
+    // Four independent runners: each has one trie and one receiver; applies full state, then hash().
+    let run_one = |mut trie: StateTrie<PathDB>, state_rx: Receiver<EvmState>, cancel: Arc<AtomicBool>| {
+        while !cancel.load(Ordering::Relaxed) {
+            let Ok(state) = state_rx.recv() else { break };
+            apply_state_to_trie(&mut trie, state);
+            let _ = trie.hash();
+        }
+    };
+
+    let c0 = cancel_flag.clone();
+    let c1 = cancel_flag.clone();
+    let c2 = cancel_flag.clone();
+    let c3 = cancel_flag.clone();
+    executor.spawn_blocking(move || run_one(t0, rx0, c0));
+    executor.spawn_blocking(move || run_one(t1, rx1, c1));
+    executor.spawn_blocking(move || run_one(t2, rx2, c2));
+    executor.spawn_blocking(move || run_one(t3, rx3, c3));
+
+    Ok(())
 }
 
 /// Unified handle for TrieDB prefetch used by both fullnode and miner.
@@ -85,6 +217,10 @@ struct TrieDBPrefetchHandleInner {
     cancel_flag: Arc<AtomicBool>,
     /// Clone of the multi_proof sender; dropped in finish()/before recv_result so forwarder gets RecvError and sends PrefetchFinished.
     multi_proof_tx: Mutex<Option<Sender<MultiProofMessage>>>,
+    /// Optional prewarm trie shape; receives a copy of PrefetchProofs(EvmState) for best-effort trie/hash prewarm.
+    /// Kept only for drop order: when the handle is dropped this drops `state_tx`, closing the channel so the 5 prewarm tasks exit.
+    #[allow(dead_code)]
+    prewarm_trie_shape: Option<PrewarmTrieShape>,
 }
 
 impl TrieDBPrefetchHandle {
@@ -99,9 +235,31 @@ impl TrieDBPrefetchHandle {
         difflayers: Option<DiffLayers>,
         executor: WorkloadExecutor,
     ) -> Result<(Self, Sender<MultiProofMessage>), TrieDBPrefetchError> {
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let (prewarm_state_tx, prewarm_state_rx) = mpsc::channel();
+        let prewarm_trie_shape = match start_prewarm_trie_shape(
+            root_hash,
+            path_db.clone(),
+            difflayers.clone(),
+            prewarm_state_rx,
+            cancel_flag.clone(),
+            &executor,
+        ) {
+            Ok(()) => Some(PrewarmTrieShape {
+                state_tx: prewarm_state_tx,
+            }),
+            Err(e) => {
+                trace!(
+                    target: "engine::trie_db_prefetch",
+                    %e,
+                    "prewarm trie shape not started (best-effort)"
+                );
+                None
+            }
+        };
+
         let spawn_exec = executor.clone();
         let (state_tx, state_rx) = mpsc::channel();
-        let cancel_flag = Arc::new(AtomicBool::new(false));
 
         let (account_task, prefetch_result_rx) = TrieDBPrefetchAccountTask::new(
             root_hash,
@@ -119,12 +277,19 @@ impl TrieDBPrefetchHandle {
         let (multi_proof_tx, message_rx) = mpsc::channel();
         let forward_state_tx = state_tx;
         let forward_cancel = cancel_flag.clone();
+
+        let forward_prewarm_tx = prewarm_trie_shape.as_ref().map(|p| p.state_tx.clone());
+
         spawn_exec.spawn_blocking(move || {
             loop {
                 match message_rx.recv() {
                     Ok(message) => {
                         match message {
-                            MultiProofMessage::PrefetchProofs(targets) => {
+                            MultiProofMessage::PrefetchProofs(state) => {
+                                if let Some(ref tx) = forward_prewarm_tx {
+                                    let _ = tx.send(state.clone());
+                                }
+                                let targets = evm_state_to_prefetch_targets(state);
                                 if forward_state_tx
                                     .send(TrieDBPrefetchMessage::PrefetchState(targets))
                                     .is_err()
@@ -163,6 +328,7 @@ impl TrieDBPrefetchHandle {
                 result_rx: Mutex::new(Some(prefetch_result_rx)),
                 cancel_flag,
                 multi_proof_tx: Mutex::new(Some(multi_proof_tx.clone())),
+                prewarm_trie_shape,
             }),
         };
         Ok((handle, multi_proof_tx))

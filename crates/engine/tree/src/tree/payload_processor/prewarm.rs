@@ -9,14 +9,12 @@ use crate::tree::{
     ExecutionEnv, StateProviderBuilder,
 };
 use alloy_evm::Database;
-use alloy_primitives::{keccak256, map::B256Set, B256};
 use metrics::{Gauge, Histogram};
 use reth_evm::{execute::ExecutableTxFor, ConfigureEvm, Evm, EvmFor, SpecFor};
 use reth_metrics::Metrics;
 use reth_primitives_traits::{NodePrimitives, SignedTransaction};
 use reth_provider::{BlockReader, StateProviderFactory, StateReader};
 use reth_revm::{database::StateProviderDatabase, db::BundleState, state::EvmState};
-use reth_trie::MultiProofTargets;
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -122,10 +120,10 @@ where
         });
     }
 
-    /// If configured and the tx returned proof targets, emit the targets the transaction produced
-    fn send_multi_proof_targets(&self, targets: Option<MultiProofTargets>) {
-        if let Some((proof_targets, to_multi_proof)) = targets.zip(self.to_multi_proof.as_ref()) {
-            let _ = to_multi_proof.send(MultiProofMessage::PrefetchProofs(proof_targets));
+    /// If configured, emit the evm state from the transaction so the prefetcher can convert as needed.
+    fn send_multi_proof_state(&self, state: Option<EvmState>) {
+        if let Some((state, to_multi_proof)) = state.zip(self.to_multi_proof.as_ref()) {
+            let _ = to_multi_proof.send(MultiProofMessage::PrefetchProofs(state));
         }
     }
 
@@ -170,9 +168,9 @@ where
                     // stop tx processing
                     self.ctx.terminate_execution.store(true, Ordering::Relaxed);
                 }
-                PrewarmTaskEvent::Outcome { proof_targets } => {
-                    // completed executing a set of transactions
-                    self.send_multi_proof_targets(proof_targets);
+                PrewarmTaskEvent::Outcome { state } => {
+                    // completed executing a set of transactions; prefetcher receives EvmState and converts to targets
+                    self.send_multi_proof_state(state);
                 }
                 PrewarmTaskEvent::Terminate { block_output } => {
                     trace!(target: "engine::tree::prewarm", "Received termination signal");
@@ -311,7 +309,7 @@ where
             // If the task was cancelled, stop execution, send an empty result to notify the task,
             // and exit.
             if terminate_execution.load(Ordering::Relaxed) {
-                let _ = sender.send(PrewarmTaskEvent::Outcome { proof_targets: None });
+                let _ = sender.send(PrewarmTaskEvent::Outcome { state: None });
                 break
             }
 
@@ -331,52 +329,14 @@ where
                 }
             };
             metrics.execution_duration.record(start.elapsed());
-
-            let (targets, storage_targets) = multiproof_targets_from_state(res.state);
-            metrics.prefetch_storage_targets.record(storage_targets as f64);
             metrics.total_runtime.record(start.elapsed());
 
-            let _ = sender.send(PrewarmTaskEvent::Outcome { proof_targets: Some(targets) });
+            let _ = sender.send(PrewarmTaskEvent::Outcome { state: Some(res.state) });
         }
 
         // send a message to the main task to flag that we're done
         let _ = done_tx.send(());
     }
-}
-
-/// Returns a set of [`MultiProofTargets`] and the total amount of storage targets, based on the
-/// given state.
-fn multiproof_targets_from_state(state: EvmState) -> (MultiProofTargets, usize) {
-    let mut targets = MultiProofTargets::with_capacity(state.len());
-    let mut storage_targets = 0;
-    for (addr, account) in state {
-        // if the account was not touched, or if the account was selfdestructed, do not
-        // fetch proofs for it
-        //
-        // Since selfdestruct can only happen in the same transaction, we can skip
-        // prefetching proofs for selfdestructed accounts
-        //
-        // See: https://eips.ethereum.org/EIPS/eip-6780
-        if !account.is_touched() || account.is_selfdestructed() {
-            continue
-        }
-
-        let mut storage_set =
-            B256Set::with_capacity_and_hasher(account.storage.len(), Default::default());
-        for (key, slot) in account.storage {
-            // do nothing if unchanged
-            if !slot.is_changed() {
-                continue
-            }
-
-            storage_set.insert(keccak256(B256::new(key.to_be_bytes())));
-        }
-
-        storage_targets += storage_set.len();
-        targets.insert(keccak256(addr), storage_set);
-    }
-
-    (targets, storage_targets)
 }
 
 /// The events the pre-warm task can handle.
@@ -389,10 +349,10 @@ pub(super) enum PrewarmTaskEvent {
         /// The final block state output.
         block_output: Option<BundleState>,
     },
-    /// The outcome of a pre-warm task
+    /// The outcome of a pre-warm task (EVM state; prefetcher converts to proof targets as needed).
     Outcome {
-        /// The prepared proof targets based on the evm state outcome
-        proof_targets: Option<MultiProofTargets>,
+        /// The evm state after executing a transaction
+        state: Option<EvmState>,
     },
     /// Finished executing all transactions
     FinishedTxExecution {
@@ -413,7 +373,8 @@ pub(crate) struct PrewarmMetrics {
     pub(crate) total_runtime: Histogram,
     /// A histogram of EVM execution duration per transaction prewarming
     pub(crate) execution_duration: Histogram,
-    /// A histogram for prefetch targets per transaction prewarming
+    /// A histogram for prefetch targets per transaction prewarming (reserved for recording when prefetch runs).
+    #[allow(dead_code)]
     pub(crate) prefetch_storage_targets: Histogram,
     /// A histogram of duration for cache saving
     pub(crate) cache_saving_duration: Gauge,
