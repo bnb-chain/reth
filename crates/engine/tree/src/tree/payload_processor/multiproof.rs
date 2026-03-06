@@ -97,9 +97,9 @@ impl<Factory> MultiProofConfig<Factory> {
     }
 }
 
-/// Messages used internally by the multi proof task.
+/// Messages used internally by the multi proof task and by TrieDB prefetch (miner + fullnode).
 #[derive(Debug)]
-pub(super) enum MultiProofMessage {
+pub enum MultiProofMessage {
     /// Prefetch proof targets
     PrefetchProofs(MultiProofTargets),
     /// New state update from transaction execution with its source
@@ -127,7 +127,7 @@ pub(super) enum MultiProofMessage {
 
 /// Message about completion of proof calculation for a specific state update
 #[derive(Debug)]
-pub(super) struct ProofCalculated {
+pub struct ProofCalculated {
     /// The index of this proof in the sequence of state updates
     sequence_number: u64,
     /// Sparse trie update

@@ -11,7 +11,6 @@ use crate::tree::{
 };
 use alloy_evm::{block::StateChangeSource, ToTxEnv};
 use alloy_primitives::B256;
-use executor::WorkloadExecutor;
 use multiproof::{SparseTrieUpdate, *};
 use parking_lot::RwLock;
 use prewarm::PrewarmMetrics;
@@ -48,13 +47,14 @@ use super::precompile_cache::PrecompileCacheMap;
 
 mod configured_sparse_trie;
 pub mod executor;
+pub use executor::WorkloadExecutor;
 pub mod multiproof;
 pub mod prewarm;
 pub mod sparse_trie;
 pub mod triedb_prefetcher;
 
 use configured_sparse_trie::ConfiguredSparseTrie;
-use triedb_prefetcher::TrieDBPrefetchHandle;
+use triedb_prefetcher::{TrieDBPrefetchError, TrieDBPrefetchHandle};
 
 /// Entrypoint for executing the payload.
 #[derive(Debug)]
@@ -238,7 +238,7 @@ where
             prewarm_handle,
             state_root: Some(state_root_rx),
             transactions: execution_rx,
-            trie_db_prefetch_result_rx: None,
+            trie_db_prefetch_handle: None,
         }
     }
 
@@ -261,15 +261,16 @@ where
             prewarm_handle,
             state_root: None,
             transactions: execution_rx,
-            trie_db_prefetch_result_rx: None,
+            trie_db_prefetch_handle: None,
         }
     }
 
     /// Spawn cache prewarming with triedb prefetcher.
     ///
     /// Returns a [`PayloadHandle`] to communicate with the task.
-    #[allow(dead_code)]
-    pub(super) fn spawn_cache_with_triedb_prefetcher<P, I: ExecutableTxIterator<Evm>>(
+    /// Used by fullnode validation and can be used by miner payload build to share the same
+    /// prewarm + TrieDB prefetcher logic.
+    pub fn spawn_cache_with_triedb_prefetcher<P, I: ExecutableTxIterator<Evm>>(
         &self,
         root_hash: B256,
         path_db: PathDB,
@@ -283,25 +284,70 @@ where
     {
         let (prewarm_rx, execution_rx) = self.spawn_tx_iterator(transactions);
 
-        let (to_multi_proof, rev_multi_proof) = channel();
+        let (prefetch_handle, to_multi_proof) =
+            TrieDBPrefetchHandle::new(root_hash, path_db, difflayers, self.executor.clone())
+                .expect("Failed to create TrieDBPrefetchHandle");
 
-        let prewarm_handle = self.spawn_caching_with(env, prewarm_rx, provider_builder, Some(to_multi_proof.clone()));
-
-        let (prefetch_handle, prefetch_result_rx) = TrieDBPrefetchHandle::new(
-            root_hash, path_db, difflayers, self.executor.clone(), rev_multi_proof)
-            .expect("Failed to create TrieDBPrefetchHandle");
-
-        self.executor.spawn_blocking(move || {
-            prefetch_handle.run();
-        });
+        let prewarm_handle = self.spawn_caching_with(
+            env,
+            prewarm_rx,
+            provider_builder,
+            Some(to_multi_proof.clone()),
+        );
 
         PayloadHandle {
             to_multi_proof: Some(to_multi_proof),
             prewarm_handle,
             state_root: None,
             transactions: execution_rx,
-            trie_db_prefetch_result_rx: Some(prefetch_result_rx),
+            trie_db_prefetch_handle: Some(prefetch_handle),
         }
+    }
+
+    /// Spawns only the prewarm task that reads txs from the given receiver and sends proof targets
+    /// to `to_multi_proof` (e.g. miner: push txs while executing, same prewarm path as fullnode).
+    pub fn spawn_prewarm_with_receiver<P, Tx>(
+        &self,
+        env: ExecutionEnv<Evm>,
+        transactions: mpsc::Receiver<Tx>,
+        provider_builder: StateProviderBuilder<N, P>,
+        to_multi_proof: Sender<MultiProofMessage>,
+    ) where
+        P: BlockReader + StateProviderFactory + StateReader + Clone + 'static,
+        Tx: ExecutableTxFor<Evm> + Send + 'static,
+    {
+        let _ = self.spawn_caching_with(env, transactions, provider_builder, Some(to_multi_proof));
+    }
+
+    /// Creates a unified TrieDB prefetch handle and spawns the prewarm task that reads txs from
+    /// the returned sender. Miner uses the same path as fullnode: prewarm → PrefetchProofs and
+    /// [`send_state_update`](TrieDBPrefetchHandle::send_state_update) from execution.
+    /// Returns `(handle, tx_sender)`. Miner should send [`WithTxEnv`] into `tx_sender`, use
+    /// `handle.send_state_update` in the state hook, drop `tx_sender` when done, then
+    /// `handle.finish()`.
+    pub fn new_miner_triedb_prefetcher_with_prewarm<P, Tx>(
+        &self,
+        root_hash: B256,
+        path_db: PathDB,
+        difflayers: Option<DiffLayers>,
+        env: ExecutionEnv<Evm>,
+        provider_builder: StateProviderBuilder<N, P>,
+    ) -> Result<
+        (
+            TrieDBPrefetchHandle,
+            mpsc::Sender<WithTxEnv<TxEnvFor<Evm>, Tx>>,
+        ),
+        TrieDBPrefetchError,
+    >
+    where
+        P: BlockReader + StateProviderFactory + StateReader + Clone + 'static,
+        Tx: ExecutableTxFor<Evm> + Send + 'static,
+    {
+        let (handle, multi_proof_tx) =
+            TrieDBPrefetchHandle::new(root_hash, path_db, difflayers, self.executor.clone())?;
+        let (tx_sender, tx_receiver) = mpsc::channel();
+        self.spawn_prewarm_with_receiver(env, tx_receiver, provider_builder, multi_proof_tx);
+        Ok((handle, tx_sender))
     }
 
     /// Spawns a task advancing transaction env iterator and streaming updates through a channel.
@@ -452,29 +498,26 @@ pub struct PayloadHandle<Tx, Err> {
     state_root: Option<mpsc::Receiver<Result<StateRootComputeOutcome, ParallelStateRootError>>>,
     /// Stream of block transactions
     transactions: mpsc::Receiver<Result<Tx, Err>>,
-    /// Receiver for the trie db prefetch results
-    trie_db_prefetch_result_rx: Option<mpsc::Receiver<triedb_prefetcher::TrieDBPrefetchResult>>,
+    /// TrieDB prefetch handle (fullnode path: recv_result to get prefetch state)
+    trie_db_prefetch_handle: Option<TrieDBPrefetchHandle>,
 }
 
 impl<Tx, Err> PayloadHandle<Tx, Err> {
-    /// Receives the trie db prefetch result
+    /// Receives the trie db prefetch result (fullnode path). Drops the multi_proof sender first
+    /// so the forwarder exits and sends PrefetchFinished, then waits for the result (2s timeout).
     ///
     /// # Panics
     ///
     /// If payload processing was started without background prefetch task.
-    pub fn triedb_preftch_result(&mut self) -> Result<Option<Arc<TrieDBPrefetchState<PathDB>>>, ParallelStateRootError> {
-        let result = self.trie_db_prefetch_result_rx
-            .take()
-            .expect("trie_db_prefetch_result_rx is None")
-            .recv()
-            .map_err(|_| ParallelStateRootError::Other("trie db prefetch result receiver dropped".to_string()))?;
-
-        match result {
-            triedb_prefetcher::TrieDBPrefetchResult::PrefetchAccountResult(state) => Ok(Some(state)),
-            triedb_prefetcher::TrieDBPrefetchResult::PrefetchStorageResult((_, _, _)) => {
-                panic!("received prefetch storage result, but expected prefetch account result");
-            }
-        }
+    pub fn triedb_preftch_result(
+        &mut self,
+    ) -> Result<Option<Arc<TrieDBPrefetchState<PathDB>>>, ParallelStateRootError> {
+        drop(self.to_multi_proof.take());
+        let handle = self
+            .trie_db_prefetch_handle
+            .as_mut()
+            .expect("trie_db_prefetch_handle is None");
+        Ok(handle.recv_result(std::time::Duration::from_secs(2)))
     }
 
     /// Awaits the state root

@@ -19,6 +19,7 @@ use reth_trie::MultiProofTargets;
 use tracing::{error, warn, info, trace};
 use rayon::prelude::*;
 
+use alloy_evm::block::StateChangeSource;
 use crate::tree::payload_processor::executor::WorkloadExecutor;
 use crate::tree::payload_processor::multiproof::MultiProofMessage;
 
@@ -63,33 +64,42 @@ pub fn evm_state_to_trie_db_prefetch_state(evm_state: &EvmState) -> MultiProofTa
     state
 }
 
-/// A direct TrieDB prefetcher that can be driven from `EvmState` updates (e.g. miner-side).
+/// Unified handle for TrieDB prefetch used by both fullnode and miner.
 ///
-/// This is a small public wrapper around the internal triedb prefetch tasks used by the engine.
-/// Unlike [`TrieDBPrefetchHandle`], this does **not** require wiring the multiproof channel; users
-/// can call [`TrieDBStatePrefetcher::on_state_update`] directly.
+/// Single entry point: all input is via [`MultiProofMessage`] on the channel returned from [`new`](Self::new).
+/// - **Prewarm path**: PrefetchProofs from prewarm task (or miner's prewarm sender).
+/// - **Execution path**: [`send_state_update`](Self::send_state_update) (miner state hook) or
+///   `StateUpdate` from fullnode's state hook over the same channel.
+///
+/// When the sender is dropped (or `FinishedStateUpdates` is sent), the forwarder sends
+/// `PrefetchFinished` and the account task produces the result. Use [`finish`](Self::finish)
+/// (miner) or [`recv_result`](Self::recv_result) (fullnode) to obtain it.
 #[derive(Debug, Clone)]
-pub struct TrieDBStatePrefetcher {
-    inner: Arc<TrieDBStatePrefetcherInner>,
+pub struct TrieDBPrefetchHandle {
+    inner: Arc<TrieDBPrefetchHandleInner>,
 }
 
 #[derive(Debug)]
-struct TrieDBStatePrefetcherInner {
-    state_tx: Sender<TrieDBPrefetchMessage>,
+struct TrieDBPrefetchHandleInner {
     result_rx: Mutex<Option<Receiver<TrieDBPrefetchResult>>>,
     cancel_flag: Arc<AtomicBool>,
+    /// Clone of the multi_proof sender; dropped in finish()/before recv_result so forwarder gets RecvError and sends PrefetchFinished.
+    multi_proof_tx: Mutex<Option<Sender<MultiProofMessage>>>,
 }
 
-impl TrieDBStatePrefetcher {
-    /// Creates and starts the prefetcher task(s).
+impl TrieDBPrefetchHandle {
+    /// Creates and starts the prefetcher: account task + forwarder loop.
+    /// Returns `(handle, multi_proof_sender)`. Wire prewarm to the sender; use
+    /// [`send_state_update`](Self::send_state_update) for execution (miner) or the same sender
+    /// in a state hook (fullnode). Drop the sender when done, then call [`finish`](Self::finish)
+    /// or [`recv_result`](Self::recv_result).
     pub fn new(
         root_hash: B256,
         path_db: PathDB,
         difflayers: Option<DiffLayers>,
-    ) -> Result<Self, TrieDBPrefetchError> {
-        let executor = WorkloadExecutor::default();
+        executor: WorkloadExecutor,
+    ) -> Result<(Self, Sender<MultiProofMessage>), TrieDBPrefetchError> {
         let spawn_exec = executor.clone();
-
         let (state_tx, state_rx) = mpsc::channel();
         let cancel_flag = Arc::new(AtomicBool::new(false));
 
@@ -102,163 +112,101 @@ impl TrieDBStatePrefetcher {
             cancel_flag.clone(),
         )?;
 
-        // Spawn the account task (which in turn spawns per-account storage tasks).
-        // This uses the internal workload executor's tokio runtime.
         spawn_exec.spawn_blocking(move || {
             account_task.run();
         });
 
-        Ok(Self {
-            inner: Arc::new(TrieDBStatePrefetcherInner {
-                state_tx,
+        let (multi_proof_tx, message_rx) = mpsc::channel();
+        let forward_state_tx = state_tx;
+        let forward_cancel = cancel_flag.clone();
+        spawn_exec.spawn_blocking(move || {
+            loop {
+                match message_rx.recv() {
+                    Ok(message) => {
+                        match message {
+                            MultiProofMessage::PrefetchProofs(targets) => {
+                                if forward_state_tx
+                                    .send(TrieDBPrefetchMessage::PrefetchState(targets))
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                            MultiProofMessage::StateUpdate(_, update) => {
+                                let targets = evm_state_to_trie_db_prefetch_state(&update);
+                                if forward_state_tx
+                                    .send(TrieDBPrefetchMessage::PrefetchState(targets))
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                            MultiProofMessage::FinishedStateUpdates => {
+                                forward_cancel.store(true, Ordering::Relaxed);
+                                let _ = forward_state_tx.send(TrieDBPrefetchMessage::PrefetchFinished());
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+                    Err(_) => {
+                        forward_cancel.store(true, Ordering::Relaxed);
+                        let _ = forward_state_tx.send(TrieDBPrefetchMessage::PrefetchFinished());
+                        break;
+                    }
+                }
+            }
+        });
+
+        let handle = Self {
+            inner: Arc::new(TrieDBPrefetchHandleInner {
                 result_rx: Mutex::new(Some(prefetch_result_rx)),
                 cancel_flag,
+                multi_proof_tx: Mutex::new(Some(multi_proof_tx.clone())),
             }),
-        })
+        };
+        Ok((handle, multi_proof_tx))
     }
 
-    /// Feed a state update into the prefetcher (typically called from an `OnStateHook`).
-    pub fn on_state_update(&self, update: &EvmState) {
+    /// Feeds a state update into the prefetcher (miner state hook). Equivalent to sending
+    /// `MultiProofMessage::StateUpdate(Execution, state)` on the multi_proof channel.
+    pub fn send_state_update(&self, update: &EvmState) {
         if self.inner.cancel_flag.load(Ordering::Relaxed) {
             return;
         }
-
-        let targets = evm_state_to_trie_db_prefetch_state(update);
-        if let Err(e) = self.inner.state_tx.send(TrieDBPrefetchMessage::PrefetchState(targets)) {
-            warn!(
-                target: "engine::trie_db_prefetch",
-                "TrieDBStatePrefetcher failed to send prefetch targets: {e:?}"
-            );
+        if let Ok(guard) = self.inner.multi_proof_tx.lock() {
+            if let Some(tx) = guard.as_ref() {
+                let _ = tx.send(MultiProofMessage::StateUpdate(
+                    StateChangeSource::Transaction(0),
+                    update.clone(),
+                ));
+            }
         }
     }
 
-    /// Finishes the prefetcher and returns the produced prefetch state, if available.
-    ///
-    /// This will signal all tasks to stop and then block until the final `PrefetchAccountResult`
-    /// is received (or the channel is dropped).
+    /// Finishes and returns the prefetch state (miner path). Drops the multi_proof sender so the
+    /// forwarder exits and sends PrefetchFinished, then waits up to 2s for the result.
     pub fn finish(self) -> Option<Arc<TrieDBPrefetchState<PathDB>>> {
         self.inner.cancel_flag.store(true, Ordering::Relaxed);
-        let _ = self.inner.state_tx.send(TrieDBPrefetchMessage::PrefetchFinished());
-
+        drop(self.inner.multi_proof_tx.lock().ok()?.take());
         let rx = self.inner.result_rx.lock().ok()?.take()?;
-        // Never block forever in miner/block-production paths: if the background task fails to
-        // respond, we fall back to "no prefetch".
         match rx.recv_timeout(Duration::from_secs(2)).ok()? {
             TrieDBPrefetchResult::PrefetchAccountResult(state) => Some(state),
             TrieDBPrefetchResult::PrefetchStorageResult((_, _, _)) => None,
         }
     }
-}
 
-/// Handle for TrieDB prefetch operations.
-#[allow(dead_code)]
-pub(super) struct TrieDBPrefetchHandle {
-    /// Executor for the task.
-    executor: WorkloadExecutor,
-    /// Receiver for the multi proof messages from executer evm.
-    message_rx: Receiver<MultiProofMessage>,
-    /// Sender for the trie db prefetch messages to account task.
-    state_message_tx: Sender<TrieDBPrefetchMessage>,
-    /// Cancellation flag shared across all prefetch tasks.
-    cancel_flag: Arc<AtomicBool>,
-}
-
-impl TrieDBPrefetchHandle {
-    #[allow(dead_code)]
-    pub(super) fn new(
-        root_hash: B256,
-        path_db: PathDB,
-        difflayers: Option<DiffLayers>,
-        executor: WorkloadExecutor,
-        message_rx: Receiver<MultiProofMessage>) ->
-        Result<(Self, Receiver<TrieDBPrefetchResult>), TrieDBPrefetchError> {
-
-        // Create the channel for the trie db prefetch messages to account task.
-        let (state_message_tx, state_message_rx) = mpsc::channel();
-
-        // Create a shared cancellation flag for all prefetch tasks.
-        let cancel_flag = Arc::new(AtomicBool::new(false));
-
-        // Create the account task.
-        let (account_task, prefetch_result_rx) = TrieDBPrefetchAccountTask::new(
-            root_hash,
-            path_db,
-            difflayers,
-            executor.clone(),
-            state_message_rx,
-            cancel_flag.clone(),
-        )?;
-
-        // Create the handle for the trie db prefetch task.
-        let handle = Self {
-            executor,
-            message_rx,
-            state_message_tx,
-            cancel_flag,
-        };
-
-        // Spawn the account task.
-        handle.executor.spawn_blocking(move || {
-            account_task.run();
-        });
-
-        return Ok((handle, prefetch_result_rx));
-    }
-
-    #[allow(dead_code)]
-    pub(super) fn run(self) {
-        loop {
-            match self.message_rx.recv() {
-                Ok(message) => {
-                    match message {
-                        MultiProofMessage::PrefetchProofs(targets) => {
-                            if let Err(e) = self.state_message_tx.send(TrieDBPrefetchMessage::PrefetchState(targets)) {
-                                error!(
-                                    target: "engine::trie_db_prefetch",
-                                    "Triedb prefetch han failed to send prefetch state message(prefetch proofs) to account task: {:?}", e.to_string()
-                                );
-                            }
-                        }
-                        MultiProofMessage::StateUpdate(_, update) => {
-                            let state = evm_state_to_trie_db_prefetch_state(&update);
-                            if let Err(e) = self.state_message_tx.send(TrieDBPrefetchMessage::PrefetchState(state)) {
-                                error!(
-                                    target: "engine::trie_db_prefetch",
-                                    "Triedb prefetch handle failed to send prefetch state message(state update) to account task: {:?}", e.to_string()
-                                );
-                            }
-                        }
-                        MultiProofMessage::FinishedStateUpdates => {
-                            // Set cancellation flag to immediately stop all tasks
-                            self.cancel_flag.store(true, Ordering::Relaxed);
-                            // Send PrefetchFinished message to account task
-                            if let Err(e) = self.state_message_tx.send(TrieDBPrefetchMessage::PrefetchFinished()) {
-                                trace!(
-                                    target: "engine::trie_db_prefetch",
-                                    "Triedb prefetch handle failed to send prefetch state finished message to account task: {:?}", e.to_string()
-                                );
-                            }
-                            break;
-                        }
-                        _ => {
-                            warn!(
-                                target: "engine::trie_db_prefetch",
-                                "Triedb prefetch task received unexpected message type: {:?}",
-                                std::any::type_name_of_val(&message)
-                            );
-                        }
-                    }
-                }
-                Err(RecvError) => {
-                    // Channel closed - this happens when all Senders are dropped
-                    // This is expected when the sender is closed intentionally
-                    error!(
-                        target: "engine::trie_db_prefetch",
-                        "Triedb prefetch task message channel closed, ending task"
-                    );
-                    break;
-                }
-            }
+    /// Receives the prefetch result (fullnode path). Caller must drop the PayloadHandle's
+    /// to_multi_proof before calling this so the forwarder exits and sends PrefetchFinished.
+    pub fn recv_result(
+        &mut self,
+        timeout: Duration,
+    ) -> Option<Arc<TrieDBPrefetchState<PathDB>>> {
+        drop(self.inner.multi_proof_tx.lock().ok()?.take());
+        let rx = self.inner.result_rx.lock().ok()?.take()?;
+        match rx.recv_timeout(timeout).ok()? {
+            TrieDBPrefetchResult::PrefetchAccountResult(state) => Some(state),
+            TrieDBPrefetchResult::PrefetchStorageResult((_, _, _)) => None,
         }
     }
 }
