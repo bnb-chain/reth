@@ -278,7 +278,7 @@ impl TrieDBPrefetchHandle {
         let forward_state_tx = state_tx;
         let forward_cancel = cancel_flag.clone();
 
-        let forward_prewarm_tx = prewarm_trie_shape.as_ref().map(|p| p.state_tx.clone());
+        let _forward_prewarm_tx = prewarm_trie_shape.as_ref().map(|p| p.state_tx.clone());
 
         spawn_exec.spawn_blocking(move || {
             loop {
@@ -286,9 +286,9 @@ impl TrieDBPrefetchHandle {
                     Ok(message) => {
                         match message {
                             MultiProofMessage::PrefetchProofs(state) => {
-                                if let Some(ref tx) = forward_prewarm_tx {
-                                    let _ = tx.send(state.clone());
-                                }
+                                // if let Some(ref tx) = forward_prewarm_tx {
+                                //     let _ = tx.send(state.clone());
+                                // }
                                 let targets = evm_state_to_prefetch_targets(state);
                                 if forward_state_tx
                                     .send(TrieDBPrefetchMessage::PrefetchState(targets))
