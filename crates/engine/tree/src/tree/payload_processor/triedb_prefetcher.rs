@@ -721,15 +721,6 @@ impl TrieDBPrefetchStorageTask {
         {
             Ok(mut trie) => {
                 trie.trie_mut().set_skip_tracer(true);
-                // Batch-resolve first-level children so subsequent slot touches
-                // hit in-memory nodes instead of individual DB reads.
-                if let Err(e) = trie.trie_mut().eager_resolve_root_children() {
-                    error!(
-                        target: "engine::trie_db_prefetch",
-                        "Failed to eager-resolve root children for address 0x{:x}: {:?}",
-                        self.hashed_address, e
-                    );
-                }
                 self.storage_trie = Some(trie);
             }
             Err(e) => {
