@@ -481,7 +481,12 @@ where
         } else {
             ensure_ok!(self.execute_block(&state_provider, env, &input, &mut handle))
         };
-        timings.execute_block = Some(execute_start.elapsed());
+        let exec_duration = execute_start.elapsed();
+        timings.execute_block = Some(exec_duration);
+        self.metrics
+            .block_validation
+            .triedb_block_exec_duration
+            .record(exec_duration.as_secs_f64());
         // after executing the block we can stop executing transactions
         let stop_prewarm_start = Instant::now();
         handle.stop_prewarming_execution();
@@ -581,7 +586,12 @@ where
                 );
                 InsertPayloadError::<N::Block>::from(err)
             })?;
-        timings.triedb_calc_root_and_commit = Some(triedb_calc_start.elapsed());
+        let trie_root_duration = triedb_calc_start.elapsed();
+        timings.triedb_calc_root_and_commit = Some(trie_root_duration);
+        self.metrics
+            .block_validation
+            .triedb_block_trie_root_duration
+            .record(trie_root_duration.as_secs_f64());
         self.metrics
             .block_validation
             .triedb_validate_duration

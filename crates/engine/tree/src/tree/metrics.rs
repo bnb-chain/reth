@@ -177,6 +177,12 @@ pub(crate) struct BlockValidationMetrics {
     pub(crate) payload_validation_duration: Gauge,
     /// Histogram of payload validation latency
     pub(crate) payload_validation_histogram: Histogram,
+    /// Block execution duration in seconds (EVM tx execution only, excluding trie root).
+    /// Mirrors `bsc.miner.block_exec_duration_seconds` for fullnode comparison.
+    pub(crate) triedb_block_exec_duration: Histogram,
+    /// Trie root computation duration in seconds (intermediate_and_commit_hashed_post_state).
+    /// Mirrors `bsc.miner.block_trie_root_duration_seconds` for fullnode comparison.
+    pub(crate) triedb_block_trie_root_duration: Histogram,
     /// triedb prefetch duration
     pub(crate) triedb_prefetch_duration: Histogram,
     /// triedb validate duration
