@@ -171,7 +171,7 @@ impl TrieDBPrefetchHandle {
         difflayers: Option<DiffLayers>,
         executor: WorkloadExecutor,
         message_rx: Receiver<MultiProofMessage>) ->
-        Result<(Self, Receiver<TrieDBPrefetchResult>), TrieDBPrefetchError> {
+        Result<(Self, Receiver<TrieDBPrefetchResult>, Sender<TrieDBPrefetchMessage>), TrieDBPrefetchError> {
 
         // Create the channel for the trie db prefetch messages to account task.
         let (state_message_tx, state_message_rx) = mpsc::channel();
@@ -189,6 +189,10 @@ impl TrieDBPrefetchHandle {
             cancel_flag.clone(),
         )?;
 
+        // Expose a direct sender to AccountTask so callers (e.g. real-execution state hook) can
+        // bypass the TrieDBPrefetchHandle relay and deliver PrefetchState in 1 hop.
+        let direct_account_tx = state_message_tx.clone();
+
         // Create the handle for the trie db prefetch task.
         let handle = Self {
             executor,
@@ -202,7 +206,7 @@ impl TrieDBPrefetchHandle {
             account_task.run();
         });
 
-        return Ok((handle, prefetch_result_rx));
+        return Ok((handle, prefetch_result_rx, direct_account_tx));
     }
 
     #[allow(dead_code)]

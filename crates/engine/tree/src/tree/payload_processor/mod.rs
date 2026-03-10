@@ -239,6 +239,7 @@ where
             state_root: Some(state_root_rx),
             transactions: execution_rx,
             trie_db_prefetch_result_rx: None,
+            trie_db_direct_account_tx: None,
         }
     }
 
@@ -262,6 +263,7 @@ where
             state_root: None,
             transactions: execution_rx,
             trie_db_prefetch_result_rx: None,
+            trie_db_direct_account_tx: None,
         }
     }
 
@@ -285,9 +287,15 @@ where
 
         let (to_multi_proof, rev_multi_proof) = channel();
 
-        let prewarm_handle = self.spawn_caching_with(env, prewarm_rx, provider_builder, Some(to_multi_proof.clone()));
+        // Prewarm is wired to `None` here intentionally: prewarm's role is to warm the EVM
+        // state cache (account values, storage values), not trie nodes.  Routing prewarm updates
+        // through the trie-prefetch channel caused the single-threaded `TrieDBPrefetchHandle`
+        // relay to become a bottleneck, delaying real-execution state updates from reaching
+        // `AccountTask`.  Real-execution state updates are now delivered via a direct 1-hop
+        // sender (`trie_db_direct_account_tx`), matching the miner's prefetch path.
+        let prewarm_handle = self.spawn_caching_with(env, prewarm_rx, provider_builder, None);
 
-        let (prefetch_handle, prefetch_result_rx) = TrieDBPrefetchHandle::new(
+        let (prefetch_handle, prefetch_result_rx, direct_account_tx) = TrieDBPrefetchHandle::new(
             root_hash, path_db, difflayers, self.executor.clone(), rev_multi_proof)
             .expect("Failed to create TrieDBPrefetchHandle");
 
@@ -301,6 +309,7 @@ where
             state_root: None,
             transactions: execution_rx,
             trie_db_prefetch_result_rx: Some(prefetch_result_rx),
+            trie_db_direct_account_tx: Some(direct_account_tx),
         }
     }
 
@@ -454,6 +463,12 @@ pub struct PayloadHandle<Tx, Err> {
     transactions: mpsc::Receiver<Result<Tx, Err>>,
     /// Receiver for the trie db prefetch results
     trie_db_prefetch_result_rx: Option<mpsc::Receiver<triedb_prefetcher::TrieDBPrefetchResult>>,
+    /// Direct sender to AccountTask (1-hop).
+    ///
+    /// When set, `state_hook()` sends converted `PrefetchState` directly to `AccountTask`,
+    /// bypassing the `TrieDBPrefetchHandle` relay.  The `to_multi_proof` channel is still kept
+    /// alive so that its `StateHookSender` wrapper can deliver `FinishedStateUpdates` on drop.
+    trie_db_direct_account_tx: Option<mpsc::Sender<triedb_prefetcher::TrieDBPrefetchMessage>>,
 }
 
 impl<Tx, Err> PayloadHandle<Tx, Err> {
@@ -493,12 +508,28 @@ impl<Tx, Err> PayloadHandle<Tx, Err> {
     /// Returns a state hook to be used to send state updates to this task.
     ///
     /// If a multiproof task is spawned the hook will notify it about new states.
+    ///
+    /// When `trie_db_direct_account_tx` is set (triedb prefetch path), state updates from real
+    /// execution are converted and sent **directly** to `AccountTask` in 1 hop, bypassing the
+    /// `TrieDBPrefetchHandle` relay.  The `StateHookSender` wrapper around `to_multi_proof` is
+    /// still kept alive inside the closure so that `FinishedStateUpdates` is signalled to
+    /// `TrieDBPrefetchHandle` when the hook is dropped (end of block execution), which in turn
+    /// terminates `AccountTask` cleanly.
     pub fn state_hook(&self) -> impl OnStateHook {
-        // convert the channel into a `StateHookSender` that emits an event on drop
+        // Always wrap to_multi_proof in StateHookSender so FinishedStateUpdates is sent on drop.
         let to_multi_proof = self.to_multi_proof.clone().map(StateHookSender::new);
+        let direct_account_tx = self.trie_db_direct_account_tx.clone();
 
         move |source: StateChangeSource, state: &EvmState| {
-            if let Some(sender) = &to_multi_proof {
+            if let Some(tx) = &direct_account_tx {
+                // Triedb direct path: convert and deliver in 1 hop to AccountTask.
+                // `to_multi_proof` (StateHookSender) is intentionally kept alive here but NOT
+                // used to send StateUpdate — it will fire FinishedStateUpdates on drop only.
+                let targets = triedb_prefetcher::evm_state_to_trie_db_prefetch_state(state);
+                let _ = tx.send(triedb_prefetcher::TrieDBPrefetchMessage::PrefetchState(targets));
+                let _ = &to_multi_proof;
+            } else if let Some(sender) = &to_multi_proof {
+                // Normal multiproof path (sparse trie state root or non-triedb case).
                 let _ = sender.send(MultiProofMessage::StateUpdate(source, state.clone()));
             }
         }
