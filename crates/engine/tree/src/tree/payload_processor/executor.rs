@@ -22,7 +22,14 @@ pub struct WorkloadExecutor {
 
 impl Default for WorkloadExecutor {
     fn default() -> Self {
-        Self { inner: WorkloadExecutorInner::new(rayon::ThreadPoolBuilder::new().build().unwrap()) }
+        Self {
+            inner: WorkloadExecutorInner::new(
+                rayon::ThreadPoolBuilder::new()
+                    .num_threads(default_workload_cpu_threads())
+                    .build()
+                    .unwrap(),
+            ),
+        }
     }
 }
 
@@ -65,6 +72,18 @@ struct WorkloadExecutorInner {
     rayon_pool: Arc<RayonPool>,
 }
 
+fn default_workload_cpu_threads() -> usize {
+    std::thread::available_parallelism()
+        .map(|num| ((num.get().saturating_add(3)) / 4).clamp(1, 8))
+        .unwrap_or(4)
+}
+
+fn default_max_blocking_threads() -> usize {
+    std::thread::available_parallelism()
+        .map(|num| num.get().clamp(4, 32))
+        .unwrap_or(16)
+}
+
 impl WorkloadExecutorInner {
     fn new(rayon_pool: rayon::ThreadPool) -> Self {
         fn get_runtime_handle() -> Handle {
@@ -75,6 +94,7 @@ impl WorkloadExecutorInner {
                 let rt = RT.get_or_init(|| {
                     Builder::new_multi_thread()
                         .enable_all()
+                        .max_blocking_threads(default_max_blocking_threads())
                         // Keep the threads alive for at least the block time, which is 12 seconds
                         // at the time of writing, plus a little extra.
                         //

@@ -154,12 +154,20 @@ where
 
         debug!(target: "provider::storage_writer", block_count = %blocks.len(), "Writing blocks and execution data to storage");
 
-        // Only get TrieDB instance if TrieDB is active
+        // Only get TrieDB instance if TrieDB is active.
+        // We batch the diff layer writes for the whole persisted range so RocksDB sees a single
+        // write batch instead of one commit per block.
         let mut triedb_opt = if is_triedb_active() {
             Some(get_global_triedb())
         } else {
             None
         };
+        let mut triedb_state = if let Some(ref triedb) = triedb_opt {
+            Some(triedb.latest_persist_state().map_err(|e| ProviderError::other(e))?)
+        } else {
+            None
+        };
+        let mut pending_difflayers = Vec::with_capacity(blocks.len());
 
         // TODO: Do performant / batched writes for each type of object
         // instead of a loop over all blocks,
@@ -178,22 +186,8 @@ where
         {
             let block_number = recovered_block.number();
             let state_root = recovered_block.state_root();
-            let hashed_state_clone = hashed_state.clone();
-
-            // Only check latest_persist_state if TrieDB is active
-            let latest_state_root_opt = if let Some(ref mut triedb) = triedb_opt {
-                let (latest_block_number, latest_state_root) = triedb.latest_persist_state()
-                    .map_err(|e| ProviderError::other(e))?;
-
-                if latest_block_number != block_number - 1 {
-                    return Err(ProviderError::Database(DatabaseError::Other(format!("latest_block_number != block_number - 1, latest_block_number={}, block_number={}", latest_block_number, block_number))));
-                }
-                Some(latest_state_root)
-            } else {
-                None
-            };
-
             let block_hash = recovered_block.hash();
+
             self.database()
                 .insert_block(Arc::unwrap_or_clone(recovered_block), StorageLocation::Both)?;
 
@@ -205,20 +199,46 @@ where
                 StorageLocation::StaticFiles,
             )?;
 
-            if let (Some(ref mut triedb), Some(latest_state_root)) = (triedb_opt.as_mut(), latest_state_root_opt) {
-                if difflayer.is_some() {
-                    triedb.flush(block_number, state_root, &difflayer)
-                        .map_err(|e| ProviderError::other(e))?;
+            if let Some((latest_block_number, latest_state_root)) = triedb_state.as_mut() {
+                if latest_block_number.saturating_add(1) != block_number {
+                    return Err(ProviderError::Database(DatabaseError::Other(format!(
+                        "latest_block_number + 1 != block_number, latest_block_number={}, block_number={}",
+                        latest_block_number, block_number
+                    ))));
+                }
+
+                if let Some(difflayer) = difflayer {
+                    pending_difflayers.push((block_number, state_root, Some(difflayer)));
+                    *latest_block_number = block_number;
+                    *latest_state_root = state_root;
                 } else {
-                    let triedb_hashed_post_state = hashed_state_clone.as_ref().to_triedb_hashed_post_state();
-                    let (new_root, difflayer) = triedb.intermediate_and_commit_hashed_post_state(
-                        latest_state_root, None, triedb_hashed_post_state.clone(), None)
+                    let triedb = triedb_opt
+                        .as_mut()
+                        .expect("triedb state exists only when triedb is active");
+                    let triedb_hashed_post_state = hashed_state.as_ref().to_triedb_hashed_post_state();
+                    let (new_root, difflayer) = triedb
+                        .intermediate_and_commit_hashed_post_state(
+                            *latest_state_root,
+                            None,
+                            triedb_hashed_post_state.clone(),
+                            None,
+                        )
                         .map_err(|e| ProviderError::other(e))?;
                     if new_root != state_root {
-                        return Err(ProviderError::Database(DatabaseError::Other(format!("write hashed state to triedb, block_number={}, new_root({:?}) != state_root({:?}), triedb_hashed_post_state={:?}, hashed_state={:?}, diff_storage_roots={:?}", block_number, new_root, state_root, triedb_hashed_post_state, hashed_state_clone, difflayer.as_ref().debug_diff_storage_roots()))));
+                        return Err(ProviderError::Database(DatabaseError::Other(format!(
+                            "write hashed state to triedb, block_number={}, new_root({:?}) != state_root({:?}), triedb_hashed_post_state={:?}, hashed_state={:?}, diff_storage_roots={:?}",
+                            block_number,
+                            new_root,
+                            state_root,
+                            triedb_hashed_post_state,
+                            hashed_state,
+                            difflayer.as_ref().debug_diff_storage_roots()
+                        ))));
                     }
-                    triedb.flush(block_number, new_root, &Some(difflayer))
-                        .map_err(|e| ProviderError::other(e))?;
+
+                    pending_difflayers.push((block_number, new_root, Some(difflayer)));
+                    *latest_block_number = block_number;
+                    *latest_state_root = new_root;
                 }
             } else {
                 // insert hashes and intermediate merkle nodes
@@ -227,6 +247,14 @@ where
                 self.database().write_trie_updates(
                     trie.as_ref().ok_or(ProviderError::MissingTrieUpdates(block_hash))?,
                 )?;
+            }
+        }
+
+        if let Some(ref mut triedb) = triedb_opt {
+            if !pending_difflayers.is_empty() {
+                triedb
+                    .flush_many(&pending_difflayers)
+                    .map_err(|e| ProviderError::other(e))?;
             }
         }
 
