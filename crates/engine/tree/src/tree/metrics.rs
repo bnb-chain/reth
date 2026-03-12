@@ -184,6 +184,7 @@ pub(crate) struct BlockValidationMetrics {
     /// Mirrors `bsc.miner.block_trie_root_duration_seconds` for fullnode comparison.
     pub(crate) triedb_block_trie_root_duration: Histogram,
     /// triedb prefetch duration
+    #[allow(dead_code)]
     pub(crate) triedb_prefetch_duration: Histogram,
     /// triedb validate duration
     pub(crate) triedb_validate_duration: Histogram,

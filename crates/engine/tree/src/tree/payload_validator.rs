@@ -39,6 +39,7 @@ use reth_provider::{
     DatabaseProviderFactory, ExecutionOutcome, HashedPostStateProvider, HeaderProvider,
     ProviderError, StateProvider, StateProviderFactory, StateReader, StateRootProvider,
 };
+use reth_revm::cached::CachedReads;
 use reth_revm::db::State;
 use reth_trie::{updates::TrieUpdates, HashedPostState, KeccakKeyHasher, TrieInput};
 use reth_trie_db::DatabaseHashedPostState;
@@ -296,18 +297,13 @@ where
             state_provider_builder: Option<std::time::Duration>,
             state_provider_build: Option<std::time::Duration>,
             sealed_header_by_hash: Option<std::time::Duration>,
-            spawn_cache_with_prefetcher: Option<std::time::Duration>,
-            cached_state_provider_wrap: Option<std::time::Duration>,
             execute_block: Option<std::time::Duration>,
-            stop_prewarming_execution: Option<std::time::Duration>,
             convert_to_block: Option<std::time::Duration>,
             validate_block_inner: Option<std::time::Duration>,
             validate_header_against_parent: Option<std::time::Duration>,
             validate_block_post_execution: Option<std::time::Duration>,
             hashed_post_state: Option<std::time::Duration>,
             validate_block_post_exec_with_hashed_state: Option<std::time::Duration>,
-            terminate_caching: Option<std::time::Duration>,
-            triedb_prefetch_wait: Option<std::time::Duration>,
             triedb_calc_root_and_commit: Option<std::time::Duration>,
             mismatch_diag_recompute_no_prefetch: Option<std::time::Duration>,
             mismatch_triedb_clean: Option<std::time::Duration>,
@@ -326,18 +322,13 @@ where
                     state_provider_builder: None,
                     state_provider_build: None,
                     sealed_header_by_hash: None,
-                    spawn_cache_with_prefetcher: None,
-                    cached_state_provider_wrap: None,
                     execute_block: None,
-                    stop_prewarming_execution: None,
                     convert_to_block: None,
                     validate_block_inner: None,
                     validate_header_against_parent: None,
                     validate_block_post_execution: None,
                     hashed_post_state: None,
                     validate_block_post_exec_with_hashed_state: None,
-                    terminate_caching: None,
-                    triedb_prefetch_wait: None,
                     triedb_calc_root_and_commit: None,
                     mismatch_diag_recompute_no_prefetch: None,
                     mismatch_triedb_clean: None,
@@ -365,10 +356,7 @@ where
                     state_provider_builder_ms = self.state_provider_builder.map(|d| d.as_millis()),
                     state_provider_build_ms = self.state_provider_build.map(|d| d.as_millis()),
                     sealed_header_by_hash_ms = self.sealed_header_by_hash.map(|d| d.as_millis()),
-                    spawn_cache_with_prefetcher_ms = self.spawn_cache_with_prefetcher.map(|d| d.as_millis()),
-                    cached_state_provider_wrap_ms = self.cached_state_provider_wrap.map(|d| d.as_millis()),
                     execute_block_ms = self.execute_block.map(|d| d.as_millis()),
-                    stop_prewarming_execution_ms = self.stop_prewarming_execution.map(|d| d.as_millis()),
                     convert_to_block_ms = self.convert_to_block.map(|d| d.as_millis()),
                     validate_block_inner_ms = self.validate_block_inner.map(|d| d.as_millis()),
                     validate_header_against_parent_ms = self.validate_header_against_parent.map(|d| d.as_millis()),
@@ -376,8 +364,6 @@ where
                     hashed_post_state_ms = self.hashed_post_state.map(|d| d.as_millis()),
                     validate_block_post_exec_with_hashed_state_ms =
                         self.validate_block_post_exec_with_hashed_state.map(|d| d.as_millis()),
-                    terminate_caching_ms = self.terminate_caching.map(|d| d.as_millis()),
-                    triedb_prefetch_wait_ms = self.triedb_prefetch_wait.map(|d| d.as_millis()),
                     triedb_calc_root_and_commit_ms = self.triedb_calc_root_and_commit.map(|d| d.as_millis()),
                     mismatch_diag_recompute_no_prefetch_ms =
                         self.mismatch_diag_recompute_no_prefetch.map(|d| d.as_millis()),
@@ -414,7 +400,6 @@ where
         let triedb_start = Instant::now();
         let mut triedb = get_global_triedb();
         timings.get_global_triedb = Some(triedb_start.elapsed());
-        let path_db = triedb.get_mut_path_db_ref();
 
         trace!(target: "engine::tree", block=?block_num_hash, parent=?parent_hash, "Fetching block state provider");
         let provider_builder_start = Instant::now();
@@ -446,17 +431,20 @@ where
         };
         timings.sealed_header_by_hash = Some(parent_header_start.elapsed());
 
-        // ── Phase 1 + 2: Trie MokaCache prewarm (starts before main execution) ─────────────────
-        // Phase 1 (blocking): speculatively execute the block's exact tx list across
-        // PREWARM_WORKERS threads to extract TrieDBHashedPostState for each worker.
-        // Phase 2 (background): spawn threads calling intermediate_hashed_post_state to warm the
-        // global PathDB MokaCache concurrently with the main validation steps below.
-        // Handles are joined before intermediate_and_commit_hashed_post_state (see below).
+        // ── EVM state cache + MokaCache prewarm (two-phase, mirrors miner payload_prewarm) ──────
+        // Phase 1 (blocking): speculatively execute the block's exact tx list across parallel
+        //   workers.  Populates CachedReads → used immediately in execute_block to eliminate
+        //   cold EVM state reads.
+        // Phase 2 (background): trie traversal threads warm the global PathDB MokaCache
+        //   concurrently with execute_block.  Handles are joined BEFORE root computation to
+        //   guarantee the MokaCache is fully warm when intermediate_and_commit_hashed_post_state
+        //   runs — identical contract to miner joining before finish_with_difflayer().
         let prewarm_txs: Vec<_> = match &input {
             BlockOrPayload::Block(block) => block.clone_transactions_recovered().collect(),
             BlockOrPayload::Payload(_) => Vec::new(),
         };
-        let trie_moka_prewarm_handles = crate::tree::block_prewarm::prewarm_block_trie_moka_cache(
+        let mut prewarm_cached_reads = CachedReads::default();
+        let trie_moka_prewarm_handles = crate::tree::block_prewarm::prewarm_block(
             &self.provider,
             &self.evm_config,
             parent_block.header(),
@@ -464,43 +452,47 @@ where
             parent_block.state_root(),
             difflayers.clone(),
             prewarm_txs,
+            &mut prewarm_cached_reads,
         );
-        // ── END prewarm launch ─────────────────────────────────────────────────────────────────
 
         let evm_env = self.evm_env_for(&input);
 
         let env = ExecutionEnv { evm_env, hash: input.hash(), parent_hash: input.parent_hash() };
 
+        // ── TrieDB trie-prefetcher (on_state_hook, original mechanism, unchanged) ─────────────
+        // spawn_triedb_prefetch_only sets up TrieDBPrefetchHandle WITHOUT PrewarmCacheTask.
+        // During execute_block the state_hook fires on every state update and delivers prefetch
+        // targets directly to AccountTask (1 hop), exactly as in the normal validation path.
+        // The prefetch result is consumed below before intermediate_and_commit_hashed_post_state.
+        let path_db = triedb.get_mut_path_db_ref().clone();
         let txs = self.tx_iterator_for(&input)?;
-        let spawn_handle_start = Instant::now();
-        let mut handle = self.payload_processor.spawn_cache_with_triedb_prefetcher(
+        let mut handle = self.payload_processor.spawn_triedb_prefetch_only(
             parent_block.state_root(),
-            path_db.clone(),
+            path_db,
             difflayers.clone(),
-            env.clone(),
             txs,
-            provider_builder,
         );
-        timings.spawn_cache_with_prefetcher = Some(spawn_handle_start.elapsed());
-
-        // Use cached state provider before executing, used in execution after prewarming threads
-        // complete
-        let cached_wrap_start = Instant::now();
-        let state_provider = CachedStateProvider::new_with_caches(
-            state_provider,
-            handle.caches(),
-            handle.cache_metrics(),
-        );
-        timings.cached_state_provider_wrap = Some(cached_wrap_start.elapsed());
 
         let execute_start = Instant::now();
         let output = if self.config.state_provider_metrics() {
             let state_provider = InstrumentedStateProvider::from_state_provider(&state_provider);
-            let output = ensure_ok!(self.execute_block(&state_provider, env, &input, &mut handle));
+            let output = ensure_ok!(self.execute_block(
+                &state_provider,
+                Some(prewarm_cached_reads),
+                env,
+                &input,
+                &mut handle
+            ));
             state_provider.record_total_latency();
             output
         } else {
-            ensure_ok!(self.execute_block(&state_provider, env, &input, &mut handle))
+            ensure_ok!(self.execute_block(
+                &state_provider,
+                Some(prewarm_cached_reads),
+                env,
+                &input,
+                &mut handle
+            ))
         };
         let exec_duration = execute_start.elapsed();
         timings.execute_block = Some(exec_duration);
@@ -508,10 +500,6 @@ where
             .block_validation
             .triedb_block_exec_duration
             .record(exec_duration.as_secs_f64());
-        // after executing the block we can stop executing transactions
-        let stop_prewarm_start = Instant::now();
-        handle.stop_prewarming_execution();
-        timings.stop_prewarming_execution = Some(stop_prewarm_start.elapsed());
 
         let convert_start = Instant::now();
         let block = self.convert_to_block(input)?;
@@ -565,37 +553,17 @@ where
         }
         timings.validate_block_post_exec_with_hashed_state =
             Some(validate_with_hashed_state_start.elapsed());
-        // terminate prewarming task with good state output
-        let terminate_caching_start = Instant::now();
-        handle.terminate_caching(Some(output.state.clone()));
-        timings.terminate_caching = Some(terminate_caching_start.elapsed());
+        // Join Phase 2 trie prewarm handles before root computation to guarantee MokaCache is
+        // fully warm.  execute_block above consumed most of the wall-clock time, so these
+        // threads have typically already finished — the join is usually a no-op in practice.
+        for h in trie_moka_prewarm_handles {
+            let _ = h.join();
+        }
 
-        let prefetch_start = Instant::now();
-        let prefetch_state = match handle.triedb_preftch_result() {
-            Ok(state) => state,
-            Err(e) => {
-                warn!(
-                    target: "engine::tree",
-                    "Failed to get triedb prefetch result: {:?}, continuing without prefetcher",
-                    e
-                );
-                None
-            }
-        };
-        timings.triedb_prefetch_wait = Some(prefetch_start.elapsed());
-        let had_prefetch_state = prefetch_state.is_some();
-        self.metrics
-            .block_validation
-            .triedb_prefetch_duration
-            .record(prefetch_start.elapsed().as_secs_f64());
-
-        // ── Detach MokaCache prewarm threads (non-blocking) ────────────────────────────────
-        // Dropping handles detaches the threads; they continue running in the background,
-        // populating the shared PathDB MokaCache concurrently with root computation below.
-        // intermediate_and_commit_hashed_post_state accesses nodes progressively, so any node
-        // that was warmed before it is accessed is a cache hit — no need to wait for all threads.
-        drop(trie_moka_prewarm_handles);
-        // ── END detach ─────────────────────────────────────────────────────────────────────
+        // Collect the TrieDB trie-prefetcher result (on_state_hook path, original mechanism).
+        // The prefetcher ran concurrently with execute_block via AccountTask and is now done.
+        let prefetch_state =
+            ensure_ok!(handle.triedb_preftch_result().map_err(ProviderError::other));
 
         let validate_start = Instant::now();
         let trie_hashed_state = hashed_state.to_triedb_hashed_post_state();
@@ -632,26 +600,7 @@ where
             //
             // IMPORTANT: use the non-committing API to avoid mutating the underlying DB/difflayers.
             let diag_start = Instant::now();
-            let got_no_prefetch = if had_prefetch_state {
-                match triedb.intermediate_hashed_post_state(
-                    parent_block.state_root(),
-                    difflayers.as_ref(),
-                    &trie_hashed_state,
-                    None,
-                ) {
-                    Ok(root) => Some(root),
-                    Err(e) => {
-                        warn!(
-                            target: "engine::tree",
-                            error = ?e,
-                            "Failed to recompute triedb state root without prefetch_state"
-                        );
-                        None
-                    }
-                }
-            } else {
-                None
-            };
+            let got_no_prefetch: Option<B256> = None;
             let diag_elapsed_ms = diag_start.elapsed().as_millis();
             timings.mismatch_diag_recompute_no_prefetch = Some(diag_start.elapsed());
             // Ensure the global triedb doesn't retain large intermediate state from diagnostics.
@@ -785,11 +734,12 @@ where
 
         let output = if self.config.state_provider_metrics() {
             let state_provider = InstrumentedStateProvider::from_state_provider(&state_provider);
-            let output = ensure_ok!(self.execute_block(&state_provider, env, &input, &mut handle));
+            let output =
+                ensure_ok!(self.execute_block(&state_provider, None, env, &input, &mut handle));
             state_provider.record_total_latency();
             output
         } else {
-            ensure_ok!(self.execute_block(&state_provider, env, &input, &mut handle))
+            ensure_ok!(self.execute_block(&state_provider, None, env, &input, &mut handle))
         };
         // after executing the block we can stop executing transactions
         handle.stop_prewarming_execution();
@@ -1040,11 +990,12 @@ where
 
         let output = if self.config.state_provider_metrics() {
             let state_provider = InstrumentedStateProvider::from_state_provider(&state_provider);
-            let output = ensure_ok!(self.execute_block(&state_provider, env, &input, &mut handle));
+            let output =
+                ensure_ok!(self.execute_block(&state_provider, None, env, &input, &mut handle));
             state_provider.record_total_latency();
             output
         } else {
-            ensure_ok!(self.execute_block(&state_provider, env, &input, &mut handle))
+            ensure_ok!(self.execute_block(&state_provider, None, env, &input, &mut handle))
         };
 
         // after executing the block we can stop executing transactions
@@ -1276,10 +1227,13 @@ where
         Ok(())
     }
 
-    /// Executes a block with the given state provider
+    /// Executes a block with the given state provider.
+    ///
+    /// If `cached_reads` is `Some`, the pre-warmed EVM state cache is used to reduce cold DB reads.
     fn execute_block<S, Err, T>(
         &mut self,
         state_provider: S,
+        cached_reads: Option<CachedReads>,
         env: ExecutionEnv<Evm>,
         input: &BlockOrPayload<T>,
         handle: &mut PayloadHandle<impl ExecutableTxFor<Evm>, Err>,
@@ -1297,44 +1251,64 @@ where
         let _enter = span.enter();
         debug!(target: "engine::tree", "Executing block");
 
-        let mut db = State::builder()
-            .with_database(StateProviderDatabase::new(&state_provider))
-            .with_bundle_update()
-            .without_state_clear()
-            .build();
+        // Macro to build executor and run block execution given a concrete `db`.
+        // Used twice (with / without CachedReads) to avoid duplicating the executor setup.
+        macro_rules! run_block {
+            ($db:expr) => {{
+                let evm = self.evm_config.evm_with_env($db, env.evm_env.clone());
+                let ctx = self.execution_ctx_for(input);
+                let mut executor = self.evm_config.create_executor(evm, ctx);
 
-        let evm = self.evm_config.evm_with_env(&mut db, env.evm_env.clone());
-        let ctx = self.execution_ctx_for(input);
-        let mut executor = self.evm_config.create_executor(evm, ctx);
+                if !self.config.precompile_cache_disabled() {
+                    // Only cache pure precompiles to avoid issues with stateful precompiles
+                    executor.evm_mut().precompiles_mut().map_pure_precompiles(
+                        |address, precompile| {
+                            let metrics = self
+                                .precompile_cache_metrics
+                                .entry(*address)
+                                .or_insert_with(|| {
+                                    CachedPrecompileMetrics::new_with_address(*address)
+                                })
+                                .clone();
+                            CachedPrecompile::wrap(
+                                precompile,
+                                self.precompile_cache_map.cache_for_address(*address),
+                                *env.evm_env.spec_id(),
+                                Some(metrics),
+                            )
+                        },
+                    );
+                }
 
-        if !self.config.precompile_cache_disabled() {
-            // Only cache pure precompiles to avoid issues with stateful precompiles
-            executor.evm_mut().precompiles_mut().map_pure_precompiles(|address, precompile| {
-                let metrics = self
-                    .precompile_cache_metrics
-                    .entry(*address)
-                    .or_insert_with(|| CachedPrecompileMetrics::new_with_address(*address))
-                    .clone();
-                CachedPrecompile::wrap(
-                    precompile,
-                    self.precompile_cache_map.cache_for_address(*address),
-                    *env.evm_env.spec_id(),
-                    Some(metrics),
-                )
-            });
+                let execution_start = Instant::now();
+                let state_hook = Box::new(handle.state_hook());
+                let output = self.metrics.execute_metered(
+                    executor,
+                    handle.iter_transactions().map(|res| res.map_err(BlockExecutionError::other)),
+                    state_hook,
+                )?;
+                let execution_time = Instant::now().duration_since(execution_start);
+                debug!(target: "engine::tree", elapsed = ?execution_time, number=?num_hash.number, "Executed block");
+                output
+            }};
         }
 
-        let execution_start = Instant::now();
-        let state_hook = Box::new(handle.state_hook());
-        let output = self.metrics.execute_metered(
-            executor,
-            handle.iter_transactions().map(|res| res.map_err(BlockExecutionError::other)),
-            state_hook,
-        )?;
-        let execution_finish = Instant::now();
-        let execution_time = execution_finish.duration_since(execution_start);
-        debug!(target: "engine::tree", elapsed = ?execution_time, number=?num_hash.number, "Executed block");
-        Ok(output)
+        let sp_db = StateProviderDatabase::new(&state_provider);
+        if let Some(mut cr) = cached_reads {
+            let mut db = State::builder()
+                .with_database(cr.as_db_mut(sp_db))
+                .with_bundle_update()
+                .without_state_clear()
+                .build();
+            Ok(run_block!(&mut db))
+        } else {
+            let mut db = State::builder()
+                .with_database(sp_db)
+                .with_bundle_update()
+                .without_state_clear()
+                .build();
+            Ok(run_block!(&mut db))
+        }
     }
 
     /// Compute state root for the given hashed post state in parallel.

@@ -338,6 +338,69 @@ where
         (prewarm_rx, execute_rx)
     }
 
+    /// Streams transactions through a channel without any prewarm or trie-prefetch tasks.
+    ///
+    /// Used internally; prefer [`spawn_triedb_prefetch_only`] for the triedb validation path.
+    #[allow(dead_code)]
+    pub(super) fn spawn_transactions_only<I: ExecutableTxIterator<Evm>>(
+        &self,
+        transactions: I,
+    ) -> PayloadHandle<WithTxEnv<TxEnvFor<Evm>, I::Tx>, I::Error> {
+        let (_, execution_rx) = self.spawn_tx_iterator(transactions);
+        let cache = ProviderCacheBuilder::default().build_caches(0);
+        let cache_metrics = CachedStateMetrics::zeroed();
+        let prewarm_handle = CacheTaskHandle { cache, cache_metrics, to_prewarm_task: None };
+        PayloadHandle {
+            to_multi_proof: None,
+            prewarm_handle,
+            state_root: None,
+            transactions: execution_rx,
+            trie_db_prefetch_result_rx: None,
+            trie_db_direct_account_tx: None,
+        }
+    }
+
+    /// Streams transactions with a `TrieDBPrefetchHandle` but **without** `PrewarmCacheTask`.
+    ///
+    /// Used by the triedb sync validation path:
+    /// - EVM state cache prewarm is handled externally by [`crate::tree::block_prewarm`].
+    /// - The `TrieDBPrefetchHandle` (trie-prefetcher) remains active: `state_hook()` feeds
+    ///   on-state updates from real execution to `AccountTask` exactly as in the normal path.
+    /// - The result of [`PayloadHandle::triedb_preftch_result`] is passed to
+    ///   `intermediate_and_commit_hashed_post_state` for the final root computation.
+    pub(super) fn spawn_triedb_prefetch_only<I: ExecutableTxIterator<Evm>>(
+        &self,
+        root_hash: B256,
+        path_db: PathDB,
+        difflayers: Option<DiffLayers>,
+        transactions: I,
+    ) -> PayloadHandle<WithTxEnv<TxEnvFor<Evm>, I::Tx>, I::Error> {
+        let (_, execution_rx) = self.spawn_tx_iterator(transactions);
+
+        let (to_multi_proof, rev_multi_proof) = channel();
+
+        let cache = ProviderCacheBuilder::default().build_caches(0);
+        let cache_metrics = CachedStateMetrics::zeroed();
+        let prewarm_handle = CacheTaskHandle { cache, cache_metrics, to_prewarm_task: None };
+
+        let (prefetch_handle, prefetch_result_rx, direct_account_tx) = TrieDBPrefetchHandle::new(
+            root_hash, path_db, difflayers, self.executor.clone(), rev_multi_proof)
+            .expect("Failed to create TrieDBPrefetchHandle");
+
+        self.executor.spawn_blocking(move || {
+            prefetch_handle.run();
+        });
+
+        PayloadHandle {
+            to_multi_proof: Some(to_multi_proof),
+            prewarm_handle,
+            state_root: None,
+            transactions: execution_rx,
+            trie_db_prefetch_result_rx: Some(prefetch_result_rx),
+            trie_db_direct_account_tx: Some(direct_account_tx),
+        }
+    }
+
     /// Spawn prewarming optionally wired to the multiproof task for target updates.
     fn spawn_caching_with<P>(
         &self,
