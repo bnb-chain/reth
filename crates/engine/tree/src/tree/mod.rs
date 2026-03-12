@@ -60,6 +60,7 @@ use tokio::sync::{
 use tracing::*;
 
 mod block_buffer;
+pub(crate) mod block_prewarm;
 mod cached_state;
 pub mod error;
 mod instrumented_state;

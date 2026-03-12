@@ -446,6 +446,27 @@ where
         };
         timings.sealed_header_by_hash = Some(parent_header_start.elapsed());
 
+        // ── Phase 1 + 2: Trie MokaCache prewarm (starts before main execution) ─────────────────
+        // Phase 1 (blocking): speculatively execute the block's exact tx list across
+        // PREWARM_WORKERS threads to extract TrieDBHashedPostState for each worker.
+        // Phase 2 (background): spawn threads calling intermediate_hashed_post_state to warm the
+        // global PathDB MokaCache concurrently with the main validation steps below.
+        // Handles are joined before intermediate_and_commit_hashed_post_state (see below).
+        let prewarm_txs: Vec<_> = match &input {
+            BlockOrPayload::Block(block) => block.clone_transactions_recovered().collect(),
+            BlockOrPayload::Payload(_) => Vec::new(),
+        };
+        let trie_moka_prewarm_handles = crate::tree::block_prewarm::prewarm_block_trie_moka_cache(
+            &self.provider,
+            &self.evm_config,
+            parent_block.header(),
+            parent_hash,
+            parent_block.state_root(),
+            difflayers.clone(),
+            prewarm_txs,
+        );
+        // ── END prewarm launch ─────────────────────────────────────────────────────────────────
+
         let evm_env = self.evm_env_for(&input);
 
         let env = ExecutionEnv { evm_env, hash: input.hash(), parent_hash: input.parent_hash() };
@@ -567,6 +588,14 @@ where
             .block_validation
             .triedb_prefetch_duration
             .record(prefetch_start.elapsed().as_secs_f64());
+
+        // ── Detach MokaCache prewarm threads (non-blocking) ────────────────────────────────
+        // Dropping handles detaches the threads; they continue running in the background,
+        // populating the shared PathDB MokaCache concurrently with root computation below.
+        // intermediate_and_commit_hashed_post_state accesses nodes progressively, so any node
+        // that was warmed before it is accessed is a cache hit — no need to wait for all threads.
+        drop(trie_moka_prewarm_handles);
+        // ── END detach ─────────────────────────────────────────────────────────────────────
 
         let validate_start = Instant::now();
         let trie_hashed_state = hashed_state.to_triedb_hashed_post_state();
