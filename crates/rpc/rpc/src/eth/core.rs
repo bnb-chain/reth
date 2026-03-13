@@ -183,6 +183,11 @@ where
     fn cache(&self) -> &EthStateCache<N::Primitives> {
         self.inner.cache()
     }
+
+    #[inline]
+    fn current_validators_len(&self) -> Option<usize> {
+        self.inner.current_validators_len()
+    }
 }
 
 impl<N, Rpc> std::fmt::Debug for EthApi<N, Rpc>
@@ -285,6 +290,8 @@ pub struct EthApiInner<N: RpcNodeCore, Rpc: RpcConvert> {
 
     /// Whether to force upcasting EIP-4844 blob sidecars to EIP-7594 format when Osaka is active.
     force_blob_sidecar_upcasting: bool,
+    /// Optional callback returning the current active validator count.
+    current_validators_len: Option<Arc<dyn Fn() -> Option<usize> + Send + Sync>>,
 }
 
 impl<N, Rpc> EthApiInner<N, Rpc>
@@ -314,6 +321,7 @@ where
         send_raw_transaction_sync_timeout: Duration,
         evm_memory_limit: u64,
         force_blob_sidecar_upcasting: bool,
+        current_validators_len: Option<Arc<dyn Fn() -> Option<usize> + Send + Sync>>,
     ) -> Self {
         let signers = parking_lot::RwLock::new(Default::default());
         // get the block number of the latest block
@@ -359,6 +367,7 @@ where
             blob_sidecar_converter: BlobSidecarConverter::new(),
             evm_memory_limit,
             force_blob_sidecar_upcasting,
+            current_validators_len,
         }
     }
 }
@@ -378,6 +387,11 @@ where
     #[inline]
     pub const fn converter(&self) -> &Rpc {
         &self.converter
+    }
+
+    /// Returns the current active validator count.
+    pub fn current_validators_len(&self) -> Option<usize> {
+        self.current_validators_len.as_ref().and_then(|resolve| resolve())
     }
 
     /// Returns a handle to data in memory.

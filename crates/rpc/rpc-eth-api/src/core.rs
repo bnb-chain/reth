@@ -256,24 +256,28 @@ pub trait EthApi<
 
     /// Returns the finalized block header.
     ///
-    /// The `verified_validator_num` parameter is provided for BSC compatibility but is not used
-    /// in standard Ethereum. The finalized block is determined by the Beacon Chain consensus
-    /// (Casper FFG) and requires 2/3+ validator attestations.
+    /// BSC compatibility:
+    /// - `-1` uses ceil(validators/2)
+    /// - `-2` uses ceil(validators*2/3)
+    /// - `-3` uses all validators
+    /// - positive values override the threshold directly.
     #[method(name = "getFinalizedHeader")]
-    async fn finalized_header(&self, verified_validator_num: u64) -> RpcResult<Option<H>>;
+    async fn finalized_header(&self, verified_validator_num: i64) -> RpcResult<Option<H>>;
 
     /// Returns the finalized block.
     ///
-    /// The `verified_validator_num` parameter is provided for BSC compatibility but is not used
-    /// in standard Ethereum. The finalized block is determined by the Beacon Chain consensus
-    /// (Casper FFG) and requires 2/3+ validator attestations.
+    /// BSC compatibility:
+    /// - `-1` uses ceil(validators/2)
+    /// - `-2` uses ceil(validators*2/3)
+    /// - `-3` uses all validators
+    /// - positive values override the threshold directly.
     ///
     /// If `full` is true, the block object will contain all transaction objects,
     /// otherwise it will only contain the transaction hashes.
     #[method(name = "getFinalizedBlock")]
     async fn finalized_block(
         &self,
-        verified_validator_num: u64,
+        verified_validator_num: i64,
         full: bool,
     ) -> RpcResult<Option<B>>;
 
@@ -794,7 +798,7 @@ where
     /// Handler for: `eth_getFinalizedHeader`
     async fn finalized_header(
         &self,
-        verified_validator_num: u64,
+        verified_validator_num: i64,
     ) -> RpcResult<Option<RpcHeader<T::NetworkTypes>>> {
         trace!(target: "rpc::eth", verified_validator_num, "Serving eth_getFinalizedHeader");
         Ok(EthBlocks::rpc_finalized_header(self, verified_validator_num).await?)
@@ -803,7 +807,7 @@ where
     /// Handler for: `eth_getFinalizedBlock`
     async fn finalized_block(
         &self,
-        verified_validator_num: u64,
+        verified_validator_num: i64,
         full: bool,
     ) -> RpcResult<Option<RpcBlock<T::NetworkTypes>>> {
         trace!(target: "rpc::eth", verified_validator_num, ?full, "Serving eth_getFinalizedBlock");
