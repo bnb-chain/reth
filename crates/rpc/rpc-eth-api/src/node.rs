@@ -98,6 +98,14 @@ where
 pub trait RpcNodeCoreExt: RpcNodeCore<Provider: BlockReader> {
     /// Returns handle to RPC cache service.
     fn cache(&self) -> &EthStateCache<Self::Primitives>;
+
+    /// Returns the current active validator count for the latest snapshot.
+    ///
+    /// Default implementation returns `None` to preserve behavior for non-parlia chains.
+    /// BSC-compatible chains should override this to provide an active validator count.
+    fn current_validators_len(&self) -> Option<usize> {
+        None
+    }
 }
 
 /// An adapter that allows to construct [`RpcNodeCore`] from components.

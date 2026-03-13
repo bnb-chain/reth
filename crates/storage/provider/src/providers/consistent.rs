@@ -817,7 +817,10 @@ impl<N: ProviderNodeTypes> BlockNumReader for ConsistentProvider<N> {
     }
 
     fn best_block_number(&self) -> ProviderResult<BlockNumber> {
-        self.head_block.as_ref().map(|b| Ok(b.number())).unwrap_or_else(|| self.last_block_number())
+        self.head_block
+            .as_ref()
+            .map(|b| Ok(b.number()))
+            .unwrap_or_else(|| self.storage_provider.best_block_number())
     }
 
     fn last_block_number(&self) -> ProviderResult<BlockNumber> {
