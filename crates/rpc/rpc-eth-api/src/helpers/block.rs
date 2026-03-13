@@ -2,8 +2,8 @@
 
 use super::{LoadPendingBlock, LoadReceipt, SpawnBlocking};
 use crate::{
-    node::RpcNodeCoreExt, EthApiTypes, FromEthApiError, FullEthApiTypes, RpcBlock, RpcNodeCore,
-    RpcReceipt,
+    node::RpcNodeCoreExt, EthApiTypes, FromEthApiError, FullEthApiTypes, RpcBlock,
+    RpcNodeCore, RpcReceipt,
 };
 use alloy_consensus::{transaction::TxHashRef, TxReceipt};
 use alloy_eips::{BlockId, BlockNumberOrTag};
@@ -14,10 +14,13 @@ use futures::Future;
 use reth_node_api::BlockBody;
 use reth_primitives_traits::{AlloyBlockHeader, RecoveredBlock, SealedHeader, TransactionMeta};
 use reth_rpc_convert::{transaction::ConvertReceiptInput, RpcConvert, RpcHeader};
+use reth_rpc_eth_types::EthApiError;
 use reth_storage_api::{
-    BlockIdReader, BlockReader, HeaderProvider, ProviderHeader, ProviderReceipt, ProviderTx,
+    BlockIdReader, BlockReader, BlockReaderIdExt, HeaderProvider, ProviderHeader, ProviderReceipt,
+    ProviderTx,
 };
 use reth_transaction_pool::{PoolTransaction, TransactionPool};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 /// Result type of the fetched block receipts.
@@ -30,6 +33,44 @@ pub type BlockAndReceiptsResult<Eth> = Result<
     )>,
     <Eth as EthApiTypes>::Error,
 >;
+
+const MAX_VALIDATOR_LOOKBACK: usize = 1000;
+
+fn resolved_validators_threshold(
+    verified_validator_num: i64,
+    active_validator_count: Option<usize>,
+) -> Result<usize, EthApiError> {
+    let missing_validator_count = || -> EthApiError {
+        EthApiError::InvalidParams(format!(
+            "Unable to derive validator-count from request value {verified_validator_num} without chain validator set"
+        ))
+    };
+
+    match verified_validator_num {
+        -1 | -2 | -3 => {
+            let active_validator_count =
+                active_validator_count.ok_or_else(|| missing_validator_count())?;
+            match verified_validator_num {
+                -1 => Ok((active_validator_count + 1) / 2),
+                -2 => Ok((active_validator_count * 2 + 2) / 3),
+                _ => Ok(active_validator_count),
+            }
+        }
+        value if value < 1 => Err(EthApiError::InvalidParams(format!(
+            "{value} neither within the range [1,{}] nor the range [-3,-1]",
+            active_validator_count.unwrap_or(0)
+        ))),
+        value if active_validator_count
+            .is_some_and(|validator_count| value > validator_count as i64) =>
+        {
+            Err(EthApiError::InvalidParams(format!(
+                "{value} neither within the range [1,{}] nor the range [-3,-1]",
+                active_validator_count.unwrap_or(0)
+            )))
+        }
+        value => Ok(value as usize),
+    }
+}
 
 /// Block related functions for the [`EthApiServer`](crate::EthApiServer) trait in the
 /// `eth_` namespace.
@@ -115,41 +156,134 @@ pub trait EthBlocks: LoadBlock<RpcConvert: RpcConvert<Primitives = Self::Primiti
 
     /// Returns the finalized block header.
     ///
-    /// The `verified_validator_num` parameter is provided for BSC compatibility but is ignored
-    /// in the implementation. In standard Ethereum, the finalized block is determined by the
-    /// Beacon Chain consensus (Casper FFG).
+    /// BSC compatibility:
+    /// - `verified_validator_num` is required to determine the probabilistic finalized height.
+    ///   Accepted values are:
+    ///   - `-1`: ceil(number_of_validators / 2)
+    ///   - `-2`: ceil(number_of_validators * 2 / 3)
+    ///   - `-3`: number_of_validators
+    ///   - or `>=1`: explicit validator threshold.
     fn rpc_finalized_header(
         &self,
-        _verified_validator_num: u64,
+        verified_validator_num: i64,
     ) -> impl Future<Output = Result<Option<RpcHeader<Self::NetworkTypes>>, Self::Error>> + Send
     where
         Self: FullEthApiTypes,
     {
         async move {
-            // Simply delegate to rpc_block_header with Finalized tag
-            self.rpc_block_header(BlockNumberOrTag::Finalized.into()).await
+            let Some(finalized_block_number) =
+                self.finalized_block_number(verified_validator_num).await?
+            else {
+                return Ok(None);
+            };
+
+            self.rpc_block_header(BlockNumberOrTag::Number(finalized_block_number).into()).await
         }
     }
 
     /// Returns the finalized block.
     ///
-    /// The `verified_validator_num` parameter is provided for BSC compatibility but is ignored
-    /// in the implementation. In standard Ethereum, the finalized block is determined by the
-    /// Beacon Chain consensus (Casper FFG).
+    /// BSC compatibility:
+    /// - `verified_validator_num` is required to determine the probabilistic finalized height.
+    ///   Accepted values are:
+    ///   - `-1`: ceil(number_of_validators / 2)
+    ///   - `-2`: ceil(number_of_validators * 2 / 3)
+    ///   - `-3`: number_of_validators
+    ///   - or `>=1`: explicit validator threshold.
     ///
     /// If `full` is true, the block object will contain all transaction objects, otherwise it will
     /// only contain the transaction hashes.
     fn rpc_finalized_block(
         &self,
-        _verified_validator_num: u64,
+        verified_validator_num: i64,
         full: bool,
     ) -> impl Future<Output = Result<Option<RpcBlock<Self::NetworkTypes>>, Self::Error>> + Send
     where
         Self: FullEthApiTypes,
     {
         async move {
-            // Simply delegate to rpc_block with Finalized tag
-            self.rpc_block(BlockNumberOrTag::Finalized.into(), full).await
+            let Some(finalized_block_number) =
+                self.finalized_block_number(verified_validator_num).await?
+            else {
+                return Ok(None);
+            };
+            self.rpc_block(BlockNumberOrTag::Number(finalized_block_number).into(), full).await
+        }
+    }
+
+    /// Returns the best-effort finalized block number according to `verified_validator_num`.
+    ///
+    /// BSC compatibility:
+    /// - `verified_validator_num` is required to determine the probabilistic finalized height.
+    ///   Accepted values are:
+    ///   - `-1`: ceil(number_of_validators / 2)
+    ///   - `-2`: ceil(number_of_validators * 2 / 3)
+    ///   - `-3`: number_of_validators
+    ///   - or `>=1`: explicit validator threshold.
+    fn finalized_block_number(
+        &self,
+        verified_validator_num: i64,
+    ) -> impl Future<Output = Result<Option<u64>, Self::Error>> + Send
+    where
+        Self: FullEthApiTypes,
+    {
+        async move {
+            let latest_header = self
+                .provider()
+                .sealed_header_by_id(BlockNumberOrTag::Latest.into())
+                .map_err(Self::Error::from_eth_err)?
+                .ok_or_else(|| {
+                    Self::Error::from_eth_err(EthApiError::HeaderNotFound(
+                        BlockNumberOrTag::Latest.into(),
+                    ))
+                })?;
+
+            let fast_finalized_header = self
+                .provider()
+                .sealed_header_by_id(BlockNumberOrTag::Finalized.into())
+                .map_err(Self::Error::from_eth_err)?
+                .ok_or_else(|| {
+                    Self::Error::from_eth_err(EthApiError::HeaderNotFound(
+                        BlockNumberOrTag::Finalized.into(),
+                    ))
+                })?;
+
+            let lower_bound = fast_finalized_header.number().max(1);
+            let active_validator_count = self.current_validators_len();
+            let threshold = resolved_validators_threshold(verified_validator_num, active_validator_count)?;
+            if threshold == 0 {
+                return Ok(Some(fast_finalized_header.number()));
+            }
+
+            let mut cursor = latest_header;
+            let mut seen_signers = HashSet::with_capacity(threshold.max(1));
+            let mut probabilistic_finalized = fast_finalized_header.number();
+            for i in 0..=MAX_VALIDATOR_LOOKBACK {
+                seen_signers.insert(cursor.beneficiary());
+                probabilistic_finalized = cursor.number();
+
+                if seen_signers.len() >= threshold {
+                    break;
+                }
+
+                let parent_hash = cursor.parent_hash();
+                if cursor.number() <= lower_bound {
+                    break;
+                }
+
+                if i == MAX_VALIDATOR_LOOKBACK {
+                    break;
+                }
+                cursor = self
+                    .provider()
+                    .sealed_header_by_hash(parent_hash)
+                    .map_err(Self::Error::from_eth_err)?
+                    .ok_or_else(|| {
+                        Self::Error::from_eth_err(EthApiError::HeaderNotFound(parent_hash.into()))
+                    })?;
+            }
+
+            Ok(Some(std::cmp::max(fast_finalized_header.number(), probabilistic_finalized)))
         }
     }
 
@@ -363,6 +497,170 @@ pub trait EthBlocks: LoadBlock<RpcConvert: RpcConvert<Primitives = Self::Primiti
                 })
                 .transpose()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::Address;
+
+    fn resolved_finalized_block_number(
+        fast_finalized_number: u64,
+        headers: &[(u64, Address)],
+        verified_validator_num: i64,
+        active_validator_count: Option<usize>,
+    ) -> Result<u64, EthApiError> {
+        if headers.is_empty() {
+            return Ok(fast_finalized_number);
+        }
+
+        let threshold = resolved_validators_threshold(verified_validator_num, active_validator_count)?;
+        if threshold == 0 {
+            return Ok(fast_finalized_number);
+        }
+
+        let mut seen = HashSet::with_capacity(threshold.max(1));
+        let mut probabilistic_finalized = headers[0].0;
+        for (number, beneficiary) in headers {
+            probabilistic_finalized = *number;
+            seen.insert(*beneficiary);
+            if seen.len() >= threshold {
+                break;
+            }
+        }
+
+        Ok(std::cmp::max(fast_finalized_number, probabilistic_finalized))
+    }
+
+    #[test]
+    fn resolves_validator_threshold_special_cases() {
+        let validator_count = 9usize;
+        assert_eq!(resolved_validators_threshold(-1, Some(validator_count)).unwrap(), 5);
+        assert_eq!(resolved_validators_threshold(-2, Some(validator_count)).unwrap(), 6);
+        assert_eq!(resolved_validators_threshold(-3, Some(validator_count)).unwrap(), 9);
+        assert_eq!(resolved_validators_threshold(4, Some(validator_count)).unwrap(), 4);
+        assert!(resolved_validators_threshold(10, Some(validator_count)).is_err());
+        assert!(resolved_validators_threshold(-4, Some(validator_count)).is_err());
+    }
+
+    fn header(number: u64, beneficiary: u8) -> (u64, Address) {
+        (number, Address::repeat_byte(beneficiary))
+    }
+
+    #[test]
+    fn finalized_block_number_uses_ceil_half_for_negative_one() {
+        let headers = vec![
+            header(12, 0x11),
+            header(11, 0x22),
+            header(10, 0x33),
+            header(9, 0x11),
+        ];
+
+        // 3 validators => threshold ceil(3/2) = 2, satisfied at header #11.
+        assert_eq!(resolved_finalized_block_number(8, &headers, -1, Some(3)).unwrap(), 11);
+    }
+
+    #[test]
+    fn finalized_block_number_uses_explicit_threshold() {
+        let headers = vec![
+            header(12, 0x11),
+            header(11, 0x11),
+            header(10, 0x22),
+            header(9, 0x33),
+            header(8, 0x44),
+        ];
+
+        // 4 validators and explicit threshold 3, reached at block 9.
+        assert_eq!(resolved_finalized_block_number(7, &headers, 3, Some(4)).unwrap(), 9);
+    }
+
+    #[test]
+    fn finalized_block_number_prefers_fast_finalized_if_newer() {
+        let headers = vec![
+            header(12, 0x11),
+            header(11, 0x22),
+            header(10, 0x33),
+        ];
+        // threshold reached at 12 but fast-finalized is higher.
+        assert_eq!(resolved_finalized_block_number(20, &headers, -1, Some(3)).unwrap(), 20);
+    }
+
+    #[test]
+    fn finalized_block_number_prefers_probabilistic_if_newer_than_fast_finalized() {
+        let headers = vec![
+            header(16, 0x11),
+            header(15, 0x22),
+            header(14, 0x33),
+            header(13, 0x11),
+        ];
+
+        // 3 validators, threshold ceil(3/2) = 2, reached at block 15.
+        assert_eq!(resolved_finalized_block_number(10, &headers, -1, Some(3)).unwrap(), 15);
+    }
+
+    #[test]
+    fn finalized_block_number_negative_two_and_three_thresholds() {
+        let headers = vec![
+            header(12, 0x11),
+            header(11, 0x22),
+            header(10, 0x33),
+            header(9, 0x44),
+        ];
+
+        // ceil(4*2/3) = 3 -> reached at block 10.
+        assert_eq!(resolved_finalized_block_number(0, &headers, -2, Some(4)).unwrap(), 10);
+
+        // 4 validators, threshold 4 -> reached at block 9.
+        assert_eq!(resolved_finalized_block_number(0, &headers, -3, Some(4)).unwrap(), 9);
+    }
+
+    #[test]
+    fn finalized_block_number_empty_headers_uses_fast_finalized_for_negative_values() {
+        let headers = Vec::new();
+        assert_eq!(resolved_finalized_block_number(42, &headers, -1, Some(4)).unwrap(), 42);
+    }
+
+    #[test]
+    fn finalized_block_number_empty_headers_uses_fast_finalized_for_positive_validator_values() {
+        let headers = Vec::new();
+        assert_eq!(resolved_finalized_block_number(42, &headers, 5, Some(3)).unwrap(), 42);
+    }
+
+    #[test]
+    fn finalized_block_number_rejects_invalid_threshold() {
+        let headers = vec![header(1, 0x11)];
+        assert!(resolved_finalized_block_number(1, &headers, 0, Some(1)).is_err());
+        assert!(resolved_finalized_block_number(1, &headers, -4, Some(1)).is_err());
+    }
+
+    #[test]
+    fn finalized_block_number_uses_active_validator_count_for_negative_values() {
+        let headers = vec![
+            header(12, 0x11),
+            header(11, 0x22),
+            header(10, 0x33),
+            header(9, 0x44),
+        ];
+
+        // With active set size 20, -2 => ceil(20*2/3) = 14. Only 4 unique signers seen, so
+        // no probabilistic finalization should happen beyond fast-finalized height.
+        assert_eq!(
+            resolved_finalized_block_number(8, &headers, -2, Some(20)).unwrap(),
+            8
+        );
+    }
+
+    #[test]
+    fn finalized_block_number_requires_validator_count_for_negative_values() {
+        let headers = vec![header(3, 0x11), header(2, 0x22), header(1, 0x33)];
+
+        assert!(
+            resolved_finalized_block_number(1, &headers, -1, None)
+                .unwrap_err()
+                .to_string()
+                .contains("Unable to derive validator-count")
+        );
     }
 }
 

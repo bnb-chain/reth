@@ -100,7 +100,6 @@ where
                             .send(MetricEvent::SyncHeight { height: block_number });
 
                         if self.pruner.is_pruning_needed(block_number) {
-                            // We log `PrunerOutput` inside the `Pruner`
                             let _ = self.prune_before(block_number)?;
                         }
                     }
