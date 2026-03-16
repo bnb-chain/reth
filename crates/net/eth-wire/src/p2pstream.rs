@@ -13,7 +13,7 @@ use alloy_rlp::{Decodable, Encodable, Error as RlpError, EMPTY_LIST_CODE};
 use futures::{Sink, SinkExt, StreamExt};
 use pin_project::pin_project;
 use reth_codecs::add_arbitrary_tests;
-use reth_metrics::metrics::counter;
+use reth_metrics::metrics::{counter, Counter};
 use reth_primitives_traits::GotExpected;
 use std::{
     collections::VecDeque,
@@ -255,6 +255,12 @@ pub struct P2PStream<S> {
     /// Whether this stream is currently in the process of disconnecting by sending a disconnect
     /// message.
     disconnecting: bool,
+
+    /// Total ingress bytes counter (matches geth `p2p/ingress`).
+    ingress_bytes: Counter,
+
+    /// Total egress bytes counter (matches geth `p2p/egress`).
+    egress_bytes: Counter,
 }
 
 impl<S> P2PStream<S> {
@@ -271,6 +277,8 @@ impl<S> P2PStream<S> {
             outgoing_messages: VecDeque::new(),
             outgoing_message_buffer_capacity: MAX_P2P_CAPACITY,
             disconnecting: false,
+            ingress_bytes: counter!("p2p.ingress"),
+            egress_bytes: counter!("p2p.egress"),
         }
     }
 
@@ -410,6 +418,9 @@ where
                 // empty messages are not allowed
                 return Poll::Ready(Some(Err(P2PStreamError::EmptyProtocolMessage)))
             }
+
+            // Track ingress bytes (raw wire bytes, matches geth p2p/ingress)
+            this.ingress_bytes.increment(bytes.len() as u64);
 
             // first decode disconnect reasons, because they can be encoded in a variety of forms
             // over the wire, in both snappy compressed and uncompressed forms.
@@ -626,6 +637,8 @@ where
                     let Some(message) = this.outgoing_messages.pop_front() else {
                         break Poll::Ready(Ok(()))
                     };
+                    // Track egress bytes (wire bytes, matches geth p2p/egress)
+                    this.egress_bytes.increment(message.len() as u64);
                     if let Err(err) = this.inner.as_mut().start_send(message) {
                         break Poll::Ready(Err(err.into()))
                     }

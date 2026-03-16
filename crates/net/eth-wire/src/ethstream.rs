@@ -28,6 +28,16 @@ use tokio::time::timeout;
 use tokio_stream::Stream;
 use tracing::{debug, trace};
 
+/// Record per-protocol message metrics matching geth's `p2p/{direction}/eth/{version}/0x{code}`
+/// format. Also records packet counts as `p2p/{direction}/eth/{version}/0x{code}/packets`.
+fn record_eth_message_metric(direction: &str, version: EthVersion, msg_id: u8, bytes: usize) {
+    let version_num = version as u8;
+    let name = format!("p2p.{direction}.eth.{version_num}.0x{msg_id:02x}");
+    let packets_name = format!("p2p.{direction}.eth.{version_num}.0x{msg_id:02x}.packets");
+    reth_metrics::metrics::counter!(name).increment(bytes as u64);
+    reth_metrics::metrics::counter!(packets_name).increment(1);
+}
+
 /// [`MAX_MESSAGE_SIZE`] is the maximum cap on the size of a protocol message.
 // https://github.com/ethereum/go-ethereum/blob/30602163d5d8321fbc68afdcbbaf2362b2641bde/eth/protocols/eth/protocol.go#L50
 pub const MAX_MESSAGE_SIZE: usize = 10 * 1024 * 1024;
@@ -259,7 +269,16 @@ where
         let res = ready!(this.inner.poll_next(cx));
 
         match res {
-            Some(Ok(bytes)) => Poll::Ready(Some(this.eth.decode_message(bytes))),
+            Some(Ok(bytes)) => {
+                // Record per-message ingress metrics before decoding
+                let byte_len = bytes.len();
+                let msg_code = if bytes.is_empty() { 0 } else { bytes[0] };
+                let result = this.eth.decode_message(bytes);
+                if result.is_ok() {
+                    record_eth_message_metric("ingress", this.eth.version(), msg_code, byte_len);
+                }
+                Poll::Ready(Some(result))
+            }
             Some(Err(err)) => Poll::Ready(Some(Err(err.into()))),
             None => Poll::Ready(None),
         }
@@ -280,21 +299,16 @@ where
 
     fn start_send(self: Pin<&mut Self>, item: EthMessage<N>) -> Result<(), Self::Error> {
         if matches!(item, EthMessage::Status(_)) {
-            // TODO: to disconnect here we would need to do something similar to P2PStream's
-            // start_disconnect, which would ideally be a part of the CanDisconnect trait, or at
-            // least similar.
-            //
-            // Other parts of reth do not yet need traits like CanDisconnect because atm they work
-            // exclusively with EthStream<P2PStream<S>>, where the inner P2PStream is accessible,
-            // allowing for its start_disconnect method to be called.
-            //
-            // self.project().inner.start_disconnect(DisconnectReason::ProtocolBreach);
             return Err(EthStreamError::EthHandshakeError(EthHandshakeError::StatusNotInHandshake))
         }
 
-        self.project()
-            .inner
-            .start_send(Bytes::from(alloy_rlp::encode(ProtocolMessage::from(item))))?;
+        // Record per-message egress metrics
+        let msg_id = item.message_id().to_u8();
+        let this = self.project();
+        let encoded = Bytes::from(alloy_rlp::encode(ProtocolMessage::from(item)));
+        record_eth_message_metric("egress", this.eth.version(), msg_id, encoded.len());
+
+        this.inner.start_send(encoded)?;
 
         Ok(())
     }
