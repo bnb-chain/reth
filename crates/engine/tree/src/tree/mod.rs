@@ -3274,22 +3274,6 @@ enum PersistTarget {
     Head,
 }
 
-/// Describes whether the block being processed is a descendant of blocks currently being
-/// persisted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PersistingKind {
-    /// The block is a descendant of the persisting blocks.
-    PersistingDescendant,
-    /// The block is not a descendant of the persisting blocks.
-    NonPersistingDescendant,
-}
-
-impl PersistingKind {
-    /// Returns `true` if this is a `PersistingDescendant`.
-    pub const fn is_descendant(&self) -> bool {
-        matches!(self, Self::PersistingDescendant)
-    }
-}
 
 /// A custom request message for the engine.
 #[derive(Debug)]
