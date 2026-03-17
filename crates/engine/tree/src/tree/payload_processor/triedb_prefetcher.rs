@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    mpsc::{self, Receiver, RecvError, Sender, TryRecvError},
+    mpsc::{self, Receiver, RecvError, Sender},
     Arc, Mutex,
 };
 use std::time::Duration;
@@ -43,7 +43,6 @@ pub(super) enum TrieDBPrefetchMessage {
 
 /// Result type for TrieDB prefetch operations.
 pub(crate) enum TrieDBPrefetchResult {
-    #[allow(dead_code)]
     PrefetchAccountResult(Arc<TrieDBPrefetchState<PathDB>>),
     PrefetchStorageResult((B256, StateTrie<PathDB>, usize)),
 }
@@ -151,7 +150,6 @@ impl TrieDBStatePrefetcher {
 }
 
 /// Handle for TrieDB prefetch operations.
-#[allow(dead_code)]
 pub(super) struct TrieDBPrefetchHandle {
     /// Executor for the task.
     executor: WorkloadExecutor,
@@ -164,7 +162,6 @@ pub(super) struct TrieDBPrefetchHandle {
 }
 
 impl TrieDBPrefetchHandle {
-    #[allow(dead_code)]
     pub(super) fn new(
         root_hash: B256,
         path_db: PathDB,
@@ -205,7 +202,6 @@ impl TrieDBPrefetchHandle {
         return Ok((handle, prefetch_result_rx));
     }
 
-    #[allow(dead_code)]
     pub(super) fn run(self) {
         loop {
             match self.message_rx.recv() {
@@ -356,7 +352,6 @@ impl TrieDBPrefetchAccountTask {
 
     /// Wait for all storage_results and write them to storage_tries.
     /// Returns (successful_count, failed_addresses).
-    #[allow(dead_code)]
     pub(super) fn receive_prefetch_storage_results(&mut self) -> usize {
         if self.storage_results.is_empty() {
             return 0;
@@ -401,40 +396,6 @@ impl TrieDBPrefetchAccountTask {
         slot_count
     }
 
-    /// Non-blocking version that quickly collects available results without waiting.
-    #[allow(dead_code)]
-    fn receive_prefetch_storage_results_non_blocking(&mut self) {
-        if self.storage_results.is_empty() {
-            return;
-        }
-
-        // Collect available results without blocking
-        let mut to_remove = Vec::new();
-        for (hashed_address, receiver) in &self.storage_results {
-            match receiver.try_recv() {
-                Ok(TrieDBPrefetchResult::PrefetchStorageResult((addr, storage_trie, _))) => {
-                    if addr == *hashed_address {
-                        self.prefetch_state.storage_tries.insert(*hashed_address, storage_trie);
-                    }
-                    to_remove.push(*hashed_address);
-                }
-                Ok(_) => {
-                    to_remove.push(*hashed_address);
-                }
-                Err(TryRecvError::Empty) => {
-                    // Result not ready yet, skip it
-                }
-                Err(TryRecvError::Disconnected) => {
-                    to_remove.push(*hashed_address);
-                }
-            }
-        }
-
-        // Remove processed receivers
-        for addr in to_remove {
-            self.storage_results.remove(&addr);
-        }
-    }
 
     pub(super) fn terminate_all_tasks(&mut self) {
         self.send_prefetch_finished_to_all_storage_tasks();

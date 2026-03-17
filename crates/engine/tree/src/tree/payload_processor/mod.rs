@@ -360,7 +360,6 @@ where
     /// Spawn cache prewarming with triedb prefetcher.
     ///
     /// Returns a [`PayloadHandle`] to communicate with the task.
-    #[allow(dead_code)]
     pub(super) fn spawn_cache_with_triedb_prefetcher<P, I: ExecutableTxIterator<Evm>>(
         &self,
         root_hash: B256,

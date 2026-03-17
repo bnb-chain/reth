@@ -2814,7 +2814,6 @@ where
 
         let ctx = TreeCtx::new(&mut self.state, &self.canonical_in_memory_state);
 
-        // Record current timestamp in nanoseconds before executing the block
         let current_timestamp_nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -3347,6 +3346,27 @@ where
     }
 }
 
+/// Events received in the main engine loop.
+#[derive(Debug)]
+enum LoopEvent<T, N, P, C>
+where
+    N: NodePrimitives,
+    T: PayloadTypes,
+    C: ConfigureEvm<Primitives = N>,
+{
+    /// An engine API message was received.
+    EngineMessage(FromEngine<EngineApiRequest<T, N, P, C>, N::Block>),
+    /// A persistence task completed.
+    PersistenceComplete {
+        /// The result of the persistence operation.
+        result: Option<BlockNumHash>,
+        /// When the persistence operation started.
+        start_time: Instant,
+    },
+    /// A channel was disconnected.
+    Disconnected,
+}
+
 /// Block inclusion can be valid, accepted, or invalid. Invalid blocks are returned as an error
 /// variant.
 ///
@@ -3377,26 +3397,7 @@ pub enum InsertPayloadOk {
     Inserted(BlockStatus),
 }
 
-/// Events received in the main engine loop.
-#[derive(Debug)]
-enum LoopEvent<T, N, P, C>
-where
-    N: NodePrimitives,
-    T: PayloadTypes,
-    C: ConfigureEvm<Primitives = N>,
-{
-    /// An engine API message was received.
-    EngineMessage(FromEngine<EngineApiRequest<T, N, P, C>, N::Block>),
-    /// A persistence task completed.
-    PersistenceComplete {
-        /// The result of the persistence operation.
-        result: Option<BlockNumHash>,
-        /// When the persistence operation started.
-        start_time: Instant,
-    },
-    /// A channel was disconnected.
-    Disconnected,
-}
+
 
 /// Target for block persistence.
 #[derive(Debug, Clone, Copy)]
