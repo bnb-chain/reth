@@ -49,12 +49,10 @@ use reth_trie_db::ChangesetCache;
 use reth_trie_parallel::root::{ParallelStateRoot, ParallelStateRootError};
 use rust_eth_triedb::{get_global_triedb, TrieDBError};
 use revm_primitives::Address;
-use rust_eth_triedb_common::DiffLayers;
 use std::{
     collections::HashMap,
     panic::{self, AssertUnwindSafe},
     sync::Arc,
-    thread,
     time::Instant,
 };
 use tracing::{debug, debug_span, error, info, instrument, trace, warn};
@@ -439,27 +437,13 @@ where
         }
 
         /// A helper macro that returns the block in case there was an error.
-        macro_rules! ensure_ok {
+         macro_rules! ensure_ok {
             ($expr:expr) => {
                 match $expr {
                     Ok(val) => val,
                     Err(e) => {
                         let block = self.convert_to_block(input)?;
                         return Err(InsertBlockError::new(block, e.into()).into())
-                    }
-                }
-            };
-        }
-
-        /// A helper macro for handling errors after the input has been converted to a block.
-        macro_rules! ensure_ok_post_block {
-            ($expr:expr, $block:expr) => {
-                match $expr {
-                    Ok(val) => val,
-                    Err(e) => {
-                        return Err(
-                            InsertBlockError::new($block.into_sealed_block(), e.into()).into()
-                        )
                     }
                 }
             };
@@ -730,7 +714,7 @@ where
         // Mark successful completion so the timing log can report outcome.
         timings.ok = true;
         Ok(ExecutedBlock {
-            recovered_block: Arc::new(block),
+                recovered_block: Arc::new(block),
             execution_output: output,
             // TrieDB manages trie data; use empty default here.
             trie_data: DeferredTrieData::ready(ComputedTrieData::default()),
@@ -1050,9 +1034,9 @@ where
 
         // Spawn the appropriate processor based on strategy
         let mut handle = ensure_ok!(self.spawn_payload_processor(
-            env.clone(),
-            txs,
-            provider_builder,
+                    env.clone(),
+                    txs,
+                    provider_builder,
             overlay_factory.clone(),
             strategy,
             block_access_list,
@@ -1805,7 +1789,7 @@ where
 
                     match changeset_result {
                         Ok(changesets) => {
-                            debug!(
+            debug!(
                                 target: "engine::tree::changeset",
                                 ?block_number,
                                 elapsed = ?changeset_start.elapsed(),

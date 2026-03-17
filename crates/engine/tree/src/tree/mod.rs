@@ -1357,6 +1357,7 @@ where
     ///
     /// Returns an error if the engine channel is disconnected.
     #[expect(clippy::type_complexity)]
+    #[allow(dead_code)]
     fn try_recv_engine_message(
         &self,
     ) -> Result<Option<FromEngine<EngineApiRequest<T, N, P, C>, N::Block>>, RecvError> {

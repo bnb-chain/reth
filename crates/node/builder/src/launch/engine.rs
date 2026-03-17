@@ -10,8 +10,7 @@ use crate::{
 };
 use alloy_consensus::BlockHeader;
 use futures::{stream_select, FutureExt, StreamExt};
-use reth_chainspec::{EthChainSpec, EthereumHardforks};
-use reth_db_api::{database_metrics::DatabaseMetrics, Database};
+use reth_chainspec::EthChainSpec;
 use reth_engine_service::service::{ChainEvent, EngineService};
 use reth_engine_tree::{
     chain::FromOrchestrator,
@@ -204,7 +203,7 @@ impl EngineNodeLauncher {
         let event_sender = EventSender::default();
 
         let beacon_engine_handle = ConsensusEngineHandle::new(consensus_engine_tx.clone());
-        let (engine_api_tx, mut engine_api_rx) = unbounded_channel::<EngineApiRequest<
+        let (_engine_api_tx, mut engine_api_rx) = unbounded_channel::<EngineApiRequest<
             <<T as FullNodeTypes>::Types as NodeTypes>::Payload,
             <<T as FullNodeTypes>::Types as NodeTypes>::Primitives,
             BlockchainProvider<NodeTypesWithDBAdapter<<T as FullNodeTypes>::Types, <T as FullNodeTypes>::DB>>,
