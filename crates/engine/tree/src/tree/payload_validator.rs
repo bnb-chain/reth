@@ -533,7 +533,8 @@ where
         Ok(ExecutedBlock {
             recovered_block: Arc::new(block),
             execution_output: output,
-            // TrieDB manages trie data; use empty default here.
+            // trie_data is unused in triedb mode: state root is managed by triedb,
+            // overlays and changeset computation are skipped when triedb is active.
             trie_data: DeferredTrieData::ready(ComputedTrieData::default()),
             difflayer: Some(difflayer),
         })
