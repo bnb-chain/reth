@@ -392,6 +392,7 @@ pub(crate) struct BlockValidationMetrics {
     /// Total number of triedb sync-validate calls dispatched from `validate_block_with_state`
     pub(crate) triedb_validate_entry_sync_total: Counter,
     /// Total number of triedb async-validate calls dispatched from `validate_block_with_state`
+    #[allow(dead_code)]
     pub(crate) triedb_validate_entry_async_total: Counter,
     /// Histogram of total time spent in triedb validation (sync or async) as measured at the
     /// `validate_block_with_state` entry point.

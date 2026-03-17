@@ -138,8 +138,6 @@ where
     validator: V,
     /// Changeset cache for in-memory trie changesets
     changeset_cache: ChangesetCache,
-    /// Whether to use the triedb sync validate.
-    use_triedb_sync_validate: bool,
 }
 
 impl<N, P, Evm, V> BasicEngineValidator<P, Evm, V>
@@ -191,7 +189,6 @@ where
             metrics: EngineApiMetrics::default(),
             validator,
             changeset_cache,
-            use_triedb_sync_validate: true,
         }
     }
 
@@ -323,7 +320,7 @@ where
     }
 
     /// Validates a block that has already been converted from a payload with triedb.
-    pub fn validate_block_with_state_with_triedb_sync_validate<
+    pub fn validate_block_with_state_with_triedb<
         T: PayloadTypes<BuiltPayload: BuiltPayload<Primitives = N>>,
     >(
         &mut self,
@@ -431,7 +428,7 @@ where
                         self.mismatch_diag_recompute_no_prefetch.map(|d| d.as_millis()),
                     mismatch_triedb_clean_ms = self.mismatch_triedb_clean.map(|d| d.as_millis()),
                     on_invalid_block_ms = self.on_invalid_block.map(|d| d.as_millis()),
-                    "validate_block_with_state_with_triedb_sync_validate timings"
+                    "validate_block_with_state_with_triedb timings"
                 );
             }
         }
@@ -722,160 +719,6 @@ where
         })
     }
 
-    /// Validates a block that has already been converted from a payload with triedb.
-    pub fn validate_block_with_state_with_triedb_async_validate<
-        T: PayloadTypes<BuiltPayload: BuiltPayload<Primitives = N>>,
-    >(
-        &mut self,
-        input: BlockOrPayload<T>,
-        mut ctx: TreeCtx<'_, N>,
-    ) -> ValidationOutcome<N, InsertPayloadError<N::Block>>
-    where
-        V: PayloadValidator<T, Block = N::Block>,
-        Evm: ConfigureEngineEvm<T::ExecutionData, Primitives = N>,
-    {
-        /// A helper macro that returns the block in case there was an error
-        macro_rules! ensure_ok {
-            ($expr:expr) => {
-                match $expr {
-                    Ok(val) => val,
-                    Err(e) => {
-                        let block = self.convert_to_block(input)?;
-                        return Err(
-                            InsertBlockError::new(block, e.into()).into()
-                        );
-                    }
-                }
-            };
-        }
-
-        /// A helper macro for handling errors after the input has been converted to a block.
-        macro_rules! ensure_ok_post_block {
-            ($expr:expr, $block:expr) => {
-                match $expr {
-                    Ok(val) => val,
-                    Err(e) => {
-                        return Err(
-                            InsertBlockError::new($block.into_sealed_block(), e.into()).into()
-                        )
-                    }
-                }
-            };
-        }
-
-        let parent_hash = input.parent_hash();
-        let block_num_hash = input.num_hash();
-
-        trace!(target: "engine::tree", block=?block_num_hash, parent=?parent_hash, "Fetching block state provider");
-        let Some(provider_builder) =
-            ensure_ok!(self.state_provider_builder(parent_hash, ctx.state()))
-        else {
-            // this is pre-validated in the tree
-            return Err(InsertBlockError::new(
-                self.convert_to_block(input)?,
-                ProviderError::HeaderNotFound(parent_hash.into()).into(),
-            )
-            .into());
-        };
-
-        let mut state_provider = ensure_ok!(provider_builder.build());
-
-        // fetch parent block
-        let Some(parent_block) = ensure_ok!(self.sealed_header_by_hash(parent_hash, ctx.state()))
-        else {
-            return Err(InsertBlockError::new(
-                self.convert_to_block(input)?,
-                ProviderError::HeaderNotFound(parent_hash.into()).into(),
-            )
-            .into());
-        };
-
-        let evm_env = self.evm_env_for(&input).map_err(NewPayloadError::other)?;
-
-        let env = ExecutionEnv { evm_env, hash: input.hash(), parent_hash: input.parent_hash() };
-
-        // Use the simplest state root strategy for triedb to avoid merkle tasks.
-        let strategy = StateRootStrategy::Synchronous;
-
-        // Get an iterator over the transactions in the payload.
-        let txs = self.tx_iterator_for(&input)?;
-
-        // Extract the BAL, if valid and available.
-        let block_access_list = ensure_ok!(input
-            .block_access_list()
-            .transpose()
-            .map_err(Box::<dyn std::error::Error + Send + Sync>::from))
-        .map(Arc::new);
-
-        // Create lazy overlay from ancestors.
-        let (lazy_overlay, anchor_hash) = Self::get_parent_lazy_overlay(parent_hash, ctx.state());
-
-        // Create overlay factory for payload processor.
-        let overlay_factory =
-            OverlayStateProviderFactory::new(self.provider.clone(), self.changeset_cache.clone())
-                .with_block_hash(Some(anchor_hash))
-                .with_lazy_overlay(lazy_overlay);
-
-        // Spawn the payload processor.
-        let mut handle = ensure_ok!(self.spawn_payload_processor(
-            env.clone(),
-            txs,
-            provider_builder,
-            overlay_factory.clone(),
-            strategy,
-            block_access_list,
-        ));
-
-        // Use cached state provider before executing, used in execution after prewarming threads
-        // complete.
-        if let Some((caches, cache_metrics)) = handle.caches().zip(handle.cache_metrics()) {
-            state_provider = Box::new(CachedStateProvider::new(state_provider, caches, cache_metrics));
-        };
-
-        if self.config.state_provider_metrics() {
-            state_provider = Box::new(InstrumentedStateProvider::new(state_provider, "engine"));
-        }
-
-        // Execute the block and handle any execution errors.
-        let (output, senders, receipt_root_rx) =
-            match self.execute_block(state_provider, env, &input, &mut handle) {
-                Ok(output) => output,
-                Err(err) => return self.handle_execution_error(input, err, &parent_block),
-            };
-
-        // After executing the block we can stop prewarming transactions.
-        handle.stop_prewarming_execution();
-
-        let block = self.convert_to_block(input)?.with_senders(senders);
-
-        // Wait for the receipt root computation to complete.
-        let receipt_root_bloom = receipt_root_rx.blocking_recv().ok();
-
-        let hashed_state = ensure_ok_post_block!(
-            self.validate_post_execution(&block, &parent_block, &output, &mut ctx, receipt_root_bloom),
-            block
-        );
-
-        let output = Arc::new(output);
-        let valid_block_tx = handle.terminate_caching(Some(output.clone()));
-
-        // TrieDB manages trie data; skip state root verification here.
-        let trie_output = TrieUpdates::default();
-
-        if let Some(valid_block_tx) = valid_block_tx {
-            let _ = valid_block_tx.send(());
-        }
-
-        Ok(self.spawn_deferred_trie_task(
-            block,
-            output,
-            &ctx,
-            hashed_state,
-            trie_output,
-            overlay_factory,
-        ))
-    }
-
     /// Validates a block that has already been converted from a payload.
     ///
     /// This method performs:
@@ -906,20 +749,12 @@ where
             let block_num_hash = input.num_hash();
             let start = Instant::now();
             self.metrics.block_validation.triedb_validate_entry_total.increment(1);
+            self.metrics
+                .block_validation
+                .triedb_validate_entry_sync_total
+                .increment(1);
 
-            let (mode, res) = if self.use_triedb_sync_validate {
-                self.metrics
-                    .block_validation
-                    .triedb_validate_entry_sync_total
-                    .increment(1);
-                ("sync", self.validate_block_with_state_with_triedb_sync_validate(input, ctx))
-            } else {
-                self.metrics
-                    .block_validation
-                    .triedb_validate_entry_async_total
-                    .increment(1);
-                ("async", self.validate_block_with_state_with_triedb_async_validate(input, ctx))
-            };
+            let res = self.validate_block_with_state_with_triedb(input, ctx);
 
             let elapsed = start.elapsed().as_secs_f64();
             self.metrics
@@ -930,7 +765,6 @@ where
             tracing::debug!(
                 target: "engine::tree",
                 block = ?block_num_hash,
-                mode,
                 elapsed_ms = (elapsed * 1000.0),
                 "Triedb validate_block_with_state completed"
             );
