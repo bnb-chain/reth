@@ -383,18 +383,11 @@ pub(crate) struct BlockValidationMetrics {
     pub(crate) anchored_overlay_trie_updates_size: Histogram,
     /// Size of `AnchoredTrieInput` overlay `HashedPostStateSorted` (`total_len`)
     pub(crate) anchored_overlay_hashed_state_size: Histogram,
-    /// triedb prefetch duration
-    pub(crate) triedb_prefetch_duration: Histogram,
     /// triedb validate duration
-    pub(crate) triedb_validate_duration: Histogram,
+    pub(crate) triedb_validate_root_duration: Histogram,
     /// Total number of triedb validation calls dispatched from `validate_block_with_state`
     pub(crate) triedb_validate_entry_total: Counter,
-    /// Total number of triedb sync-validate calls dispatched from `validate_block_with_state`
-    pub(crate) triedb_validate_entry_sync_total: Counter,
-    /// Total number of triedb async-validate calls dispatched from `validate_block_with_state`
-    #[allow(dead_code)]
-    pub(crate) triedb_validate_entry_async_total: Counter,
-    /// Histogram of total time spent in triedb validation (sync or async) as measured at the
+    /// Histogram of total time spent in triedb validation as measured at the
     /// `validate_block_with_state` entry point.
     pub(crate) triedb_validate_entry_duration: Histogram,
 }
