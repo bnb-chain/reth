@@ -205,9 +205,9 @@ impl EngineNodeLauncher {
 
         let beacon_engine_handle = ConsensusEngineHandle::new(consensus_engine_tx.clone());
         let (engine_api_tx, mut engine_api_rx) = unbounded_channel::<EngineApiRequest<
-            <Types as NodeTypes>::Payload,
-            <Types as NodeTypes>::Primitives,
-            BlockchainProvider<NodeTypesWithDBAdapter<Types, DB>>,
+            <<T as FullNodeTypes>::Types as NodeTypes>::Payload,
+            <<T as FullNodeTypes>::Types as NodeTypes>::Primitives,
+            BlockchainProvider<NodeTypesWithDBAdapter<<T as FullNodeTypes>::Types, <T as FullNodeTypes>::DB>>,
             <CB::Components as NodeComponents<T>>::Evm
         >>();
 

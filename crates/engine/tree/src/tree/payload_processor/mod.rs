@@ -375,7 +375,19 @@ where
     {
         let (prewarm_rx, execution_rx, size_hint) = self.spawn_tx_iterator(transactions);
 
-        let (to_multi_proof, rev_multi_proof) = channel();
+        // Create a crossbeam channel for multi-proof messages (required by spawn_caching_with).
+        let (to_multi_proof, crossbeam_rx) = crossbeam_channel::unbounded::<MultiProofMessage>();
+
+        // Bridge the crossbeam receiver to a std::sync::mpsc channel because
+        // TrieDBPrefetchHandle::new expects a std::sync::mpsc::Receiver.
+        let (mpsc_tx, rev_multi_proof) = std::sync::mpsc::channel::<MultiProofMessage>();
+        self.executor.spawn_blocking(move || {
+            while let Ok(msg) = crossbeam_rx.recv() {
+                if mpsc_tx.send(msg).is_err() {
+                    break;
+                }
+            }
+        });
 
         let prewarm_handle = self.spawn_caching_with(
             env,

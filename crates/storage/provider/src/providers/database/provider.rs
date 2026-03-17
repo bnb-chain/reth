@@ -589,10 +589,11 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
                         );
 
                         let (new_root, difflayer) = triedb
-                            .commit_hashed_post_state(
+                            .intermediate_and_commit_hashed_post_state(
                                 latest_state_root,
                                 None,
                                 &triedb_hashed_post_state,
+                                None,
                             )
                             .map_err(|e| ProviderError::other(e))?;
 
@@ -606,7 +607,7 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
                         }
 
                         triedb
-                            .flush(block_number, new_root, &difflayer)
+                            .flush(block_number, new_root, &Some(difflayer))
                             .map_err(|e| ProviderError::other(e))?;
 
                         debug!(

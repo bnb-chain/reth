@@ -18,7 +18,9 @@ use alloy_primitives::B256;
 
 use crate::tree::payload_processor::receipt_root_task::{IndexedReceipt, ReceiptRootTaskHandle};
 use rayon::prelude::*;
-use reth_chain_state::{CanonicalInMemoryState, DeferredTrieData, ExecutedBlock, LazyOverlay};
+use reth_chain_state::{
+    CanonicalInMemoryState, ComputedTrieData, DeferredTrieData, ExecutedBlock, LazyOverlay,
+};
 use reth_consensus::{ConsensusError, FullConsensus, ReceiptRootBloom};
 use reth_engine_primitives::{
     ConfigureEngineEvm, ExecutableTxIterator, ExecutionPayload, InvalidBlockHook, PayloadValidator,
@@ -38,7 +40,7 @@ use reth_primitives_traits::{
 use reth_provider::{
     providers::OverlayStateProviderFactory, BlockExecutionOutput, BlockNumReader, BlockReader,
     ChangeSetReader, DatabaseProviderFactory, DatabaseProviderROFactory, HashedPostStateProvider,
-    ProviderError, PruneCheckpointReader, StageCheckpointReader, StateProvider,
+    ProviderError, PruneCheckpointReader, StageCheckpointReader, StateProvider, StateProviderBox,
     StateProviderFactory, StateReader,
 };
 use reth_revm::db::State;
@@ -483,7 +485,7 @@ where
         else {
             // this is pre-validated in the tree
             return Err(InsertBlockError::new(
-                self.convert_to_block(input)?.into_sealed_block(),
+                self.convert_to_block(input)?,
                 ProviderError::HeaderNotFound(parent_hash.into()).into(),
             )
             .into());
@@ -499,14 +501,14 @@ where
         let Some(parent_block) = ensure_ok!(self.sealed_header_by_hash(parent_hash, ctx.state()))
         else {
             return Err(InsertBlockError::new(
-                self.convert_to_block(input)?.into_sealed_block(),
+                self.convert_to_block(input)?,
                 ProviderError::HeaderNotFound(parent_hash.into()).into(),
             )
             .into());
         };
         timings.sealed_header_by_hash = Some(parent_header_start.elapsed());
 
-        let evm_env = self.evm_env_for(&input);
+        let evm_env = self.evm_env_for(&input).map_err(NewPayloadError::other)?;
 
         let env = ExecutionEnv { evm_env, hash: input.hash(), parent_hash: input.parent_hash() };
 
@@ -523,23 +525,21 @@ where
         timings.spawn_cache_with_prefetcher = Some(spawn_handle_start.elapsed());
 
         // Use cached state provider before executing, used in execution after prewarming threads
-        // complete
+        // complete.
         let cached_wrap_start = Instant::now();
-        let state_provider = CachedStateProvider::new_with_caches(
-            state_provider,
-            handle.caches(),
-            handle.cache_metrics(),
-        );
+        let mut state_provider: StateProviderBox = Box::new(state_provider);
+        if let Some((caches, cache_metrics)) = handle.caches().zip(handle.cache_metrics()) {
+            state_provider = Box::new(CachedStateProvider::new(state_provider, caches, cache_metrics));
+        }
         timings.cached_state_provider_wrap = Some(cached_wrap_start.elapsed());
 
         let execute_start = Instant::now();
-        let output = if self.config.state_provider_metrics() {
-            let state_provider = InstrumentedStateProvider::from_state_provider(&state_provider);
-            let output = ensure_ok!(self.execute_block(&state_provider, env, &input, &mut handle));
-            state_provider.record_total_latency();
-            output
+        let (output, senders, receipt_root_rx) = if self.config.state_provider_metrics() {
+            // Wrap in InstrumentedStateProvider which records metrics on Drop
+            let instrumented = InstrumentedStateProvider::new(state_provider, "engine");
+            ensure_ok!(self.execute_block(instrumented, env, &input, &mut handle))
         } else {
-            ensure_ok!(self.execute_block(&state_provider, env, &input, &mut handle))
+            ensure_ok!(self.execute_block(state_provider, env, &input, &mut handle))
         };
         timings.execute_block = Some(execute_start.elapsed());
         // after executing the block we can stop executing transactions
@@ -548,15 +548,18 @@ where
         timings.stop_prewarming_execution = Some(stop_prewarm_start.elapsed());
 
         let convert_start = Instant::now();
-        let block = self.convert_to_block(input)?;
+        let block = self.convert_to_block(input)?.with_senders(senders);
         timings.convert_to_block = Some(convert_start.elapsed());
+
+        // Wrap output in Arc so it can be shared across multiple uses.
+        let output = Arc::new(output);
 
         // A helper macro that returns the block in case there was an error
         macro_rules! ensure_ok {
             ($expr:expr) => {
                 match $expr {
                     Ok(val) => val,
-                    Err(e) => return Err(InsertBlockError::new(block.into_sealed_block(), e.into()).into()),
+                    Err(e) => return Err(InsertBlockError::new(block.clone().into_sealed_block(), e.into()).into()),
                 }
             };
         }
@@ -564,7 +567,7 @@ where
         trace!(target: "engine::tree", block=?block_num_hash, "Validating block consensus");
         // validate block consensus rules
         let validate_inner_start = Instant::now();
-        ensure_ok!(self.validate_block_inner(&block));
+        ensure_ok!(self.validate_block_inner(&*block));
         timings.validate_block_inner = Some(validate_inner_start.elapsed());
 
         // now validate against the parent
@@ -577,10 +580,13 @@ where
         }
         timings.validate_header_against_parent = Some(validate_against_parent_start.elapsed());
 
+        // Wait for receipt root computation.
+        let receipt_root_bloom = receipt_root_rx.blocking_recv().ok();
+
         let validate_post_exec_start = Instant::now();
-        if let Err(err) = self.consensus.validate_block_post_execution(&block, &output) {
+        if let Err(err) = self.consensus.validate_block_post_execution(&block, &*output, receipt_root_bloom) {
             // call post-block hook
-            self.on_invalid_block(&parent_block, &block, &output, None, ctx.state_mut());
+            self.on_invalid_block(&parent_block, &block, &*output, None, ctx.state_mut());
             return Err(InsertBlockError::new(block.into_sealed_block(), err.into()).into());
         }
         timings.validate_block_post_execution = Some(validate_post_exec_start.elapsed());
@@ -594,14 +600,14 @@ where
             self.validator.validate_block_post_execution_with_hashed_state(&hashed_state, &block)
         {
             // call post-block hook
-            self.on_invalid_block(&parent_block, &block, &output, None, ctx.state_mut());
+            self.on_invalid_block(&parent_block, &block, &*output, None, ctx.state_mut());
             return Err(InsertBlockError::new(block.into_sealed_block(), err.into()).into());
         }
         timings.validate_block_post_exec_with_hashed_state =
             Some(validate_with_hashed_state_start.elapsed());
         // terminate prewarming task with good state output
         let terminate_caching_start = Instant::now();
-        handle.terminate_caching(Some(output.state.clone()));
+        handle.terminate_caching(Some(output.clone()));
         timings.terminate_caching = Some(terminate_caching_start.elapsed());
 
         let prefetch_start = Instant::now();
@@ -708,7 +714,7 @@ where
             );
             // call post-block hook
             let on_invalid_start = Instant::now();
-            self.on_invalid_block(&parent_block, &block, &output, None, ctx.state_mut());
+            self.on_invalid_block(&parent_block, &block, &*output, None, ctx.state_mut());
             timings.on_invalid_block = Some(on_invalid_start.elapsed());
             let block_state_root = block.header().state_root();
             return Err(InsertBlockError::new(
@@ -723,13 +729,11 @@ where
 
         // Mark successful completion so the timing log can report outcome.
         timings.ok = true;
-        Ok(ExecutedBlockWithTrieUpdates {
-            block: ExecutedBlock {
-                recovered_block: Arc::new(block),
-                execution_output: Arc::new(ExecutionOutcome::from((output, block_num_hash.number))),
-                hashed_state: Arc::new(hashed_state),
-            },
-            trie: ExecutedTrieUpdates::Present(Arc::new(TrieUpdates::default())),
+        Ok(ExecutedBlock {
+            recovered_block: Arc::new(block),
+            execution_output: output,
+            // TrieDB manages trie data; use empty default here.
+            trie_data: DeferredTrieData::ready(ComputedTrieData::default()),
             difflayer: Some(difflayer),
         })
     }
@@ -754,8 +758,22 @@ where
                     Err(e) => {
                         let block = self.convert_to_block(input)?;
                         return Err(
-                            InsertBlockError::new(block.into_sealed_block(), e.into()).into()
+                            InsertBlockError::new(block, e.into()).into()
                         );
+                    }
+                }
+            };
+        }
+
+        /// A helper macro for handling errors after the input has been converted to a block.
+        macro_rules! ensure_ok_post_block {
+            ($expr:expr, $block:expr) => {
+                match $expr {
+                    Ok(val) => val,
+                    Err(e) => {
+                        return Err(
+                            InsertBlockError::new($block.into_sealed_block(), e.into()).into()
+                        )
                     }
                 }
             };

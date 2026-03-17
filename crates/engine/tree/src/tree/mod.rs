@@ -30,13 +30,15 @@ use reth_payload_primitives::{
 };
 use reth_primitives_traits::{NodePrimitives, RecoveredBlock, SealedBlock, SealedHeader};
 use reth_provider::{
-    BlockExecutionOutput, BlockExecutionResult, BlockNumReader, BlockReader, ChangeSetReader,
-    DatabaseProviderFactory, HashedPostStateProvider, ProviderError, StageCheckpointReader,
-    StateProviderBox, StateProviderFactory, StateReader, TransactionVariant,
+    providers::ConsistentDbView, BlockExecutionOutput, BlockExecutionResult, BlockNumReader,
+    BlockReader, ChangeSetReader, DBProvider, DatabaseProviderFactory, HashedPostStateProvider,
+    ProviderError, StageCheckpointReader, StateProviderBox, StateProviderFactory, StateReader,
+    TransactionVariant,
 };
 use reth_revm::database::StateProviderDatabase;
 use reth_stages_api::ControlFlow;
-use reth_trie::{HashedPostState, TrieInput};
+use reth_trie::{HashedPostState, HashedPostStateSorted, TrieInput};
+use reth_trie_common::KeccakKeyHasher;
 use reth_trie_db::{ChangesetCache, DatabaseHashedPostState};
 use reth_trie_parallel::root::ParallelStateRoot;
 use revm::state::EvmState;
@@ -45,7 +47,7 @@ use rust_eth_triedb_common::{DiffLayer, DiffLayers};
 use state::TreeState;
 use std::{fmt::{Debug, Display}, ops, sync::Arc, time::Instant};
 
-use crossbeam_channel::{Receiver, Sender};
+use crossbeam_channel::{Receiver, RecvError, RecvTimeoutError, Sender};
 use tokio::sync::{
     mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
     oneshot,
@@ -2917,7 +2919,7 @@ where
     ///    block.
     /// 3. Once in-memory blocks are collected and optionally filtered, we compute the
     ///    [`HashedPostState`] from them.
-    fn compute_trie_input<TP: DBProvider + BlockNumReader>(
+    fn compute_trie_input<TP: DBProvider + BlockNumReader + ChangeSetReader>(
         &self,
         persisting_kind: PersistingKind,
         provider: TP,
@@ -2980,11 +2982,13 @@ where
             debug!(target: "engine::tree", block_number, best_block_number, "Empty revert state");
             HashedPostState::default()
         } else {
-            let revert_state = HashedPostState::from_reverts::<KeccakKeyHasher>(
-                provider.tx_ref(),
-                block_number + 1,
-            )
-            .map_err(ProviderError::from)?;
+            let revert_state: HashedPostState =
+                HashedPostStateSorted::from_reverts::<KeccakKeyHasher>(
+                    &provider,
+                    block_number + 1..,
+                )
+                .map_err(ProviderError::from)?
+                .into();
             debug!(
                 target: "engine::tree",
                 block_number,
@@ -2998,9 +3002,12 @@ where
         input.append(revert_state);
 
         // Extend with contents of parent in-memory blocks.
-        input.extend_with_blocks(
-            blocks.iter().rev().map(|block| (block.hashed_state(), block.trie_updates())),
-        );
+        for block in blocks.iter().rev() {
+            let hashed_state = block.hashed_state();
+            let trie_updates = block.trie_updates();
+            input.nodes.extend_from_sorted(&trie_updates);
+            input.state.extend_from_sorted(&hashed_state);
+        }
 
         Ok(input)
     }
@@ -3501,9 +3508,8 @@ where
         // TODO: this needs to be extended with caller.
         // input.append_ref(hashed_state);
 
-        Ok(ParallelStateRoot::new(consistent_view, input))
+        Ok(ParallelStateRoot::new(self.provider.clone(), input.prefix_sets.freeze()))
     }
-}
 
     fn request_payload_processor(&self) -> ProviderResult<PayloadProcessor<C>> {
         let precompile_cache_map = precompile_cache::PrecompileCacheMap::default();
@@ -3591,6 +3597,23 @@ enum PersistTarget {
     Threshold,
     /// Persist all blocks up to and including the canonical head.
     Head,
+}
+
+/// Describes whether the block being processed is a descendant of blocks currently being
+/// persisted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PersistingKind {
+    /// The block is a descendant of the persisting blocks.
+    PersistingDescendant,
+    /// The block is not a descendant of the persisting blocks.
+    NonPersistingDescendant,
+}
+
+impl PersistingKind {
+    /// Returns `true` if this is a `PersistingDescendant`.
+    pub const fn is_descendant(&self) -> bool {
+        matches!(self, Self::PersistingDescendant)
+    }
 }
 
 /// A custom parallel context for parallel state computation.

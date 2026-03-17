@@ -14,7 +14,7 @@ use reth_trie::{
     trie_cursor::{InMemoryTrieCursorFactory, TrieCursorFactory},
     updates::TrieUpdates,
     walker::TrieWalker,
-    HashBuilder, HashedPostState, Nibbles, StorageRoot, TrieInput, TRIE_ACCOUNT_RLP_MAX_SIZE,
+    HashBuilder, HashedPostState, Nibbles, StorageRoot, TRIE_ACCOUNT_RLP_MAX_SIZE,
 };
 use std::{
     collections::HashMap,
@@ -75,11 +75,6 @@ where
         self,
     ) -> Result<(B256, TrieUpdates), ParallelStateRootError> {
         self.calculate(true)
-    }
-
-    /// Appends a state to the trie input.
-    pub fn append_state(&mut self, state: &HashedPostState) {
-        self.input.append_ref(state);
     }
 
     /// Computes the state root by calculating storage roots in parallel for modified accounts,
