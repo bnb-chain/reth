@@ -22,7 +22,7 @@ use reth_engine_primitives::{
     BeaconEngineMessage, BeaconOnNewPayloadError, ConsensusEngineEvent, ExecutionPayload,
     ForkchoiceStateTracker, OnForkChoiceUpdated,
 };
-use reth_errors::{ConsensusError, ProviderResult, RethResult};
+use reth_errors::{ConsensusError, ProviderResult, RethError, RethResult};
 use reth_evm::{ConfigureEvm, OnStateHook};
 use reth_payload_builder::PayloadBuilderHandle;
 use reth_payload_primitives::{
@@ -30,24 +30,21 @@ use reth_payload_primitives::{
 };
 use reth_primitives_traits::{NodePrimitives, RecoveredBlock, SealedBlock, SealedHeader};
 use reth_provider::{
-    providers::ConsistentDbView, BlockExecutionOutput, BlockExecutionResult, BlockNumReader,
-    BlockReader, ChangeSetReader, DBProvider, DatabaseProviderFactory, HashedPostStateProvider,
+    BlockExecutionOutput, BlockExecutionResult, BlockNumReader,
+    BlockReader, ChangeSetReader, DatabaseProviderFactory, HashedPostStateProvider,
     ProviderError, StageCheckpointReader, StateProviderBox, StateProviderFactory, StateReader,
     TransactionVariant,
 };
 use reth_revm::database::StateProviderDatabase;
 use reth_stages_api::ControlFlow;
-use reth_trie::{HashedPostState, HashedPostStateSorted, TrieInput};
-use reth_trie_common::KeccakKeyHasher;
-use reth_trie_db::{ChangesetCache, DatabaseHashedPostState};
-use reth_trie_parallel::root::ParallelStateRoot;
+use reth_trie_db::ChangesetCache;
 use revm::state::EvmState;
 use revm_primitives::U256;
 use rust_eth_triedb_common::{DiffLayer, DiffLayers};
 use state::TreeState;
-use std::{fmt::{Debug, Display}, ops, sync::Arc, time::Instant};
+use std::{fmt::{Debug, Display}, marker::PhantomData, ops, sync::Arc, time::Instant};
 
-use crossbeam_channel::{Receiver, RecvError, RecvTimeoutError, Sender};
+use crossbeam_channel::{Receiver, Sender};
 use tokio::sync::{
     mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
     oneshot,
@@ -1348,34 +1345,6 @@ where
         .with_event(TreeEvent::Download(DownloadRequest::single_block(target))))
     }
 
-    /// Attempts to receive the next engine request.
-    ///
-    /// If there's currently no persistence action in progress, this will block until a new request
-    /// is received. If there's a persistence action in progress, this will try to receive the
-    /// next request with a timeout to not block indefinitely and return `Ok(None)` if no request is
-    /// received in time.
-    ///
-    /// Returns an error if the engine channel is disconnected.
-    #[expect(clippy::type_complexity)]
-    #[allow(dead_code)]
-    fn try_recv_engine_message(
-        &self,
-    ) -> Result<Option<FromEngine<EngineApiRequest<T, N, P, C>, N::Block>>, RecvError> {
-        if self.persistence_state.in_progress() {
-            // try to receive the next request with a timeout to not block indefinitely
-            match self.incoming.recv_timeout(std::time::Duration::from_millis(500)) {
-                Ok(msg) => Ok(Some(msg)),
-                Err(err) => match err {
-                    RecvTimeoutError::Timeout => Ok(None),
-                    RecvTimeoutError::Disconnected => Err(RecvError),
-                },
-            }
-        } else {
-            self.incoming.recv().map(Some)
-        }
-    }
-
-
     /// Helper method to remove blocks and set the persistence state. This ensures we keep track of
     /// the current persistence action while we're removing blocks.
     fn remove_blocks(&mut self, new_tip_num: u64) {
@@ -1727,28 +1696,19 @@ where
                             }
                         }
                     }
-                    EngineApiRequest::Custom(request) => {
-                        match request {
-                            CustomRequestMessage::RequestParallelStateRoot { parent_hash, tx } => {
-                                let output = self.request_parallel_state_root(parent_hash);
-                                if tx.send(output.map_err(Into::into)).is_err() {
-                                    error!(target: "engine::tree", "Failed to send event");
-                                }
+                    EngineApiRequest::Custom(request) => match request {
+                        CustomRequestMessage::RequestDiffLayer { parent_hash, tx, .. } => {
+                            let start = Instant::now();
+                            let output = self
+                                .state
+                                .get_merged_difflayers(parent_hash)
+                                .ok_or_else(|| "DiffLayers not found".to_string());
+                            if tx.send(output.map_err(RethError::msg)).is_err() {
+                                error!(target: "engine::tree", "Failed to send event");
                             }
-                            CustomRequestMessage::RequestPayloadProcessor { tx } => {
-                                let output = self.request_payload_processor();
-                                if tx.send(output.map_err(Into::into)).is_err() {
-                                    error!(target: "engine::tree", "Failed to send event");
-                                }
-                            }
-                            CustomRequestMessage::RequestParallelCtx { parent_hash, allocated_trie_input, tx } => {
-                                let output = self.request_parallel_ctx(parent_hash, allocated_trie_input);
-                                if tx.send(output.map_err(Into::into)).is_err() {
-                                    error!(target: "engine::tree", "Failed to send event");
-                                }
-                            }
+                            log_handler_duration("request.custom.request_difflayer", start.elapsed());
                         }
-                    }
+                    },
                 }
             }
             FromEngine::DownloadedBlocks(blocks) => {
@@ -2905,115 +2865,6 @@ where
         Ok(InsertPayloadOk::Inserted(BlockStatus::Valid))
     }
 
-    /// Computes the trie input at the provided parent hash.
-    ///
-    /// The goal of this function is to take in-memory blocks and generate a [`TrieInput`] that
-    /// serves as an overlay to the database blocks.
-    ///
-    /// It works as follows:
-    /// 1. Collect in-memory blocks that are descendants of the provided parent hash using
-    ///    [`TreeState::blocks_by_hash`].
-    /// 2. If the persistence is in progress, and the block that we're computing the trie input for
-    ///    is a descendant of the currently persisting blocks, we need to be sure that in-memory
-    ///    blocks are not overlapping with the database blocks that may have been already persisted.
-    ///    To do that, we're filtering out in-memory blocks that are lower than the highest database
-    ///    block.
-    /// 3. Once in-memory blocks are collected and optionally filtered, we compute the
-    ///    [`HashedPostState`] from them.
-    fn compute_trie_input<TP: DBProvider + BlockNumReader + ChangeSetReader>(
-        &self,
-        persisting_kind: PersistingKind,
-        provider: TP,
-        parent_hash: B256,
-        allocated_trie_input: Option<TrieInput>,
-    ) -> ProviderResult<TrieInput> {
-        // get allocated trie input or use a default trie input
-        let mut input = allocated_trie_input.unwrap_or_default();
-
-        let best_block_number = provider.best_block_number()?;
-
-        let (mut historical, mut blocks) = self
-            .state
-            .tree_state
-            .blocks_by_hash(parent_hash)
-            .map_or_else(|| (parent_hash.into(), vec![]), |(hash, blocks)| (hash.into(), blocks));
-
-        // If the current block is a descendant of the currently persisting blocks, then we need to
-        // filter in-memory blocks, so that none of them are already persisted in the database.
-        if persisting_kind.is_descendant() {
-            // Iterate over the blocks from oldest to newest.
-            while let Some(block) = blocks.last() {
-                let recovered_block = block.recovered_block();
-                if recovered_block.number() <= best_block_number {
-                    // Remove those blocks that lower than or equal to the highest database
-                    // block.
-                    blocks.pop();
-                } else {
-                    // If the block is higher than the best block number, stop filtering, as it's
-                    // the first block that's not in the database.
-                    break;
-                }
-            }
-
-            historical = if let Some(block) = blocks.last() {
-                // If there are any in-memory blocks left after filtering, set the anchor to the
-                // parent of the oldest block.
-                (block.recovered_block().number() - 1).into()
-            } else {
-                // Otherwise, set the anchor to the original provided parent hash.
-                parent_hash.into()
-            };
-        }
-
-        if blocks.is_empty() {
-            debug!(target: "engine::tree", %parent_hash, "Parent found on disk");
-        } else {
-            debug!(target: "engine::tree", %parent_hash, %historical, blocks = blocks.len(), "Parent found in memory");
-        }
-
-        // Convert the historical block to the block number.
-        let block_number = provider
-            .convert_hash_or_number(historical)?
-            .ok_or_else(|| ProviderError::BlockHashNotFound(historical.as_hash().unwrap()))?;
-
-        // Retrieve revert state for historical block.
-        let revert_state = if block_number == best_block_number {
-            // We do not check against the `last_block_number` here because
-            // `HashedPostState::from_reverts` only uses the database tables, and not static files.
-            debug!(target: "engine::tree", block_number, best_block_number, "Empty revert state");
-            HashedPostState::default()
-        } else {
-            let revert_state: HashedPostState =
-                HashedPostStateSorted::from_reverts::<KeccakKeyHasher>(
-                    &provider,
-                    block_number + 1..,
-                )
-                .map_err(ProviderError::from)?
-                .into();
-            debug!(
-                target: "engine::tree",
-                block_number,
-                best_block_number,
-                accounts = revert_state.accounts.len(),
-                storages = revert_state.storages.len(),
-                "Non-empty revert state"
-            );
-            revert_state
-        };
-        input.append(revert_state);
-
-        // Extend with contents of parent in-memory blocks.
-        for block in blocks.iter().rev() {
-            let hashed_state = block.hashed_state();
-            let trie_updates = block.trie_updates();
-            input.nodes.extend_from_sorted(&trie_updates);
-            input.state.extend_from_sorted(&hashed_state);
-        }
-
-        Ok(input)
-    }
-
-
     /// Handles an error that occurred while inserting a block.
     ///
     /// If this is a validation error this will mark the block as invalid.
@@ -3494,50 +3345,6 @@ where
         }
         Ok((ret_header, Some(ret_td)))
     }
-    
-    fn request_parallel_state_root(&self, parent_hash: BlockHash) -> ProviderResult<ParallelStateRoot<P>> {
-        let consistent_view = ConsistentDbView::new_with_latest_tip(self.provider.clone())?;
-
-        let input = self.compute_trie_input(
-            PersistingKind::PersistingDescendant,
-            consistent_view.provider_ro()?,
-            parent_hash,
-            None,
-        )?;
-
-        // Extend with block we are validating root for.
-        // TODO: this needs to be extended with caller.
-        // input.append_ref(hashed_state);
-
-        Ok(ParallelStateRoot::new(self.provider.clone(), input.prefix_sets.freeze()))
-    }
-
-    fn request_payload_processor(&self) -> ProviderResult<PayloadProcessor<C>> {
-        let precompile_cache_map = precompile_cache::PrecompileCacheMap::default();
-        Ok(PayloadProcessor::new(
-            payload_processor::executor::WorkloadExecutor::default(),
-            self.evm_config.clone(),
-            &self.config,
-            precompile_cache_map,
-        ))
-    }
-
-    fn request_parallel_ctx(&self, parent_hash: BlockHash, allocated_trie_input: Option<TrieInput>) -> ProviderResult<CustomParallelCtx<P, N>> {
-        let consistent_view = ConsistentDbView::new_with_latest_tip(self.provider.clone())?;
-        let state_provider_builder = self.state_provider_builder(parent_hash)?;
-        let trie_input = self.compute_trie_input(
-            PersistingKind::PersistingDescendant,
-            consistent_view.provider_ro()?,
-            parent_hash,
-            allocated_trie_input,
-        )?;
-        Ok(CustomParallelCtx {
-            trie_input,
-            consistent_view,
-            state_provider_builder: state_provider_builder,
-            persisting_kind: PersistingKind::PersistingDescendant,
-        })
-    }
 }
 
 /// Block inclusion can be valid, accepted, or invalid. Invalid blocks are returned as an error
@@ -3617,35 +3424,6 @@ impl PersistingKind {
     }
 }
 
-/// A custom parallel context for parallel state computation.
-pub struct CustomParallelCtx<P, N>
-where
-    N: NodePrimitives,
-{
-    /// The trie input to use for the parallel state computation.
-    pub trie_input: TrieInput,
-    /// The consistent view to use for the parallel state computation.
-    pub consistent_view: ConsistentDbView<P>,
-    /// The state provider builder to use for the parallel state computation.
-    pub state_provider_builder: Option<StateProviderBuilder<N, P>>,
-    /// The persisting kind to use for the parallel state computation.
-    pub persisting_kind: PersistingKind,
-}
-
-impl<P, N> std::fmt::Debug for CustomParallelCtx<P, N>
-where
-    N: NodePrimitives,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CustomParallelCtx")
-            .field("trie_input", &"...")
-            .field("consistent_view", &"...")
-            .field("state_provider_builder", &"...")
-            .field("persisting_kind", &self.persisting_kind)
-            .finish()
-    }
-}
-
 /// A custom request message for the engine.
 #[derive(Debug)]
 pub enum CustomRequestMessage<P, Evm, N>
@@ -3653,26 +3431,14 @@ where
     Evm: ConfigureEvm<Primitives = N>,
     N: NodePrimitives,
 {
-    /// Request to calculate the parallel state root for a given parent hash.
-    RequestParallelStateRoot {
-        /// The parent hash to calculate the parallel state root for.
+    /// Request to get the merged diff layers for a given parent hash.
+    RequestDiffLayer {
+        /// The parent hash to get the diff layers for.
         parent_hash: BlockHash,
-        /// The sender for returning the parallel state root.
-        tx: oneshot::Sender<RethResult<ParallelStateRoot<P>>>,
-    },
-    /// Request to calculate the parallel state root for a given parent hash.
-    RequestPayloadProcessor {
-        /// The sender for returning the parallel state root.
-        tx: oneshot::Sender<RethResult<PayloadProcessor<Evm>>>,
-    },
-    /// Request context for parallel state computation.
-    RequestParallelCtx {
-        /// The parent hash to calculate the parallel state root for.
-        parent_hash: BlockHash,
-        /// The allocated trie input to use.
-        allocated_trie_input: Option<TrieInput>,
-        /// The sender for returning the parallel state root.
-        tx: oneshot::Sender<RethResult<CustomParallelCtx<P, N>>>,
+        /// The sender for returning the diff layers.
+        tx: oneshot::Sender<RethResult<DiffLayers>>,
+        /// Phantom data to hold the generic types.
+        _phantom: PhantomData<(P, Evm, N)>,
     },
 }
 
@@ -3683,14 +3449,8 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::RequestParallelStateRoot { parent_hash, .. } => {
-                write!(f, "RequestParallelStateRoot(parent_hash: {:?})", parent_hash)
-            }
-            Self::RequestPayloadProcessor { .. } => {
-                write!(f, "RequestPayloadProcessor")
-            }
-            Self::RequestParallelCtx { parent_hash, .. } => {
-                write!(f, "RequestParallelCtx(parent_hash: {:?})", parent_hash)
+            Self::RequestDiffLayer { parent_hash, .. } => {
+                write!(f, "RequestDiffLayer(parent_hash: {:?})", parent_hash)
             }
         }
     }
