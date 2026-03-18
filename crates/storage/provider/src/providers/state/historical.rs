@@ -581,17 +581,23 @@ pub struct PipelineConsistency {
 impl PipelineConsistency {
     /// Returns `Some((exec_tip, hist_tip))` if account history is inconsistent with PlainState,
     /// meaning the `InPlainState` fallback would return wrong data.
+    ///
+    /// A `None` history tip means the index stage has never run, which is equivalent to block 0.
     pub const fn account_inconsistency(&self) -> Option<(BlockNumber, BlockNumber)> {
         match (self.execution_tip, self.account_history_tip) {
             (Some(exec), Some(hist)) if exec > hist => Some((exec, hist)),
+            (Some(exec), None) => Some((exec, 0)),
             _ => None,
         }
     }
 
     /// Returns `Some((exec_tip, hist_tip))` if storage history is inconsistent with PlainState.
+    ///
+    /// A `None` history tip means the index stage has never run, which is equivalent to block 0.
     pub const fn storage_inconsistency(&self) -> Option<(BlockNumber, BlockNumber)> {
         match (self.execution_tip, self.storage_history_tip) {
             (Some(exec), Some(hist)) if exec > hist => Some((exec, hist)),
+            (Some(exec), None) => Some((exec, 0)),
             _ => None,
         }
     }
