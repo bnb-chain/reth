@@ -5,6 +5,7 @@ use alloy_eips::eip1559::{ETHEREUM_BLOCK_GAS_LIMIT_30M, MIN_PROTOCOL_BASE_FEE};
 use alloy_primitives::Address;
 use clap::{builder::Resettable, Args};
 use reth_cli_util::{parse_duration_from_secs_or_ms, parsers::format_duration_as_secs_or_ms};
+use reth_network::transactions::constants::tx_manager::DEFAULT_REANNOUNCE_TIME;
 use reth_transaction_pool::{
     blobstore::disk::DEFAULT_MAX_CACHED_BLOBS,
     maintain::MAX_QUEUED_TRANSACTION_LIFETIME,
@@ -52,6 +53,7 @@ pub struct DefaultTxPoolValues {
     new_tx_listener_buffer_size: usize,
     max_new_pending_txs_notifications: usize,
     max_queued_lifetime: Duration,
+    reannounce_time: Duration,
     transactions_backup_path: Option<PathBuf>,
     disable_transactions_backup: bool,
     max_batch_size: usize,
@@ -230,6 +232,12 @@ impl DefaultTxPoolValues {
         self
     }
 
+    /// Set the default local transaction reannounce threshold.
+    pub const fn with_reannounce_time(mut self, v: Duration) -> Self {
+        self.reannounce_time = v;
+        self
+    }
+
     /// Set the default transactions backup path
     pub fn with_transactions_backup_path(mut self, v: Option<PathBuf>) -> Self {
         self.transactions_backup_path = v;
@@ -279,6 +287,7 @@ impl Default for DefaultTxPoolValues {
             new_tx_listener_buffer_size: NEW_TX_LISTENER_BUFFER_SIZE,
             max_new_pending_txs_notifications: MAX_NEW_PENDING_TXS_NOTIFICATIONS,
             max_queued_lifetime: MAX_QUEUED_TRANSACTION_LIFETIME,
+            reannounce_time: DEFAULT_REANNOUNCE_TIME,
             transactions_backup_path: None,
             disable_transactions_backup: false,
             max_batch_size: 1,
@@ -395,6 +404,12 @@ pub struct TxPoolArgs {
     #[arg(long = "txpool.lifetime", value_parser = parse_duration_from_secs_or_ms, value_name = "DURATION", default_value = format_duration_as_secs_or_ms(DefaultTxPoolValues::get_global().max_queued_lifetime))]
     pub max_queued_lifetime: Duration,
 
+    /// Age threshold for hash-only reannouncement of local pending transactions.
+    ///
+    /// Default is effectively disabled at 10 years. Minimum is 1 minute.
+    #[arg(long = "txpool.reannouncetime", alias = "txpool.reannounce-time", value_parser = parse_duration_from_secs_or_ms, value_name = "DURATION", default_value = format_duration_as_secs_or_ms(DefaultTxPoolValues::get_global().reannounce_time))]
+    pub reannounce_time: Duration,
+
     /// Path to store the local transaction backup at, to survive node restarts.
     #[arg(long = "txpool.transactions-backup", alias = "txpool.journal", value_name = "PATH", default_value = Resettable::from(DefaultTxPoolValues::get_global().transactions_backup_path.as_ref().map(|v| v.to_string_lossy().into())))]
     pub transactions_backup_path: Option<PathBuf>,
@@ -461,6 +476,7 @@ impl Default for TxPoolArgs {
             new_tx_listener_buffer_size,
             max_new_pending_txs_notifications,
             max_queued_lifetime,
+            reannounce_time,
             transactions_backup_path,
             disable_transactions_backup,
             max_batch_size,
@@ -493,6 +509,7 @@ impl Default for TxPoolArgs {
             new_tx_listener_buffer_size,
             max_new_pending_txs_notifications,
             max_queued_lifetime,
+            reannounce_time,
             transactions_backup_path,
             disable_transactions_backup,
             max_batch_size,
@@ -622,6 +639,7 @@ mod tests {
             new_tx_listener_buffer_size: 256,
             max_new_pending_txs_notifications: 128,
             max_queued_lifetime: Duration::from_secs(7200),
+            reannounce_time: Duration::from_secs(1200),
             transactions_backup_path: Some(PathBuf::from("/tmp/txpool-backup")),
             disable_transactions_backup: false,
             max_batch_size: 10,
@@ -681,6 +699,8 @@ mod tests {
             "128",
             "--txpool.lifetime",
             "7200",
+            "--txpool.reannouncetime",
+            "1200",
             "--txpool.transactions-backup",
             "/tmp/txpool-backup",
             "--txpool.max-batch-size",

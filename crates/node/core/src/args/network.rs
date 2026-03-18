@@ -30,6 +30,7 @@ use reth_network::{
             },
             tx_manager::{
                 DEFAULT_MAX_COUNT_PENDING_POOL_IMPORTS, DEFAULT_MAX_COUNT_TRANSACTIONS_SEEN_BY_PEER,
+                DEFAULT_REANNOUNCE_TIME,
             },
         },
         TransactionFetcherConfig, TransactionPropagationMode, TransactionsManagerConfig,
@@ -298,6 +299,7 @@ impl NetworkArgs {
             max_transactions_seen_by_peer_history: self.max_seen_tx_history,
             propagation_mode: self.propagation_mode,
             ingress_policy: self.tx_ingress_policy,
+            reannounce_time: DEFAULT_REANNOUNCE_TIME,
         }
     }
 
