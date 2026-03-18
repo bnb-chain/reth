@@ -41,7 +41,6 @@ use std::{
     },
     time::{Instant, SystemTime},
 };
-use tokio::sync::Mutex;
 
 /// A [`TransactionValidator`] implementation that validates ethereum transaction.
 ///
@@ -1262,7 +1261,7 @@ impl<Client> EthTransactionValidatorBuilder<Client> {
             }),
         );
 
-        let to_validation_task = Arc::new(Mutex::new(tx));
+        let to_validation_task = Arc::new(tx);
 
         TransactionValidationTaskExecutor { validator: Arc::new(validator), to_validation_task }
     }

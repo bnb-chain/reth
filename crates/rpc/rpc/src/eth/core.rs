@@ -390,7 +390,7 @@ where
         // Create tx pool insertion batcher
         let (processor, tx_batch_sender) =
             BatchTxProcessor::new(components.pool().clone(), max_batch_size);
-        task_spawner.spawn_critical("tx-batcher", Box::pin(processor));
+        task_spawner.spawn_critical("tx-batcher", Box::pin(processor.run()));
 
         Self {
             components,

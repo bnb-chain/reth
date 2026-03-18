@@ -11,10 +11,7 @@ use futures_util::{lock::Mutex, StreamExt};
 use reth_primitives_traits::{Block, SealedBlock};
 use reth_tasks::TaskSpawner;
 use std::{future::Future, pin::Pin, sync::Arc};
-use tokio::{
-    sync,
-    sync::{mpsc, oneshot},
-};
+use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 
 /// Represents a future outputting unit type and is sendable.
@@ -38,7 +35,7 @@ impl ValidationTask {
     ///
     /// The sender sends new (transaction) validation tasks to an available validation task.
     pub fn new() -> (ValidationJobSender, Self) {
-        Self::with_capacity(1)
+        Self::with_capacity(64)
     }
 
     /// Creates a new cloneable task pair with the given channel capacity.
@@ -57,8 +54,12 @@ impl ValidationTask {
     ///
     /// This will run as long as the channel is alive and is expected to be spawned as a task.
     pub async fn run(self) {
-        while let Some(task) = self.validation_jobs.lock().await.next().await {
-            task.await;
+        loop {
+            let maybe_task = self.validation_jobs.lock().await.next().await;
+            match maybe_task {
+                Some(task) => task.await,
+                None => break,
+            }
         }
     }
 }
@@ -100,7 +101,8 @@ pub struct TransactionValidationTaskExecutor<V> {
     /// The validator that will validate transactions on a separate task.
     pub validator: Arc<V>,
     /// The sender half to validation tasks that perform the actual validation.
-    pub to_validation_task: Arc<sync::Mutex<ValidationJobSender>>,
+    /// No mutex needed: `mpsc::Sender::send` takes `&self` and the metrics use atomics.
+    pub to_validation_task: Arc<ValidationJobSender>,
 }
 
 impl<V> Clone for TransactionValidationTaskExecutor<V> {
@@ -182,13 +184,7 @@ impl<V> TransactionValidationTaskExecutor<V> {
     /// validation tasks.
     pub fn new(validator: V) -> (Self, ValidationTask) {
         let (tx, task) = ValidationTask::new();
-        (
-            Self {
-                validator: Arc::new(validator),
-                to_validation_task: Arc::new(sync::Mutex::new(tx)),
-            },
-            task,
-        )
+        (Self { validator: Arc::new(validator), to_validation_task: Arc::new(tx) }, task)
     }
 }
 
@@ -206,17 +202,12 @@ where
         let hash = *transaction.hash();
         let (tx, rx) = oneshot::channel();
         {
-            let res = {
-                let to_validation_task = self.to_validation_task.clone();
-                let validator = self.validator.clone();
-                let fut = Box::pin(async move {
-                    let res = validator.validate_transaction(origin, transaction).await;
-                    let _ = tx.send(res);
-                });
-                let to_validation_task = to_validation_task.lock().await;
-                to_validation_task.send(fut).await
-            };
-            if res.is_err() {
+            let validator = self.validator.clone();
+            let fut = Box::pin(async move {
+                let res = validator.validate_transaction(origin, transaction).await;
+                let _ = tx.send(res);
+            });
+            if self.to_validation_task.send(fut).await.is_err() {
                 return TransactionValidationOutcome::Error(
                     hash,
                     Box::new(TransactionValidatorError::ValidationServiceUnreachable),
@@ -240,17 +231,12 @@ where
         let hashes: Vec<_> = transactions.iter().map(|(_, tx)| *tx.hash()).collect();
         let (tx, rx) = oneshot::channel();
         {
-            let res = {
-                let to_validation_task = self.to_validation_task.clone();
-                let validator = self.validator.clone();
-                let fut = Box::pin(async move {
-                    let res = validator.validate_transactions(transactions).await;
-                    let _ = tx.send(res);
-                });
-                let to_validation_task = to_validation_task.lock().await;
-                to_validation_task.send(fut).await
-            };
-            if res.is_err() {
+            let validator = self.validator.clone();
+            let fut = Box::pin(async move {
+                let res = validator.validate_transactions(transactions).await;
+                let _ = tx.send(res);
+            });
+            if self.to_validation_task.send(fut).await.is_err() {
                 return hashes
                     .into_iter()
                     .map(|hash| {

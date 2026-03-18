@@ -2,15 +2,15 @@
 //!
 //! This module provides transaction batching logic to reduce lock contention when processing
 //! many concurrent transaction pool insertions.
+//!
+//! The processor awaits each batch inline (rather than spawning it). While a batch is being
+//! validated and inserted, new requests accumulate in the unbounded channel. The next iteration
+//! drains them all at once, producing a naturally larger batch under load. This is critical for
+//! performance: a batch of N transactions shares a single MDBX state-provider creation, a single
+//! pool write-lock acquisition, and a single validation-channel round trip.
 
 use crate::{
     error::PoolError, AddedTransactionOutcome, PoolTransaction, TransactionOrigin, TransactionPool,
-};
-use pin_project::pin_project;
-use std::{
-    future::Future,
-    pin::Pin,
-    task::{ready, Context, Poll},
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -38,14 +38,14 @@ where
     }
 }
 
-/// Transaction batch processor that handles batch processing
-#[pin_project]
+/// Transaction batch processor that handles batch processing.
+///
+/// Processes batches inline so that new requests accumulate during processing,
+/// enabling natural batching under load.
 #[derive(Debug)]
 pub struct BatchTxProcessor<Pool: TransactionPool> {
     pool: Pool,
     max_batch_size: usize,
-    buf: Vec<BatchTxRequest<Pool::Transaction>>,
-    #[pin]
     request_rx: mpsc::UnboundedReceiver<BatchTxRequest<Pool::Transaction>>,
 }
 
@@ -60,7 +60,7 @@ where
     ) -> (Self, mpsc::UnboundedSender<BatchTxRequest<Pool::Transaction>>) {
         let (request_tx, request_rx) = mpsc::unbounded_channel();
 
-        let processor = Self { pool, max_batch_size, buf: Vec::with_capacity(1), request_rx };
+        let processor = Self { pool, max_batch_size, request_rx };
 
         (processor, request_tx)
     }
@@ -87,34 +87,25 @@ where
             let _ = response_tx.send(pool_result);
         }
     }
-}
 
-impl<Pool> Future for BatchTxProcessor<Pool>
-where
-    Pool: TransactionPool + 'static,
-{
-    type Output = ();
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut this = self.project();
-
+    /// Run the batch processor loop.
+    ///
+    /// Each iteration waits for at least one request, collects up to `max_batch_size`
+    /// requests that are already buffered, and processes them as a single batch.
+    /// While the batch is being processed (validation + pool insertion), new requests
+    /// accumulate in the unbounded channel, so the next iteration naturally forms a
+    /// larger batch under sustained load.
+    pub async fn run(mut self) {
+        let mut buf = Vec::with_capacity(self.max_batch_size);
         loop {
-            // Drain all available requests from the receiver
-            ready!(this.request_rx.poll_recv_many(cx, this.buf, *this.max_batch_size));
-
-            if !this.buf.is_empty() {
-                let batch = std::mem::take(this.buf);
-                let pool = this.pool.clone();
-                tokio::spawn(async move {
-                    Self::process_batch(&pool, batch).await;
-                });
-                this.buf.reserve(1);
-
-                continue;
+            buf.clear();
+            let count = self.request_rx.recv_many(&mut buf, self.max_batch_size).await;
+            if count == 0 {
+                break;
             }
-
-            // No requests available, return Pending to wait for more
-            return Poll::Pending;
+            let batch = std::mem::take(&mut buf);
+            Self::process_batch(&self.pool, batch).await;
+            buf = Vec::with_capacity(self.max_batch_size);
         }
     }
 }
@@ -159,7 +150,7 @@ mod tests {
         let (processor, request_tx) = BatchTxProcessor::new(pool.clone(), 1000);
 
         // Spawn the processor
-        let handle = tokio::spawn(processor);
+        let handle = tokio::spawn(processor.run());
 
         let mut responses = Vec::new();
 
@@ -191,7 +182,7 @@ mod tests {
         let (processor, request_tx) = BatchTxProcessor::new(pool.clone(), 1000);
 
         // Spawn the processor
-        let handle = tokio::spawn(processor);
+        let handle = tokio::spawn(processor.run());
 
         let mut results = Vec::new();
         for i in 0..10 {
@@ -219,7 +210,7 @@ mod tests {
         let (processor, request_tx) = BatchTxProcessor::new(pool.clone(), max_batch_size);
 
         // Spawn batch processor with threshold
-        let handle = tokio::spawn(processor);
+        let handle = tokio::spawn(processor.run());
 
         let mut futures = FuturesUnordered::new();
         for i in 0..max_batch_size {
