@@ -27,7 +27,6 @@ use revm_database::{AccountStatus, BundleAccount};
 use alloy_consensus::constants::KECCAK_EMPTY;
 use rust_eth_triedb::TrieDBHashedPostState;
 use rust_eth_triedb_state_trie::account::StateAccount;
-/// Representation of in-memory hashed state.
 #[derive(PartialEq, Eq, Clone, Default, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct HashedPostState {
