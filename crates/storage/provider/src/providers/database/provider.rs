@@ -251,7 +251,12 @@ impl<TX: DbTx + 'static, N: NodeTypes> DatabaseProvider<TX, N> {
         if block_number == self.best_block_number().unwrap_or_default() &&
             block_number == self.last_block_number().unwrap_or_default()
         {
-            return Ok(Box::new(LatestStateProviderRef::new(self)))
+            let pipeline_consistency = self.build_pipeline_consistency()?;
+            if pipeline_consistency.account_inconsistency().is_none() &&
+                pipeline_consistency.storage_inconsistency().is_none()
+            {
+                return Ok(Box::new(LatestStateProviderRef::new(self)))
+            }
         }
 
         // +1 as the changeset that we want is the one that was applied after this block.
@@ -872,10 +877,17 @@ impl<TX: DbTx + 'static, N: NodeTypes> TryIntoHistoricalStateProvider for Databa
         self,
         mut block_number: BlockNumber,
     ) -> ProviderResult<StateProviderBox> {
-        // if the block number is the same as the currently best block number on disk we can use the
-        // latest state provider here
+        // If the block number matches the best block on disk, we can normally use the latest
+        // state provider. However, during pipeline sync the Execution stage may have advanced
+        // PlainState beyond the Finish checkpoint, so LatestStateProvider would return data
+        // from a future block. Only take the fast path when there is no pipeline gap.
         if block_number == self.best_block_number().unwrap_or_default() {
-            return Ok(Box::new(LatestStateProvider::new(self)))
+            let pipeline_consistency = self.build_pipeline_consistency()?;
+            if pipeline_consistency.account_inconsistency().is_none() &&
+                pipeline_consistency.storage_inconsistency().is_none()
+            {
+                return Ok(Box::new(LatestStateProvider::new(self)))
+            }
         }
 
         // +1 as the changeset that we want is the one that was applied after this block.
