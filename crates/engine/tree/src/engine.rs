@@ -97,7 +97,7 @@ where
                                 Poll::Ready(HandlerEvent::Event(ev))
                             }
                             HandlerEvent::FatalError => Poll::Ready(HandlerEvent::FatalError),
-                        };
+                        }
                     }
                     RequestHandlerEvent::Download(req) => {
                         // delegate download request to the downloader
@@ -111,7 +111,7 @@ where
                 // and delegate the request to the handler
                 self.handler.on_event(FromEngine::Request(req.into()));
                 // skip downloading in this iteration to allow the handler to process the request
-                continue;
+                continue
             }
 
             // advance the downloader
@@ -120,10 +120,10 @@ where
                     // delegate the downloaded blocks to the handler
                     self.handler.on_event(FromEngine::DownloadedBlocks(blocks));
                 }
-                continue;
+                continue
             }
 
-            return Poll::Pending;
+            return Poll::Pending
         }
     }
 }
@@ -203,7 +203,7 @@ where
 
     fn poll(&mut self, cx: &mut Context<'_>) -> Poll<RequestHandlerEvent<Self::Event>> {
         let Some(ev) = ready!(self.from_tree.poll_recv(cx)) else {
-            return Poll::Ready(RequestHandlerEvent::HandlerEvent(HandlerEvent::FatalError));
+            return Poll::Ready(RequestHandlerEvent::HandlerEvent(HandlerEvent::FatalError))
         };
 
         let ev = match ev {

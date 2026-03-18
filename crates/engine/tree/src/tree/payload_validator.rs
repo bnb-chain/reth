@@ -100,7 +100,6 @@ impl<'a, N: NodePrimitives> TreeCtx<'a, N> {
     pub const fn canonical_in_memory_state(&self) -> &'a CanonicalInMemoryState<N> {
         self.canonical_in_memory_state
     }
-
 }
 
 /// A helper type that provides reusable payload validation logic for network-specific validators.
@@ -320,12 +319,7 @@ where
     }
 
     /// Validates a block that has already been converted from a payload with triedb.
-    ///
-    /// Uses the triedb prefetcher to pre-fetch trie proofs during execution, then commits
-    /// the state root via triedb (bypassing the normal merkle trie computation).
-    pub fn validate_block_with_state_with_triedb<
-        T: PayloadTypes<BuiltPayload: BuiltPayload<Primitives = N>>,
-    >(
+    pub fn validate_block_with_state_with_triedb<T: PayloadTypes<BuiltPayload: BuiltPayload<Primitives = N>>>(
         &mut self,
         input: BlockOrPayload<T>,
         mut ctx: TreeCtx<'_, N>,
@@ -334,6 +328,7 @@ where
         V: PayloadValidator<T, Block = N::Block>,
         Evm: ConfigureEngineEvm<T::ExecutionData, Primitives = N>,
     {
+        /// A helper macro that returns the block in case there was an error.
         macro_rules! ensure_ok {
             ($expr:expr) => {
                 match $expr {
@@ -346,6 +341,7 @@ where
             };
         }
 
+        /// A helper macro for handling errors after the input has been converted to a block.
         macro_rules! ensure_ok_post_block {
             ($expr:expr, $block:expr) => {
                 match $expr {
@@ -373,25 +369,28 @@ where
         let Some(provider_builder) =
             ensure_ok!(self.state_provider_builder(parent_hash, ctx.state()))
         else {
+            // this is pre-validated in the tree
             return Err(InsertBlockError::new(
                 self.convert_to_block(input)?,
                 ProviderError::HeaderNotFound(parent_hash.into()).into(),
             )
-            .into());
+            .into())
         };
 
         let mut state_provider = ensure_ok!(provider_builder.build());
 
+        // fetch parent block
         let Some(parent_block) = ensure_ok!(self.sealed_header_by_hash(parent_hash, ctx.state()))
         else {
             return Err(InsertBlockError::new(
                 self.convert_to_block(input)?,
                 ProviderError::HeaderNotFound(parent_hash.into()).into(),
             )
-            .into());
+            .into())
         };
 
         let evm_env = self.evm_env_for(&input).map_err(NewPayloadError::other)?;
+
         let env = ExecutionEnv { evm_env, hash: input.hash(), parent_hash: input.parent_hash() };
 
         let txs = self.tx_iterator_for(&input)?;
@@ -408,24 +407,32 @@ where
             provider_builder,
         );
 
+        // Use cached state provider before executing, used in execution after prewarming threads
+        // complete.
         if let Some((caches, cache_metrics)) = handle.caches().zip(handle.cache_metrics()) {
-            state_provider =
-                Box::new(CachedStateProvider::new(state_provider, caches, cache_metrics));
-        }
+            state_provider = Box::new(CachedStateProvider::new(state_provider, caches, cache_metrics));
+        };
 
         if self.config.state_provider_metrics() {
             state_provider = Box::new(InstrumentedStateProvider::new(state_provider, "engine"));
         }
 
+        let execution_start = Instant::now();
+        // Execute the block and handle any execution errors.
         let (output, senders, receipt_root_rx) =
             match self.execute_block(state_provider, env, &input, &mut handle) {
                 Ok(output) => output,
                 Err(err) => return self.handle_execution_error(input, err, &parent_block),
             };
 
+        self.metrics.block_validation.triedb_validate_execution_duration.record(execution_start.elapsed().as_secs_f64());
+
+        // After executing the block we can stop prewarming transactions.
         handle.stop_prewarming_execution();
 
         let block = self.convert_to_block(input)?.with_senders(senders);
+
+        // Wait for the receipt root computation to complete.
         let receipt_root_bloom = receipt_root_rx.blocking_recv().ok();
 
         let hashed_state = ensure_ok_post_block!(
@@ -630,7 +637,7 @@ where
                 self.convert_to_block(input)?,
                 ProviderError::HeaderNotFound(parent_hash.into()).into(),
             )
-            .into());
+            .into())
         };
         let mut state_provider = ensure_ok!(provider_builder.build());
         drop(_enter);
@@ -643,7 +650,7 @@ where
                 self.convert_to_block(input)?,
                 ProviderError::HeaderNotFound(parent_hash.into()).into(),
             )
-            .into());
+            .into())
         };
 
         let evm_env = debug_span!(target: "engine::tree::payload_validator", "evm env")
@@ -685,9 +692,9 @@ where
 
         // Spawn the appropriate processor based on strategy
         let mut handle = ensure_ok!(self.spawn_payload_processor(
-                    env.clone(),
-                    txs,
-                    provider_builder,
+            env.clone(),
+            txs,
+            provider_builder,
             overlay_factory.clone(),
             strategy,
             block_access_list,
@@ -754,7 +761,6 @@ where
                 target: "engine::tree::payload_validator",
                 "Skipping state root calculation in fastnode mode"
             );
-
             // Use the state root from the block header directly without validation
             (block.header().state_root(), TrieUpdates::default())
         } else {
@@ -764,7 +770,6 @@ where
             match strategy {
                 StateRootStrategy::StateRootTask => {
                     debug!(target: "engine::tree::payload_validator", "Using sparse trie state root algorithm");
-
                     match handle.state_root() {
                         Ok(StateRootComputeOutcome { state_root, trie_updates }) => {
                             let elapsed = root_time.elapsed();
@@ -877,7 +882,7 @@ where
                 )
                 .into(),
             )
-            .into());
+            .into())
         }
 
         if let Some(valid_block_tx) = valid_block_tx {
@@ -922,7 +927,6 @@ where
         if let Err(e) = self.consensus.validate_block_pre_execution(block) {
             error!(target: "engine::tree::payload_validator", ?block, "Failed to validate block {}: {e}", block.hash());
             return Err(e)
-
         }
 
         Ok(())
@@ -1260,7 +1264,7 @@ where
                 self.provider.clone(),
                 historical,
                 Some(blocks),
-            )));
+            )))
         }
 
         // Check if the block is persisted
@@ -1268,7 +1272,7 @@ where
             debug!(target: "engine::tree::payload_validator", %hash, number = %header.number(), "found canonical state for block in database, creating provider builder");
             // For persisted blocks, we create a builder that will fetch state directly from the
             // database
-            return Ok(Some(StateProviderBuilder::new(self.provider.clone(), hash, None)));
+            return Ok(Some(StateProviderBuilder::new(self.provider.clone(), hash, None)))
         }
 
         debug!(target: "engine::tree::payload_validator", %hash, "no canonical state found for block");
@@ -1318,7 +1322,6 @@ where
     ) -> (Option<LazyOverlay>, B256) {
         let (anchor_hash, blocks) =
             state.tree_state.blocks_by_hash(parent_hash).unwrap_or_else(|| (parent_hash, vec![]));
-
 
         if blocks.is_empty() {
             debug!(target: "engine::tree::payload_validator", "Parent found on disk, no lazy overlay needed");
@@ -1440,7 +1443,7 @@ where
 
                     match changeset_result {
                         Ok(changesets) => {
-            debug!(
+                            debug!(
                                 target: "engine::tree::changeset",
                                 ?block_number,
                                 elapsed = ?changeset_start.elapsed(),
