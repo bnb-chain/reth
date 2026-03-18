@@ -1241,7 +1241,7 @@ where
 
             // For OpStack, or if explicitly configured, the proposers are allowed to reorg their
             // own chain at will, so we need to always trigger a new payload job if requested.
-            if self.engine_kind.is_opstack() || 
+            if self.engine_kind.is_opstack() ||
                 self.config.always_process_payload_attributes_on_canonical_head()
             {
                 // We need to effectively unwind the _canonical_ chain to the FCU's head, which is
@@ -1586,7 +1586,7 @@ where
 
                         // if the parent is the canonical head, we can insert the block as the
                         // pending block
-                        if self.state.tree_state.canonical_block_hash() == 
+                        if self.state.tree_state.canonical_block_hash() ==
                             block.recovered_block().parent_hash()
                         {
                             debug!(target: "engine::tree", pending=?block_num_hash, "updating pending block");
@@ -1937,7 +1937,7 @@ where
                 // backfill sync and persisting data are mutually exclusive, so we can't start
                 // backfill while we're still persisting
                 debug!(target: "engine::tree", "skipping backfill file while persistence task is active");
-                return;
+                return
             }
 
             self.backfill_sync_state = BackfillSyncState::Pending;
@@ -1960,7 +1960,7 @@ where
         }
 
         let min_block = self.persistence_state.last_persisted_block.number;
-        self.state.tree_state.canonical_block_number().saturating_sub(min_block) > 
+        self.state.tree_state.canonical_block_number().saturating_sub(min_block) >
             self.config.persistence_threshold()
     }
 
@@ -2957,7 +2957,7 @@ where
                 return Err(OnForkChoiceUpdated::invalid_state())
             }
             Ok(Some(finalized)) => {
-                if Some(finalized.num_hash()) != 
+                if Some(finalized.num_hash()) !=
                     self.canonical_in_memory_state.get_finalized_num_hash()
                 {
                     // we're also persisting the finalized block on disk so we can reload it on
