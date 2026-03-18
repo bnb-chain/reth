@@ -1,7 +1,11 @@
 use reth_rpc::{EthFilter, EthPubSub};
 use reth_rpc_eth_api::EthApiTypes;
-use reth_rpc_eth_types::EthConfig;
+use reth_rpc_eth_types::{
+    logs_utils::ReceiptFilter,
+    EthConfig,
+};
 use reth_tasks::TaskSpawner;
+use std::sync::Arc;
 
 /// Handlers for core, filter and pubsub `eth` namespace APIs.
 #[derive(Debug, Clone)]
@@ -26,9 +30,31 @@ where
         executor: Box<dyn TaskSpawner + 'static>,
         eth_api: EthApi,
     ) -> Self {
-        let filter = EthFilter::new(eth_api.clone(), config.filter_config(), executor.clone());
+        Self::bootstrap_with_receipt_filter(config, executor, eth_api, None)
+    }
 
-        let pubsub = EthPubSub::with_spawner(eth_api.clone(), executor);
+    /// Returns a new instance with an optional [`ReceiptFilter`].
+    ///
+    /// The receipt filter allows excluding certain receipts from log queries
+    /// and PubSub log subscriptions (e.g., BSC system transaction logs).
+    pub fn bootstrap_with_receipt_filter(
+        config: EthConfig,
+        executor: Box<dyn TaskSpawner + 'static>,
+        eth_api: EthApi,
+        receipt_filter: Option<Arc<dyn ReceiptFilter>>,
+    ) -> Self {
+        let filter = EthFilter::new_with_receipt_filter(
+            eth_api.clone(),
+            config.filter_config(),
+            executor.clone(),
+            receipt_filter.clone(),
+        );
+
+        let pubsub = EthPubSub::with_spawner_and_receipt_filter(
+            eth_api.clone(),
+            executor,
+            receipt_filter,
+        );
 
         Self { api: eth_api, filter, pubsub }
     }
