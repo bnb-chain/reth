@@ -107,6 +107,10 @@ pub struct HistoricalStateProviderRef<'b, Provider> {
     block_number: BlockNumber,
     /// Lowest blocks at which different parts of the state are available.
     lowest_available_blocks: LowestAvailableBlocks,
+    /// Cached pipeline consistency info. When the Execution stage checkpoint is ahead of the
+    /// history index checkpoint, PlainState has been advanced beyond history coverage and the
+    /// `InPlainState` fallback would return data from a future block.
+    pipeline_consistency: PipelineConsistency,
 }
 
 impl<'b, Provider: DBProvider + ChangeSetReader + BlockNumReader>
@@ -114,7 +118,12 @@ impl<'b, Provider: DBProvider + ChangeSetReader + BlockNumReader>
 {
     /// Create new `StateProvider` for historical block number
     pub fn new(provider: &'b Provider, block_number: BlockNumber) -> Self {
-        Self { provider, block_number, lowest_available_blocks: Default::default() }
+        Self {
+            provider,
+            block_number,
+            lowest_available_blocks: Default::default(),
+            pipeline_consistency: Default::default(),
+        }
     }
 
     /// Create new `StateProvider` for historical block number and lowest block numbers at which
@@ -123,8 +132,19 @@ impl<'b, Provider: DBProvider + ChangeSetReader + BlockNumReader>
         provider: &'b Provider,
         block_number: BlockNumber,
         lowest_available_blocks: LowestAvailableBlocks,
+        pipeline_consistency: PipelineConsistency,
     ) -> Self {
-        Self { provider, block_number, lowest_available_blocks }
+        Self { provider, block_number, lowest_available_blocks, pipeline_consistency }
+    }
+
+    /// Set the pipeline consistency info for detecting stale `InPlainState` reads during
+    /// pipeline sync.
+    pub const fn with_pipeline_consistency(
+        mut self,
+        pipeline_consistency: PipelineConsistency,
+    ) -> Self {
+        self.pipeline_consistency = pipeline_consistency;
+        self
     }
 
     /// Lookup an account in the `AccountsHistory` table using `EitherReader`.
@@ -262,6 +282,15 @@ impl<
                     .map(|account_before| account_before.info)
             }
             HistoryInfo::InPlainState | HistoryInfo::MaybeInPlainState => {
+                if let Some((exec_tip, hist_tip)) =
+                    self.pipeline_consistency.account_inconsistency()
+                {
+                    return Err(ProviderError::HistoryStateInconsistent {
+                        block: self.block_number,
+                        execution_tip: exec_tip,
+                        history_tip: hist_tip,
+                    })
+                }
                 Ok(self.tx().get_by_encoded_key::<tables::PlainAccountState>(address)?)
             }
         }
@@ -430,13 +459,24 @@ impl<
                     })?
                     .value,
             )),
-            HistoryInfo::InPlainState | HistoryInfo::MaybeInPlainState => Ok(self
-                .tx()
-                .cursor_dup_read::<tables::PlainStorageState>()?
-                .seek_by_key_subkey(address, storage_key)?
-                .filter(|entry| entry.key == storage_key)
-                .map(|entry| entry.value)
-                .or(Some(StorageValue::ZERO))),
+            HistoryInfo::InPlainState | HistoryInfo::MaybeInPlainState => {
+                if let Some((exec_tip, hist_tip)) =
+                    self.pipeline_consistency.storage_inconsistency()
+                {
+                    return Err(ProviderError::HistoryStateInconsistent {
+                        block: self.block_number,
+                        execution_tip: exec_tip,
+                        history_tip: hist_tip,
+                    })
+                }
+                Ok(self
+                    .tx()
+                    .cursor_dup_read::<tables::PlainStorageState>()?
+                    .seek_by_key_subkey(address, storage_key)?
+                    .filter(|entry| entry.key == storage_key)
+                    .map(|entry| entry.value)
+                    .or(Some(StorageValue::ZERO)))
+            }
         }
     }
 }
@@ -460,12 +500,19 @@ pub struct HistoricalStateProvider<Provider> {
     block_number: BlockNumber,
     /// Lowest blocks at which different parts of the state are available.
     lowest_available_blocks: LowestAvailableBlocks,
+    /// Cached pipeline consistency info.
+    pipeline_consistency: PipelineConsistency,
 }
 
 impl<Provider: DBProvider + ChangeSetReader + BlockNumReader> HistoricalStateProvider<Provider> {
     /// Create new `StateProvider` for historical block number
     pub fn new(provider: Provider, block_number: BlockNumber) -> Self {
-        Self { provider, block_number, lowest_available_blocks: Default::default() }
+        Self {
+            provider,
+            block_number,
+            lowest_available_blocks: Default::default(),
+            pipeline_consistency: Default::default(),
+        }
     }
 
     /// Set the lowest block number at which the account history is available.
@@ -486,6 +533,16 @@ impl<Provider: DBProvider + ChangeSetReader + BlockNumReader> HistoricalStatePro
         self
     }
 
+    /// Set the pipeline consistency info for detecting stale `InPlainState` reads during
+    /// pipeline sync.
+    pub const fn with_pipeline_consistency(
+        mut self,
+        pipeline_consistency: PipelineConsistency,
+    ) -> Self {
+        self.pipeline_consistency = pipeline_consistency;
+        self
+    }
+
     /// Returns a new provider that takes the `TX` as reference
     #[inline(always)]
     const fn as_ref(&self) -> HistoricalStateProviderRef<'_, Provider> {
@@ -493,12 +550,58 @@ impl<Provider: DBProvider + ChangeSetReader + BlockNumReader> HistoricalStatePro
             &self.provider,
             self.block_number,
             self.lowest_available_blocks,
+            self.pipeline_consistency,
         )
     }
 }
 
 // Delegates all provider impls to [HistoricalStateProviderRef]
 reth_storage_api::macros::delegate_provider_impls!(HistoricalStateProvider<Provider> where [Provider: DBProvider + BlockNumReader + BlockHashReader + ChangeSetReader + StorageSettingsCache + RocksDBProviderFactory + NodePrimitivesProvider]);
+
+/// Cached pipeline stage checkpoint info used to detect inconsistent `InPlainState` reads.
+///
+/// During pipeline sync, the `ExecutionStage` commits `PlainAccountState` / `PlainStorageState`
+/// in its own MDBX write transaction **before** the `IndexAccountHistoryStage` and
+/// `IndexStorageHistoryStage` commit the corresponding history indices. This creates a window
+/// where `HistoricalStateProvider` would incorrectly fall back to `InPlainState` and return
+/// data from a future block.
+///
+/// When the Execution checkpoint is ahead of the history index checkpoint, we know PlainState
+/// has been silently advanced and the `InPlainState` path must not be used.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PipelineConsistency {
+    /// Block number up to which the Execution stage has committed PlainState.
+    pub execution_tip: Option<BlockNumber>,
+    /// Block number up to which the account history index has been built.
+    pub account_history_tip: Option<BlockNumber>,
+    /// Block number up to which the storage history index has been built.
+    pub storage_history_tip: Option<BlockNumber>,
+}
+
+impl PipelineConsistency {
+    /// Returns `Some((exec_tip, hist_tip))` if account history is inconsistent with PlainState,
+    /// meaning the `InPlainState` fallback would return wrong data.
+    ///
+    /// A `None` history tip means the index stage has never run, which is equivalent to block 0.
+    pub const fn account_inconsistency(&self) -> Option<(BlockNumber, BlockNumber)> {
+        match (self.execution_tip, self.account_history_tip) {
+            (Some(exec), Some(hist)) if exec > hist => Some((exec, hist)),
+            (Some(exec), None) => Some((exec, 0)),
+            _ => None,
+        }
+    }
+
+    /// Returns `Some((exec_tip, hist_tip))` if storage history is inconsistent with PlainState.
+    ///
+    /// A `None` history tip means the index stage has never run, which is equivalent to block 0.
+    pub const fn storage_inconsistency(&self) -> Option<(BlockNumber, BlockNumber)> {
+        match (self.execution_tip, self.storage_history_tip) {
+            (Some(exec), Some(hist)) if exec > hist => Some((exec, hist)),
+            (Some(exec), None) => Some((exec, 0)),
+            _ => None,
+        }
+    }
+}
 
 /// Lowest blocks at which different parts of the state are available.
 /// They may be [Some] if pruning is enabled.
@@ -876,6 +979,7 @@ mod tests {
                 account_history_block_number: Some(3),
                 storage_history_block_number: Some(3),
             },
+            Default::default(),
         );
         assert!(matches!(
             provider.account_history_lookup(ADDRESS),
@@ -895,6 +999,7 @@ mod tests {
                 account_history_block_number: Some(2),
                 storage_history_block_number: Some(2),
             },
+            Default::default(),
         );
         assert!(matches!(
             provider.account_history_lookup(ADDRESS),
@@ -914,6 +1019,7 @@ mod tests {
                 account_history_block_number: Some(1),
                 storage_history_block_number: Some(1),
             },
+            Default::default(),
         );
         assert!(matches!(
             provider.account_history_lookup(ADDRESS),
