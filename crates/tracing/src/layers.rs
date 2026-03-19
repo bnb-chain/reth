@@ -146,7 +146,7 @@ impl Layers {
     }
 
     #[cfg(not(feature = "samply"))]
-    pub(crate) fn samply(&mut self, _config: LayerInfo) -> eyre::Result<()> {
+    pub(crate) fn samply(&self, _config: LayerInfo) -> eyre::Result<()> {
         Err(eyre::eyre!("samply feature is disabled"))
     }
 

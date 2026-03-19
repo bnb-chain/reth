@@ -278,8 +278,8 @@ where
             LEGACY_TX_TYPE_ID => {
                 // Accept legacy transactions
             }
+            #[allow(clippy::collapsible_match)]
             EIP2930_TX_TYPE_ID => {
-                // Accept only legacy transactions until EIP-2718/2930 activates
                 if !self.eip2718 {
                     return Err(TransactionValidationOutcome::Invalid(
                         transaction,
@@ -287,8 +287,8 @@ where
                     ));
                 }
             }
+            #[allow(clippy::collapsible_match)]
             EIP1559_TX_TYPE_ID => {
-                // Reject dynamic fee transactions until EIP-1559 activates.
                 if !self.eip1559 {
                     return Err(TransactionValidationOutcome::Invalid(
                         transaction,
@@ -297,27 +297,19 @@ where
                 }
             }
             EIP4844_TX_TYPE_ID => {
-                // Reject blob transactions.
-                if !self.eip4844 {
+                if let Some(blob_fee) = transaction.max_fee_per_blob_gas() &&
+                    blob_fee == 0
+                {
                     return Err(TransactionValidationOutcome::Invalid(
                         transaction,
-                        InvalidTransactionError::Eip4844Disabled.into(),
+                        InvalidPoolTransactionError::Eip4844(
+                            Eip4844PoolTransactionError::ZeroBlobFee,
+                        ),
                     ));
                 }
-                // Reject blob transactions with zero max_fee_per_blob_gas
-                if let Some(blob_fee) = transaction.max_fee_per_blob_gas() {
-                    if blob_fee == 0 {
-                        return Err(TransactionValidationOutcome::Invalid(
-                            transaction,
-                            InvalidPoolTransactionError::Eip4844(
-                                Eip4844PoolTransactionError::ZeroBlobFee,
-                            ),
-                        ));
-                    }
-                }
             }
+            #[allow(clippy::collapsible_match)]
             EIP7702_TX_TYPE_ID => {
-                // Reject EIP-7702 transactions.
                 if !self.eip7702 {
                     return Err(TransactionValidationOutcome::Invalid(
                         transaction,
@@ -448,9 +440,9 @@ where
 
         // Drop non-local transactions with a fee lower than the configured fee for acceptance into
         // the pool.
-        if !is_local
-            && transaction.is_dynamic_fee()
-            && transaction.max_priority_fee_per_gas() < self.minimum_priority_fee
+        if !is_local &&
+            transaction.is_dynamic_fee() &&
+            transaction.max_priority_fee_per_gas() < self.minimum_priority_fee
         {
             return Err(TransactionValidationOutcome::Invalid(
                 transaction,
@@ -529,8 +521,8 @@ where
         }
 
         // Osaka validation of max tx gas.
-        if self.fork_tracker.is_osaka_activated()
-            && transaction.gas_limit() > MAX_TX_GAS_LIMIT_OSAKA
+        if self.fork_tracker.is_osaka_activated() &&
+            transaction.gas_limit() > MAX_TX_GAS_LIMIT_OSAKA
         {
             return Err(TransactionValidationOutcome::Invalid(
                 transaction,
@@ -567,10 +559,10 @@ where
         };
 
         // Checks for nonce
-        if transaction.requires_nonce_check() {
-            if let Err(err) = self.validate_sender_nonce(&transaction, &account) {
-                return TransactionValidationOutcome::Invalid(transaction, err);
-            }
+        if transaction.requires_nonce_check() &&
+            let Err(err) = self.validate_sender_nonce(&transaction, &account)
+        {
+            return TransactionValidationOutcome::Invalid(transaction, err);
         }
 
         // checks for max cost not exceedng account_balance
@@ -706,14 +698,7 @@ where
                     let now = Instant::now();
 
                     // EIP-7594 sidecar version handling
-                    if !self.eip7594 {
-                        // EIP-7594 disabled: always reject v1 sidecars, accept v0
-                        if sidecar.is_eip7594() {
-                            return Err(InvalidPoolTransactionError::Eip4844(
-                                Eip4844PoolTransactionError::UnexpectedEip7594SidecarBeforeOsaka,
-                            ));
-                        }
-                    } else {
+                    if self.eip7594 {
                         // Standard Ethereum behavior
                         if self.fork_tracker.is_osaka_activated() {
                             if sidecar.is_eip4844() {
@@ -722,6 +707,13 @@ where
                                 ));
                             }
                         } else if sidecar.is_eip7594() && !self.allow_7594_sidecars() {
+                            return Err(InvalidPoolTransactionError::Eip4844(
+                                Eip4844PoolTransactionError::UnexpectedEip7594SidecarBeforeOsaka,
+                            ));
+                        }
+                    } else {
+                        // EIP-7594 disabled: always reject v1 sidecars, accept v0
+                        if sidecar.is_eip7594() {
                             return Err(InvalidPoolTransactionError::Eip4844(
                                 Eip4844PoolTransactionError::UnexpectedEip7594SidecarBeforeOsaka,
                             ));
@@ -1036,7 +1028,7 @@ impl<Client> EthTransactionValidatorBuilder<Client> {
     /// When disabled, EIP-7594 (v1) blob sidecars are always rejected and EIP-4844 (v0)
     /// sidecars are always accepted, regardless of Osaka fork activation.
     ///
-    /// Use this for chains that do not adopt EIP-7594 (PeerDAS).
+    /// Use this for chains that do not adopt EIP-7594 (`PeerDAS`).
     pub const fn no_eip7594(self) -> Self {
         self.set_eip7594(false)
     }

@@ -1,6 +1,4 @@
 use alloy_primitives::B256;
-use std::backtrace::Backtrace;
-use std::sync::atomic::{AtomicBool, Ordering};
 use reth_db_api::{
     cursor::{DbCursorRO, DbCursorRW, DbDupCursorRO, DbDupCursorRW},
     tables,
@@ -11,6 +9,10 @@ use reth_trie::{
     trie_cursor::{TrieCursor, TrieCursorFactory, TrieStorageCursor},
     updates::StorageTrieUpdatesSorted,
     BranchNodeCompact, Nibbles, StorageTrieEntry, StoredNibbles, StoredNibblesSubKey,
+};
+use std::{
+    backtrace::Backtrace,
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 /// Wrapper struct for database transaction implementing trie cursor factory trait.
@@ -39,8 +41,8 @@ where
 
     fn account_trie_cursor(&self) -> Result<Self::AccountTrieCursor<'_>, DatabaseError> {
         static WARNED_ACCOUNT_CURSOR: AtomicBool = AtomicBool::new(false);
-        if rust_eth_triedb::triedb_manager::is_triedb_active()
-            && !WARNED_ACCOUNT_CURSOR.swap(true, Ordering::Relaxed)
+        if rust_eth_triedb::triedb_manager::is_triedb_active() &&
+            !WARNED_ACCOUNT_CURSOR.swap(true, Ordering::Relaxed)
         {
             tracing::warn!(
                 target: "reth_trie_db::trie_cursor",
@@ -56,8 +58,8 @@ where
         hashed_address: B256,
     ) -> Result<Self::StorageTrieCursor<'_>, DatabaseError> {
         static WARNED_STORAGE_CURSOR: AtomicBool = AtomicBool::new(false);
-        if rust_eth_triedb::triedb_manager::is_triedb_active()
-            && !WARNED_STORAGE_CURSOR.swap(true, Ordering::Relaxed)
+        if rust_eth_triedb::triedb_manager::is_triedb_active() &&
+            !WARNED_STORAGE_CURSOR.swap(true, Ordering::Relaxed)
         {
             tracing::warn!(
                 target: "reth_trie_db::trie_cursor",
@@ -161,8 +163,7 @@ where
             if self
                 .cursor
                 .seek_by_key_subkey(self.hashed_address, nibbles.clone())?
-                .filter(|e| e.nibbles == nibbles)
-                .is_some()
+                .is_some_and(|e| e.nibbles == nibbles)
             {
                 self.cursor.delete_current()?;
             }

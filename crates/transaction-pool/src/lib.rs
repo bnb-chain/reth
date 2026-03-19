@@ -501,7 +501,7 @@ where
         }
         let validated = self.validate_all(origin, transactions).await;
 
-        self.pool.add_transactions(origin, validated.into_iter())
+        self.pool.add_transactions(origin, validated)
     }
 
     fn transaction_event_listener(&self, tx_hash: TxHash) -> Option<TransactionEvents> {
@@ -737,7 +737,7 @@ where
         &self,
         tx_hash: TxHash,
         blob: BlobTransactionSidecarVariant,
-    ) ->  Result<(), BlobStoreError> {
+    ) -> Result<(), BlobStoreError> {
         self.pool.blob_store().insert(tx_hash, blob)
     }
 

@@ -214,7 +214,7 @@ pub async fn maintain_transaction_pool<N, Client, P, St, Tasks>(
                     dirty_addresses.remove(acc);
                 }
                 async move {
-                    let res = load_accounts(c, at, accs_to_reload.into_iter());
+                    let res = load_accounts(c, at, accs_to_reload);
                     let _ = tx.send(res);
                 }
                 .boxed()
@@ -222,7 +222,7 @@ pub async fn maintain_transaction_pool<N, Client, P, St, Tasks>(
                 // can fetch all dirty accounts at once
                 let accs_to_reload = std::mem::take(&mut dirty_addresses);
                 async move {
-                    let res = load_accounts(c, at, accs_to_reload.into_iter());
+                    let res = load_accounts(c, at, accs_to_reload);
                     let _ = tx.send(res);
                 }
                 .boxed()
@@ -233,24 +233,23 @@ pub async fn maintain_transaction_pool<N, Client, P, St, Tasks>(
 
         // check if we have a new finalized block
         if let Some(finalized) =
-            last_finalized_block.update(client.finalized_block_number().ok().flatten())
+            last_finalized_block.update(client.finalized_block_number().ok().flatten()) &&
+            finalized > FINALIZED_BLOCK_OFFSET
         {
-            if finalized > FINALIZED_BLOCK_OFFSET {
-                debug!(target: "txpool", finalized_block = %finalized, "finalized block");
-                if let BlobStoreUpdates::Finalized(blobs) =
-                    blob_store_tracker.on_finalized_block(finalized - FINALIZED_BLOCK_OFFSET)
-                {
-                    let num_blobs = blobs.len();
-                    metrics.inc_deleted_tracked_blobs(num_blobs);
-                    // remove all finalized blobs from the blob store
-                    pool.delete_blobs(blobs);
-                    // and also do periodic cleanup
-                    let pool = pool.clone();
-                    task_spawner.spawn_blocking(Box::pin(async move {
+            debug!(target: "txpool", finalized_block = %finalized, "finalized block");
+            if let BlobStoreUpdates::Finalized(blobs) =
+                blob_store_tracker.on_finalized_block(finalized - FINALIZED_BLOCK_OFFSET)
+            {
+                let num_blobs = blobs.len();
+                metrics.inc_deleted_tracked_blobs(num_blobs);
+                // remove all finalized blobs from the blob store
+                pool.delete_blobs(blobs);
+                // and also do periodic cleanup
+                let pool = pool.clone();
+                task_spawner.spawn_blocking(Box::pin(async move {
                         debug!(target: "txpool", finalized_block = %finalized, num_blobs = %num_blobs, "cleaning up blob store");
                         pool.cleanup_blobs();
                     }));
-                }
             }
         }
 

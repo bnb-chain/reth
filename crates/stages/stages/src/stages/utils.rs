@@ -60,10 +60,8 @@ where
     let mut collect = |cache: &mut HashMap<P, Vec<u64>>| {
         for (key, indices) in cache.drain() {
             let last = *indices.last().expect("qed");
-            collector.insert(
-                sharded_key_factory(key, last),
-                BlockNumberList::new_pre_sorted(indices.into_iter()),
-            )?;
+            collector
+                .insert(sharded_key_factory(key, last), BlockNumberList::new_pre_sorted(indices))?;
         }
         Ok::<(), StageError>(())
     };
@@ -125,10 +123,8 @@ where
 
     let mut insert_fn = |address: Address, indices: Vec<u64>| {
         let last = indices.last().expect("qed");
-        collector.insert(
-            ShardedKey::new(address, *last),
-            BlockNumberList::new_pre_sorted(indices.into_iter()),
-        )?;
+        collector
+            .insert(ShardedKey::new(address, *last), BlockNumberList::new_pre_sorted(indices))?;
         Ok::<(), StageError>(())
     };
 

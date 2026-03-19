@@ -62,8 +62,10 @@ use reth_storage_api::{
     NodePrimitivesProvider, StateProvider, StateWriteConfig, StorageChangeSetReader,
     StorageSettingsCache, TryIntoHistoricalStateProvider, WriteStateInput,
 };
-use reth_storage_errors::db::DatabaseError;
-use reth_storage_errors::provider::{ProviderResult, StaticFileWriterError};
+use reth_storage_errors::{
+    db::DatabaseError,
+    provider::{ProviderResult, StaticFileWriterError},
+};
 use reth_trie::{
     changesets::storage_trie_wiped_changeset_iter,
     trie_cursor::{InMemoryTrieCursor, TrieCursor, TrieCursorIter, TrieStorageCursor},
@@ -500,10 +502,10 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
                 let mut all_tx_hashes = Vec::with_capacity(total_tx_count);
                 for (i, block) in blocks.iter().enumerate() {
                     let recovered_block = block.recovered_block();
-                    let mut tx_num = tx_nums[i];
-                    for transaction in recovered_block.body().transactions_iter() {
+                    for (tx_num, transaction) in
+                        (tx_nums[i]..).zip(recovered_block.body().transactions_iter())
+                    {
                         all_tx_hashes.push((*transaction.tx_hash(), tx_num));
-                        tx_num += 1;
                     }
                 }
 
@@ -526,7 +528,7 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
 
             // Get TrieDB instance if active
             let triedb_active = is_triedb_active();
-            let mut triedb_opt = if triedb_active { Some(get_global_triedb()) } else { None };
+            let mut triedb_opt = triedb_active.then(get_global_triedb);
 
             for (i, block) in blocks.iter().enumerate() {
                 let recovered_block = block.recovered_block();
@@ -559,12 +561,11 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
 
                     let trie_data = block.trie_data();
 
+                    let start = Instant::now();
                     if let Some(ref mut triedb) = triedb_opt {
                         // TrieDB mode: update TrieDB instead of writing hashed state to MDBX
-                        let start = Instant::now();
-
                         let (latest_block_number, latest_state_root) =
-                            triedb.latest_persist_state().map_err(|e| ProviderError::other(e))?;
+                            triedb.latest_persist_state().map_err(ProviderError::other)?;
 
                         // Validate that triedb state is consistent
                         if block_number > 0 && latest_block_number != block_number - 1 {
@@ -594,7 +595,7 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
                                 None,
                                 &triedb_hashed_post_state,
                             )
-                            .map_err(|e| ProviderError::other(e))?;
+                            .map_err(ProviderError::other)?;
 
                         if new_root != state_root {
                             return Err(ProviderError::Database(DatabaseError::Other(format!(
@@ -607,7 +608,7 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
 
                         triedb
                             .flush(block_number, new_root, &difflayer)
-                            .map_err(|e| ProviderError::other(e))?;
+                            .map_err(ProviderError::other)?;
 
                         debug!(
                             target: "providers::db",
@@ -615,14 +616,11 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
                             block_number,
                             new_root
                         );
-
-                        timings.write_hashed_state += start.elapsed();
                     } else {
                         // Non-TrieDB mode: write hashed state to MDBX
-                        let start = Instant::now();
                         self.write_hashed_state(&trie_data.hashed_state)?;
-                        timings.write_hashed_state += start.elapsed();
                     }
+                    timings.write_hashed_state += start.elapsed();
                 }
             }
 
@@ -815,7 +813,8 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
                     available: 0..=0,
                 })?;
 
-            let trie_revert = self.changeset_cache.get_or_compute_range(self, from..=db_tip_block)?;
+            let trie_revert =
+                self.changeset_cache.get_or_compute_range(self, from..=db_tip_block)?;
             self.write_trie_updates_sorted(&trie_revert)?;
 
             // Clear trie changesets which have been unwound.
@@ -1539,12 +1538,12 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> HeaderProvider for DatabasePro
     }
 
     fn header_td_by_number(&self, number: BlockNumber) -> ProviderResult<Option<U256>> {
-        if self.chain_spec.is_paris_active_at_block(number) {
-            if let Some(td) = self.chain_spec.final_paris_total_difficulty() {
-                // if this block is higher than the final paris(merge) block, return the final paris
-                // difficulty
-                return Ok(Some(td));
-            }
+        if self.chain_spec.is_paris_active_at_block(number) &&
+            let Some(td) = self.chain_spec.final_paris_total_difficulty()
+        {
+            // if this block is higher than the final paris(merge) block, return the final paris
+            // difficulty
+            return Ok(Some(td));
         }
 
         self.static_file_provider.get_with_static_file_or_database(
@@ -2529,8 +2528,8 @@ impl<TX: DbTxMut + DbTx + 'static, N: NodeTypesForProvider> StateWriter
                 // delete previous value
                 if plain_storage_cursor
                     .seek_by_key_subkey(*address, *storage_key)?
-                    .filter(|s| s.key == *storage_key)
-                    .is_some()
+                    .as_ref()
+                    .is_some_and(|s| s.key == *storage_key)
                 {
                     plain_storage_cursor.delete_current()?
                 }
@@ -2646,8 +2645,8 @@ impl<TX: DbTxMut + DbTx + 'static, N: NodeTypesForProvider> StateWriter
                 // delete previous value
                 if plain_storage_cursor
                     .seek_by_key_subkey(*address, *storage_key)?
-                    .filter(|s| s.key == *storage_key)
-                    .is_some()
+                    .as_ref()
+                    .is_some_and(|s| s.key == *storage_key)
                 {
                     plain_storage_cursor.delete_current()?
                 }
@@ -2851,7 +2850,9 @@ impl<TX: DbTxMut + DbTx + 'static, N: NodeTypes> StorageTrieWriter for DatabaseP
     ) -> ProviderResult<usize> {
         if rust_eth_triedb::triedb_manager::is_triedb_active() {
             tracing::error!("write_storage_trie_updates is not supported triedb");
-            return Err(ProviderError::Database(DatabaseError::Other("write_trie_updates is not supported triedb".to_string())));
+            return Err(ProviderError::Database(DatabaseError::Other(
+                "write_trie_updates is not supported triedb".to_string(),
+            )));
         }
 
         let mut num_entries = 0;
@@ -3019,8 +3020,8 @@ impl<TX: DbTxMut + DbTx + 'static, N: NodeTypes> HashingWriter for DatabaseProvi
 
             if hashed_storage
                 .seek_by_key_subkey(hashed_address, key)?
-                .filter(|entry| entry.key == key)
-                .is_some()
+                .as_ref()
+                .is_some_and(|entry| entry.key == key)
             {
                 hashed_storage.delete_current()?;
             }
@@ -3071,8 +3072,8 @@ impl<TX: DbTxMut + DbTx + 'static, N: NodeTypes> HashingWriter for DatabaseProvi
             storage.into_iter().try_for_each(|(key, value)| -> ProviderResult<()> {
                 if hashed_storage_cursor
                     .seek_by_key_subkey(hashed_address, key)?
-                    .filter(|entry| entry.key == key)
-                    .is_some()
+                    .as_ref()
+                    .is_some_and(|entry| entry.key == key)
                 {
                     hashed_storage_cursor.delete_current()?;
                 }

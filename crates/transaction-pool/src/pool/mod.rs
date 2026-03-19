@@ -752,7 +752,9 @@ where
         }
 
         if needs_cleanup {
-            self.pending_transaction_listener.write().retain(|listener| !listener.sender.is_closed());
+            self.pending_transaction_listener
+                .write()
+                .retain(|listener| !listener.sender.is_closed());
         }
 
         let listener_count_after = self.pending_transaction_listener.read().len();

@@ -73,7 +73,7 @@ pub trait NewBlockPayload:
 
     /// Returns a reference to the block.
     fn block(&self) -> &Self::Block;
-    
+
     /// Returns the total difficulty if available
     fn td(&self) -> Option<U256>;
 }
@@ -96,7 +96,7 @@ impl<B: Block + 'static> NewBlockPayload for NewBlock<B> {
     fn block(&self) -> &Self::Block {
         &self.block
     }
-    
+
     fn td(&self) -> Option<U256> {
         Some(U256::from(self.td))
     }

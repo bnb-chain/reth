@@ -12,6 +12,12 @@ ignore = [
     "RUSTSEC-2025-0141",
     #  https://rustsec.org/advisories/RUSTSEC-2026-0002 lru unused directly: <https://github.com/alloy-rs/alloy/pull/3460>
     "RUSTSEC-2026-0002",
+    # https://rustsec.org/advisories/RUSTSEC-2026-0009 time DoS via stack exhaustion, fixed in 0.3.47
+    # TODO: upgrade when upstream deps adopt time >=0.3.47
+    "RUSTSEC-2026-0009",
+    # https://rustsec.org/advisories/RUSTSEC-2026-0037 quinn-proto DoS via invalid QUIC transport params, fixed in 0.11.14
+    # TODO: upgrade when upstream deps adopt quinn-proto >=0.11.14
+    "RUSTSEC-2026-0037",
 ]
 
 # This section is considered when running `cargo deny check bans`.
@@ -93,4 +99,6 @@ allow-git = [
     "https://github.com/alloy-rs/evm",
     "https://github.com/alloy-rs/hardforks",
     "https://github.com/paradigmxyz/jsonrpsee",
+    "https://github.com/bnb-chain/reth-bsc-triedb",
+    "https://github.com/bnb-chain/reth-bsc-triedb.git",
 ]

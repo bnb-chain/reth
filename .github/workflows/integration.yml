@@ -24,7 +24,7 @@ jobs:
   test:
     name: test / ${{ matrix.network }}
     if: github.event_name != 'schedule'
-    runs-on: depot-ubuntu-latest-4
+    runs-on: ubuntu-latest
     env:
       RUST_BACKTRACE: 1
     strategy:
@@ -32,6 +32,18 @@ jobs:
         network: ["ethereum", "optimism"]
     timeout-minutes: 60
     steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y liburing-dev pkg-config libclang-dev
       - uses: actions/checkout@v6
       - uses: rui314/setup-mold@v1
       - uses: dtolnay/rust-toolchain@stable

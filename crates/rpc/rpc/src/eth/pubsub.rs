@@ -351,8 +351,7 @@ where
                         block.clone_sealed_header(),
                         block.rlp_length(),
                         None,
-                    )
-                    {
+                    ) {
                         Ok(header) => Some(header),
                         Err(err) => {
                             error!(target = "rpc", %err, "Failed to convert header");

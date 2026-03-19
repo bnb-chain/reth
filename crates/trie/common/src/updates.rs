@@ -169,7 +169,7 @@ impl TrieUpdates {
             .collect::<Vec<_>>();
 
         account_nodes.extend(self.removed_nodes.drain().map(|path| (path, None)));
-        account_nodes.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        account_nodes.sort_unstable_by_key(|a| a.0);
 
         let storage_tries = self
             .storage_tries
@@ -195,7 +195,7 @@ impl TrieUpdates {
                 .filter(|path| !self.account_nodes.contains_key(*path))
                 .map(|path| (*path, None)),
         );
-        account_nodes.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        account_nodes.sort_unstable_by_key(|a| a.0);
 
         let storage_tries = self
             .storage_tries
@@ -208,7 +208,7 @@ impl TrieUpdates {
     /// Converts trie updates into [`TrieUpdatesSortedRef`].
     pub fn into_sorted_ref<'a>(&'a self) -> TrieUpdatesSortedRef<'a> {
         let mut account_nodes = self.account_nodes.iter().collect::<Vec<_>>();
-        account_nodes.sort_unstable_by(|a, b| a.0.cmp(b.0));
+        account_nodes.sort_unstable_by_key(|a| a.0);
 
         TrieUpdatesSortedRef {
             removed_nodes: self.removed_nodes.iter().collect::<BTreeSet<_>>(),
@@ -373,7 +373,7 @@ impl StorageTrieUpdates {
             .collect::<Vec<_>>();
 
         storage_nodes.extend(self.removed_nodes.into_iter().map(|path| (path, None)));
-        storage_nodes.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        storage_nodes.sort_unstable_by_key(|a| a.0);
 
         StorageTrieUpdatesSorted { is_deleted: self.is_deleted, storage_nodes }
     }
@@ -394,7 +394,7 @@ impl StorageTrieUpdates {
                 .filter(|path| !self.storage_nodes.contains_key(*path))
                 .map(|path| (*path, None)),
         );
-        storage_nodes.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        storage_nodes.sort_unstable_by_key(|a| a.0);
 
         StorageTrieUpdatesSorted { is_deleted: self.is_deleted, storage_nodes }
     }

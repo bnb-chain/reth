@@ -142,9 +142,7 @@ impl<T: TransactionOrdering> PendingPool<T> {
         base_fee_per_blob_gas: u64,
     ) -> BestTransactionsWithFees<T> {
         let mut best = self.best();
-        let mut submission_id = self.submission_id;
-        for tx in unlocked {
-            submission_id += 1;
+        for (submission_id, tx) in (self.submission_id + 1..).zip(unlocked) {
             debug_assert!(!best.all.contains_key(tx.id()), "transaction already included");
             let priority = self.ordering.priority(&tx.transaction, base_fee);
             let tx_id = *tx.id();
@@ -436,8 +434,8 @@ impl<T: TransactionOrdering> PendingPool<T> {
             // loop through the highest nonces set, removing transactions until we reach the limit
             for tx in worst_transactions {
                 // return early if the pool is under limits
-                if !limit.is_exceeded(original_length - total_removed, original_size - total_size)
-                    || non_local_senders == 0
+                if !limit.is_exceeded(original_length - total_removed, original_size - total_size) ||
+                    non_local_senders == 0
                 {
                     // need to remove remaining transactions before exiting
                     for id in &removed {

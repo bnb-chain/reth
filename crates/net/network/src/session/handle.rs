@@ -75,7 +75,7 @@ pub struct ActiveSessionHandle<N: NetworkPrimitives> {
     pub(crate) local_addr: Option<SocketAddr>,
     /// The Status message the peer sent for the `eth` handshake
     pub(crate) status: Arc<UnifiedStatus>,
-    /// Current total difficulty, updated when receiving NewBlock messages
+    /// Current total difficulty, updated when receiving `NewBlock` messages
     /// This is essential for BSC and other chains that rely on TD
     pub(crate) current_td: Arc<parking_lot::Mutex<Option<alloy_primitives::U256>>>,
 }

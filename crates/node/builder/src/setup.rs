@@ -144,32 +144,30 @@ where
         );
         pipeline
     } else {
-        let pipeline = builder
-        .with_tip_sender(tip_tx)
-        .with_metrics_tx(metrics_tx)
-        .add_stages(
-            DefaultStages::new(
-                provider_factory.clone(),
-                tip_rx,
-                Arc::clone(&consensus),
-                header_downloader,
-                body_downloader,
-                evm_config.clone(),
-                stage_config.clone(),
-                prune_modes,
-                era_import_source,
+        builder
+            .with_tip_sender(tip_tx)
+            .with_metrics_tx(metrics_tx)
+            .add_stages(
+                DefaultStages::new(
+                    provider_factory.clone(),
+                    tip_rx,
+                    Arc::clone(&consensus),
+                    header_downloader,
+                    body_downloader,
+                    evm_config.clone(),
+                    stage_config.clone(),
+                    prune_modes,
+                    era_import_source,
+                )
+                .set(ExecutionStage::new(
+                    evm_config,
+                    consensus,
+                    stage_config.execution.into(),
+                    stage_config.execution_external_clean_threshold(),
+                    exex_manager_handle,
+                )),
             )
-            .set(ExecutionStage::new(
-                evm_config,
-                consensus,
-                stage_config.execution.into(),
-                stage_config.execution_external_clean_threshold(),
-                exex_manager_handle,
-            )),
-        )
-        .build(provider_factory, static_file_producer);
-
-        pipeline
+            .build(provider_factory, static_file_producer)
     };
 
     Ok(pipeline)
