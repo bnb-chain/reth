@@ -10690,6 +10690,7 @@ dependencies = [
  "parking_lot",
  "reth-chain-state",
  "reth-chainspec",
+ "reth-engine-primitives",
  "reth-errors",
  "reth-evm",
  "reth-network-api",
