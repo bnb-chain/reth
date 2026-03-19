@@ -42,7 +42,7 @@ use tokio::{
 };
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::PollSender;
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 /// The recommended interval at which to check if a new range update should be sent to the remote
 /// peer.
@@ -424,10 +424,11 @@ impl<N: NetworkPrimitives> ActiveSession<N> {
         {
             Ok(_) => Ok(()),
             Err(err) => {
-                trace!(
-                    target: "net",
+                warn!(
+                    target: "net::session",
+                    remote_peer_id=?self.remote_peer_id,
                     %err,
-                    "no capacity for incoming request",
+                    "no capacity for incoming ETH request — session→manager channel full",
                 );
                 match err {
                     TrySendError::Full(msg) => Err(msg),
@@ -685,6 +686,12 @@ impl<N: NetworkPrimitives> Future for ActiveSession<N> {
                     //
                     // Note: we don't need to register the waker here because we polled the requests
                     // above
+                    warn!(
+                        target: "net::session",
+                        remote_peer_id=?this.remote_peer_id,
+                        pending_responses=this.received_requests_from_remote.len(),
+                        "throttling incoming messages — too many pending responses (>{MAX_QUEUED_OUTGOING_RESPONSES})",
+                    );
                     break 'receive
                 }
 
@@ -698,6 +705,13 @@ impl<N: NetworkPrimitives> Future for ActiveSession<N> {
                     // Note: we don't need to register the waker here because we still have
                     // queued messages and the sink impl registered the waker because we've
                     // already advanced it to `Pending` earlier
+                    warn!(
+                        target: "net::session",
+                        remote_peer_id=?this.remote_peer_id,
+                        queued_outgoing=this.queued_outgoing.messages.len(),
+                        queued_responses=this.queued_response_count(),
+                        "throttling incoming messages — outgoing queue congested (>{MAX_QUEUED_OUTGOING_RESPONSES})",
+                    );
                     break 'receive
                 }
 
