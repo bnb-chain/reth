@@ -150,22 +150,39 @@ where
 
     fn on_headers_request(
         &self,
-        _peer_id: PeerId,
+        peer_id: PeerId,
         request: GetBlockHeaders,
         response: oneshot::Sender<RequestResult<BlockHeaders<C::Header>>>,
     ) {
         self.metrics.eth_headers_requests_received_total.increment(1);
+        let start = std::time::Instant::now();
+        let start_block = request.start_block;
+        let limit = request.limit;
         let headers = self.get_headers_response(request);
+        let elapsed = start.elapsed();
+        if headers.is_empty() || elapsed > std::time::Duration::from_millis(100) {
+            tracing::warn!(
+                target: "net::eth",
+                ?peer_id,
+                ?start_block,
+                limit,
+                returned = headers.len(),
+                ?elapsed,
+                "GetBlockHeaders: slow or empty response",
+            );
+        }
         let _ = response.send(Ok(BlockHeaders(headers)));
     }
 
     fn on_bodies_request(
         &self,
-        _peer_id: PeerId,
+        peer_id: PeerId,
         request: GetBlockBodies,
         response: oneshot::Sender<RequestResult<BlockBodies<<C::Block as Block>::Body>>>,
     ) {
         self.metrics.eth_bodies_requests_received_total.increment(1);
+        let start = std::time::Instant::now();
+        let requested = request.0.len();
         let mut bodies = Vec::new();
 
         let mut total_bytes = 0;
@@ -184,6 +201,17 @@ where
             }
         }
 
+        let elapsed = start.elapsed();
+        if bodies.len() < requested || elapsed > std::time::Duration::from_millis(100) {
+            tracing::warn!(
+                target: "net::eth",
+                ?peer_id,
+                requested,
+                returned = bodies.len(),
+                ?elapsed,
+                "GetBlockBodies: incomplete or slow response",
+            );
+        }
         let _ = response.send(Ok(BlockBodies(bodies)));
     }
 
