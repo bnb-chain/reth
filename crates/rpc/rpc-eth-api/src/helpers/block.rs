@@ -568,16 +568,18 @@ mod tests {
         }
 
         let mut seen = HashSet::with_capacity(threshold.max(1));
-        let mut probabilistic_finalized = headers[0].0;
+        let mut probabilistic_finalized = None;
         for (number, beneficiary) in headers {
-            probabilistic_finalized = *number;
             seen.insert(*beneficiary);
             if seen.len() >= threshold {
+                probabilistic_finalized = Some(*number);
                 break;
             }
         }
 
-        Ok(std::cmp::max(fast_finalized_number, probabilistic_finalized))
+        Ok(probabilistic_finalized.map_or(fast_finalized_number, |p| {
+            std::cmp::max(fast_finalized_number, p)
+        }))
     }
 
     #[test]
