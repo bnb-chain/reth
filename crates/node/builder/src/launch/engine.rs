@@ -294,7 +294,7 @@ impl EngineNodeLauncher {
             engine_events,
             beacon_engine_handle,
             engine_shutdown: _,
-            engine_api_tx: _rpc_engine_api_tx,
+            engine_api_tx: _,
         } = add_ons.launch_add_ons(add_ons_ctx).await?;
 
         // Create engine shutdown handle
