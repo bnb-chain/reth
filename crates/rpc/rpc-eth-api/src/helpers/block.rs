@@ -577,9 +577,8 @@ mod tests {
             }
         }
 
-        Ok(probabilistic_finalized.map_or(fast_finalized_number, |p| {
-            std::cmp::max(fast_finalized_number, p)
-        }))
+        Ok(probabilistic_finalized
+            .map_or(fast_finalized_number, |p| std::cmp::max(fast_finalized_number, p)))
     }
 
     #[test]

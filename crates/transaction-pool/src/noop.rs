@@ -396,9 +396,7 @@ impl<T: EthPoolTransaction> TransactionValidator for MockTransactionValidator<T>
         if transaction.max_fee_per_blob_gas() == Some(0) {
             return TransactionValidationOutcome::Invalid(
                 transaction,
-                InvalidPoolTransactionError::Eip4844(
-                    Eip4844PoolTransactionError::ZeroBlobFee,
-                ),
+                InvalidPoolTransactionError::Eip4844(Eip4844PoolTransactionError::ZeroBlobFee),
             );
         }
         let maybe_sidecar = transaction.take_blob().maybe_sidecar().cloned();
