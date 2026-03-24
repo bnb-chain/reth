@@ -1,9 +1,9 @@
-//! Parallel proof computation using worker pools with dedicated database transactions.
+//! Parallel proof computation using worker pools with per-job database transactions.
 //!
 //!
 //! # Architecture
 //!
-//! - **Worker Pools**: Pre-spawned workers with dedicated database transactions
+//! - **Worker Pools**: Pre-spawned workers with per-job database transactions
 //!   - Storage pool: Handles storage proofs and blinded storage node requests
 //!   - Account pool: Handles account multiproofs and blinded account node requests
 //! - **Direct Channel Access**: [`ProofWorkerHandle`] provides type-safe queue methods with direct
@@ -804,7 +804,7 @@ where
     ///
     /// # Lifecycle
     ///
-    /// 1. Initializes database provider and transaction
+    /// 1. Starts the worker loop
     /// 2. Advertises availability
     /// 3. Processes jobs in a loop:
     ///    - Receives job from channel
@@ -818,10 +818,6 @@ where
     /// If this function panics, the worker thread terminates but other workers
     /// continue operating and the system degrades gracefully.
     fn run(mut self) -> ProviderResult<()> {
-        // Create provider from factory
-        let provider = self.task_ctx.factory.database_provider_ro()?;
-        let proof_tx = ProofTaskTx::new(provider, self.worker_id);
-
         trace!(
             target: "trie::proof_task",
             worker_id = self.worker_id,
@@ -831,13 +827,6 @@ where
         let mut storage_proofs_processed = 0u64;
         let mut storage_nodes_processed = 0u64;
         let mut cursor_metrics_cache = ProofTaskCursorMetricsCache::default();
-        let mut v2_calculator = if self.v2_enabled {
-            let trie_cursor = proof_tx.provider.storage_trie_cursor(B256::ZERO)?;
-            let hashed_cursor = proof_tx.provider.hashed_storage_cursor(B256::ZERO)?;
-            Some(proof_v2::StorageProofCalculator::new_storage(trie_cursor, hashed_cursor))
-        } else {
-            None
-        };
 
         // Initially mark this worker as available.
         self.available_workers.fetch_add(1, Ordering::Relaxed);
@@ -845,6 +834,37 @@ where
         while let Ok(job) = self.work_rx.recv() {
             // Mark worker as busy.
             self.available_workers.fetch_sub(1, Ordering::Relaxed);
+
+            // Open a fresh read transaction for each job. Workers are long-lived and may sit idle
+            // between jobs, so keeping a single transaction open for the full worker lifetime can
+            // exceed the MDBX read timeout if the state-root computation stalls.
+            let provider = match self.task_ctx.factory.database_provider_ro() {
+                Ok(provider) => provider,
+                Err(err) => {
+                    self.available_workers.fetch_add(1, Ordering::Relaxed);
+                    return Err(err)
+                }
+            };
+            let proof_tx = ProofTaskTx::new(provider, self.worker_id);
+            let mut v2_calculator = if self.v2_enabled {
+                let trie_cursor = match proof_tx.provider.storage_trie_cursor(B256::ZERO) {
+                    Ok(cursor) => cursor,
+                    Err(err) => {
+                        self.available_workers.fetch_add(1, Ordering::Relaxed);
+                        return Err(err.into())
+                    }
+                };
+                let hashed_cursor = match proof_tx.provider.hashed_storage_cursor(B256::ZERO) {
+                    Ok(cursor) => cursor,
+                    Err(err) => {
+                        self.available_workers.fetch_add(1, Ordering::Relaxed);
+                        return Err(err.into())
+                    }
+                };
+                Some(proof_v2::StorageProofCalculator::new_storage(trie_cursor, hashed_cursor))
+            } else {
+                None
+            };
 
             match job {
                 StorageWorkerJob::StorageProof { input, proof_result_sender } => {
@@ -869,6 +889,11 @@ where
                     );
                 }
             }
+
+            // Drop the per-job provider and any associated cursors before the worker blocks on the
+            // next recv.
+            drop(v2_calculator);
+            drop(proof_tx);
 
             // Mark worker as available again.
             self.available_workers.fetch_add(1, Ordering::Relaxed);
@@ -1096,7 +1121,7 @@ where
     ///
     /// # Lifecycle
     ///
-    /// 1. Initializes database provider and transaction
+    /// 1. Starts the worker loop
     /// 2. Advertises availability
     /// 3. Processes jobs in a loop:
     ///    - Receives job from channel
@@ -1110,10 +1135,6 @@ where
     /// If this function panics, the worker thread terminates but other workers
     /// continue operating and the system degrades gracefully.
     fn run(mut self) -> ProviderResult<()> {
-        // Create provider from factory
-        let provider = self.task_ctx.factory.database_provider_ro()?;
-        let proof_tx = ProofTaskTx::new(provider, self.worker_id);
-
         trace!(
             target: "trie::proof_task",
             worker_id=self.worker_id,
@@ -1130,6 +1151,18 @@ where
         while let Ok(job) = self.work_rx.recv() {
             // Mark worker as busy.
             self.available_workers.fetch_sub(1, Ordering::Relaxed);
+
+            // Open a fresh read transaction for each job. Workers are long-lived and may sit idle
+            // between jobs, so keeping a single transaction open for the full worker lifetime can
+            // exceed the MDBX read timeout if the state-root computation stalls.
+            let provider = match self.task_ctx.factory.database_provider_ro() {
+                Ok(provider) => provider,
+                Err(err) => {
+                    self.available_workers.fetch_add(1, Ordering::Relaxed);
+                    return Err(err)
+                }
+            };
+            let proof_tx = ProofTaskTx::new(provider, self.worker_id);
 
             match job {
                 AccountWorkerJob::AccountMultiproof { input } => {
@@ -1151,6 +1184,9 @@ where
                     );
                 }
             }
+
+            // Drop the per-job provider before the worker blocks on the next recv.
+            drop(proof_tx);
 
             // Mark worker as available again.
             self.available_workers.fetch_add(1, Ordering::Relaxed);
