@@ -156,6 +156,18 @@ where
         &self.executor
     }
 
+    /// Returns a clone of the moka [`StateExecutionCache`] for the given parent hash,
+    /// for read-only access (e.g. from the miner).
+    ///
+    /// Cloning the moka caches is cheap (Arc refcount bump only).
+    /// Returns `None` if the cache doesn't exist or the hash doesn't match.
+    pub fn get_execution_cache_for(
+        &self,
+        parent_hash: B256,
+    ) -> Option<StateExecutionCache> {
+        self.execution_cache.try_read_caches_for(parent_hash)
+    }
+
     /// Creates a new payload processor.
     pub fn new(
         executor: WorkloadExecutor,
@@ -903,6 +915,25 @@ impl ExecutionCache {
         }
 
         None
+    }
+
+    /// Returns a clone of the inner [`StateExecutionCache`] (moka caches) for
+    /// the given parent hash, without requiring exclusive access.
+    ///
+    /// Unlike [`get_cache_for`], this does **not** check `is_available()` — it is
+    /// safe for read-only callers (e.g. miner) that only want to query the cache,
+    /// not lock it for prewarming.
+    ///
+    /// Returns `None` if no cache exists or the hash does not match.
+    pub(crate) fn try_read_caches_for(
+        &self,
+        parent_hash: B256,
+    ) -> Option<StateExecutionCache> {
+        let cache = self.inner.read();
+        cache
+            .as_ref()
+            .filter(|c| c.executed_block_hash() == parent_hash)
+            .map(|c| c.clone_caches())
     }
 
     /// Clears the tracked cache

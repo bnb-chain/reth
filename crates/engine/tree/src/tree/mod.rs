@@ -3,7 +3,12 @@ use crate::{
     chain::FromOrchestrator,
     engine::{DownloadRequest, EngineApiEvent, EngineApiKind, EngineApiRequest, FromEngine},
     persistence::PersistenceHandle,
-    tree::{error::InsertPayloadError, metrics::EngineApiMetrics, payload_validator::TreeCtx},
+    tree::{
+        cached_state::ExecutionCache as StateExecutionCache,
+        error::InsertPayloadError,
+        metrics::EngineApiMetrics,
+        payload_validator::TreeCtx,
+    },
 };
 use alloy_consensus::BlockHeader;
 use alloy_eips::{eip1898::BlockWithParent, BlockNumHash, NumHash};
@@ -1708,6 +1713,14 @@ where
                             }
                             log_handler_duration("request.custom.request_difflayer", start.elapsed());
                         }
+                        CustomRequestMessage::RequestExecutionCache { parent_hash, tx, .. } => {
+                            let start = Instant::now();
+                            let cache = self.payload_validator.get_execution_cache_for(parent_hash);
+                            if tx.send(cache).is_err() {
+                                error!(target: "engine::tree", "Failed to send execution cache");
+                            }
+                            log_handler_duration("request.custom.request_execution_cache", start.elapsed());
+                        }
                     },
                 }
             }
@@ -3295,6 +3308,21 @@ where
         /// Phantom data to hold the generic types.
         _phantom: PhantomData<(P, Evm, N)>,
     },
+
+    /// Request the cross-block execution cache for a given parent hash.
+    ///
+    /// The miner sends this at payload-build time to obtain a read-only snapshot of the
+    /// moka-based `ExecutionCache` accumulated by the engine during block import.
+    /// This allows the miner's EVM state reads to hit the warm engine cache before
+    /// falling through to the underlying MDBX database.
+    RequestExecutionCache {
+        /// The parent block hash whose execution cache is requested.
+        parent_hash: BlockHash,
+        /// One-shot sender to return the cache (or `None` if not available).
+        tx: oneshot::Sender<Option<StateExecutionCache>>,
+        /// Phantom data to hold the generic types.
+        _phantom: PhantomData<(P, Evm, N)>,
+    },
 }
 
 impl<P, Evm, N> Display for CustomRequestMessage<P, Evm, N>
@@ -3306,6 +3334,9 @@ where
         match self {
             Self::RequestDiffLayer { parent_hash, .. } => {
                 write!(f, "RequestDiffLayer(parent_hash: {:?})", parent_hash)
+            }
+            Self::RequestExecutionCache { parent_hash, .. } => {
+                write!(f, "RequestExecutionCache(parent_hash: {:?})", parent_hash)
             }
         }
     }

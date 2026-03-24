@@ -18,7 +18,7 @@ use revm_primitives::map::DefaultHashBuilder;
 use std::{sync::Arc, time::Duration};
 use tracing::{debug_span, instrument, trace};
 
-pub(crate) type Cache<K, V> =
+pub type Cache<K, V> =
     mini_moka::sync::Cache<K, V, alloy_primitives::map::DefaultHashBuilder>;
 
 /// A wrapper of a state provider and a shared cache.
@@ -338,17 +338,20 @@ impl<S: HashedPostStateProvider> HashedPostStateProvider for CachedStateProvider
 /// Optimizes state access by maintaining in-memory copies of frequently accessed
 /// accounts, storage slots, and bytecode. Works in conjunction with prewarming
 /// to reduce database I/O during block execution.
+///
+/// All three inner caches are `mini_moka::sync::Cache` which is internally
+/// Arc-based, so cloning this struct is cheap (no data is copied).
 #[derive(Debug, Clone)]
-pub(crate) struct ExecutionCache {
+pub struct ExecutionCache {
     /// Cache for contract bytecode, keyed by code hash.
-    code_cache: Cache<B256, Option<Bytecode>>,
+    pub code_cache: Cache<B256, Option<Bytecode>>,
 
     /// Per-account storage cache: outer cache keyed by Address, inner cache tracks that account’s
     /// storage slots.
-    storage_cache: Cache<Address, Arc<AccountStorageCache>>,
+    pub storage_cache: Cache<Address, Arc<AccountStorageCache>>,
 
     /// Cache for basic account information (nonce, balance, code hash).
-    account_cache: Cache<Address, Option<Account>>,
+    pub account_cache: Cache<Address, Option<Account>>,
 }
 
 impl ExecutionCache {
@@ -639,6 +642,14 @@ impl SavedCache {
         &self.caches
     }
 
+    /// Returns a clone of the inner [`ExecutionCache`] without consuming the [`SavedCache`].
+    ///
+    /// Because `ExecutionCache` fields are `mini_moka::sync::Cache` (internally Arc-based),
+    /// this clone is cheap — it only increments reference counts, no data is copied.
+    pub fn clone_caches(&self) -> ExecutionCache {
+        self.caches.clone()
+    }
+
     /// Returns the metrics associated with this cache.
     pub(crate) const fn metrics(&self) -> &CachedStateMetrics {
         &self.metrics
@@ -664,9 +675,9 @@ impl SavedCache {
 /// This represents the second level of the hierarchical storage cache.
 /// Each account gets its own `AccountStorageCache` to store accessed storage slots.
 #[derive(Debug, Clone)]
-pub(crate) struct AccountStorageCache {
+pub struct AccountStorageCache {
     /// Map of storage keys to their cached values.
-    slots: Cache<StorageKey, Option<StorageValue>>,
+    pub slots: Cache<StorageKey, Option<StorageValue>>,
 }
 
 impl AccountStorageCache {

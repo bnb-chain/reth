@@ -1,7 +1,7 @@
 //! Types and traits for validating blocks and payloads.
 
 use crate::tree::{
-    cached_state::CachedStateProvider,
+    cached_state::{CachedStateProvider, ExecutionCache as StateExecutionCache},
     error::{InsertBlockError, InsertBlockErrorKind, InsertPayloadError},
     instrumented_state::InstrumentedStateProvider,
     payload_processor::{executor::WorkloadExecutor, PayloadProcessor},
@@ -1552,6 +1552,15 @@ pub trait EngineValidator<
     /// This is invoked when blocks are inserted via `InsertExecutedBlock` (e.g., locally built
     /// blocks by sequencers) to allow implementations to update internal state such as caches.
     fn on_inserted_executed_block(&self, block: ExecutedBlock<N>);
+
+    /// Returns a clone of the cross-block [`StateExecutionCache`] (moka caches) for the given
+    /// parent hash, intended for read-only access by the miner.
+    ///
+    /// Default implementation returns `None`. Validators backed by a [`PayloadProcessor`]
+    /// (e.g. [`BasicEngineValidator`]) override this to expose their cached state.
+    fn get_execution_cache_for(&self, _parent_hash: B256) -> Option<StateExecutionCache> {
+        None
+    }
 }
 
 impl<N, Types, P, Evm, V> EngineValidator<Types> for BasicEngineValidator<P, Evm, V>
@@ -1612,6 +1621,10 @@ where
             block.recovered_block.block_with_parent(),
             &block.execution_output.state,
         );
+    }
+
+    fn get_execution_cache_for(&self, parent_hash: B256) -> Option<StateExecutionCache> {
+        self.payload_processor.get_execution_cache_for(parent_hash)
     }
 }
 
