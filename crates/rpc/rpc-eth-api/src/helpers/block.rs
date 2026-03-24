@@ -2,13 +2,12 @@
 
 use super::{LoadPendingBlock, LoadReceipt, SpawnBlocking};
 use crate::{
-    node::RpcNodeCoreExt, EthApiTypes, FromEthApiError, FullEthApiTypes, RpcBlock,
-    RpcNodeCore, RpcReceipt,
+    node::RpcNodeCoreExt, EthApiTypes, FromEthApiError, FullEthApiTypes, RpcBlock, RpcNodeCore,
+    RpcReceipt,
 };
 use alloy_consensus::{transaction::TxHashRef, TxReceipt};
 use alloy_eips::{BlockId, BlockNumberOrTag};
 use alloy_rlp::Encodable;
-use tracing::{trace, warn};
 use alloy_rpc_types_eth::{Block, BlockTransactions, Index};
 use futures::Future;
 use reth_node_api::BlockBody;
@@ -20,8 +19,8 @@ use reth_storage_api::{
     ProviderTx,
 };
 use reth_transaction_pool::{PoolTransaction, TransactionPool};
-use std::collections::HashSet;
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
+use tracing::{trace, warn};
 
 /// Result type of the fetched block receipts.
 pub type BlockReceiptsResult<N, E> = Result<Option<Vec<RpcReceipt<N>>>, E>;
@@ -60,8 +59,9 @@ fn resolved_validators_threshold(
             "{value} neither within the range [1,{}] nor the range [-3,-1]",
             active_validator_count.unwrap_or(0)
         ))),
-        value if active_validator_count
-            .is_some_and(|validator_count| value > validator_count as i64) =>
+        value
+            if active_validator_count
+                .is_some_and(|validator_count| value > validator_count as i64) =>
         {
             Err(EthApiError::InvalidParams(format!(
                 "{value} neither within the range [1,{}] nor the range [-3,-1]",
@@ -123,10 +123,10 @@ pub trait EthBlocks: LoadBlock<RpcConvert: RpcConvert<Primitives = Self::Primiti
 
                                     trace!(
                                         target: "rpc::eth", 
-                                        ?block_id, 
-                                        block_number, 
+                                        ?block_id,
+                                        block_number,
                                         parent_number,
-                                        ?parent_td, 
+                                        ?parent_td,
                                         ?current_difficulty,
                                         ?calculated_td,
                                         "Calculated TD from parent"
@@ -250,7 +250,8 @@ pub trait EthBlocks: LoadBlock<RpcConvert: RpcConvert<Primitives = Self::Primiti
 
             let lower_bound = fast_finalized_header.number().max(1);
             let active_validator_count = self.current_validators_len();
-            let threshold = resolved_validators_threshold(verified_validator_num, active_validator_count)?;
+            let threshold =
+                resolved_validators_threshold(verified_validator_num, active_validator_count)?;
             if threshold == 0 {
                 return Ok(Some(fast_finalized_header.number()));
             }
@@ -297,10 +298,8 @@ pub trait EthBlocks: LoadBlock<RpcConvert: RpcConvert<Primitives = Self::Primiti
         async move {
             // If no pending block from provider, build the pending block locally.
             if block_id.is_pending() {
-                if let Some(block) = self
-                    .provider()
-                    .pending_block()
-                    .map_err(Self::Error::from_eth_err)?
+                if let Some(block) =
+                    self.provider().pending_block().map_err(Self::Error::from_eth_err)?
                 {
                     return Ok(Some(block.body().transaction_count()));
                 }
@@ -485,9 +484,11 @@ pub trait EthBlocks: LoadBlock<RpcConvert: RpcConvert<Primitives = Self::Primiti
                     let block =
                         alloy_consensus::Block::<alloy_consensus::TxEnvelope, _>::uncle(header);
                     let size = block.length();
-                    let header = self
-                        .converter()
-                        .convert_header(SealedHeader::new_unhashed(block.header), size, None)?;
+                    let header = self.converter().convert_header(
+                        SealedHeader::new_unhashed(block.header),
+                        size,
+                        None,
+                    )?;
                     Ok(Block {
                         uncles: vec![],
                         header,
@@ -515,7 +516,8 @@ mod tests {
             return Ok(fast_finalized_number);
         }
 
-        let threshold = resolved_validators_threshold(verified_validator_num, active_validator_count)?;
+        let threshold =
+            resolved_validators_threshold(verified_validator_num, active_validator_count)?;
         if threshold == 0 {
             return Ok(fast_finalized_number);
         }
@@ -550,12 +552,7 @@ mod tests {
 
     #[test]
     fn finalized_block_number_uses_ceil_half_for_negative_one() {
-        let headers = vec![
-            header(12, 0x11),
-            header(11, 0x22),
-            header(10, 0x33),
-            header(9, 0x11),
-        ];
+        let headers = vec![header(12, 0x11), header(11, 0x22), header(10, 0x33), header(9, 0x11)];
 
         // 3 validators => threshold ceil(3/2) = 2, satisfied at header #11.
         assert_eq!(resolved_finalized_block_number(8, &headers, -1, Some(3)).unwrap(), 11);
@@ -577,23 +574,14 @@ mod tests {
 
     #[test]
     fn finalized_block_number_prefers_fast_finalized_if_newer() {
-        let headers = vec![
-            header(12, 0x11),
-            header(11, 0x22),
-            header(10, 0x33),
-        ];
+        let headers = vec![header(12, 0x11), header(11, 0x22), header(10, 0x33)];
         // threshold reached at 12 but fast-finalized is higher.
         assert_eq!(resolved_finalized_block_number(20, &headers, -1, Some(3)).unwrap(), 20);
     }
 
     #[test]
     fn finalized_block_number_prefers_probabilistic_if_newer_than_fast_finalized() {
-        let headers = vec![
-            header(16, 0x11),
-            header(15, 0x22),
-            header(14, 0x33),
-            header(13, 0x11),
-        ];
+        let headers = vec![header(16, 0x11), header(15, 0x22), header(14, 0x33), header(13, 0x11)];
 
         // 3 validators, threshold ceil(3/2) = 2, reached at block 15.
         assert_eq!(resolved_finalized_block_number(10, &headers, -1, Some(3)).unwrap(), 15);
@@ -601,12 +589,7 @@ mod tests {
 
     #[test]
     fn finalized_block_number_negative_two_and_three_thresholds() {
-        let headers = vec![
-            header(12, 0x11),
-            header(11, 0x22),
-            header(10, 0x33),
-            header(9, 0x44),
-        ];
+        let headers = vec![header(12, 0x11), header(11, 0x22), header(10, 0x33), header(9, 0x44)];
 
         // ceil(4*2/3) = 3 -> reached at block 10.
         assert_eq!(resolved_finalized_block_number(0, &headers, -2, Some(4)).unwrap(), 10);
@@ -636,31 +619,21 @@ mod tests {
 
     #[test]
     fn finalized_block_number_uses_active_validator_count_for_negative_values() {
-        let headers = vec![
-            header(12, 0x11),
-            header(11, 0x22),
-            header(10, 0x33),
-            header(9, 0x44),
-        ];
+        let headers = vec![header(12, 0x11), header(11, 0x22), header(10, 0x33), header(9, 0x44)];
 
         // With active set size 20, -2 => ceil(20*2/3) = 14. Only 4 unique signers seen, so
         // no probabilistic finalization should happen beyond fast-finalized height.
-        assert_eq!(
-            resolved_finalized_block_number(8, &headers, -2, Some(20)).unwrap(),
-            8
-        );
+        assert_eq!(resolved_finalized_block_number(8, &headers, -2, Some(20)).unwrap(), 8);
     }
 
     #[test]
     fn finalized_block_number_requires_validator_count_for_negative_values() {
         let headers = vec![header(3, 0x11), header(2, 0x22), header(1, 0x33)];
 
-        assert!(
-            resolved_finalized_block_number(1, &headers, -1, None)
-                .unwrap_err()
-                .to_string()
-                .contains("Unable to derive validator-count")
-        );
+        assert!(resolved_finalized_block_number(1, &headers, -1, None)
+            .unwrap_err()
+            .to_string()
+            .contains("Unable to derive validator-count"));
     }
 }
 

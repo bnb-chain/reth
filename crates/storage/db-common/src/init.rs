@@ -358,21 +358,27 @@ where
         );
     }
 
-
-    let (root, nodes, diff_storage_roots) = triedb.batch_update_and_commit(
-        alloy_trie::EMPTY_ROOT_HASH,
-        None,
-        state_accounts,
-        HashSet::new(),
-        storage_states)
-        .map_err(|_| ProviderError::Database(DatabaseError::Other("Failed to update and commit state".to_string())))?;
+    let (root, nodes, diff_storage_roots) = triedb
+        .batch_update_and_commit(
+            alloy_trie::EMPTY_ROOT_HASH,
+            None,
+            state_accounts,
+            HashSet::new(),
+            storage_states,
+        )
+        .map_err(|_| {
+            ProviderError::Database(DatabaseError::Other(
+                "Failed to update and commit state".to_string(),
+            ))
+        })?;
 
     let diff_nodes = (*nodes.to_diff_nodes()).clone();
     let difflayer = Some(Arc::new(DiffLayer::new(diff_nodes, diff_storage_roots)));
-    triedb.flush(0, root, &difflayer).map_err(|_| ProviderError::Database(DatabaseError::Other("Failed to flush state".to_string())))?;
+    triedb.flush(0, root, &difflayer).map_err(|_| {
+        ProviderError::Database(DatabaseError::Other("Failed to flush state".to_string()))
+    })?;
 
     info!(target: "reth::storage", "Triedb genesis state root computed: {:?}", root);
-
 
     let all_reverts_init: RevertsInit = HashMap::from_iter([(block, reverts_init)]);
 
@@ -395,7 +401,6 @@ where
 
     Ok(())
 }
-
 
 /// Inserts state at given block into database.
 pub fn insert_state<'a, 'b, Provider>(

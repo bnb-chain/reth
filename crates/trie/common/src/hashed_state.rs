@@ -22,8 +22,8 @@ use rayon::prelude::{FromParallelIterator, IntoParallelIterator, ParallelIterato
 
 use revm_database::{AccountStatus, BundleAccount};
 
-/// In-memory hashed state that stores account and storage changes with keccak256-hashed keys in
-/// hash maps.
+/// In-memory hashed state that stores account and storage changes with keccak256-hashed keys
+/// in hash maps.
 use alloy_consensus::constants::KECCAK_EMPTY;
 use rust_eth_triedb::TrieDBHashedPostState;
 use rust_eth_triedb_state_trie::account::StateAccount;
@@ -87,7 +87,10 @@ impl HashedPostState {
                     None => HashedStorage::new(false),
                     Some(_) => HashedStorage::from_plain_storage(
                         AccountStatus::Changed,
-                        account.storage.iter().map(|(slot, value)| (slot, &value.previous_or_original_value)),
+                        account
+                            .storage
+                            .iter()
+                            .map(|(slot, value)| (slot, &value.previous_or_original_value)),
                     ),
                 };
                 (hashed_address, (hashed_account, hashed_storage))
@@ -114,7 +117,7 @@ impl HashedPostState {
                 Some(account) => {
                     let code_hash = match account.bytecode_hash {
                         Some(code_hash) => code_hash,
-                        None => KECCAK_EMPTY
+                        None => KECCAK_EMPTY,
                     };
                     let acc = StateAccount::default()
                         .with_nonce(account.nonce)

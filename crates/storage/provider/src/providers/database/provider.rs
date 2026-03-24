@@ -62,8 +62,10 @@ use reth_storage_api::{
     NodePrimitivesProvider, StateProvider, StateWriteConfig, StorageChangeSetReader,
     StorageSettingsCache, TryIntoHistoricalStateProvider, WriteStateInput,
 };
-use reth_storage_errors::db::DatabaseError;
-use reth_storage_errors::provider::{ProviderResult, StaticFileWriterError};
+use reth_storage_errors::{
+    db::DatabaseError,
+    provider::{ProviderResult, StaticFileWriterError},
+};
 use reth_trie::{
     changesets::storage_trie_wiped_changeset_iter,
     trie_cursor::{InMemoryTrieCursor, TrieCursor, TrieCursorIter, TrieStorageCursor},
@@ -815,7 +817,8 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
                     available: 0..=0,
                 })?;
 
-            let trie_revert = self.changeset_cache.get_or_compute_range(self, from..=db_tip_block)?;
+            let trie_revert =
+                self.changeset_cache.get_or_compute_range(self, from..=db_tip_block)?;
             self.write_trie_updates_sorted(&trie_revert)?;
 
             // Clear trie changesets which have been unwound.
@@ -2851,7 +2854,9 @@ impl<TX: DbTxMut + DbTx + 'static, N: NodeTypes> StorageTrieWriter for DatabaseP
     ) -> ProviderResult<usize> {
         if rust_eth_triedb::triedb_manager::is_triedb_active() {
             tracing::error!("write_storage_trie_updates is not supported triedb");
-            return Err(ProviderError::Database(DatabaseError::Other("write_trie_updates is not supported triedb".to_string())));
+            return Err(ProviderError::Database(DatabaseError::Other(
+                "write_trie_updates is not supported triedb".to_string(),
+            )));
         }
 
         let mut num_entries = 0;

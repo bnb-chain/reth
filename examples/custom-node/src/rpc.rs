@@ -10,10 +10,10 @@ use op_alloy_consensus::OpTxEnvelope;
 use op_alloy_rpc_types::{OpTransactionReceipt, OpTransactionRequest};
 use reth_op::rpc::RpcTypes;
 use reth_primitives_traits::SealedHeader;
-use reth_rpc_convert::transaction::FromConsensusHeader;
 use reth_rpc_api::eth::{
     EthTxEnvError, SignTxRequestError, SignableTxRequest, TryIntoSimTx, TryIntoTxEnv,
 };
+use reth_rpc_convert::transaction::FromConsensusHeader;
 use revm::context::BlockEnv;
 
 #[derive(Debug, Clone, Copy, Default)]
