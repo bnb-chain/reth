@@ -22,11 +22,12 @@ use rayon::prelude::{FromParallelIterator, IntoParallelIterator, ParallelIterato
 
 use revm_database::{AccountStatus, BundleAccount};
 
-/// In-memory hashed state that stores account and storage changes with keccak256-hashed keys in
-/// hash maps.
 use alloy_consensus::constants::KECCAK_EMPTY;
 use rust_eth_triedb::TrieDBHashedPostState;
 use rust_eth_triedb_state_trie::account::StateAccount;
+
+/// In-memory hashed state that stores account and storage changes with keccak256-hashed keys in
+/// hash maps.
 #[derive(PartialEq, Eq, Clone, Default, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct HashedPostState {
