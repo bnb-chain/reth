@@ -3,15 +3,15 @@ use alloy_eip7928::BlockAccessList;
 use alloy_eips::{eip2718::Encodable2718, BlockId, BlockNumberOrTag};
 use alloy_evm::env::BlockEnvironment;
 use alloy_genesis::ChainConfig;
-use alloy_primitives::{hex::decode, uint, Address, Bytes, B256};
+use alloy_primitives::{hex::decode, uint, Address, Bytes, B256, U256};
 use alloy_rlp::{Decodable, Encodable};
 use alloy_rpc_types::BlockTransactionsKind;
 use alloy_rpc_types_debug::ExecutionWitness;
 use alloy_rpc_types_eth::{state::EvmOverrides, BlockError, Bundle, StateContext, TransactionInfo};
 use alloy_rpc_types_trace::geth::{
-    call::FlatCallFrame, BlockTraceResult, FourByteFrame, GethDebugBuiltInTracerType,
-    GethDebugTracerType, GethDebugTracingCallOptions, GethDebugTracingOptions, GethTrace,
-    NoopFrame, TraceResult,
+    call::FlatCallFrame, mux::MuxFrame, BlockTraceResult, FourByteFrame,
+    GethDebugBuiltInTracerType, GethDebugTracerType, GethDebugTracingCallOptions,
+    GethDebugTracingOptions, GethTrace, NoopFrame, TraceResult,
 };
 use async_trait::async_trait;
 use futures::Stream;
@@ -122,6 +122,23 @@ where
         if tx_env.gas_limit() == u64::MAX / 2 && tx_env.caller() == evm_env.block_env.beneficiary()
         {
             evm_env.cfg_env.disable_block_gas_limit = true;
+        }
+    }
+
+    /// Fixes the top-level `gas` field in a [`MuxFrame`]'s callTracer result.
+    ///
+    /// When using [`MuxInspector`], the internal [`TracingInspector`] does not have
+    /// `set_transaction_gas_limit()` called on it, so the root call frame's `gas` field
+    /// reflects the EVM-level gas (after intrinsic gas deduction) rather than the original
+    /// transaction gas limit. This helper post-processes the [`MuxFrame`] to correct the
+    /// `gas` field for the callTracer entry, matching geth/erigon behavior where the
+    /// top-level `gas` equals the transaction's gas limit.
+    fn fix_mux_frame_gas_limit(frame: &mut MuxFrame, gas_limit: u64) {
+        if let Some(GethTrace::CallTracer(call_frame)) = frame
+            .0
+            .get_mut(&GethDebugBuiltInTracerType::CallTracer)
+        {
+            call_frame.gas = U256::from(gas_limit);
         }
     }
 
@@ -455,6 +472,7 @@ where
 
                                     Self::handle_bsc_system_transaction(&mut evm_env, &tx_env);
 
+                                    let gas_limit = tx_env.gas_limit();
                                     let res = {
                                         let mut bal_db =
                                             reth_revm::db::bal::BalDatabase::new(&mut *db);
@@ -465,9 +483,10 @@ where
                                             &mut inspector,
                                         )?
                                     };
-                                    let frame = inspector
+                                    let mut frame = inspector
                                         .try_into_mux_frame(&res, db, tx_info)
                                         .map_err(Eth::Error::from_eth_err)?;
+                                    Self::fix_mux_frame_gas_limit(&mut frame, gas_limit);
                                     Ok(frame.into())
                                 },
                             )
@@ -994,11 +1013,13 @@ where
 
                         Self::handle_bsc_system_transaction(&mut evm_env, &tx_env);
 
+                        let gas_limit = tx_env.gas_limit();
                         let res =
                             self.eth_api().inspect(&mut *db, evm_env, tx_env, &mut inspector)?;
-                        let frame = inspector
+                        let mut frame = inspector
                             .try_into_mux_frame(&res, db, tx_info)
                             .map_err(Eth::Error::from_eth_err)?;
+                        Self::fix_mux_frame_gas_limit(&mut frame, gas_limit);
                         return Ok((frame.into(), res.state))
                     }
                     GethDebugBuiltInTracerType::FlatCallTracer => {
