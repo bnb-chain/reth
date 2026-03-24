@@ -113,8 +113,8 @@ where
     /// Handles BSC system transactions by disabling block gas limit validation.
     ///
     /// BSC system transactions are identified by:
-    /// 1. gas_limit == u64::MAX / 2
-    /// 2. caller == block beneficiary (coinbase)
+    /// 1. `gas_limit == u64::MAX / 2`
+    /// 2. `caller == block beneficiary` (coinbase)
     fn handle_bsc_system_transaction(
         evm_env: &mut EvmEnvFor<Eth::Evm>,
         tx_env: &TxEnvFor<Eth::Evm>,

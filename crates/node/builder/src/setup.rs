@@ -144,7 +144,7 @@ where
         );
         pipeline
     } else {
-        let pipeline = builder
+        builder
             .with_tip_sender(tip_tx)
             .with_metrics_tx(metrics_tx)
             .add_stages(
@@ -167,9 +167,7 @@ where
                     exex_manager_handle,
                 )),
             )
-            .build(provider_factory, static_file_producer);
-
-        pipeline
+            .build(provider_factory, static_file_producer)
     };
 
     Ok(pipeline)

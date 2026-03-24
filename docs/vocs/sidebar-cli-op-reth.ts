@@ -85,6 +85,10 @@ export const opRethCliSidebar: SidebarItem = {
                     ]
                 },
                 {
+                    text: "op-reth db migrate",
+                    link: "/cli/op-reth/db/migrate"
+                },
+                {
                     text: "op-reth db repair-trie",
                     link: "/cli/op-reth/db/repair-trie"
                 },

@@ -312,7 +312,7 @@ where
             ..
         } = self;
 
-        EthApiBuilder {
+        Self {
             components,
             rpc_converter,
             gas_cap,

@@ -528,7 +528,7 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
 
             // Get TrieDB instance if active
             let triedb_active = is_triedb_active();
-            let mut triedb_opt = if triedb_active { Some(get_global_triedb()) } else { None };
+            let mut triedb_opt = triedb_active.then(get_global_triedb);
 
             for (i, block) in blocks.iter().enumerate() {
                 let recovered_block = block.recovered_block();
@@ -561,12 +561,11 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
 
                     let trie_data = block.trie_data();
 
+                    let start = Instant::now();
                     if let Some(ref mut triedb) = triedb_opt {
                         // TrieDB mode: update TrieDB instead of writing hashed state to MDBX
-                        let start = Instant::now();
-
                         let (latest_block_number, latest_state_root) =
-                            triedb.latest_persist_state().map_err(|e| ProviderError::other(e))?;
+                            triedb.latest_persist_state().map_err(ProviderError::other)?;
 
                         // Validate that triedb state is consistent
                         if block_number > 0 && latest_block_number != block_number - 1 {
@@ -596,7 +595,7 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
                                 None,
                                 &triedb_hashed_post_state,
                             )
-                            .map_err(|e| ProviderError::other(e))?;
+                            .map_err(ProviderError::other)?;
 
                         if new_root != state_root {
                             return Err(ProviderError::Database(DatabaseError::Other(format!(
@@ -609,7 +608,7 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
 
                         triedb
                             .flush(block_number, new_root, &difflayer)
-                            .map_err(|e| ProviderError::other(e))?;
+                            .map_err(ProviderError::other)?;
 
                         debug!(
                             target: "providers::db",
@@ -617,14 +616,11 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
                             block_number,
                             new_root
                         );
-
-                        timings.write_hashed_state += start.elapsed();
                     } else {
                         // Non-TrieDB mode: write hashed state to MDBX
-                        let start = Instant::now();
                         self.write_hashed_state(&trie_data.hashed_state)?;
-                        timings.write_hashed_state += start.elapsed();
                     }
+                    timings.write_hashed_state += start.elapsed();
                 }
             }
 
@@ -1542,12 +1538,12 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> HeaderProvider for DatabasePro
     }
 
     fn header_td_by_number(&self, number: BlockNumber) -> ProviderResult<Option<U256>> {
-        if self.chain_spec.is_paris_active_at_block(number) {
-            if let Some(td) = self.chain_spec.final_paris_total_difficulty() {
-                // if this block is higher than the final paris(merge) block, return the final paris
-                // difficulty
-                return Ok(Some(td));
-            }
+        if self.chain_spec.is_paris_active_at_block(number) &&
+            let Some(td) = self.chain_spec.final_paris_total_difficulty()
+        {
+            // if this block is higher than the final paris(merge) block, return the final paris
+            // difficulty
+            return Ok(Some(td));
         }
 
         self.static_file_provider.get_with_static_file_or_database(

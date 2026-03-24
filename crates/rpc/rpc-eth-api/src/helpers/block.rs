@@ -46,12 +46,12 @@ fn resolved_validators_threshold(
     };
 
     match verified_validator_num {
-        -1 | -2 | -3 => {
+        -3..=-1 => {
             let active_validator_count =
-                active_validator_count.ok_or_else(|| missing_validator_count())?;
+                active_validator_count.ok_or_else(missing_validator_count)?;
             match verified_validator_num {
-                -1 => Ok((active_validator_count + 1) / 2),
-                -2 => Ok((active_validator_count * 2 + 2) / 3),
+                -1 => Ok(active_validator_count.div_ceil(2)),
+                -2 => Ok((active_validator_count * 2).div_ceil(3)),
                 _ => Ok(active_validator_count),
             }
         }
@@ -159,9 +159,9 @@ pub trait EthBlocks: LoadBlock<RpcConvert: RpcConvert<Primitives = Self::Primiti
     /// BSC compatibility:
     /// - `verified_validator_num` is required to determine the probabilistic finalized height.
     ///   Accepted values are:
-    ///   - `-1`: ceil(number_of_validators / 2)
-    ///   - `-2`: ceil(number_of_validators * 2 / 3)
-    ///   - `-3`: number_of_validators
+    ///   - `-1`: `ceil(number_of_validators / 2)`
+    ///   - `-2`: `ceil(number_of_validators * 2 / 3)`
+    ///   - `-3`: `number_of_validators`
     ///   - or `>=1`: explicit validator threshold.
     fn rpc_finalized_header(
         &self,
@@ -186,9 +186,9 @@ pub trait EthBlocks: LoadBlock<RpcConvert: RpcConvert<Primitives = Self::Primiti
     /// BSC compatibility:
     /// - `verified_validator_num` is required to determine the probabilistic finalized height.
     ///   Accepted values are:
-    ///   - `-1`: ceil(number_of_validators / 2)
-    ///   - `-2`: ceil(number_of_validators * 2 / 3)
-    ///   - `-3`: number_of_validators
+    ///   - `-1`: `ceil(number_of_validators / 2)`
+    ///   - `-2`: `ceil(number_of_validators * 2 / 3)`
+    ///   - `-3`: `number_of_validators`
     ///   - or `>=1`: explicit validator threshold.
     ///
     /// If `full` is true, the block object will contain all transaction objects, otherwise it will
@@ -216,9 +216,9 @@ pub trait EthBlocks: LoadBlock<RpcConvert: RpcConvert<Primitives = Self::Primiti
     /// BSC compatibility:
     /// - `verified_validator_num` is required to determine the probabilistic finalized height.
     ///   Accepted values are:
-    ///   - `-1`: ceil(number_of_validators / 2)
-    ///   - `-2`: ceil(number_of_validators * 2 / 3)
-    ///   - `-3`: number_of_validators
+    ///   - `-1`: `ceil(number_of_validators / 2)`
+    ///   - `-2`: `ceil(number_of_validators * 2 / 3)`
+    ///   - `-3`: `number_of_validators`
     ///   - or `>=1`: explicit validator threshold.
     fn finalized_block_number(
         &self,
@@ -501,6 +501,51 @@ pub trait EthBlocks: LoadBlock<RpcConvert: RpcConvert<Primitives = Self::Primiti
     }
 }
 
+/// Loads a block from database.
+///
+/// Behaviour shared by several `eth_` RPC methods, not exclusive to `eth_` blocks RPC methods.
+pub trait LoadBlock: LoadPendingBlock + SpawnBlocking + RpcNodeCoreExt {
+    /// Returns the block object for the given block id.
+    #[expect(clippy::type_complexity)]
+    fn recovered_block(
+        &self,
+        block_id: BlockId,
+    ) -> impl Future<
+        Output = Result<
+            Option<Arc<RecoveredBlock<<Self::Provider as BlockReader>::Block>>>,
+            Self::Error,
+        >,
+    > + Send {
+        async move {
+            if block_id.is_pending() {
+                // Pending block can be fetched directly without need for caching
+                if let Some(pending_block) =
+                    self.provider().pending_block().map_err(Self::Error::from_eth_err)?
+                {
+                    return Ok(Some(Arc::new(pending_block)));
+                }
+
+                // If no pending block from provider, try to get local pending block
+                return match self.local_pending_block().await? {
+                    Some(pending) => Ok(Some(pending.block)),
+                    None => Ok(None),
+                };
+            }
+
+            let block_hash = match self
+                .provider()
+                .block_hash_for_id(block_id)
+                .map_err(Self::Error::from_eth_err)?
+            {
+                Some(block_hash) => block_hash,
+                None => return Ok(None),
+            };
+
+            self.cache().get_recovered_block(block_hash).await.map_err(Self::Error::from_eth_err)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -634,50 +679,5 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("Unable to derive validator-count"));
-    }
-}
-
-/// Loads a block from database.
-///
-/// Behaviour shared by several `eth_` RPC methods, not exclusive to `eth_` blocks RPC methods.
-pub trait LoadBlock: LoadPendingBlock + SpawnBlocking + RpcNodeCoreExt {
-    /// Returns the block object for the given block id.
-    #[expect(clippy::type_complexity)]
-    fn recovered_block(
-        &self,
-        block_id: BlockId,
-    ) -> impl Future<
-        Output = Result<
-            Option<Arc<RecoveredBlock<<Self::Provider as BlockReader>::Block>>>,
-            Self::Error,
-        >,
-    > + Send {
-        async move {
-            if block_id.is_pending() {
-                // Pending block can be fetched directly without need for caching
-                if let Some(pending_block) =
-                    self.provider().pending_block().map_err(Self::Error::from_eth_err)?
-                {
-                    return Ok(Some(Arc::new(pending_block)));
-                }
-
-                // If no pending block from provider, try to get local pending block
-                return match self.local_pending_block().await? {
-                    Some(pending) => Ok(Some(pending.block)),
-                    None => Ok(None),
-                };
-            }
-
-            let block_hash = match self
-                .provider()
-                .block_hash_for_id(block_id)
-                .map_err(Self::Error::from_eth_err)?
-            {
-                Some(block_hash) => block_hash,
-                None => return Ok(None),
-            };
-
-            self.cache().get_recovered_block(block_hash).await.map_err(Self::Error::from_eth_err)
-        }
     }
 }

@@ -27,6 +27,7 @@ jobs:
       - uses: rui314/setup-mold@v1
       - uses: dtolnay/rust-toolchain@clippy
         with:
+          toolchain: ${{ env.PINNED_NIGHTLY }}
           components: clippy
       - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2

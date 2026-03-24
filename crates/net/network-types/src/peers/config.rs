@@ -172,8 +172,8 @@ pub struct PeersConfig {
     /// IPs within the specified CIDR ranges will be allowed.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub ip_filter: IpFilter,
-    /// The node ids of the proxyed nodes.
-    pub proxyed_node_ids: Vec<PeerId>,
+    /// The node ids of the proxied nodes.
+    pub proxied_node_ids: Vec<PeerId>,
 }
 
 impl Default for PeersConfig {
@@ -193,7 +193,7 @@ impl Default for PeersConfig {
             max_backoff_count: 5,
             incoming_ip_throttle_duration: INBOUND_IP_THROTTLE_DURATION,
             ip_filter: IpFilter::default(),
-            proxyed_node_ids: Vec::new(),
+            proxied_node_ids: Vec::new(),
         }
     }
 }
