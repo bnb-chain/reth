@@ -9,7 +9,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTC_WRAPPER: "sccache"
-  PINNED_NIGHTLY: nightly-2025-01-22
+  PINNED_NIGHTLY: nightly-2026-01-22
 
 jobs:
   clippy-binaries:
