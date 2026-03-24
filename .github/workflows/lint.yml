@@ -9,6 +9,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTC_WRAPPER: "sccache"
+  PINNED_NIGHTLY: nightly-2025-01-22
 
 jobs:
   clippy-binaries:
@@ -47,8 +48,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: rui314/setup-mold@v1
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.PINNED_NIGHTLY }}
           components: clippy
       - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
@@ -149,7 +151,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: rui314/setup-mold@v1
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.PINNED_NIGHTLY }}
       - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
         with:
@@ -169,8 +173,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: rui314/setup-mold@v1
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.PINNED_NIGHTLY }}
           components: rustfmt
       - uses: mozilla-actions/sccache-action@v0.0.9
       - name: Run fmt
@@ -183,7 +188,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: rui314/setup-mold@v1
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.PINNED_NIGHTLY }}
       - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
         with:
@@ -200,7 +207,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: rui314/setup-mold@v1
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.PINNED_NIGHTLY }}
       - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
         with:

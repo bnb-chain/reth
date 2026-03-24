@@ -12,6 +12,7 @@ on:
 
 env:
   RUSTC_WRAPPER: "sccache"
+  PINNED_NIGHTLY: nightly-2025-01-22
 
 jobs:
   build:
@@ -34,7 +35,9 @@ jobs:
           npx playwright install --with-deps chromium
 
       - name: Install Rust nightly
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.PINNED_NIGHTLY }}
 
       - uses: mozilla-actions/sccache-action@v0.0.9
 
