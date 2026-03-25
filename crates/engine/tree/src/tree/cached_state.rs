@@ -18,7 +18,7 @@ use revm_primitives::map::DefaultHashBuilder;
 use std::{sync::Arc, time::Duration};
 use tracing::{debug_span, instrument, trace};
 
-pub type Cache<K, V> =
+pub(crate) type Cache<K, V> =
     mini_moka::sync::Cache<K, V, alloy_primitives::map::DefaultHashBuilder>;
 
 /// A wrapper of a state provider and a shared cache.
@@ -646,7 +646,7 @@ impl SavedCache {
     ///
     /// Because `ExecutionCache` fields are `mini_moka::sync::Cache` (internally Arc-based),
     /// this clone is cheap — it only increments reference counts, no data is copied.
-    pub fn clone_caches(&self) -> ExecutionCache {
+    pub(crate) fn clone_caches(&self) -> ExecutionCache {
         self.caches.clone()
     }
 

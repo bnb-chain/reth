@@ -73,6 +73,7 @@ mod trie_updates;
 
 use crate::tree::error::AdvancePersistenceError;
 pub use block_buffer::BlockBuffer;
+pub use cached_state::{AccountStorageCache, ExecutionCache};
 pub use invalid_headers::InvalidHeaderCache;
 pub use payload_processor::*;
 pub use payload_validator::{BasicEngineValidator, EngineValidator};

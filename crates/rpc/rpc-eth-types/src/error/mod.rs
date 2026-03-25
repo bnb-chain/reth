@@ -459,6 +459,8 @@ where
             DebugInspectorError::Database(err) => Self::Internal(RethError::other(err)),
             #[cfg(feature = "js-tracer")]
             DebugInspectorError::JsInspector(err) => err.into(),
+            #[allow(unreachable_patterns)]
+            _ => Self::InvalidParams("unhandled debug inspector error".to_string()),
         }
     }
 }
