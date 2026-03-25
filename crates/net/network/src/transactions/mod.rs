@@ -2881,8 +2881,7 @@ mod tests {
             version: EthVersion::Eth68,
             peer_kind: PeerKind::Basic,
         };
-        let messages_1: PeerRequestSender<PeerRequest> =
-            PeerRequestSender::new(peer_id_1, tx1);
+        let messages_1: PeerRequestSender<PeerRequest> = PeerRequestSender::new(peer_id_1, tx1);
         tx_manager.on_network_event(NetworkEvent::ActivePeerSession {
             info: session_info_1,
             messages: messages_1,
@@ -2893,8 +2892,7 @@ mod tests {
         // A small transaction (within TX_MAX_BROADCAST_SIZE) should be sent in full via Basic mode
         let small_tx = Arc::new(factory.create_eip1559());
         let small_propagate = vec![PropagateTransaction::pool_tx(small_tx.clone())];
-        let propagated =
-            tx_manager.propagate_transactions(small_propagate, PropagationMode::Basic);
+        let propagated = tx_manager.propagate_transactions(small_propagate, PropagationMode::Basic);
         let prop_txs = propagated.0.get(small_tx.transaction.hash()).unwrap();
         assert_eq!(prop_txs.len(), 1);
         assert!(prop_txs[0].is_full(), "small tx should be broadcast in full");
@@ -2904,8 +2902,7 @@ mod tests {
         large_valid_tx.transaction.set_size(TX_MAX_BROADCAST_SIZE + 1);
         let large_tx = Arc::new(large_valid_tx);
         let large_propagate = vec![PropagateTransaction::pool_tx(large_tx.clone())];
-        let propagated =
-            tx_manager.propagate_transactions(large_propagate, PropagationMode::Basic);
+        let propagated = tx_manager.propagate_transactions(large_propagate, PropagationMode::Basic);
         let prop_txs = propagated.0.get(large_tx.transaction.hash()).unwrap();
         assert_eq!(prop_txs.len(), 1);
         assert!(prop_txs[0].is_hash(), "large tx should be hash-only in Basic mode");
@@ -2922,8 +2919,7 @@ mod tests {
             version: EthVersion::Eth68,
             peer_kind: PeerKind::Basic,
         };
-        let messages_2: PeerRequestSender<PeerRequest> =
-            PeerRequestSender::new(peer_id_2, tx2);
+        let messages_2: PeerRequestSender<PeerRequest> = PeerRequestSender::new(peer_id_2, tx2);
         tx_manager.on_network_event(NetworkEvent::ActivePeerSession {
             info: session_info_2,
             messages: messages_2,
