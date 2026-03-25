@@ -132,9 +132,17 @@ impl<'b, Provider: DBProvider + ChangeSetReader + BlockNumReader>
         provider: &'b Provider,
         block_number: BlockNumber,
         lowest_available_blocks: LowestAvailableBlocks,
-        pipeline_consistency: PipelineConsistency,
     ) -> Self {
-        Self { provider, block_number, lowest_available_blocks, pipeline_consistency }
+        Self {
+            provider,
+            block_number,
+            lowest_available_blocks,
+            pipeline_consistency: PipelineConsistency {
+                execution_tip: None,
+                account_history_tip: None,
+                storage_history_tip: None,
+            },
+        }
     }
 
     /// Set the pipeline consistency info for detecting stale `InPlainState` reads during
@@ -550,8 +558,8 @@ impl<Provider: DBProvider + ChangeSetReader + BlockNumReader> HistoricalStatePro
             &self.provider,
             self.block_number,
             self.lowest_available_blocks,
-            self.pipeline_consistency,
         )
+        .with_pipeline_consistency(self.pipeline_consistency)
     }
 }
 
@@ -979,7 +987,6 @@ mod tests {
                 account_history_block_number: Some(3),
                 storage_history_block_number: Some(3),
             },
-            Default::default(),
         );
         assert!(matches!(
             provider.account_history_lookup(ADDRESS),
@@ -999,7 +1006,6 @@ mod tests {
                 account_history_block_number: Some(2),
                 storage_history_block_number: Some(2),
             },
-            Default::default(),
         );
         assert!(matches!(
             provider.account_history_lookup(ADDRESS),
@@ -1019,7 +1025,6 @@ mod tests {
                 account_history_block_number: Some(1),
                 storage_history_block_number: Some(1),
             },
-            Default::default(),
         );
         assert!(matches!(
             provider.account_history_lookup(ADDRESS),

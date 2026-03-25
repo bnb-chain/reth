@@ -248,10 +248,10 @@ impl<TX: DbTx + 'static, N: NodeTypes> DatabaseProvider<TX, N> {
     ) -> ProviderResult<Box<dyn StateProvider + 'a>> {
         let mut block_number =
             self.block_number(block_hash)?.ok_or(ProviderError::BlockHashNotFound(block_hash))?;
+        let pipeline_consistency = self.build_pipeline_consistency()?;
         if block_number == self.best_block_number().unwrap_or_default() &&
             block_number == self.last_block_number().unwrap_or_default()
         {
-            let pipeline_consistency = self.build_pipeline_consistency()?;
             if pipeline_consistency.account_inconsistency().is_none() &&
                 pipeline_consistency.storage_inconsistency().is_none()
             {
@@ -266,8 +266,6 @@ impl<TX: DbTx + 'static, N: NodeTypes> DatabaseProvider<TX, N> {
             self.get_prune_checkpoint(PruneSegment::AccountHistory)?;
         let storage_history_prune_checkpoint =
             self.get_prune_checkpoint(PruneSegment::StorageHistory)?;
-
-        let pipeline_consistency = self.build_pipeline_consistency()?;
 
         let mut state_provider = HistoricalStateProviderRef::new(self, block_number)
             .with_pipeline_consistency(pipeline_consistency);
@@ -881,8 +879,8 @@ impl<TX: DbTx + 'static, N: NodeTypes> TryIntoHistoricalStateProvider for Databa
         // state provider. However, during pipeline sync the Execution stage may have advanced
         // PlainState beyond the Finish checkpoint, so LatestStateProvider would return data
         // from a future block. Only take the fast path when there is no pipeline gap.
+        let pipeline_consistency = self.build_pipeline_consistency()?;
         if block_number == self.best_block_number().unwrap_or_default() {
-            let pipeline_consistency = self.build_pipeline_consistency()?;
             if pipeline_consistency.account_inconsistency().is_none() &&
                 pipeline_consistency.storage_inconsistency().is_none()
             {
@@ -897,8 +895,6 @@ impl<TX: DbTx + 'static, N: NodeTypes> TryIntoHistoricalStateProvider for Databa
             self.get_prune_checkpoint(PruneSegment::AccountHistory)?;
         let storage_history_prune_checkpoint =
             self.get_prune_checkpoint(PruneSegment::StorageHistory)?;
-
-        let pipeline_consistency = self.build_pipeline_consistency()?;
 
         let mut state_provider = HistoricalStateProvider::new(self, block_number)
             .with_pipeline_consistency(pipeline_consistency);
