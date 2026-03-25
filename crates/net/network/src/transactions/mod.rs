@@ -77,8 +77,10 @@ use std::{
     task::{Context, Poll},
     time::{Duration, Instant},
 };
-use tokio::sync::{mpsc, oneshot, oneshot::error::RecvError};
-use tokio::time::{self, Interval, MissedTickBehavior};
+use tokio::{
+    sync::{mpsc, oneshot, oneshot::error::RecvError},
+    time::{self, Interval, MissedTickBehavior},
+};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{debug, trace};
 
@@ -939,9 +941,7 @@ where
         peer_id: PeerId,
         propagation_mode: PropagationMode,
     ) {
-        if let Some(propagated) =
-            self.propagate_hashes_to_peer(hashes, peer_id, propagation_mode)
-        {
+        if let Some(propagated) = self.propagate_hashes_to_peer(hashes, peer_id, propagation_mode) {
             self.pool.on_propagated(propagated);
         }
     }
@@ -2245,10 +2245,10 @@ mod tests {
         sync::{NetworkSyncUpdater, SyncState},
     };
     use reth_storage_api::noop::NoopProvider;
-    use reth_transaction_pool::test_utils::{
-        testing_pool, MockTransaction, MockTransactionFactory, TestPool,
+    use reth_transaction_pool::{
+        test_utils::{testing_pool, MockTransaction, MockTransactionFactory, TestPool},
+        TransactionOrigin,
     };
-    use reth_transaction_pool::TransactionOrigin;
     use secp256k1::SecretKey;
     use std::{
         future::poll_fn,
@@ -3046,8 +3046,8 @@ mod tests {
         let now = Instant::now();
         let pending = (0..(DEFAULT_MAX_COUNT_REANNOUNCED_LOCAL_TRANSACTIONS + 1))
             .map(|_| {
-                let mut tx =
-                    factory.validated_with_origin(TransactionOrigin::Local, MockTransaction::eip1559());
+                let mut tx = factory
+                    .validated_with_origin(TransactionOrigin::Local, MockTransaction::eip1559());
                 tx.propagate = true;
                 tx.timestamp = now - Duration::from_secs(60);
                 Arc::new(tx)

@@ -29,8 +29,8 @@ use reth_network::{
                 DEFAULT_MAX_COUNT_CONCURRENT_REQUESTS_PER_PEER,
             },
             tx_manager::{
-                DEFAULT_MAX_COUNT_PENDING_POOL_IMPORTS, DEFAULT_MAX_COUNT_TRANSACTIONS_SEEN_BY_PEER,
-                DEFAULT_REANNOUNCE_TIME,
+                DEFAULT_MAX_COUNT_PENDING_POOL_IMPORTS,
+                DEFAULT_MAX_COUNT_TRANSACTIONS_SEEN_BY_PEER, DEFAULT_REANNOUNCE_TIME,
             },
         },
         TransactionFetcherConfig, TransactionPropagationMode, TransactionsManagerConfig,

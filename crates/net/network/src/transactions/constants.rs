@@ -60,8 +60,7 @@ pub mod tx_manager {
     pub const DEFAULT_MAX_COUNT_REANNOUNCED_LOCAL_TRANSACTIONS: usize = 1024;
 
     /// Interval between checks for local pending transactions that should be reannounced.
-    pub const DEFAULT_REANNOUNCE_LOCAL_TRANSACTIONS_INTERVAL: Duration =
-        Duration::from_secs(60);
+    pub const DEFAULT_REANNOUNCE_LOCAL_TRANSACTIONS_INTERVAL: Duration = Duration::from_secs(60);
 
     /// Default age threshold for reannouncing local pending transactions.
     ///
