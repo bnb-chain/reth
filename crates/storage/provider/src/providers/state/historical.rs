@@ -1173,10 +1173,7 @@ mod tests {
         let provider =
             HistoricalStateProviderRef::new(&db, 5).with_pipeline_consistency(inconsistent);
         let result = provider.basic_account(&no_history_addr);
-        assert!(
-            matches!(result, Ok(None)),
-            "Never-written account should return None: {result:?}"
-        );
+        assert!(matches!(result, Ok(None)), "Never-written account should return None: {result:?}");
 
         // Test 4: Same queries with consistent pipeline → all succeed
         let consistent = PipelineConsistency {

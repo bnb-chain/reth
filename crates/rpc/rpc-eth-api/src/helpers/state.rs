@@ -9,6 +9,7 @@ use alloy_primitives::{Address, Bytes, B256, U256};
 use alloy_rpc_types_eth::{Account, AccountInfo, EIP1186AccountProofResponse};
 use alloy_serde::JsonStorageKey;
 use futures::Future;
+use reth_engine_primitives::is_fastnode_active;
 use reth_errors::RethError;
 use reth_evm::{ConfigureEvm, EvmEnvFor};
 use reth_primitives_traits::SealedHeaderFor;
@@ -20,7 +21,6 @@ use reth_storage_api::{
     BlockIdReader, BlockNumReader, BlockReaderIdExt, StateProvider, StateProviderBox,
     StateProviderFactory,
 };
-use reth_engine_primitives::is_fastnode_active;
 use reth_transaction_pool::TransactionPool;
 use rust_eth_triedb::triedb_manager::is_triedb_active;
 
