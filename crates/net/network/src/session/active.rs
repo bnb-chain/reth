@@ -226,7 +226,7 @@ impl<N: NetworkPrimitives> ActiveSession<N> {
             EthMessage::NewBlock(msg) => {
                 // Extract TD from NewBlock message (BSC and other chains need this)
                 let td = msg.td();
-                
+
                 let block = NewBlockMessage {
                     hash: msg.block().header().hash_slow(),
                     block: Arc::new(*msg),

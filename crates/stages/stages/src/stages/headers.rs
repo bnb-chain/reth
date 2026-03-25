@@ -1,5 +1,5 @@
 use alloy_consensus::BlockHeader;
-use alloy_primitives::{BlockHash, BlockNumber, Bytes, B256};
+use alloy_primitives::{BlockHash, BlockNumber, Bytes, B256, U256};
 use futures_util::StreamExt;
 use reth_config::config::EtlConfig;
 use reth_db_api::{
@@ -17,7 +17,6 @@ use reth_network_p2p::headers::{
 use reth_primitives_traits::{
     serde_bincode_compat, FullBlockHeader, HeaderTy, NodePrimitives, SealedHeader,
 };
-use alloy_primitives::U256;
 use reth_provider::{
     providers::StaticFileWriter, BlockHashReader, DBProvider, HeaderProvider,
     HeaderSyncGapProvider, StaticFileProviderFactory,
@@ -110,9 +109,8 @@ where
             .unwrap_or_default();
 
         // Get the total difficulty of the last header to continue accumulating TD
-        let mut current_td = static_file_provider
-            .header_td_by_number(last_header_number)?
-            .unwrap_or(U256::ZERO);
+        let mut current_td =
+            static_file_provider.header_td_by_number(last_header_number)?.unwrap_or(U256::ZERO);
 
         // Although headers were downloaded in reverse order, the collector iterates it in ascending
         // order
