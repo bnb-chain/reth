@@ -15,9 +15,11 @@ use jsonrpsee::{core::middleware::layer::Either, RpcModule};
 use parking_lot::Mutex;
 use reth_chain_state::CanonStateSubscriptions;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec, EthereumHardforks, Hardforks};
+use reth_engine_tree::engine::EngineApiRequest;
 use reth_node_api::{
     AddOnsContext, BlockTy, EngineApiValidator, EngineTypes, FullNodeComponents, FullNodeTypes,
-    NodeAddOns, NodeTypes, PayloadTypes, PayloadValidator, PrimitivesTy, TreeConfig,
+    NodeAddOns, NodeTypes, NodeTypesWithDBAdapter, PayloadTypes, PayloadValidator, PrimitivesTy,
+    TreeConfig,
 };
 use reth_node_core::{
     cli::config::RethTransactionPoolConfig,
@@ -25,6 +27,7 @@ use reth_node_core::{
     version::{version_metadata, CLIENT_CODE},
 };
 use reth_payload_builder::{PayloadBuilderHandle, PayloadStore};
+use reth_provider::providers::BlockchainProvider;
 use reth_rpc::{
     eth::{core::EthRpcConverterFor, DevSigner, EthApiTypes, FullEthApiServer},
     AdminApi,
@@ -45,9 +48,6 @@ use std::{
     ops::{Deref, DerefMut},
     sync::Arc,
 };
-use reth_engine_tree::engine::EngineApiRequest;
-use reth_node_api::NodeTypesWithDBAdapter;
-use reth_provider::providers::BlockchainProvider;
 use tokio::sync::{mpsc::UnboundedSender, oneshot};
 
 /// Contains the handles to the spawned RPC servers.
@@ -331,9 +331,11 @@ type EngineApiTx<Node> = UnboundedSender<
     EngineApiRequest<
         <<Node as FullNodeTypes>::Types as NodeTypes>::Payload,
         <<Node as FullNodeTypes>::Types as NodeTypes>::Primitives,
-        BlockchainProvider<NodeTypesWithDBAdapter<<Node as FullNodeTypes>::Types, <Node as FullNodeTypes>::DB>>,
-        <Node as FullNodeComponents>::Evm
-    >
+        BlockchainProvider<
+            NodeTypesWithDBAdapter<<Node as FullNodeTypes>::Types, <Node as FullNodeTypes>::DB>,
+        >,
+        <Node as FullNodeComponents>::Evm,
+    >,
 >;
 
 /// Handle to the launched RPC servers.

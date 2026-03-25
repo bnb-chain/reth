@@ -93,10 +93,7 @@ impl<N: NodePrimitives> TreeState<N> {
         Some((parent_hash, blocks))
     }
 
-    pub(crate) fn merged_difflayer_by_hash(
-        &self,
-        parent_block_hash: B256,
-    ) -> Option<DiffLayers> {
+    pub(crate) fn merged_difflayer_by_hash(&self, parent_block_hash: B256) -> Option<DiffLayers> {
         let mut difflayers = DiffLayers::default();
         let mut parent_hash = parent_block_hash;
         while let Some(executed) = self.blocks_by_hash.get(&parent_hash) {

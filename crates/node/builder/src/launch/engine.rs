@@ -204,12 +204,16 @@ impl EngineNodeLauncher {
         let event_sender = EventSender::default();
 
         let beacon_engine_handle = ConsensusEngineHandle::new(consensus_engine_tx.clone());
-        let (engine_api_tx, mut engine_api_rx) = unbounded_channel::<EngineApiRequest<
-            <<T as FullNodeTypes>::Types as NodeTypes>::Payload,
-            <<T as FullNodeTypes>::Types as NodeTypes>::Primitives,
-            BlockchainProvider<NodeTypesWithDBAdapter<<T as FullNodeTypes>::Types, <T as FullNodeTypes>::DB>>,
-            <CB::Components as NodeComponents<T>>::Evm
-        >>();
+        let (engine_api_tx, mut engine_api_rx) = unbounded_channel::<
+            EngineApiRequest<
+                <<T as FullNodeTypes>::Types as NodeTypes>::Payload,
+                <<T as FullNodeTypes>::Types as NodeTypes>::Primitives,
+                BlockchainProvider<
+                    NodeTypesWithDBAdapter<<T as FullNodeTypes>::Types, <T as FullNodeTypes>::DB>,
+                >,
+                <CB::Components as NodeComponents<T>>::Evm,
+            >,
+        >();
 
         // extract the jwt secret from the args if possible
         let jwt_secret = ctx.auth_jwt_secret()?;

@@ -47,8 +47,8 @@ use reth_revm::db::State;
 use reth_trie::{updates::TrieUpdates, HashedPostState, StateRoot};
 use reth_trie_db::ChangesetCache;
 use reth_trie_parallel::root::{ParallelStateRoot, ParallelStateRootError};
-use rust_eth_triedb::{get_global_triedb, TrieDBError};
 use revm_primitives::Address;
+use rust_eth_triedb::{get_global_triedb, TrieDBError};
 use std::{
     collections::HashMap,
     panic::{self, AssertUnwindSafe},
@@ -428,7 +428,10 @@ where
                 Err(err) => return self.handle_execution_error(input, err, &parent_block),
             };
 
-        self.metrics.block_validation.triedb_validate_execution_duration.record(execution_start.elapsed().as_secs_f64());
+        self.metrics
+            .block_validation
+            .triedb_validate_execution_duration
+            .record(execution_start.elapsed().as_secs_f64());
 
         // After executing the block we can stop prewarming transactions.
         handle.stop_prewarming_execution();
@@ -590,10 +593,7 @@ where
             let res = self.validate_block_with_state_with_triedb(input, ctx);
 
             let elapsed = start.elapsed().as_secs_f64();
-            self.metrics
-                .block_validation
-                .triedb_validate_entry_duration
-                .record(elapsed);
+            self.metrics.block_validation.triedb_validate_entry_duration.record(elapsed);
 
             tracing::debug!(
                 target: "engine::tree",

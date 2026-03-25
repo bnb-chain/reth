@@ -44,7 +44,7 @@ type EngineServiceType<N, Client, Evm> = ChainOrchestrator<
                 <N as NodeTypes>::Payload,
                 <N as NodeTypes>::Primitives,
                 BlockchainProvider<N>,
-                Evm
+                Evm,
             >,
             <N as NodeTypes>::Primitives,
         >,

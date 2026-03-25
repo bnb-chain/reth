@@ -44,6 +44,9 @@ use reth_trie_sparse::{
     ClearedSparseStateTrie, SparseStateTrie, SparseTrie,
 };
 use reth_trie_sparse_parallel::{ParallelSparseTrie, ParallelismThresholds};
+use rust_eth_triedb::TrieDBPrefetchState;
+use rust_eth_triedb_common::DiffLayers;
+use rust_eth_triedb_pathdb::PathDB;
 use std::{
     collections::BTreeMap,
     ops::Not,
@@ -54,9 +57,6 @@ use std::{
     },
     time::Instant,
 };
-use rust_eth_triedb::TrieDBPrefetchState;
-use rust_eth_triedb_pathdb::PathDB;
-use rust_eth_triedb_common::DiffLayers;
 use tracing::{debug, debug_span, instrument, warn, Span};
 
 pub mod bal;
@@ -398,8 +398,13 @@ where
         );
 
         let (prefetch_handle, prefetch_result_rx) = TrieDBPrefetchHandle::new(
-            root_hash, path_db, difflayers, self.executor.clone(), rev_multi_proof)
-            .expect("Failed to create TrieDBPrefetchHandle");
+            root_hash,
+            path_db,
+            difflayers,
+            self.executor.clone(),
+            rev_multi_proof,
+        )
+        .expect("Failed to create TrieDBPrefetchHandle");
 
         self.executor.spawn_blocking(move || {
             prefetch_handle.run();
@@ -686,15 +691,24 @@ impl<Tx, Err, R: Send + Sync + 'static> PayloadHandle<Tx, Err, R> {
     /// # Panics
     ///
     /// If payload processing was started without background prefetch task.
-    pub fn triedb_preftch_result(&mut self) -> Result<Option<Arc<TrieDBPrefetchState<PathDB>>>, ParallelStateRootError> {
-        let result = self.trie_db_prefetch_result_rx
+    pub fn triedb_preftch_result(
+        &mut self,
+    ) -> Result<Option<Arc<TrieDBPrefetchState<PathDB>>>, ParallelStateRootError> {
+        let result = self
+            .trie_db_prefetch_result_rx
             .take()
             .expect("trie_db_prefetch_result_rx is None")
             .recv()
-            .map_err(|_| ParallelStateRootError::Other("trie db prefetch result receiver dropped".to_string()))?;
+            .map_err(|_| {
+                ParallelStateRootError::Other(
+                    "trie db prefetch result receiver dropped".to_string(),
+                )
+            })?;
 
         match result {
-            triedb_prefetcher::TrieDBPrefetchResult::PrefetchAccountResult(state) => Ok(Some(state)),
+            triedb_prefetcher::TrieDBPrefetchResult::PrefetchAccountResult(state) => {
+                Ok(Some(state))
+            }
             triedb_prefetcher::TrieDBPrefetchResult::PrefetchStorageResult((_, _, _)) => {
                 panic!("received prefetch storage result, but expected prefetch account result");
             }

@@ -30,10 +30,9 @@ use reth_payload_primitives::{
 };
 use reth_primitives_traits::{NodePrimitives, RecoveredBlock, SealedBlock, SealedHeader};
 use reth_provider::{
-    BlockExecutionOutput, BlockExecutionResult, BlockNumReader,
-    BlockReader, ChangeSetReader, DatabaseProviderFactory, HashedPostStateProvider,
-    ProviderError, StageCheckpointReader, StateProviderBox, StateProviderFactory, StateReader,
-    TransactionVariant,
+    BlockExecutionOutput, BlockExecutionResult, BlockNumReader, BlockReader, ChangeSetReader,
+    DatabaseProviderFactory, HashedPostStateProvider, ProviderError, StageCheckpointReader,
+    StateProviderBox, StateProviderFactory, StateReader, TransactionVariant,
 };
 use reth_revm::database::StateProviderDatabase;
 use reth_stages_api::ControlFlow;
@@ -42,7 +41,13 @@ use revm::state::EvmState;
 use revm_primitives::U256;
 use rust_eth_triedb_common::{DiffLayer, DiffLayers};
 use state::TreeState;
-use std::{fmt::{Debug, Display}, marker::PhantomData, ops, sync::Arc, time::Instant};
+use std::{
+    fmt::{Debug, Display},
+    marker::PhantomData,
+    ops,
+    sync::Arc,
+    time::Instant,
+};
 
 use crossbeam_channel::{Receiver, Sender};
 use tokio::sync::{
@@ -416,8 +421,10 @@ where
         kind: EngineApiKind,
         evm_config: C,
         changeset_cache: ChangesetCache,
-    ) -> (Sender<FromEngine<EngineApiRequest<T, N, P, C>, N::Block>>, UnboundedReceiver<EngineApiEvent<N>>)
-    {
+    ) -> (
+        Sender<FromEngine<EngineApiRequest<T, N, P, C>, N::Block>>,
+        UnboundedReceiver<EngineApiEvent<N>>,
+    ) {
         let best_block_number = provider.best_block_number().unwrap_or(0);
         let header = provider.sealed_header(best_block_number).ok().flatten().unwrap_or_default();
 
@@ -1503,7 +1510,8 @@ where
         &mut self,
         msg: FromEngine<EngineApiRequest<T, N, P, C>, N::Block>,
     ) -> Result<ops::ControlFlow<()>, InsertBlockFatalError> {
-        const SLOW_HANDLER_WARN_THRESHOLD: std::time::Duration = std::time::Duration::from_millis(300);
+        const SLOW_HANDLER_WARN_THRESHOLD: std::time::Duration =
+            std::time::Duration::from_millis(300);
 
         #[inline]
         fn log_handler_duration(kind: &'static str, elapsed: std::time::Duration) {
@@ -1547,8 +1555,6 @@ where
             }
         }
 
-
-
         match msg {
             FromEngine::Event(event) => match event {
                 FromOrchestrator::BackfillSyncStarted => {
@@ -1577,7 +1583,10 @@ where
                         let block_num_hash = block.recovered_block().num_hash();
                         if block_num_hash.number <= self.state.tree_state.canonical_block_number() {
                             // outdated block that can be skipped
-                            log_handler_duration("request.insert_executed_block(outdated)", start.elapsed());
+                            log_handler_duration(
+                                "request.insert_executed_block(outdated)",
+                                start.elapsed(),
+                            );
                             return Ok(ops::ControlFlow::Continue(()))
                         }
 
@@ -1647,7 +1656,10 @@ where
                                         .increment(1);
                                     error!(target: "engine::tree", ?state, elapsed=?start.elapsed(), "Failed to send event: {err:?}");
                                 }
-                                log_handler_duration("request.beacon.forkchoice_updated", start.elapsed());
+                                log_handler_duration(
+                                    "request.beacon.forkchoice_updated",
+                                    start.elapsed(),
+                                );
                             }
                             BeaconEngineMessage::NewPayload { payload, tx } => {
                                 let block_num_hash = payload.num_hash();
@@ -1706,7 +1718,10 @@ where
                             if tx.send(output.map_err(RethError::msg)).is_err() {
                                 error!(target: "engine::tree", "Failed to send event");
                             }
-                            log_handler_duration("request.custom.request_difflayer", start.elapsed());
+                            log_handler_duration(
+                                "request.custom.request_difflayer",
+                                start.elapsed(),
+                            );
                         }
                     },
                 }

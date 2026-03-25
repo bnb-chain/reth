@@ -576,11 +576,11 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
                             );
                             triedb
                                 .flush(block_number, state_root, &Some(difflayer.clone()))
-                                .map_err(|e| ProviderError::other(e))?;
+                                .map_err(ProviderError::other)?;
                         } else {
                             // No precomputed difflayer; compute and commit from hashed state.
                             let (latest_block_number, latest_state_root) =
-                                triedb.latest_persist_state().map_err(|e| ProviderError::other(e))?;
+                                triedb.latest_persist_state().map_err(ProviderError::other)?;
 
                             if block_number > 0 && latest_block_number != block_number - 1 {
                                 return Err(ProviderError::Database(DatabaseError::Other(format!(
@@ -610,7 +610,7 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
                                     &triedb_hashed_post_state,
                                     None,
                                 )
-                                .map_err(|e| ProviderError::other(e))?;
+                                .map_err(ProviderError::other)?;
 
                             if new_root != state_root {
                                 return Err(ProviderError::Database(DatabaseError::Other(format!(
@@ -623,7 +623,7 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
 
                             triedb
                                 .flush(block_number, new_root, &Some(difflayer))
-                                .map_err(|e| ProviderError::other(e))?;
+                                .map_err(ProviderError::other)?;
                         }
 
                         timings.write_hashed_state += start.elapsed();

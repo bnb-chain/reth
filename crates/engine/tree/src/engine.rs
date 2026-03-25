@@ -3,15 +3,16 @@
 use crate::{
     backfill::BackfillAction,
     chain::{ChainHandler, FromOrchestrator, HandlerEvent},
-    download::{BlockDownloader, DownloadAction, DownloadOutcome}, tree::CustomRequestMessage,
+    download::{BlockDownloader, DownloadAction, DownloadOutcome},
+    tree::CustomRequestMessage,
 };
 use alloy_primitives::B256;
 use crossbeam_channel::Sender;
 use futures::{Stream, StreamExt};
 use reth_chain_state::ExecutedBlock;
 use reth_engine_primitives::{BeaconEngineMessage, ConsensusEngineEvent};
-use reth_evm::ConfigureEvm;
 use reth_ethereum_primitives::EthPrimitives;
+use reth_evm::ConfigureEvm;
 use reth_payload_primitives::PayloadTypes;
 use reth_primitives_traits::{Block, NodePrimitives, SealedBlock};
 use std::{

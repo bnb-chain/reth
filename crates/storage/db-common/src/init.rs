@@ -358,18 +358,25 @@ where
         );
     }
 
-
-    let (root, nodes, diff_storage_roots) = triedb.finalise(
-        alloy_trie::EMPTY_ROOT_HASH,
-        None,
-        state_accounts,
-        HashSet::new(),
-        storage_states,
-        None)
-        .map_err(|_| ProviderError::Database(DatabaseError::Other("Failed to update and commit state".to_string())))?;
+    let (root, nodes, diff_storage_roots) = triedb
+        .finalise(
+            alloy_trie::EMPTY_ROOT_HASH,
+            None,
+            state_accounts,
+            HashSet::new(),
+            storage_states,
+            None,
+        )
+        .map_err(|_| {
+            ProviderError::Database(DatabaseError::Other(
+                "Failed to update and commit state".to_string(),
+            ))
+        })?;
 
     let difflayer = Some(Arc::new(DiffLayer::new(nodes.to_diff_nodes(), diff_storage_roots)));
-    triedb.flush(0, root, &difflayer).map_err(|_| ProviderError::Database(DatabaseError::Other("Failed to flush state".to_string())))?;
+    triedb.flush(0, root, &difflayer).map_err(|_| {
+        ProviderError::Database(DatabaseError::Other("Failed to flush state".to_string()))
+    })?;
 
     info!(target: "reth::storage", "Triedb genesis state root computed: {:?}", root);
 
