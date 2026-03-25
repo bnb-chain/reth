@@ -105,13 +105,13 @@ pub enum ProviderError {
     #[error("state at block #{_0} is pruned")]
     StateAtBlockPruned(BlockNumber),
     /// Historical state at the requested block may be inconsistent because pipeline sync is in
-    /// progress. The Execution stage has advanced PlainState beyond the history index coverage,
+    /// progress. The Execution stage has advanced `PlainState` beyond the history index coverage,
     /// so the `InPlainState` fallback would return data from a future block.
     #[error("historical state at block #{block} is inconsistent during pipeline sync: execution tip is #{execution_tip} but history index only covers up to #{history_tip}")]
     HistoryStateInconsistent {
         /// The block number being queried.
         block: BlockNumber,
-        /// Block number up to which the Execution stage has committed PlainState.
+        /// Block number up to which the Execution stage has committed `PlainState`.
         execution_tip: BlockNumber,
         /// Block number up to which the history index has been built.
         history_tip: BlockNumber,
