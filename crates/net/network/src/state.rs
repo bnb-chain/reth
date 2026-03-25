@@ -246,7 +246,7 @@ impl<N: NetworkPrimitives> NetworkState<N> {
                 peer.blocks.insert(msg.hash);
                 proxied_peer_count += 1;
             }
-            // todo: evn
+            // todo: even
         }
 
         debug!(

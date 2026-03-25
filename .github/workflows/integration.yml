@@ -24,31 +24,48 @@ jobs:
   test:
     name: test / ${{ matrix.network }}
     if: github.event_name != 'schedule'
-    runs-on: ${{ github.repository == 'paradigmxyz/reth' && 'depot-ubuntu-latest-4' || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     env:
       RUST_BACKTRACE: 1
     strategy:
       matrix:
-        network: ["ethereum"]
+        network: ["ethereum", "optimism"]
     timeout-minutes: 60
     steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y liburing-dev pkg-config libclang-dev
       - uses: actions/checkout@v6
       - uses: rui314/setup-mold@v1
       - uses: dtolnay/rust-toolchain@stable
       - name: Install Geth
-        run: .github/scripts/install_geth.sh
+        run: .github/assets/install_geth.sh
       - uses: taiki-e/install-action@nextest
       - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-      - name: Run tests
+      - if: matrix.network == 'ethereum'
+        name: Run tests
         run: |
           cargo nextest run \
-            --no-fail-fast \
             --locked --features "asm-keccak ${{ matrix.network }}" \
             --workspace --exclude ef-tests \
             -E "kind(test) and not binary(e2e_testsuite)"
+      - if: matrix.network == 'optimism'
+        name: Run tests
+        run: |
+          cargo nextest run \
+            --locked -p reth-optimism-node
 
   integration-success:
     name: integration success
@@ -64,7 +81,7 @@ jobs:
 
   era-files:
     name: era1 file integration tests once a day
-    if: github.event_name == 'schedule' && github.repository == 'paradigmxyz/reth'
+    # if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -76,4 +93,4 @@ jobs:
         with:
           cache-on-failure: true
       - name: run era1 files integration tests
-        run: cargo nextest run --no-fail-fast --release --package reth-era --test it -- --ignored
+        run: cargo nextest run --release --package reth-era --test it -- --ignored

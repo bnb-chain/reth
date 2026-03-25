@@ -715,7 +715,7 @@ impl<N: NetworkPrimitives> NetworkConfigBuilder<N> {
 ///
 /// This affects block propagation in the `eth` sub-protocol [EIP-3675](https://eips.ethereum.org/EIPS/eip-3675#devp2p)
 ///
-/// In POS `NewBlockHashes` and `NewBlock` messages become invalid.
+/// In `PoS` `NewBlockHashes` and `NewBlock` messages become invalid.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum NetworkMode {

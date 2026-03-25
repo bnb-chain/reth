@@ -12,10 +12,11 @@ on:
 
 env:
   RUSTC_WRAPPER: "sccache"
+  PINNED_NIGHTLY: nightly-2026-01-22
 
 jobs:
   build:
-    runs-on: ${{ github.repository == 'paradigmxyz/reth' && 'depot-ubuntu-latest-8' || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
       - name: Checkout
@@ -34,7 +35,9 @@ jobs:
           npx playwright install --with-deps chromium
 
       - name: Install Rust nightly
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.PINNED_NIGHTLY }}
 
       - uses: mozilla-actions/sccache-action@v0.0.9
 
@@ -47,7 +50,7 @@ jobs:
           echo "Vocs Build Complete"
 
       - name: Setup Pages
-        uses: actions/configure-pages@v6
+        uses: actions/configure-pages@v5
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v4
