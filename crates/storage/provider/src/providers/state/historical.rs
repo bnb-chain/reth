@@ -108,7 +108,7 @@ pub struct HistoricalStateProviderRef<'b, Provider> {
     /// Lowest blocks at which different parts of the state are available.
     lowest_available_blocks: LowestAvailableBlocks,
     /// Cached pipeline consistency info. When the Execution stage checkpoint is ahead of the
-    /// history index checkpoint, PlainState has been advanced beyond history coverage and the
+    /// history index checkpoint, `PlainState` has been advanced beyond history coverage and the
     /// `InPlainState` fallback would return data from a future block.
     pipeline_consistency: PipelineConsistency,
 }
@@ -574,11 +574,11 @@ reth_storage_api::macros::delegate_provider_impls!(HistoricalStateProvider<Provi
 /// where `HistoricalStateProvider` would incorrectly fall back to `InPlainState` and return
 /// data from a future block.
 ///
-/// When the Execution checkpoint is ahead of the history index checkpoint, we know PlainState
+/// When the Execution checkpoint is ahead of the history index checkpoint, we know `PlainState`
 /// has been silently advanced and the `InPlainState` path must not be used.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PipelineConsistency {
-    /// Block number up to which the Execution stage has committed PlainState.
+    /// Block number up to which the Execution stage has committed `PlainState`.
     pub execution_tip: Option<BlockNumber>,
     /// Block number up to which the account history index has been built.
     pub account_history_tip: Option<BlockNumber>,
@@ -587,7 +587,7 @@ pub struct PipelineConsistency {
 }
 
 impl PipelineConsistency {
-    /// Returns `Some((exec_tip, hist_tip))` if account history is inconsistent with PlainState,
+    /// Returns `Some((exec_tip, hist_tip))` if account history is inconsistent with `PlainState`,
     /// meaning the `InPlainState` fallback would return wrong data.
     ///
     /// A `None` history tip means the index stage has never run, which is equivalent to block 0.
@@ -599,7 +599,7 @@ impl PipelineConsistency {
         }
     }
 
-    /// Returns `Some((exec_tip, hist_tip))` if storage history is inconsistent with PlainState.
+    /// Returns `Some((exec_tip, hist_tip))` if storage history is inconsistent with `PlainState`.
     ///
     /// A `None` history tip means the index stage has never run, which is equivalent to block 0.
     pub const fn storage_inconsistency(&self) -> Option<(BlockNumber, BlockNumber)> {
