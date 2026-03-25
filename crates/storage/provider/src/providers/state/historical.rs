@@ -1101,7 +1101,7 @@ mod tests {
 
     /// Verifies selective rejection during pipeline inconsistency:
     /// - Accounts resolving via changeset path → return correct data (not blocked)
-    /// - Accounts resolving via InPlainState path → return HistoryStateInconsistent error
+    /// - Accounts resolving via `InPlainState` path → return `HistoryStateInconsistent` error
     #[test]
     fn pipeline_consistency_selective_rejection() {
         let factory = create_test_provider_factory();
