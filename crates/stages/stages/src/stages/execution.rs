@@ -23,6 +23,8 @@ use reth_stages_api::{
     UnwindInput, UnwindOutput,
 };
 use reth_static_file_types::StaticFileSegment;
+use reth_trie_common::{HashedPostState, KeccakKeyHasher};
+use rust_eth_triedb::{get_global_triedb, triedb_manager::is_triedb_active};
 use std::{
     cmp::{max, Ordering},
     collections::BTreeMap,
@@ -31,9 +33,6 @@ use std::{
     task::{ready, Context, Poll},
     time::{Duration, Instant},
 };
-use reth_trie_common::{HashedPostState, KeccakKeyHasher};
-use rust_eth_triedb::triedb_manager::is_triedb_active;
-use rust_eth_triedb::get_global_triedb;
 use tracing::*;
 
 use super::missing_static_data_error;
@@ -482,8 +481,8 @@ where
             let merkle_time = Instant::now();
 
             let mut triedb = get_global_triedb();
-            let (latest_block_number, latest_state_root) = triedb.latest_persist_state()
-                .map_err(|e| StageError::Fatal(Box::new(e)))?;
+            let (latest_block_number, latest_state_root) =
+                triedb.latest_persist_state().map_err(|e| StageError::Fatal(Box::new(e)))?;
 
             // Check for gap between triedb checkpoint and execution start block.
             // If triedb is behind where we're starting execution, we can't compute
@@ -518,9 +517,8 @@ where
                     block.header().state_root()
                 };
 
-                let hashed_post_state = HashedPostState::from_bundle_state::<KeccakKeyHasher>(
-                    state.bundle.state(),
-                );
+                let hashed_post_state =
+                    HashedPostState::from_bundle_state::<KeccakKeyHasher>(state.bundle.state());
                 let triedb_hashed_post_state = hashed_post_state.to_triedb_hashed_post_state();
 
                 info!(target: "sync::stages::execution",
@@ -598,13 +596,13 @@ where
 
         if is_triedb_active() {
             let mut triedb = get_global_triedb();
-            let (latest_block_number, latest_state_root) = triedb.latest_persist_state()
-                .map_err(|e| StageError::Fatal(Box::new(e)))?;
+            let (latest_block_number, latest_state_root) =
+                triedb.latest_persist_state().map_err(|e| StageError::Fatal(Box::new(e)))?;
 
             if latest_block_number > unwind_to {
-                let hashed_post_state = HashedPostState::from_bundle_state_to_unwind::<KeccakKeyHasher>(
-                    bundle_state_with_receipts.bundle.state()
-                );
+                let hashed_post_state = HashedPostState::from_bundle_state_to_unwind::<
+                    KeccakKeyHasher,
+                >(bundle_state_with_receipts.bundle.state());
 
                 let triedb_hashed_post_state = hashed_post_state.to_triedb_hashed_post_state();
                 let validate_root = if unwind_to == 0 {
@@ -629,7 +627,10 @@ where
                 triedb.flush(latest_block_number, new_root, &Some(difflayer))
                     .map_err(|e| StageError::Fatal(Box::new(e)))?;
             } else {
-                warn!("latest_block_number <= unwind_to, latest_triedb_block_number={}, unwind_to={}", latest_block_number, unwind_to);
+                warn!(
+                    "latest_block_number <= unwind_to, latest_triedb_block_number={}, unwind_to={}",
+                    latest_block_number, unwind_to
+                );
             }
         }
 

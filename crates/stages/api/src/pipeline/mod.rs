@@ -2,14 +2,14 @@ mod ctrl;
 mod event;
 pub use crate::pipeline::ctrl::ControlFlow;
 use crate::{PipelineTarget, StageCheckpoint, StageId};
-use alloy_primitives::{BlockNumber, B256};
+use alloy_eips::eip1898::BlockWithParent;
+use alloy_primitives::{BlockNumber, Sealable, B256};
 pub use event::*;
 use futures_util::Future;
-use reth_primitives_traits::constants::BEACON_CONSENSUS_REORG_UNWIND_DEPTH;
-use alloy_eips::eip1898::BlockWithParent;
-use alloy_primitives::Sealable;
 use reth_errors::ProviderError;
-use reth_primitives_traits::AlloyBlockHeader as _;
+use reth_primitives_traits::{
+    constants::BEACON_CONSENSUS_REORG_UNWIND_DEPTH, AlloyBlockHeader as _,
+};
 use reth_provider::{
     providers::ProviderNodeTypes, BlockHashReader, BlockNumReader, ChainStateBlockReader,
     ChainStateBlockWriter, DBProvider, DatabaseProviderFactory, HeaderProvider, ProviderFactory,
@@ -641,7 +641,9 @@ impl<N: ProviderNodeTypes> Pipeline<N> {
 
             // Construct a BlockWithParent for the execution_start_block
             // to identify the block that triggered the unwind
-            let header = self.provider_factory.header_by_number(execution_start_block)?
+            let header = self
+                .provider_factory
+                .header_by_number(execution_start_block)?
                 .ok_or(ProviderError::HeaderNotFound(execution_start_block.into()))?;
             let bad_block = Box::new(BlockWithParent {
                 block: alloy_eips::eip1898::BlockNumHash {
@@ -652,10 +654,7 @@ impl<N: ProviderNodeTypes> Pipeline<N> {
             });
 
             // Unwind to the triedb checkpoint so execution can resume from there
-            Ok(Some(ControlFlow::Unwind {
-                target: triedb_block,
-                bad_block,
-            }))
+            Ok(Some(ControlFlow::Unwind { target: triedb_block, bad_block }))
         } else if err.is_fatal() {
             error!(target: "sync::pipeline", stage = %stage_id, "Stage encountered a fatal error: {err}");
             Err(err.into())

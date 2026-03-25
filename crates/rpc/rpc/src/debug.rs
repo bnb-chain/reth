@@ -7,9 +7,7 @@ use alloy_primitives::{hex::decode, uint, Address, Bytes, B256};
 use alloy_rlp::{Decodable, Encodable};
 use alloy_rpc_types::BlockTransactionsKind;
 use alloy_rpc_types_debug::ExecutionWitness;
-use alloy_rpc_types_eth::{
-    state::EvmOverrides, BlockError, Bundle, StateContext, TransactionInfo,
-};
+use alloy_rpc_types_eth::{state::EvmOverrides, BlockError, Bundle, StateContext, TransactionInfo};
 use alloy_rpc_types_trace::geth::{
     call::FlatCallFrame, BlockTraceResult, FourByteFrame, GethDebugBuiltInTracerType,
     GethDebugTracerType, GethDebugTracingCallOptions, GethDebugTracingOptions, GethTrace,
@@ -34,19 +32,22 @@ use reth_rpc_eth_api::{
     FromEthApiError, RpcConvert, RpcNodeCore,
 };
 use reth_rpc_eth_types::{EthApiError, StateCacheDb};
-use reth_rpc_server_types::{result::internal_rpc_err, result::rpc_error_with_code, ToRpcResult};
+use reth_rpc_server_types::{
+    result::{internal_rpc_err, rpc_error_with_code},
+    ToRpcResult,
+};
 use reth_storage_api::{
     BlockIdReader, BlockReaderIdExt, HeaderProvider, ProviderBlock, ReceiptProviderIdExt,
     StateProofProvider, StateProviderFactory, StateRootProvider, TransactionVariant,
 };
 use reth_tasks::{pool::BlockingTaskGuard, TaskSpawner};
 use reth_trie_common::{updates::TrieUpdates, HashedPostState};
-use rust_eth_triedb::triedb_manager::is_triedb_active;
 use revm::{context::Block, context_interface::Transaction, state::EvmState, DatabaseCommit};
 use revm_inspectors::tracing::{
     DebugInspector, FourByteInspector, MuxInspector, TracingInspector, TracingInspectorConfig,
     TransactionContext,
 };
+use rust_eth_triedb::triedb_manager::is_triedb_active;
 use serde::{Deserialize, Serialize};
 use std::{collections::VecDeque, sync::Arc};
 use tokio::sync::{AcquireError, OwnedSemaphorePermit};
@@ -112,14 +113,13 @@ where
     /// Handles BSC system transactions by disabling block gas limit validation.
     ///
     /// BSC system transactions are identified by:
-    /// 1. gas_limit == u64::MAX / 2
-    /// 2. caller == block beneficiary (coinbase)
+    /// 1. `gas_limit == u64::MAX / 2`
+    /// 2. `caller == block beneficiary` (coinbase)
     fn handle_bsc_system_transaction(
         evm_env: &mut EvmEnvFor<Eth::Evm>,
         tx_env: &TxEnvFor<Eth::Evm>,
     ) {
-        if tx_env.gas_limit() == u64::MAX / 2 &&
-            tx_env.caller() == evm_env.block_env.beneficiary()
+        if tx_env.gas_limit() == u64::MAX / 2 && tx_env.caller() == evm_env.block_env.beneficiary()
         {
             evm_env.cfg_env.disable_block_gas_limit = true;
         }
@@ -331,11 +331,16 @@ where
                         let mut inspector = FourByteInspector::default();
                         let inspector = self
                             .eth_api()
-                            .spawn_with_call_at(call, at, overrides, move |db, mut evm_env, tx_env| {
-                                Self::handle_bsc_system_transaction(&mut evm_env, &tx_env);
-                                this.eth_api().inspect(db, evm_env, tx_env, &mut inspector)?;
-                                Ok(inspector)
-                            })
+                            .spawn_with_call_at(
+                                call,
+                                at,
+                                overrides,
+                                move |db, mut evm_env, tx_env| {
+                                    Self::handle_bsc_system_transaction(&mut evm_env, &tx_env);
+                                    this.eth_api().inspect(db, evm_env, tx_env, &mut inspector)?;
+                                    Ok(inspector)
+                                },
+                            )
                             .await?;
                         Ok(FourByteFrame::from(&inspector).into())
                     }
@@ -350,18 +355,27 @@ where
 
                         let frame = self
                             .eth_api()
-                            .spawn_with_call_at(call, at, overrides, move |db, mut evm_env, tx_env| {
-                                Self::handle_bsc_system_transaction(&mut evm_env, &tx_env);
+                            .spawn_with_call_at(
+                                call,
+                                at,
+                                overrides,
+                                move |db, mut evm_env, tx_env| {
+                                    Self::handle_bsc_system_transaction(&mut evm_env, &tx_env);
 
-                                let gas_limit = tx_env.gas_limit();
-                                let res =
-                                    this.eth_api().inspect(db, evm_env, tx_env, &mut inspector)?;
-                                let frame = inspector
-                                    .with_transaction_gas_limit(gas_limit)
-                                    .into_geth_builder()
-                                    .geth_call_traces(call_config, res.result.gas_used());
-                                Ok(frame.into())
-                            })
+                                    let gas_limit = tx_env.gas_limit();
+                                    let res = this.eth_api().inspect(
+                                        db,
+                                        evm_env,
+                                        tx_env,
+                                        &mut inspector,
+                                    )?;
+                                    let frame = inspector
+                                        .with_transaction_gas_limit(gas_limit)
+                                        .into_geth_builder()
+                                        .geth_call_traces(call_config, res.result.gas_used());
+                                    Ok(frame.into())
+                                },
+                            )
                             .await?;
                         Ok(frame)
                     }
@@ -375,27 +389,36 @@ where
 
                         let frame = self
                             .eth_api()
-                            .spawn_with_call_at(call, at, overrides, move |db, mut evm_env, tx_env| {
-                                // wrapper is hack to get around 'higher-ranked lifetime error',
-                                // see <https://github.com/rust-lang/rust/issues/100013>
-                                let db = &mut db.database;
+                            .spawn_with_call_at(
+                                call,
+                                at,
+                                overrides,
+                                move |db, mut evm_env, tx_env| {
+                                    // wrapper is hack to get around 'higher-ranked lifetime error',
+                                    // see <https://github.com/rust-lang/rust/issues/100013>
+                                    let db = &mut db.database;
 
-                                Self::handle_bsc_system_transaction(&mut evm_env, &tx_env);
+                                    Self::handle_bsc_system_transaction(&mut evm_env, &tx_env);
 
-                                let gas_limit = tx_env.gas_limit();
-                                let res = {
-                                    let mut bal_db =
-                                        reth_revm::db::bal::BalDatabase::new(&mut *db);
-                                    this.eth_api()
-                                        .inspect(&mut bal_db, evm_env, tx_env, &mut inspector)?
-                                };
-                                let frame = inspector
-                                    .with_transaction_gas_limit(gas_limit)
-                                    .into_geth_builder()
-                                    .geth_prestate_traces(&res, &prestate_config, db)
-                                    .map_err(Eth::Error::from_eth_err)?;
-                                Ok(frame)
-                            })
+                                    let gas_limit = tx_env.gas_limit();
+                                    let res = {
+                                        let mut bal_db =
+                                            reth_revm::db::bal::BalDatabase::new(&mut *db);
+                                        this.eth_api().inspect(
+                                            &mut bal_db,
+                                            evm_env,
+                                            tx_env,
+                                            &mut inspector,
+                                        )?
+                                    };
+                                    let frame = inspector
+                                        .with_transaction_gas_limit(gas_limit)
+                                        .into_geth_builder()
+                                        .geth_prestate_traces(&res, &prestate_config, db)
+                                        .map_err(Eth::Error::from_eth_err)?;
+                                    Ok(frame)
+                                },
+                            )
                             .await?;
                         Ok(frame.into())
                     }
@@ -411,32 +434,43 @@ where
                         let frame = self
                             .inner
                             .eth_api
-                            .spawn_with_call_at(call, at, overrides, move |db, mut evm_env, tx_env| {
-                                // wrapper is hack to get around 'higher-ranked lifetime error', see
-                                // <https://github.com/rust-lang/rust/issues/100013>
-                                let db = &mut db.database;
+                            .spawn_with_call_at(
+                                call,
+                                at,
+                                overrides,
+                                move |db, mut evm_env, tx_env| {
+                                    // wrapper is hack to get around 'higher-ranked lifetime error',
+                                    // see <https://github.com/rust-lang/rust/issues/100013>
+                                    let db = &mut db.database;
 
-                                let tx_info = TransactionInfo {
-                                    block_number: Some(evm_env.block_env.number().saturating_to()),
-                                    base_fee: Some(evm_env.block_env.basefee()),
-                                    hash: None,
-                                    block_hash: None,
-                                    index: None,
-                                };
+                                    let tx_info = TransactionInfo {
+                                        block_number: Some(
+                                            evm_env.block_env.number().saturating_to(),
+                                        ),
+                                        base_fee: Some(evm_env.block_env.basefee()),
+                                        hash: None,
+                                        block_hash: None,
+                                        index: None,
+                                    };
 
-                                Self::handle_bsc_system_transaction(&mut evm_env, &tx_env);
+                                    Self::handle_bsc_system_transaction(&mut evm_env, &tx_env);
 
-                                let res = {
-                                    let mut bal_db =
-                                        reth_revm::db::bal::BalDatabase::new(&mut *db);
-                                    this.eth_api()
-                                        .inspect(&mut bal_db, evm_env, tx_env, &mut inspector)?
-                                };
-                                let frame = inspector
-                                    .try_into_mux_frame(&res, db, tx_info)
-                                    .map_err(Eth::Error::from_eth_err)?;
-                                Ok(frame.into())
-                            })
+                                    let res = {
+                                        let mut bal_db =
+                                            reth_revm::db::bal::BalDatabase::new(&mut *db);
+                                        this.eth_api().inspect(
+                                            &mut bal_db,
+                                            evm_env,
+                                            tx_env,
+                                            &mut inspector,
+                                        )?
+                                    };
+                                    let frame = inspector
+                                        .try_into_mux_frame(&res, db, tx_info)
+                                        .map_err(Eth::Error::from_eth_err)?;
+                                    Ok(frame.into())
+                                },
+                            )
                             .await?;
                         Ok(frame)
                     }
@@ -452,18 +486,23 @@ where
                         let frame: FlatCallFrame = self
                             .inner
                             .eth_api
-                            .spawn_with_call_at(call, at, overrides, move |db, mut evm_env, tx_env| {
-                                Self::handle_bsc_system_transaction(&mut evm_env, &tx_env);
+                            .spawn_with_call_at(
+                                call,
+                                at,
+                                overrides,
+                                move |db, mut evm_env, tx_env| {
+                                    Self::handle_bsc_system_transaction(&mut evm_env, &tx_env);
 
-                                let gas_limit = tx_env.gas_limit();
-                                this.eth_api().inspect(db, evm_env, tx_env, &mut inspector)?;
-                                let tx_info = TransactionInfo::default();
-                                let frame: FlatCallFrame = inspector
-                                    .with_transaction_gas_limit(gas_limit)
-                                    .into_parity_builder()
-                                    .into_localized_transaction_traces(tx_info);
-                                Ok(frame)
-                            })
+                                    let gas_limit = tx_env.gas_limit();
+                                    this.eth_api().inspect(db, evm_env, tx_env, &mut inspector)?;
+                                    let tx_info = TransactionInfo::default();
+                                    let frame: FlatCallFrame = inspector
+                                        .with_transaction_gas_limit(gas_limit)
+                                        .into_parity_builder()
+                                        .into_localized_transaction_traces(tx_info);
+                                    Ok(frame)
+                                },
+                            )
                             .await?;
 
                         Ok(frame.into())
@@ -486,23 +525,28 @@ where
 
                     let res = self
                         .eth_api()
-                        .spawn_with_call_at(call, at, overrides, move |mut db, mut evm_env, tx_env| {
-                            Self::handle_bsc_system_transaction(&mut evm_env, &tx_env);
-                            // wrapper is hack to get around 'higher-ranked lifetime error', see
-                            // <https://github.com/rust-lang/rust/issues/100013>
-                            let mut inspector =
-                                revm_inspectors::tracing::js::JsInspector::new(code, config)
-                                    .map_err(Eth::Error::from_eth_err)?;
-                            let res = this.eth_api().inspect(
-                                &mut db,
-                                evm_env.clone(),
-                                tx_env.clone(),
-                                &mut inspector,
-                            )?;
-                            inspector
-                                .json_result(res, &tx_env, &evm_env.block_env, &db)
-                                .map_err(Eth::Error::from_eth_err)
-                        })
+                        .spawn_with_call_at(
+                            call,
+                            at,
+                            overrides,
+                            move |mut db, mut evm_env, tx_env| {
+                                Self::handle_bsc_system_transaction(&mut evm_env, &tx_env);
+                                // wrapper is hack to get around 'higher-ranked lifetime error', see
+                                // <https://github.com/rust-lang/rust/issues/100013>
+                                let mut inspector =
+                                    revm_inspectors::tracing::js::JsInspector::new(code, config)
+                                        .map_err(Eth::Error::from_eth_err)?;
+                                let res = this.eth_api().inspect(
+                                    &mut db,
+                                    evm_env.clone(),
+                                    tx_env.clone(),
+                                    &mut inspector,
+                                )?;
+                                inspector
+                                    .json_result(res, &tx_env, &evm_env.block_env, &db)
+                                    .map_err(Eth::Error::from_eth_err)
+                            },
+                        )
                         .await?;
 
                     Ok(GethTrace::JS(res))
@@ -718,7 +762,10 @@ where
         hash: B256,
     ) -> Result<ExecutionWitness, Eth::Error> {
         if is_triedb_active() {
-            return Err(EthApiError::MethodNotAvailable("debug_executionWitnessByBlockHash".to_string()).into());
+            return Err(EthApiError::MethodNotAvailable(
+                "debug_executionWitnessByBlockHash".to_string(),
+            )
+            .into());
         }
 
         let this = self.clone();
@@ -759,7 +806,10 @@ where
         block: Arc<RecoveredBlock<ProviderBlock<Eth::Provider>>>,
     ) -> Result<ExecutionWitness, Eth::Error> {
         if is_triedb_active() {
-            return Err(EthApiError::MethodNotAvailable("debug_executionWitnessForBlock".to_string()).into());
+            return Err(EthApiError::MethodNotAvailable(
+                "debug_executionWitnessForBlock".to_string(),
+            )
+            .into());
         }
 
         let block_number = block.header().number();
@@ -1035,9 +1085,10 @@ where
         hashed_state: HashedPostState,
         block_id: Option<BlockId>,
     ) -> Result<(B256, TrieUpdates), Eth::Error> {
-
         if is_triedb_active() {
-            return Err(EthApiError::MethodNotAvailable("debug_stateRootWithUpdates".to_string()).into());
+            return Err(
+                EthApiError::MethodNotAvailable("debug_stateRootWithUpdates".to_string()).into()
+            );
         }
 
         self.inner
@@ -1245,7 +1296,10 @@ where
         block: BlockNumberOrTag,
     ) -> RpcResult<ExecutionWitness> {
         if is_triedb_active() {
-            return Err(rpc_error_with_code(-32601, "The method debug_executionWitness does not exist/is not available"));
+            return Err(rpc_error_with_code(
+                -32601,
+                "The method debug_executionWitness does not exist/is not available",
+            ));
         }
         let _permit = self.acquire_trace_permit().await;
         Self::debug_execution_witness(self, block).await.map_err(Into::into)
@@ -1257,7 +1311,10 @@ where
         hash: B256,
     ) -> RpcResult<ExecutionWitness> {
         if is_triedb_active() {
-            return Err(rpc_error_with_code(-32601, "The method debug_executionWitnessByBlockHash does not exist/is not available"));
+            return Err(rpc_error_with_code(
+                -32601,
+                "The method debug_executionWitnessByBlockHash does not exist/is not available",
+            ));
         }
         let _permit = self.acquire_trace_permit().await;
         Self::debug_execution_witness_by_block_hash(self, hash).await.map_err(Into::into)
@@ -1479,7 +1536,10 @@ where
         block_id: Option<BlockId>,
     ) -> RpcResult<(B256, TrieUpdates)> {
         if is_triedb_active() {
-            return Err(rpc_error_with_code(-32601, "The method debug_stateRootWithUpdates does not exist/is not available"));
+            return Err(rpc_error_with_code(
+                -32601,
+                "The method debug_stateRootWithUpdates does not exist/is not available",
+            ));
         }
         Self::debug_state_root_with_updates(self, hashed_state, block_id).await.map_err(Into::into)
     }

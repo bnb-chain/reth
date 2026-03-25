@@ -20,8 +20,8 @@ use reth_storage_errors::{
     provider::{ProviderError, ProviderResult},
 };
 use rocksdb::{
-    BlockBasedOptions, Cache, ColumnFamilyDescriptor, CompactionPri, DBCompressionType,
-    DBRawIteratorWithThreadMode, IteratorMode, OptimisticTransactionDB,
+    BlockBasedOptions, BoundColumnFamily, Cache, ColumnFamilyDescriptor, CompactionPri,
+    DBCompressionType, DBRawIteratorWithThreadMode, IteratorMode, OptimisticTransactionDB,
     OptimisticTransactionOptions, Options, Transaction, WriteBatchWithTransaction, WriteOptions,
 };
 use std::{
@@ -341,7 +341,7 @@ impl RocksDBProvider {
     }
 
     /// Gets the column family handle for a table.
-    fn get_cf_handle<T: Table>(&self) -> Result<&rocksdb::ColumnFamily, DatabaseError> {
+    fn get_cf_handle<T: Table>(&self) -> Result<Arc<BoundColumnFamily<'_>>, DatabaseError> {
         self.0
             .db
             .cf_handle(T::NAME)
@@ -377,7 +377,7 @@ impl RocksDBProvider {
     ) -> ProviderResult<Option<T::Value>> {
         self.execute_with_operation_metric(RocksDBOperation::Get, T::NAME, |this| {
             let result =
-                this.0.db.get_cf(this.get_cf_handle::<T>()?, key.as_ref()).map_err(|e| {
+                this.0.db.get_cf(&this.get_cf_handle::<T>()?, key.as_ref()).map_err(|e| {
                     ProviderError::Database(DatabaseError::Read(DatabaseErrorInfo {
                         message: e.to_string().into(),
                         code: -1,
@@ -407,7 +407,7 @@ impl RocksDBProvider {
             let mut buf = Vec::new();
             let value_bytes = compress_to_buf_or_ref!(buf, value).unwrap_or(&buf);
 
-            this.0.db.put_cf(this.get_cf_handle::<T>()?, key, value_bytes).map_err(|e| {
+            this.0.db.put_cf(&this.get_cf_handle::<T>()?, key, value_bytes).map_err(|e| {
                 ProviderError::Database(DatabaseError::Write(Box::new(DatabaseWriteError {
                     info: DatabaseErrorInfo { message: e.to_string().into(), code: -1 },
                     operation: DatabaseWriteOperation::PutUpsert,
@@ -421,7 +421,7 @@ impl RocksDBProvider {
     /// Deletes a value from the specified table.
     pub fn delete<T: Table>(&self, key: T::Key) -> ProviderResult<()> {
         self.execute_with_operation_metric(RocksDBOperation::Delete, T::NAME, |this| {
-            this.0.db.delete_cf(this.get_cf_handle::<T>()?, key.encode().as_ref()).map_err(|e| {
+            this.0.db.delete_cf(&this.get_cf_handle::<T>()?, key.encode().as_ref()).map_err(|e| {
                 ProviderError::Database(DatabaseError::Delete(DatabaseErrorInfo {
                     message: e.to_string().into(),
                     code: -1,
@@ -434,7 +434,7 @@ impl RocksDBProvider {
     pub fn first<T: Table>(&self) -> ProviderResult<Option<(T::Key, T::Value)>> {
         self.execute_with_operation_metric(RocksDBOperation::Get, T::NAME, |this| {
             let cf = this.get_cf_handle::<T>()?;
-            let mut iter = this.0.db.iterator_cf(cf, IteratorMode::Start);
+            let mut iter = this.0.db.iterator_cf(&cf, IteratorMode::Start);
 
             match iter.next() {
                 Some(Ok((key_bytes, value_bytes))) => {
@@ -459,7 +459,7 @@ impl RocksDBProvider {
     pub fn last<T: Table>(&self) -> ProviderResult<Option<(T::Key, T::Value)>> {
         self.execute_with_operation_metric(RocksDBOperation::Get, T::NAME, |this| {
             let cf = this.get_cf_handle::<T>()?;
-            let mut iter = this.0.db.iterator_cf(cf, IteratorMode::End);
+            let mut iter = this.0.db.iterator_cf(&cf, IteratorMode::End);
 
             match iter.next() {
                 Some(Ok((key_bytes, value_bytes))) => {
@@ -485,7 +485,7 @@ impl RocksDBProvider {
     /// Returns decoded `(Key, Value)` pairs in key order.
     pub fn iter<T: Table>(&self) -> ProviderResult<RocksDBIter<'_, T>> {
         let cf = self.get_cf_handle::<T>()?;
-        let iter = self.0.db.iterator_cf(cf, IteratorMode::Start);
+        let iter = self.0.db.iterator_cf(&cf, IteratorMode::Start);
         Ok(RocksDBIter { inner: iter, _marker: std::marker::PhantomData })
     }
 
@@ -675,13 +675,13 @@ impl<'a> RocksDBBatch<'a> {
         value: &T::Value,
     ) -> ProviderResult<()> {
         let value_bytes = compress_to_buf_or_ref!(self.buf, value).unwrap_or(&self.buf);
-        self.inner.put_cf(self.provider.get_cf_handle::<T>()?, key, value_bytes);
+        self.inner.put_cf(&self.provider.get_cf_handle::<T>()?, key, value_bytes);
         Ok(())
     }
 
     /// Deletes a value from the batch.
     pub fn delete<T: Table>(&mut self, key: T::Key) -> ProviderResult<()> {
-        self.inner.delete_cf(self.provider.get_cf_handle::<T>()?, key.encode().as_ref());
+        self.inner.delete_cf(&self.provider.get_cf_handle::<T>()?, key.encode().as_ref());
         Ok(())
     }
 
@@ -876,7 +876,7 @@ impl<'db> RocksTx<'db> {
         key: &<T::Key as Encode>::Encoded,
     ) -> ProviderResult<Option<T::Value>> {
         let cf = self.provider.get_cf_handle::<T>()?;
-        let result = self.inner.get_cf(cf, key.as_ref()).map_err(|e| {
+        let result = self.inner.get_cf(&cf, key.as_ref()).map_err(|e| {
             ProviderError::Database(DatabaseError::Read(DatabaseErrorInfo {
                 message: e.to_string().into(),
                 code: -1,
@@ -902,7 +902,7 @@ impl<'db> RocksTx<'db> {
         let mut buf = Vec::new();
         let value_bytes = compress_to_buf_or_ref!(buf, value).unwrap_or(&buf);
 
-        self.inner.put_cf(cf, key.as_ref(), value_bytes).map_err(|e| {
+        self.inner.put_cf(&cf, key.as_ref(), value_bytes).map_err(|e| {
             ProviderError::Database(DatabaseError::Write(Box::new(DatabaseWriteError {
                 info: DatabaseErrorInfo { message: e.to_string().into(), code: -1 },
                 operation: DatabaseWriteOperation::PutUpsert,
@@ -915,7 +915,7 @@ impl<'db> RocksTx<'db> {
     /// Deletes a value from the specified table.
     pub fn delete<T: Table>(&self, key: T::Key) -> ProviderResult<()> {
         let cf = self.provider.get_cf_handle::<T>()?;
-        self.inner.delete_cf(cf, key.encode().as_ref()).map_err(|e| {
+        self.inner.delete_cf(&cf, key.encode().as_ref()).map_err(|e| {
             ProviderError::Database(DatabaseError::Delete(DatabaseErrorInfo {
                 message: e.to_string().into(),
                 code: -1,
@@ -928,7 +928,7 @@ impl<'db> RocksTx<'db> {
     /// Returns an iterator that yields `(encoded_key, compressed_value)` pairs.
     pub fn iter<T: Table>(&self) -> ProviderResult<RocksTxIter<'_, T>> {
         let cf = self.provider.get_cf_handle::<T>()?;
-        let iter = self.inner.iterator_cf(cf, IteratorMode::Start);
+        let iter = self.inner.iterator_cf(&cf, IteratorMode::Start);
         Ok(RocksTxIter { inner: iter, _marker: std::marker::PhantomData })
     }
 
@@ -936,9 +936,10 @@ impl<'db> RocksTx<'db> {
     pub fn iter_from<T: Table>(&self, key: T::Key) -> ProviderResult<RocksTxIter<'_, T>> {
         let cf = self.provider.get_cf_handle::<T>()?;
         let encoded_key = key.encode();
-        let iter = self
-            .inner
-            .iterator_cf(cf, IteratorMode::From(encoded_key.as_ref(), rocksdb::Direction::Forward));
+        let iter = self.inner.iterator_cf(
+            &cf,
+            IteratorMode::From(encoded_key.as_ref(), rocksdb::Direction::Forward),
+        );
         Ok(RocksTxIter { inner: iter, _marker: std::marker::PhantomData })
     }
 

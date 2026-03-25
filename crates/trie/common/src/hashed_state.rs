@@ -88,7 +88,10 @@ impl HashedPostState {
                     None => HashedStorage::new(false),
                     Some(_) => HashedStorage::from_plain_storage(
                         AccountStatus::Changed,
-                        account.storage.iter().map(|(slot, value)| (slot, &value.previous_or_original_value)),
+                        account
+                            .storage
+                            .iter()
+                            .map(|(slot, value)| (slot, &value.previous_or_original_value)),
                     ),
                 };
                 (hashed_address, (hashed_account, hashed_storage))
@@ -110,12 +113,12 @@ impl HashedPostState {
     pub fn to_triedb_hashed_post_state(&self) -> TrieDBHashedPostState {
         let mut triedb_hashed_post_state = TrieDBHashedPostState::default();
 
-        for (hashed_address, account) in self.accounts.iter() {
+        for (hashed_address, account) in &self.accounts {
             match account {
                 Some(account) => {
                     let code_hash = match account.bytecode_hash {
                         Some(code_hash) => code_hash,
-                        None => KECCAK_EMPTY
+                        None => KECCAK_EMPTY,
                     };
                     let acc = StateAccount::default()
                         .with_nonce(account.nonce)
@@ -124,10 +127,10 @@ impl HashedPostState {
                     triedb_hashed_post_state.states.insert(*hashed_address, Some(acc));
 
                     // check if the account is being rebuilt
-                    if let Some(storages) = self.storages.get(hashed_address) {
-                        if storages.wiped {
-                            triedb_hashed_post_state.states_rebuild.insert(*hashed_address);
-                        }
+                    if let Some(storages) = self.storages.get(hashed_address) &&
+                        storages.wiped
+                    {
+                        triedb_hashed_post_state.states_rebuild.insert(*hashed_address);
                     }
                 }
                 None => {
@@ -136,12 +139,12 @@ impl HashedPostState {
             }
         }
 
-        for (hashed_address, storages) in self.storages.iter() {
+        for (hashed_address, storages) in &self.storages {
             if storages.storage.is_empty() {
                 continue;
             }
             let mut kvs = HashMap::new();
-            for (hashed_key, value) in storages.storage.iter() {
+            for (hashed_key, value) in &storages.storage {
                 if value.is_zero() {
                     // if the value is zero, it means the storage is being deleted
                     kvs.insert(*hashed_key, None);
@@ -788,7 +791,7 @@ impl HashedPostStateSorted {
     pub fn to_triedb_hashed_post_state(&self) -> TrieDBHashedPostState {
         let mut triedb_hashed_post_state = TrieDBHashedPostState::default();
 
-        for (hashed_address, account) in self.accounts.iter() {
+        for (hashed_address, account) in &self.accounts {
             match account {
                 Some(account) => {
                     let code_hash = match account.bytecode_hash {
@@ -802,10 +805,10 @@ impl HashedPostStateSorted {
                     triedb_hashed_post_state.states.insert(*hashed_address, Some(acc));
 
                     // check if the account is being rebuilt
-                    if let Some(storages) = self.storages.get(hashed_address) {
-                        if storages.wiped {
-                            triedb_hashed_post_state.states_rebuild.insert(*hashed_address);
-                        }
+                    if let Some(storages) = self.storages.get(hashed_address) &&
+                        storages.wiped
+                    {
+                        triedb_hashed_post_state.states_rebuild.insert(*hashed_address);
                     }
                 }
                 None => {
@@ -814,12 +817,12 @@ impl HashedPostStateSorted {
             }
         }
 
-        for (hashed_address, storages) in self.storages.iter() {
+        for (hashed_address, storages) in &self.storages {
             if storages.storage_slots.is_empty() {
                 continue;
             }
             let mut kvs = HashMap::new();
-            for (hashed_key, value) in storages.storage_slots.iter() {
+            for (hashed_key, value) in &storages.storage_slots {
                 if value.is_zero() {
                     // if the value is zero, it means the storage is being deleted
                     kvs.insert(*hashed_key, None);

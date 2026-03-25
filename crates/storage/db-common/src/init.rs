@@ -199,11 +199,11 @@ where
 
     insert_genesis_state(&provider_rw, alloc.iter())?;
 
-    if !is_triedb_active() {
+    if is_triedb_active() {
+        info!(target: "reth::storage", "TrieDB is active, skipping mdbx state root computation");
+    } else {
         // compute state root to populate trie tables
         compute_state_root(&provider_rw, None)?;
-    } else {
-        info!(target: "reth::storage", "TrieDB is active, skipping mdbx state root computation");
     }
 
     // set stage checkpoint to genesis block number for all stages
@@ -259,10 +259,10 @@ where
         + AsRef<Provider>,
 {
     let genesis_block_number = provider.chain_spec().genesis_header().number();
-    if !is_triedb_active() {
-        insert_state(provider, alloc, genesis_block_number)
-    } else {
+    if is_triedb_active() {
         insert_triedb_state(provider, alloc, genesis_block_number)
+    } else {
+        insert_state(provider, alloc, genesis_block_number)
     }
 }
 
@@ -311,8 +311,8 @@ where
         let mut state_account = StateAccount::default()
             .with_nonce(account.nonce.unwrap_or_default())
             .with_balance(account.balance);
-        if bytecode_hash.is_some() {
-            state_account = state_account.with_code_hash(bytecode_hash.unwrap());
+        if let Some(hash) = bytecode_hash {
+            state_account = state_account.with_code_hash(hash);
         }
         state_accounts.insert(hashed_address, Some(state_account));
 
@@ -373,7 +373,6 @@ where
 
     info!(target: "reth::storage", "Triedb genesis state root computed: {:?}", root);
 
-
     let all_reverts_init: RevertsInit = HashMap::from_iter([(block, reverts_init)]);
 
     let execution_outcome = ExecutionOutcome::new_init(
@@ -395,7 +394,6 @@ where
 
     Ok(())
 }
-
 
 /// Inserts state at given block into database.
 pub fn insert_state<'a, 'b, Provider>(

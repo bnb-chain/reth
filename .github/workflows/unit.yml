@@ -20,7 +20,7 @@ concurrency:
 jobs:
   test:
     name: test / ${{ matrix.type }} / ${{ matrix.storage }}
-    runs-on: depot-ubuntu-latest-4
+    runs-on: ubuntu-latest
     env:
       RUST_BACKTRACE: 1
       EDGE_FEATURES: ${{ matrix.storage == 'edge' && 'edge' || '' }}
@@ -44,6 +44,18 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y liburing-dev pkg-config libclang-dev
       - uses: taiki-e/install-action@nextest
       - if: "${{ matrix.type == 'book' }}"
         uses: arduino/setup-protoc@v3
@@ -59,7 +71,7 @@ jobs:
 
   state:
     name: Ethereum state tests
-    runs-on: depot-ubuntu-latest-4
+    runs-on: ubuntu-latest
     env:
       RUST_LOG: info,sync=error
       RUST_BACKTRACE: 1
@@ -90,11 +102,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev llvm liburing-dev pkg-config
       - run: cargo nextest run --release -p ef-tests --features "asm-keccak ef-tests"
 
   doc:
     name: doc tests
-    runs-on: depot-ubuntu-latest
+    runs-on: ubuntu-latest
     env:
       RUST_BACKTRACE: 1
     timeout-minutes: 30
@@ -106,6 +120,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev llvm liburing-dev pkg-config
       - name: Run doctests
         run: cargo test --doc --workspace --all-features
 

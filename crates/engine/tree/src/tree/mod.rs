@@ -86,8 +86,8 @@ pub mod state;
 /// an epoch has slots), then this exceeds the threshold at which the pipeline should be used to
 /// backfill this gap.
 ///
-/// This is kept for backwards compatibility with tests. Use `TreeConfig::min_blocks_for_pipeline_run()`
-/// for configurable threshold.
+/// This is kept for backwards compatibility with tests. Use
+/// `TreeConfig::min_blocks_for_pipeline_run()` for configurable threshold.
 #[cfg(test)]
 pub(crate) const MIN_BLOCKS_FOR_PIPELINE_RUN: u64 = DEFAULT_MIN_BLOCKS_FOR_PIPELINE_RUN;
 
@@ -2391,7 +2391,7 @@ where
     ///
     /// If the `local_tip` is greater than the `block`, then this will return false.
     #[inline]
-    fn exceeds_backfill_run_threshold(&self, local_tip: u64, block: u64) -> bool {
+    const fn exceeds_backfill_run_threshold(&self, local_tip: u64, block: u64) -> bool {
         block > local_tip && block - local_tip > self.config.min_blocks_for_pipeline_run()
     }
 
@@ -2852,14 +2852,8 @@ where
             .engine
             .block_insert_total_duration
             .record(block_insert_start.elapsed().as_secs_f64());
-        self.metrics
-            .engine
-            .block_insert_mgasps
-            .set(gas_used as f64 / elapsed.as_secs_f64());
-        self.metrics
-            .engine
-            .block_insert_timestamp_delay
-            .record(timestamp_delay_nanos);
+        self.metrics.engine.block_insert_mgasps.set(gas_used as f64 / elapsed.as_secs_f64());
+        self.metrics.engine.block_insert_timestamp_delay.record(timestamp_delay_nanos);
         debug!(target: "engine::tree", block=?block_num_hash, "Finished inserting block");
         Ok(InsertPayloadOk::Inserted(BlockStatus::Valid))
     }
@@ -3147,12 +3141,18 @@ where
 
     /// Query the header and TD of the given block number and hash.
     /// If the block is not found, the header and TD of the last block will be returned.
-    pub fn query_header_with_td(&self, number: BlockNumber, hash: BlockHash) -> ProviderResult<(N::BlockHeader, Option<U256>)> {
+    pub fn query_header_with_td(
+        &self,
+        number: BlockNumber,
+        hash: BlockHash,
+    ) -> ProviderResult<(N::BlockHeader, Option<U256>)> {
         // query header td from canonical chain
         if let Some(block_number) = self.provider.block_number(hash)? {
             tracing::debug!(target: "engine::tree", number=?number, hash=?hash, "querying TD from canonical chain");
-            let header = self.provider.header_by_number(block_number)?.
-                ok_or(ProviderError::HeaderNotFound(block_number.into()))?;
+            let header = self
+                .provider
+                .header_by_number(block_number)?
+                .ok_or(ProviderError::HeaderNotFound(block_number.into()))?;
             let td = self.provider.header_td_by_number(block_number)?;
             return Ok((header, td))
         }

@@ -319,7 +319,9 @@ where
     }
 
     /// Validates a block that has already been converted from a payload with triedb.
-    pub fn validate_block_with_state_with_triedb<T: PayloadTypes<BuiltPayload: BuiltPayload<Primitives = N>>>(
+    pub fn validate_block_with_state_with_triedb<
+        T: PayloadTypes<BuiltPayload: BuiltPayload<Primitives = N>>,
+    >(
         &mut self,
         input: BlockOrPayload<T>,
         mut ctx: TreeCtx<'_, N>,
@@ -410,7 +412,8 @@ where
         // Use cached state provider before executing, used in execution after prewarming threads
         // complete.
         if let Some((caches, cache_metrics)) = handle.caches().zip(handle.cache_metrics()) {
-            state_provider = Box::new(CachedStateProvider::new(state_provider, caches, cache_metrics));
+            state_provider =
+                Box::new(CachedStateProvider::new(state_provider, caches, cache_metrics));
         };
 
         if self.config.state_provider_metrics() {
@@ -436,7 +439,13 @@ where
         let receipt_root_bloom = receipt_root_rx.blocking_recv().ok();
 
         let hashed_state = ensure_ok_post_block!(
-            self.validate_post_execution(&block, &parent_block, &output, &mut ctx, receipt_root_bloom),
+            self.validate_post_execution(
+                &block,
+                &parent_block,
+                &output,
+                &mut ctx,
+                receipt_root_bloom
+            ),
             block
         );
 
@@ -839,10 +848,7 @@ where
                         target: "engine::tree::payload_validator",
                         "Failed to compute state root in parallel"
                     );
-                    self.metrics
-                        .block_validation
-                        .state_root_parallel_fallback_total
-                        .increment(1);
+                    self.metrics.block_validation.state_root_parallel_fallback_total.increment(1);
                 }
 
                 let (root, updates) = ensure_ok_post_block!(
@@ -1027,12 +1033,7 @@ where
         // Some receipts may be appended during post-execution finalization rather than during the
         // main transaction loop. Ensure the background receipt-root task sees the full receipt set.
         if output.receipts.len() > last_sent_len {
-            for (tx_index, receipt) in output
-                .receipts
-                .iter()
-                .enumerate()
-                .skip(last_sent_len)
-            {
+            for (tx_index, receipt) in output.receipts.iter().enumerate().skip(last_sent_len) {
                 let _ = receipt_tx.send(IndexedReceipt::new(tx_index, receipt.clone()));
             }
         }
