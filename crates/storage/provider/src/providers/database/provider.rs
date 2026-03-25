@@ -221,7 +221,12 @@ impl<TX, N: NodeTypes> DatabaseProvider<TX, N> {
 }
 
 impl<TX: DbTx + 'static, N: NodeTypes> DatabaseProvider<TX, N> {
-    /// State provider for latest state
+    /// State provider for latest state.
+    ///
+    /// No [`PipelineConsistency`] guard is needed here: `LatestStateProviderRef` reads
+    /// `PlainState` directly and always returns the Execution-stage tip. The guard only
+    /// protects historical providers whose `InPlainState` fallback would silently serve
+    /// future-block data when the history index lags behind.
     pub fn latest<'a>(&'a self) -> Box<dyn StateProvider + 'a> {
         trace!(target: "providers::db", "Returning latest state provider");
         Box::new(LatestStateProviderRef::new(self))
