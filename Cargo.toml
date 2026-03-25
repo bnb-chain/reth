@@ -475,10 +475,10 @@ reth-ress-provider = { path = "crates/ress/provider" }
 # triedb
 # Note: To enable io-uring support, add `io-uring = ["rust-eth-triedb/io-uring"]` to the [features] section
 # of any crate that depends on rust-eth-triedb. Then enable the io-uring feature at the root (bin/reth).
-rust-eth-triedb = { git = "https://github.com/bnb-chain/reth-bsc-triedb.git", rev = "596d39bddb6c74280c72fd5249e24903e7650362" }
-rust-eth-triedb-common = { git = "https://github.com/bnb-chain/reth-bsc-triedb.git", rev = "596d39bddb6c74280c72fd5249e24903e7650362", package = "rust-eth-triedb-common" }
-rust-eth-triedb-pathdb = { git = "https://github.com/bnb-chain/reth-bsc-triedb.git", rev = "596d39bddb6c74280c72fd5249e24903e7650362", package = "rust-eth-triedb-pathdb" }
-rust-eth-triedb-state-trie = { git = "https://github.com/bnb-chain/reth-bsc-triedb.git", rev = "596d39bddb6c74280c72fd5249e24903e7650362", package = "rust-eth-triedb-state-trie" }
+rust-eth-triedb = { git = "https://github.com/bnb-chain/reth-bsc-triedb.git", rev = "85107ce9edaa2a149b0babbebdeb80e33406103b" }
+rust-eth-triedb-common = { git = "https://github.com/bnb-chain/reth-bsc-triedb.git", rev = "85107ce9edaa2a149b0babbebdeb80e33406103b", package = "rust-eth-triedb-common" }
+rust-eth-triedb-pathdb = { git = "https://github.com/bnb-chain/reth-bsc-triedb.git", rev = "85107ce9edaa2a149b0babbebdeb80e33406103b", package = "rust-eth-triedb-pathdb" }
+rust-eth-triedb-state-trie = { git = "https://github.com/bnb-chain/reth-bsc-triedb.git", rev = "85107ce9edaa2a149b0babbebdeb80e33406103b", package = "rust-eth-triedb-state-trie" }
 
 # revm
 revm = { version = "34.0.0", default-features = false }
