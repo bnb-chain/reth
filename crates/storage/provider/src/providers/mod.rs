@@ -17,7 +17,7 @@ mod state;
 pub use state::{
     historical::{
         compute_history_rank, history_info, needs_prev_shard_check, HistoricalStateProvider,
-        HistoricalStateProviderRef, HistoryInfo, LowestAvailableBlocks,
+        HistoricalStateProviderRef, HistoryInfo, LowestAvailableBlocks, PipelineConsistency,
     },
     latest::{LatestStateProvider, LatestStateProviderRef},
     overlay::{OverlayStateProvider, OverlayStateProviderFactory},

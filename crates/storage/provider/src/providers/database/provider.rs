@@ -14,9 +14,9 @@ use crate::{
     BlockReader, BlockWriter, BundleStateInit, ChainStateBlockReader, ChainStateBlockWriter,
     DBProvider, EitherReader, EitherWriter, EitherWriterDestination, HashingWriter, HeaderProvider,
     HeaderSyncGapProvider, HistoricalStateProvider, HistoricalStateProviderRef, HistoryWriter,
-    LatestStateProvider, LatestStateProviderRef, OriginalValuesKnown, ProviderError,
-    PruneCheckpointReader, PruneCheckpointWriter, RawRocksDBBatch, RevertsInit, RocksBatchArg,
-    RocksDBProviderFactory, StageCheckpointReader, StateProviderBox, StateWriter,
+    LatestStateProvider, LatestStateProviderRef, OriginalValuesKnown, PipelineConsistency,
+    ProviderError, PruneCheckpointReader, PruneCheckpointWriter, RawRocksDBBatch, RevertsInit,
+    RocksBatchArg, RocksDBProviderFactory, StageCheckpointReader, StateProviderBox, StateWriter,
     StaticFileProviderFactory, StatsReader, StorageReader, StorageTrieWriter, TransactionVariant,
     TransactionsProvider, TransactionsProviderExt, TrieWriter,
 };
@@ -290,10 +290,29 @@ impl<TX: DbTx + 'static, N: NodeTypes> DatabaseProvider<TX, N> {
         Ok(())
     }
 
-    /// State provider for latest state
+    /// State provider for latest state.
+    ///
+    /// No [`PipelineConsistency`] guard is needed here: `LatestStateProviderRef` reads
+    /// `PlainState` directly and always returns the Execution-stage tip. The guard only
+    /// protects historical providers whose `InPlainState` fallback would silently serve
+    /// future-block data when the history index lags behind.
     pub fn latest<'a>(&'a self) -> Box<dyn StateProvider + 'a> {
         trace!(target: "providers::db", "Returning latest state provider");
         Box::new(LatestStateProviderRef::new(self))
+    }
+
+    /// Reads pipeline stage checkpoints and builds [`PipelineConsistency`] info.
+    ///
+    /// During pipeline sync the Execution stage commits `PlainState` before the history index
+    /// stages run. This helper detects that gap so [`HistoricalStateProviderRef`] can reject
+    /// `InPlainState` reads that would return data from a future block.
+    fn build_pipeline_consistency(&self) -> ProviderResult<PipelineConsistency> {
+        let execution_tip = self.get_stage_checkpoint(StageId::Execution)?.map(|c| c.block_number);
+        let account_history_tip =
+            self.get_stage_checkpoint(StageId::IndexAccountHistory)?.map(|c| c.block_number);
+        let storage_history_tip =
+            self.get_stage_checkpoint(StageId::IndexStorageHistory)?.map(|c| c.block_number);
+        Ok(PipelineConsistency { execution_tip, account_history_tip, storage_history_tip })
     }
 
     /// Storage provider for state at that given block hash
@@ -303,8 +322,11 @@ impl<TX: DbTx + 'static, N: NodeTypes> DatabaseProvider<TX, N> {
     ) -> ProviderResult<Box<dyn StateProvider + 'a>> {
         let mut block_number =
             self.block_number(block_hash)?.ok_or(ProviderError::BlockHashNotFound(block_hash))?;
+        let pipeline_consistency = self.build_pipeline_consistency()?;
         if block_number == self.best_block_number().unwrap_or_default() &&
-            block_number == self.last_block_number().unwrap_or_default()
+            block_number == self.last_block_number().unwrap_or_default() &&
+            pipeline_consistency.account_inconsistency().is_none() &&
+            pipeline_consistency.storage_inconsistency().is_none()
         {
             return Ok(Box::new(LatestStateProviderRef::new(self)))
         }
@@ -317,7 +339,8 @@ impl<TX: DbTx + 'static, N: NodeTypes> DatabaseProvider<TX, N> {
         let storage_history_prune_checkpoint =
             self.get_prune_checkpoint(PruneSegment::StorageHistory)?;
 
-        let mut state_provider = HistoricalStateProviderRef::new(self, block_number);
+        let mut state_provider = HistoricalStateProviderRef::new(self, block_number)
+            .with_pipeline_consistency(pipeline_consistency);
 
         // If we pruned account or storage history, we can't return state on every historical block.
         // Instead, we should cap it at the latest prune checkpoint for corresponding prune segment.
@@ -995,9 +1018,15 @@ impl<TX: DbTx + 'static, N: NodeTypes> TryIntoHistoricalStateProvider for Databa
             });
         }
 
-        // If requesting state at the best block, use the latest state provider
-        if block_number == best_block {
-            return Ok(Box::new(LatestStateProvider::new(self)));
+        // Only use the LatestStateProvider fast path when there is no pipeline gap.
+        // During pipeline sync the Execution stage may have advanced PlainState beyond the
+        // Finish checkpoint, so LatestStateProvider would return data from a future block.
+        let pipeline_consistency = self.build_pipeline_consistency()?;
+        if block_number == best_block &&
+            pipeline_consistency.account_inconsistency().is_none() &&
+            pipeline_consistency.storage_inconsistency().is_none()
+        {
+            return Ok(Box::new(LatestStateProvider::new(self)))
         }
 
         // +1 as the changeset that we want is the one that was applied after this block.
@@ -1008,7 +1037,8 @@ impl<TX: DbTx + 'static, N: NodeTypes> TryIntoHistoricalStateProvider for Databa
         let storage_history_prune_checkpoint =
             self.get_prune_checkpoint(PruneSegment::StorageHistory)?;
 
-        let mut state_provider = HistoricalStateProvider::new(self, block_number);
+        let mut state_provider = HistoricalStateProvider::new(self, block_number)
+            .with_pipeline_consistency(pipeline_consistency);
 
         // If we pruned account or storage history, we can't return state on every historical block.
         // Instead, we should cap it at the latest prune checkpoint for corresponding prune segment.
