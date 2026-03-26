@@ -9,6 +9,7 @@ use alloy_primitives::{Address, Bytes, B256, U256};
 use alloy_rpc_types_eth::{Account, AccountInfo, EIP1186AccountProofResponse};
 use alloy_serde::JsonStorageKey;
 use futures::Future;
+use reth_engine_primitives::is_fastnode_active;
 use reth_errors::RethError;
 use reth_evm::{ConfigureEvm, EvmEnvFor};
 use reth_primitives_traits::SealedHeaderFor;
@@ -103,6 +104,11 @@ pub trait EthState: LoadState + SpawnBlocking {
                 return Err(EthApiError::MethodNotAvailable("eth_getProof".to_string()).into())
             }
 
+            // In fastnode mode, trie tables are not maintained so proofs would be invalid
+            if is_fastnode_active() {
+                return Err(EthApiError::MethodNotAvailable("eth_getProof".to_string()).into())
+            }
+
             let _permit = self
                 .acquire_owned_tracing()
                 .await
@@ -144,6 +150,11 @@ pub trait EthState: LoadState + SpawnBlocking {
         self.spawn_blocking_io_fut(move |this| async move {
             // Check if TrieDB is active, return error if so
             if is_triedb_active() {
+                return Err(EthApiError::MethodNotAvailable("eth_getAccount".to_string()).into())
+            }
+
+            // In fastnode mode, trie tables are not maintained so storage root would be invalid
+            if is_fastnode_active() {
                 return Err(EthApiError::MethodNotAvailable("eth_getAccount".to_string()).into())
             }
 
