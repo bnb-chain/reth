@@ -14,6 +14,16 @@ pub const SOFT_LIMIT_COUNT_HASHES_IN_NEW_POOLED_TRANSACTIONS_BROADCAST_MESSAGE: 
 /// Default is 128 KiB.
 pub const DEFAULT_SOFT_LIMIT_BYTE_SIZE_TRANSACTIONS_BROADCAST_MESSAGE: usize = 128 * 1024;
 
+/// Max size of a transaction that will be broadcast in full to peers.
+///
+/// Transactions larger than this threshold will only be announced via
+/// [`NewPooledTransactionHashes`](reth_eth_wire::NewPooledTransactionHashes) and must be
+/// explicitly fetched by interested peers. This aligns with the BSC client behavior to reduce
+/// bandwidth usage for large transactions (e.g. contract deployments).
+///
+/// Default is 4096 bytes.
+pub const TX_MAX_BROADCAST_SIZE: usize = 4096;
+
 /* ================ REQUEST-RESPONSE ================ */
 
 /// Recommended soft limit for the number of hashes in a

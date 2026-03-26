@@ -25,7 +25,10 @@ use policy::NetworkPolicies;
 
 pub(crate) use fetcher::{FetchEvent, TransactionFetcher};
 
-use self::constants::{tx_manager::*, DEFAULT_SOFT_LIMIT_BYTE_SIZE_TRANSACTIONS_BROADCAST_MESSAGE};
+use self::constants::{
+    tx_manager::*, DEFAULT_SOFT_LIMIT_BYTE_SIZE_TRANSACTIONS_BROADCAST_MESSAGE,
+    TX_MAX_BROADCAST_SIZE,
+};
 use crate::{
     budget::{
         DEFAULT_BUDGET_TRY_DRAIN_NETWORK_TRANSACTION_EVENTS,
@@ -1055,7 +1058,14 @@ where
                     // Only proceed if the transaction is not in the peer's list of seen
                     // transactions
                     if !peer.seen_transactions.contains(tx.tx_hash()) {
-                        builder.push(tx);
+                        // Large transactions are only announced as hashes in the normal
+                        // pool fanout and must be fetched explicitly by peers. This matches
+                        // BSC's txMaxBroadcastSize behavior.
+                        if tx.size > TX_MAX_BROADCAST_SIZE {
+                            builder.push_pooled(tx);
+                        } else {
+                            builder.push(tx);
+                        }
                     }
                 }
             }
@@ -1877,6 +1887,15 @@ impl<T: SignedTransaction> PropagateTransactionsBuilder<T> {
         match self {
             Self::Pooled(builder) => builder.push(transaction),
             Self::Full(builder) => builder.push(transaction),
+        }
+    }
+
+    /// Appends a transaction as a hash-only announcement, regardless of whether this builder
+    /// would otherwise send full transactions.
+    fn push_pooled(&mut self, transaction: &PropagateTransaction<T>) {
+        match self {
+            Self::Pooled(builder) => builder.push(transaction),
+            Self::Full(builder) => builder.pooled.push(transaction),
         }
     }
 }
@@ -2945,6 +2964,86 @@ mod tests {
         assert_eq!(pooled.len(), 1);
         let txs = txs.full.unwrap();
         assert_eq!(txs.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_large_tx_broadcast_threshold() {
+        reth_tracing::init_test_tracing();
+
+        let (mut tx_manager, network) = new_tx_manager().await;
+
+        network.handle().update_sync_state(SyncState::Idle);
+
+        // Register two peers so we can test Basic on one and Forced on the other
+        let peer_id_1 = PeerId::random();
+        let (tx1, _rx1) = mpsc::channel::<PeerRequest>(1);
+        let session_info_1 = SessionInfo {
+            peer_id: peer_id_1,
+            remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+            client_version: Arc::from(""),
+            capabilities: Arc::new(vec![].into()),
+            status: Arc::new(Default::default()),
+            version: EthVersion::Eth68,
+            peer_kind: PeerKind::Basic,
+        };
+        let messages_1: PeerRequestSender<PeerRequest> = PeerRequestSender::new(peer_id_1, tx1);
+        tx_manager.on_network_event(NetworkEvent::ActivePeerSession {
+            info: session_info_1,
+            messages: messages_1,
+        });
+
+        let mut factory = MockTransactionFactory::default();
+
+        // A small transaction (within TX_MAX_BROADCAST_SIZE) should be sent in full via Basic mode
+        let small_tx = Arc::new(factory.create_eip1559());
+        let small_propagate = vec![PropagateTransaction::pool_tx(small_tx.clone())];
+        let propagated = tx_manager.propagate_transactions(small_propagate, PropagationMode::Basic);
+        let prop_txs = propagated.0.get(small_tx.transaction.hash()).unwrap();
+        assert_eq!(prop_txs.len(), 1);
+        assert!(prop_txs[0].is_full(), "small tx should be broadcast in full");
+
+        // A large transaction (exceeding TX_MAX_BROADCAST_SIZE) should be hash-only in Basic mode
+        let mut large_valid_tx = factory.create_eip1559();
+        large_valid_tx.transaction.set_size(TX_MAX_BROADCAST_SIZE + 1);
+        let large_tx = Arc::new(large_valid_tx);
+        let large_propagate = vec![PropagateTransaction::pool_tx(large_tx.clone())];
+        let propagated = tx_manager.propagate_transactions(large_propagate, PropagationMode::Basic);
+        let prop_txs = propagated.0.get(large_tx.transaction.hash()).unwrap();
+        assert_eq!(prop_txs.len(), 1);
+        assert!(prop_txs[0].is_hash(), "large tx should be hash-only in Basic mode");
+
+        // Register a second peer to test Forced mode with a fresh seen set
+        let peer_id_2 = PeerId::random();
+        let (tx2, _rx2) = mpsc::channel::<PeerRequest>(1);
+        let session_info_2 = SessionInfo {
+            peer_id: peer_id_2,
+            remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 1),
+            client_version: Arc::from(""),
+            capabilities: Arc::new(vec![].into()),
+            status: Arc::new(Default::default()),
+            version: EthVersion::Eth68,
+            peer_kind: PeerKind::Basic,
+        };
+        let messages_2: PeerRequestSender<PeerRequest> = PeerRequestSender::new(peer_id_2, tx2);
+        tx_manager.on_network_event(NetworkEvent::ActivePeerSession {
+            info: session_info_2,
+            messages: messages_2,
+        });
+
+        // The same large transaction should be sent in full via Forced mode (e.g.
+        // broadcast_transactions before pool insertion)
+        let mut large_valid_tx_2 = factory.create_eip1559();
+        large_valid_tx_2.transaction.set_size(TX_MAX_BROADCAST_SIZE + 1);
+        let large_tx_2 = Arc::new(large_valid_tx_2);
+        let large_propagate_2 = vec![PropagateTransaction::pool_tx(large_tx_2.clone())];
+        let propagated =
+            tx_manager.propagate_transactions(large_propagate_2, PropagationMode::Forced);
+        let prop_txs = propagated.0.get(large_tx_2.transaction.hash()).unwrap();
+        // Forced mode should deliver to both peers in full
+        assert!(
+            prop_txs.iter().all(|p| p.is_full()),
+            "large tx should be broadcast in full in Forced mode"
+        );
     }
 
     #[tokio::test]
