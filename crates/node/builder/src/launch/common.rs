@@ -188,6 +188,7 @@ impl LaunchContext {
         if config.engine.skip_state_root_validation {
             info!(target: "reth::cli", "Fastnode mode enabled via --engine.skip-state-root-validation - disabling hashing stages and state root validation");
             toml_config.stages.disable_hashing_stages = true;
+            reth_engine_primitives::activate_fastnode();
         }
 
         Ok(toml_config)
