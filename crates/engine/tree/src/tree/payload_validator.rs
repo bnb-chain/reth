@@ -18,7 +18,9 @@ use alloy_primitives::B256;
 
 use crate::tree::payload_processor::receipt_root_task::{IndexedReceipt, ReceiptRootTaskHandle};
 use rayon::prelude::*;
-use reth_chain_state::{CanonicalInMemoryState, DeferredTrieData, ExecutedBlock, LazyOverlay};
+use reth_chain_state::{
+    CanonicalInMemoryState, ComputedTrieData, DeferredTrieData, ExecutedBlock, LazyOverlay,
+};
 use reth_consensus::{ConsensusError, FullConsensus, ReceiptRootBloom};
 use reth_engine_primitives::{
     ConfigureEngineEvm, ExecutableTxIterator, ExecutionPayload, InvalidBlockHook, PayloadValidator,
@@ -46,6 +48,7 @@ use reth_trie::{updates::TrieUpdates, HashedPostState, StateRoot};
 use reth_trie_db::ChangesetCache;
 use reth_trie_parallel::root::{ParallelStateRoot, ParallelStateRootError};
 use revm_primitives::Address;
+use rust_eth_triedb::{get_global_triedb, TrieDBError};
 use std::{
     collections::HashMap,
     panic::{self, AssertUnwindSafe},
@@ -357,6 +360,13 @@ where
         let parent_hash = input.parent_hash();
         let block_num_hash = input.num_hash();
 
+        // Look up difflayers for this parent; passed to the prefetcher and state root commit.
+        let difflayers = ctx.state().merged_difflayer_by_hash(parent_hash);
+
+        // Acquire the global triedb and extract the path_db handle for the prefetcher.
+        let mut triedb = get_global_triedb();
+        let path_db = triedb.get_mut_path_db_ref();
+
         trace!(target: "engine::tree", block=?block_num_hash, parent=?parent_hash, "Fetching block state provider");
         let Some(provider_builder) =
             ensure_ok!(self.state_provider_builder(parent_hash, ctx.state()))
@@ -385,37 +395,19 @@ where
 
         let env = ExecutionEnv { evm_env, hash: input.hash(), parent_hash: input.parent_hash() };
 
-        // Use the simplest state root strategy for triedb to avoid merkle tasks.
-        let strategy = StateRootStrategy::Synchronous;
-
-        // Get an iterator over the transactions in the payload.
         let txs = self.tx_iterator_for(&input)?;
 
-        // Extract the BAL, if valid and available.
-        let block_access_list = ensure_ok!(input
-            .block_access_list()
-            .transpose()
-            .map_err(Box::<dyn std::error::Error + Send + Sync>::from))
-        .map(Arc::new);
-
-        // Create lazy overlay from ancestors.
-        let (lazy_overlay, anchor_hash) = Self::get_parent_lazy_overlay(parent_hash, ctx.state());
-
-        // Create overlay factory for payload processor.
-        let overlay_factory =
-            OverlayStateProviderFactory::new(self.provider.clone(), self.changeset_cache.clone())
-                .with_block_hash(Some(anchor_hash))
-                .with_lazy_overlay(lazy_overlay);
-
-        // Spawn the payload processor.
-        let mut handle = ensure_ok!(self.spawn_payload_processor(
+        // Spawn the payload processor with the triedb prefetcher.  The prefetcher starts
+        // fetching trie proofs in the background while the block executes, so that the
+        // state-root commit below can proceed without blocking on trie I/O.
+        let mut handle = self.payload_processor.spawn_cache_with_triedb_prefetcher(
+            parent_block.state_root(),
+            path_db.clone(),
+            difflayers.clone(),
             env.clone(),
             txs,
             provider_builder,
-            overlay_factory.clone(),
-            strategy,
-            block_access_list,
-        ));
+        );
 
         // Use cached state provider before executing, used in execution after prewarming threads
         // complete.
@@ -428,12 +420,18 @@ where
             state_provider = Box::new(InstrumentedStateProvider::new(state_provider, "engine"));
         }
 
+        let execution_start = Instant::now();
         // Execute the block and handle any execution errors.
         let (output, senders, receipt_root_rx) =
             match self.execute_block(state_provider, env, &input, &mut handle) {
                 Ok(output) => output,
                 Err(err) => return self.handle_execution_error(input, err, &parent_block),
             };
+
+        self.metrics
+            .block_validation
+            .triedb_validate_execution_duration
+            .record(execution_start.elapsed().as_secs_f64());
 
         // After executing the block we can stop prewarming transactions.
         handle.stop_prewarming_execution();
@@ -457,21 +455,108 @@ where
         let output = Arc::new(output);
         let valid_block_tx = handle.terminate_caching(Some(output.clone()));
 
-        // TrieDB manages trie data; skip state root verification here.
-        let trie_output = TrieUpdates::default();
+        // Wait for the prefetcher result (may be None if prefetch failed/wasn't available).
+        let prefetch_state = match handle.triedb_preftch_result() {
+            Ok(state) => state,
+            Err(e) => {
+                warn!(
+                    target: "engine::tree",
+                    block = ?block_num_hash,
+                    "Failed to get triedb prefetch result: {:?}, continuing without prefetcher",
+                    e
+                );
+                None
+            }
+        };
+        let had_prefetch_state = prefetch_state.is_some();
+
+        // Commit the state root via triedb, accelerated by the prefetch state.
+        let trie_hashed_state = hashed_state.to_triedb_hashed_post_state();
+        let block_state_root = block.state_root();
+        let root_start = Instant::now();
+        let (new_root, difflayer) = triedb
+            .intermediate_and_commit_hashed_post_state(
+                parent_block.state_root(),
+                difflayers.as_ref(),
+                &trie_hashed_state,
+                prefetch_state,
+            )
+            .map_err(|e: TrieDBError| {
+                InsertPayloadError::<N::Block>::from(InsertBlockError::new(
+                    block.clone().into_sealed_block(),
+                    ProviderError::other(e).into(),
+                ))
+            })?;
+        self.metrics
+            .block_validation
+            .triedb_validate_root_duration
+            .record(root_start.elapsed().as_secs_f64());
+
+        if new_root != block_state_root {
+            // Diagnostic: recompute without the prefetch state to determine whether the
+            // prefetch inputs are affecting correctness.  Uses the non-committing API so
+            // the underlying DB/difflayers are not mutated.
+            let got_no_prefetch = if had_prefetch_state {
+                match triedb.intermediate_hashed_post_state(
+                    parent_block.state_root(),
+                    difflayers.as_ref(),
+                    &trie_hashed_state,
+                    None,
+                ) {
+                    Ok(root) => Some(root),
+                    Err(e) => {
+                        warn!(
+                            target: "engine::tree",
+                            error = ?e,
+                            "Failed to recompute triedb state root without prefetch_state"
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            // Clean up any intermediate state the diagnostic may have left behind.
+            triedb.clean();
+
+            warn!(
+                target: "engine::tree",
+                invalid_hash = ?block.hash(),
+                invalid_number = block_num_hash.number,
+                parent_hash = ?parent_block.hash(),
+                parent_state_root = ?parent_block.state_root(),
+                got = ?new_root,
+                got_no_prefetch = ?got_no_prefetch,
+                expected = ?block_state_root,
+                tx_count = block.body().transaction_count(),
+                hashed_accounts = hashed_state.accounts.len(),
+                hashed_storages = hashed_state.storages.len(),
+                has_difflayers = difflayers.is_some(),
+                "mismatched block state root (triedb validate)"
+            );
+            self.on_invalid_block(&parent_block, &block, &*output, None, ctx.state_mut());
+            return Err(InsertBlockError::new(
+                block.into_sealed_block(),
+                ConsensusError::BodyStateRootDiff(
+                    GotExpected { got: new_root, expected: block_state_root }.into(),
+                )
+                .into(),
+            )
+            .into());
+        }
 
         if let Some(valid_block_tx) = valid_block_tx {
             let _ = valid_block_tx.send(());
         }
 
-        Ok(self.spawn_deferred_trie_task(
-            block,
-            output,
-            &ctx,
-            hashed_state,
-            trie_output,
-            overlay_factory,
-        ))
+        Ok(ExecutedBlock {
+            recovered_block: Arc::new(block),
+            execution_output: output,
+            // trie_data is unused in triedb mode: state root is managed by triedb,
+            // overlays and changeset computation are skipped when triedb is active.
+            trie_data: DeferredTrieData::ready(ComputedTrieData::default()),
+            difflayer: Some(difflayer),
+        })
     }
 
     /// Validates a block that has already been converted from a payload.
@@ -500,7 +585,24 @@ where
         Evm: ConfigureEngineEvm<T::ExecutionData, Primitives = N>,
     {
         if rust_eth_triedb::triedb_manager::is_triedb_active() {
-            return self.validate_block_with_state_with_triedb(input, ctx);
+            // Track which triedb validation path is used and how long it takes.
+            let block_num_hash = input.num_hash();
+            let start = Instant::now();
+            self.metrics.block_validation.triedb_validate_entry_total.increment(1);
+
+            let res = self.validate_block_with_state_with_triedb(input, ctx);
+
+            let elapsed = start.elapsed().as_secs_f64();
+            self.metrics.block_validation.triedb_validate_entry_duration.record(elapsed);
+
+            tracing::debug!(
+                target: "engine::tree",
+                block = ?block_num_hash,
+                elapsed_ms = (elapsed * 1000.0),
+                "Triedb validate_block_with_state completed"
+            );
+
+            return res;
         }
 
         /// A helper macro that returns the block in case there was an error

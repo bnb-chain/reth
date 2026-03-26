@@ -359,12 +359,13 @@ where
     }
 
     let (root, nodes, diff_storage_roots) = triedb
-        .batch_update_and_commit(
+        .finalise(
             alloy_trie::EMPTY_ROOT_HASH,
             None,
             state_accounts,
             HashSet::new(),
             storage_states,
+            None,
         )
         .map_err(|_| {
             ProviderError::Database(DatabaseError::Other(
@@ -372,8 +373,7 @@ where
             ))
         })?;
 
-    let diff_nodes = (*nodes.to_diff_nodes()).clone();
-    let difflayer = Some(Arc::new(DiffLayer::new(diff_nodes, diff_storage_roots)));
+    let difflayer = Some(Arc::new(DiffLayer::new(nodes.to_diff_nodes(), diff_storage_roots)));
     triedb.flush(0, root, &difflayer).map_err(|_| {
         ProviderError::Database(DatabaseError::Other("Failed to flush state".to_string()))
     })?;

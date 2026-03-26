@@ -204,6 +204,16 @@ impl EngineNodeLauncher {
         let event_sender = EventSender::default();
 
         let beacon_engine_handle = ConsensusEngineHandle::new(consensus_engine_tx.clone());
+        let (engine_api_tx, mut engine_api_rx) = unbounded_channel::<
+            EngineApiRequest<
+                <<T as FullNodeTypes>::Types as NodeTypes>::Payload,
+                <<T as FullNodeTypes>::Types as NodeTypes>::Primitives,
+                BlockchainProvider<
+                    NodeTypesWithDBAdapter<<T as FullNodeTypes>::Types, <T as FullNodeTypes>::DB>,
+                >,
+                <CB::Components as NodeComponents<T>>::Evm,
+            >,
+        >();
 
         // extract the jwt secret from the args if possible
         let jwt_secret = ctx.auth_jwt_secret()?;
@@ -290,6 +300,7 @@ impl EngineNodeLauncher {
             engine_events,
             beacon_engine_handle,
             engine_shutdown: _,
+            engine_api_tx: _,
         } = add_ons.launch_add_ons(add_ons_ctx).await?;
 
         // Create engine shutdown handle
@@ -342,6 +353,11 @@ impl EngineNodeLauncher {
                         if let Some(executed_block) = payload.executed_block() {
                             debug!(target: "reth::cli", block=?executed_block.recovered_block.num_hash(),  "inserting built payload");
                             engine_service.orchestrator_mut().handler_mut().handler_mut().on_event(EngineApiRequest::InsertExecutedBlock(executed_block.into_executed_payload()).into());
+                        }
+                    }
+                    req = engine_api_rx.recv() => {
+                        if let Some(req) = req {
+                            engine_service.orchestrator_mut().handler_mut().handler_mut().on_event(req.into());
                         }
                     }
                     event = engine_service.next() => {
@@ -415,6 +431,7 @@ impl EngineNodeLauncher {
                 engine_events,
                 beacon_engine_handle,
                 engine_shutdown,
+                engine_api_tx: Some(engine_api_tx),
             },
         };
         // Notify on node started
