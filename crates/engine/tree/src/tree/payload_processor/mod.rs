@@ -484,7 +484,7 @@ where
     #[instrument(level = "debug", target = "engine::tree::payload_processor", skip_all)]
     fn spawn_sparse_trie_task<BPF>(
         &self,
-        sparse_trie_rx: mpsc::Receiver<SparseTrieUpdate>,
+        sparse_trie_rx: mpsc::Receiver<Result<SparseTrieUpdate, ParallelStateRootError>>,
         proof_worker_handle: BPF,
         state_root_tx: mpsc::Sender<Result<StateRootComputeOutcome, ParallelStateRootError>>,
     ) where
