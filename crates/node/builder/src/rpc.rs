@@ -355,7 +355,7 @@ pub struct RpcHandle<Node: FullNodeComponents, EthApi: EthApiTypes> {
     pub engine_shutdown: EngineShutdown,
     /// Sender for engine API requests flowing from RPC to engine service.
     ///
-    /// Factory requirement (for clarity): ProviderFactory implements
+    /// Factory requirement (for clarity): `ProviderFactory` implements
     /// `DatabaseProviderFactory<Provider: BlockReader> + Clone + Send + Sync + 'static`.
     pub engine_api_tx: Option<EngineApiTx<Node>>,
 }

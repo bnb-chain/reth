@@ -271,6 +271,7 @@ impl OnStateHook for MeteredStateHook {
 ///
 /// This type is responsible for processing engine API requests, maintaining the canonical state and
 /// emitting events.
+#[allow(clippy::type_complexity)]
 pub struct EngineApiTreeHandler<N, P, T, V, C>
 where
     N: NodePrimitives,
@@ -462,6 +463,7 @@ where
     }
 
     /// Returns a new [`Sender`] to send messages to this type.
+    #[allow(clippy::type_complexity)]
     pub fn sender(&self) -> Sender<FromEngine<EngineApiRequest<T, N, P, C>, N::Block>> {
         self.incoming_tx.clone()
     }
@@ -3289,8 +3291,8 @@ enum PersistTarget {
 
 /// A custom request message for the engine tree handler.
 ///
-/// Used by `reth-bsc` in TrieDB mode: during the miner flow, the miner needs the
-/// merged `DiffLayers` from the in-memory tree state so that TrieDB can compute
+/// Used by `reth-bsc` in `TrieDB` mode: during the miner flow, the miner needs the
+/// merged `DiffLayers` from the in-memory tree state so that `TrieDB` can compute
 /// the state root incrementally on top of the parent block's trie.
 #[derive(Debug)]
 pub enum CustomRequestMessage<P, Evm, N>
@@ -3301,7 +3303,7 @@ where
     /// Request the merged diff layers for a given parent hash.
     ///
     /// The miner sends this before calling `intermediate_and_commit_hashed_post_state`
-    /// so that TrieDB can apply cached trie diffs instead of reading everything from disk.
+    /// so that `TrieDB` can apply cached trie diffs instead of reading everything from disk.
     RequestDiffLayer {
         /// The parent hash to get the diff layers for.
         parent_hash: BlockHash,

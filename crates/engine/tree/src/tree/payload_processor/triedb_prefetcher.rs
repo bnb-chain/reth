@@ -1,4 +1,4 @@
-//! TrieDBPrefetchTask is a task that is responsible for prefetching the triedb from the database.
+//! `TrieDBPrefetchTask` is a task that is responsible for prefetching the triedb from the database.
 
 use std::{
     collections::HashMap,
@@ -25,7 +25,7 @@ use tracing::{error, info, trace, warn};
 
 use crate::tree::payload_processor::{executor::WorkloadExecutor, multiproof::MultiProofMessage};
 
-/// Error type for TrieDB prefetch operations.
+/// Error type for `TrieDB` prefetch operations.
 #[derive(Debug, thiserror::Error)]
 pub enum TrieDBPrefetchError {
     /// Secure trie error.
@@ -36,26 +36,28 @@ pub enum TrieDBPrefetchError {
     BuildAccountTrie(String),
 }
 
-/// Message type for TrieDB prefetch operations.
+/// Message type for `TrieDB` prefetch operations.
+#[allow(clippy::enum_variant_names)]
 pub(super) enum TrieDBPrefetchMessage {
     PrefetchState(MultiProofTargets),
     PrefetchSlots(B256Set),
     PrefetchFinished(),
 }
 
-/// Result type for TrieDB prefetch operations.
+/// Result type for `TrieDB` prefetch operations.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum TrieDBPrefetchResult {
     PrefetchAccountResult(Arc<TrieDBPrefetchState<PathDB>>),
     PrefetchStorageResult((B256, StateTrie<PathDB>, usize)),
 }
 
-/// Convert EVM state to TrieDB prefetch state.
+/// Convert EVM state to `TrieDB` prefetch state.
 pub fn evm_state_to_trie_db_prefetch_state(evm_state: &EvmState) -> MultiProofTargets {
     let mut state = MultiProofTargets::default();
     for (address, account) in evm_state {
         let hashed_address = keccak256(address.as_slice());
         let mut slots = B256Set::default();
-        for (slot, _) in account.storage.iter() {
+        for slot in account.storage.keys() {
             let hashed_key = keccak256(B256::from(*slot));
             slots.insert(hashed_key);
         }
@@ -64,7 +66,7 @@ pub fn evm_state_to_trie_db_prefetch_state(evm_state: &EvmState) -> MultiProofTa
     state
 }
 
-/// A direct TrieDB prefetcher that can be driven from `EvmState` updates (e.g. miner-side).
+/// A direct `TrieDB` prefetcher that can be driven from `EvmState` updates (e.g. miner-side).
 ///
 /// This is a small public wrapper around the internal triedb prefetch tasks used by the engine.
 /// Unlike `TrieDBPrefetchHandle`, this does **not** require wiring the multiproof channel; users
@@ -151,7 +153,7 @@ impl TrieDBStatePrefetcher {
     }
 }
 
-/// Handle for TrieDB prefetch operations.
+/// Handle for `TrieDB` prefetch operations.
 pub(super) struct TrieDBPrefetchHandle {
     /// Executor for the task.
     executor: WorkloadExecutor,
@@ -195,7 +197,7 @@ impl TrieDBPrefetchHandle {
             account_task.run();
         });
 
-        return Ok((handle, prefetch_result_rx));
+        Ok((handle, prefetch_result_rx))
     }
 
     pub(super) fn run(self) {
@@ -278,9 +280,9 @@ pub(super) struct TrieDBPrefetchAccountTask {
     /// Sender for the trie db prefetch results to account task.
     prefetch_result_tx: Sender<TrieDBPrefetchResult>,
 
-    /// HashMap for the storage tasks sender.
+    /// `HashMap` for the storage tasks sender.
     storage_tasks: HashMap<B256, Sender<TrieDBPrefetchMessage>>,
-    /// HashMap for the storage results.
+    /// `HashMap` for the storage results.
     storage_results: HashMap<B256, Receiver<TrieDBPrefetchResult>>,
 
     /// Prefetch state for the account trie.
@@ -334,8 +336,9 @@ impl TrieDBPrefetchAccountTask {
         Ok((task, prefetch_result_rx))
     }
 
-    /// Concurrently send PrefetchFinished message to all storage tasks.
-    /// Returns (successful_addresses, failed_addresses) and removes failed ones from storage_tasks.
+    /// Concurrently send `PrefetchFinished` message to all storage tasks.
+    /// Returns (`successful_addresses`, `failed_addresses`) and removes failed ones from
+    /// `storage_tasks`.
     pub(super) fn send_prefetch_finished_to_all_storage_tasks(&mut self) {
         let results: Vec<(B256, Result<(), mpsc::SendError<TrieDBPrefetchMessage>>)> = self
             .storage_tasks
@@ -361,8 +364,8 @@ impl TrieDBPrefetchAccountTask {
         }
     }
 
-    /// Wait for all storage_results and write them to storage_tries.
-    /// Returns (successful_count, failed_addresses).
+    /// Wait for all `storage_results` and write them to `storage_tries`.
+    /// Returns (`successful_count`, `failed_addresses`).
     pub(super) fn receive_prefetch_storage_results(&mut self) -> usize {
         if self.storage_results.is_empty() {
             return 0;
@@ -488,15 +491,15 @@ impl TrieDBPrefetchAccountTask {
         }
     }
 
-    pub(super) fn get_storage_root(&mut self, hashed_address: B256) -> Option<B256> {
+    pub(super) fn get_storage_root(&self, hashed_address: B256) -> Option<B256> {
         if let Some(storage_root) = self.prefetch_state.storage_roots.get(&hashed_address) {
             return Some(*storage_root);
         }
 
-        if let Some(difflayers) = &self.difflayers {
-            if let Some(storage_root) = difflayers.get_storage_root(hashed_address) {
-                return Some(storage_root);
-            }
+        if let Some(storage_root) =
+            self.difflayers.as_ref().and_then(|d| d.get_storage_root(hashed_address))
+        {
+            return Some(storage_root);
         }
 
         match self.path_db.get_storage_root(hashed_address) {
@@ -561,7 +564,6 @@ impl TrieDBPrefetchAccountTask {
                 "Failed to send prefetch slot message to storage trie: {:?}", e
             );
         }
-        return;
     }
 }
 
@@ -598,7 +600,7 @@ impl TrieDBPrefetchStorageTask {
         (task, prefetch_result_rx)
     }
 
-    pub(super) fn terminate(&mut self) {
+    pub(super) fn terminate(&self) {
         if let Err(e) = self.prefetch_result_tx.send(TrieDBPrefetchResult::PrefetchStorageResult((
             self.hashed_address,
             self.storage_trie.clone(),
@@ -623,7 +625,7 @@ impl TrieDBPrefetchStorageTask {
                                 self.terminate();
                                 return;
                             }
-                            for slot in slots.iter() {
+                            for slot in &slots {
                                 if self.cancel_flag.load(Ordering::Relaxed) {
                                     self.terminate();
                                     return;
