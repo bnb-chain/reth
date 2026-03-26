@@ -841,10 +841,13 @@ impl<Node: FullNodeTypes> BuilderContext<Node> {
             + 'static,
         Node::Provider: BlockReaderFor<N>,
     {
+        let mut tx_config = self.config().network.transactions_manager_config();
+        tx_config.reannounce_time = self.config().txpool.reannounce_time;
+
         self.start_network_with(
             builder,
             pool,
-            self.config().network.transactions_manager_config(),
+            tx_config,
             self.config().network.tx_propagation_policy,
         )
     }
