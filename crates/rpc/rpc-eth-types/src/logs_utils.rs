@@ -157,6 +157,7 @@ where
 ///
 /// When `receipt_filter` is `None`, no filtering overhead is incurred — the function
 /// behaves identically to [`append_matching_block_logs`].
+#[allow(clippy::too_many_arguments)]
 pub fn append_matching_block_logs_with_receipt_filter<P>(
     all_logs: &mut Vec<Log>,
     provider_or_block: ProviderOrBlock<'_, P>,
@@ -202,11 +203,7 @@ where
 
             let (tx_signer, tx_to, tx_max_fee) = match &provider_or_block {
                 ProviderOrBlock::Block(block) => {
-                    let signer = block
-                        .senders()
-                        .get(receipt_idx)
-                        .copied()
-                        .unwrap_or(Address::ZERO);
+                    let signer = block.senders().get(receipt_idx).copied().unwrap_or(Address::ZERO);
                     if let Some(tx) = block.body().transactions().get(receipt_idx) {
                         (signer, tx.to(), tx.max_fee_per_gas())
                     } else {
@@ -217,23 +214,20 @@ where
                     let first_tx_num = match loaded_first_tx_num {
                         Some(num) => num,
                         None => {
-                            let indices = provider
-                                .block_body_indices(block_num_hash.number)?
-                                .ok_or(ProviderError::BlockBodyIndicesNotFound(
-                                    block_num_hash.number,
-                                ))?;
+                            let indices =
+                                provider.block_body_indices(block_num_hash.number)?.ok_or(
+                                    ProviderError::BlockBodyIndicesNotFound(block_num_hash.number),
+                                )?;
                             loaded_first_tx_num = Some(indices.first_tx_num);
                             indices.first_tx_num
                         }
                     };
                     let transaction_id = first_tx_num + receipt_idx as u64;
-                    let tx =
-                        provider.transaction_by_id(transaction_id)?.ok_or_else(|| {
-                            ProviderError::TransactionNotFound(transaction_id.into())
-                        })?;
-                    let signer = tx
-                        .recover_signer()
-                        .map_err(|_| ProviderError::SenderRecoveryError)?;
+                    let tx = provider
+                        .transaction_by_id(transaction_id)?
+                        .ok_or_else(|| ProviderError::TransactionNotFound(transaction_id.into()))?;
+                    let signer =
+                        tx.recover_signer().map_err(|_| ProviderError::SenderRecoveryError)?;
                     (signer, tx.to(), tx.max_fee_per_gas())
                 }
             };
@@ -312,7 +306,7 @@ where
 /// Returns all matching logs of a block's receipts when the transaction hashes are known,
 /// with an optional receipt filter to skip certain receipts.
 ///
-/// This is used by `eth_subscribe("logs")` PubSub to filter logs from the canonical state
+/// This is used by `eth_subscribe("logs")` `PubSub` to filter logs from the canonical state
 /// stream. The `should_skip` closure is called for each receipt index and should return
 /// `true` to exclude that receipt's logs from the result.
 ///

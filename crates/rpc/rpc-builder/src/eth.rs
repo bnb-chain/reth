@@ -1,9 +1,6 @@
 use reth_rpc::{EthFilter, EthPubSub};
 use reth_rpc_eth_api::EthApiTypes;
-use reth_rpc_eth_types::{
-    logs_utils::ReceiptFilter,
-    EthConfig,
-};
+use reth_rpc_eth_types::{logs_utils::ReceiptFilter, EthConfig};
 use reth_tasks::TaskSpawner;
 use std::sync::Arc;
 
@@ -50,11 +47,8 @@ where
             receipt_filter.clone(),
         );
 
-        let pubsub = EthPubSub::with_spawner_and_receipt_filter(
-            eth_api.clone(),
-            executor,
-            receipt_filter,
-        );
+        let pubsub =
+            EthPubSub::with_spawner_and_receipt_filter(eth_api.clone(), executor, receipt_filter);
 
         Self { api: eth_api, filter, pubsub }
     }

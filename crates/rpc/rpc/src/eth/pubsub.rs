@@ -59,7 +59,8 @@ impl<Eth> EthPubSub<Eth> {
     /// Creates a new, shareable instance with an optional [`ReceiptFilter`].
     ///
     /// The receipt filter allows excluding certain receipts from log subscriptions.
-    /// For example, BSC uses this to filter out system transaction logs from `eth_subscribe("logs")`.
+    /// For example, BSC uses this to filter out system transaction logs from
+    /// `eth_subscribe("logs")`.
     pub fn with_spawner_and_receipt_filter(
         eth_api: Eth,
         subscription_task_spawner: Box<dyn TaskSpawner>,
@@ -389,8 +390,8 @@ where
     /// When no receipt filter is present, uses the efficient `block_receipts()` path.
     fn log_stream(&self, filter: Filter) -> impl Stream<Item = Log> {
         let receipt_filter = self.receipt_filter.clone();
-        BroadcastStream::new(self.eth_api.provider().subscribe_to_canonical_state())
-            .flat_map(move |canon_state| {
+        BroadcastStream::new(self.eth_api.provider().subscribe_to_canonical_state()).flat_map(
+            move |canon_state| {
                 let notification = canon_state.expect("new block subscription never ends");
                 let mut all_logs = Vec::new();
 
@@ -401,39 +402,37 @@ where
                     // Process reverted chain (removed = true)
                     if let Some(old) = notification.reverted() {
                         for (block, receipts) in old.blocks_and_receipts() {
-                            let block_num_hash =
-                                BlockNumHash::new(block.number(), block.hash());
+                            let block_num_hash = BlockNumHash::new(block.number(), block.hash());
                             let beneficiary = block.header().beneficiary();
                             let senders = block.senders();
                             let txs = block.body().transactions();
 
                             let rf_ref = rf.as_ref();
-                            let logs =
-                                logs_utils::matching_block_logs_with_tx_hashes_filtered(
-                                    &filter,
-                                    block_num_hash,
-                                    block.timestamp(),
-                                    txs.iter()
-                                        .zip(receipts.iter())
-                                        .map(|(tx, receipt)| (tx.trie_hash(), receipt)),
-                                    true, // removed
-                                    |idx| {
-                                        if let (Some(&signer), Some(tx)) =
-                                            (senders.get(idx), txs.get(idx))
-                                        {
-                                            !rf_ref.should_include(
-                                                block_num_hash,
-                                                idx,
-                                                beneficiary,
-                                                signer,
-                                                tx.to(),
-                                                tx.max_fee_per_gas(),
-                                            )
-                                        } else {
-                                            false // include by default if data missing
-                                        }
-                                    },
-                                );
+                            let logs = logs_utils::matching_block_logs_with_tx_hashes_filtered(
+                                &filter,
+                                block_num_hash,
+                                block.timestamp(),
+                                txs.iter()
+                                    .zip(receipts.iter())
+                                    .map(|(tx, receipt)| (tx.trie_hash(), receipt)),
+                                true, // removed
+                                |idx| {
+                                    if let (Some(&signer), Some(tx)) =
+                                        (senders.get(idx), txs.get(idx))
+                                    {
+                                        !rf_ref.should_include(
+                                            block_num_hash,
+                                            idx,
+                                            beneficiary,
+                                            signer,
+                                            tx.to(),
+                                            tx.max_fee_per_gas(),
+                                        )
+                                    } else {
+                                        false // include by default if data missing
+                                    }
+                                },
+                            );
                             all_logs.extend(logs);
                         }
                     }
@@ -455,8 +454,7 @@ where
                                 .map(|(tx, receipt)| (tx.trie_hash(), receipt)),
                             false, // not removed
                             |idx| {
-                                if let (Some(&signer), Some(tx)) =
-                                    (senders.get(idx), txs.get(idx))
+                                if let (Some(&signer), Some(tx)) = (senders.get(idx), txs.get(idx))
                                 {
                                     !rf_ref.should_include(
                                         block_num_hash,
@@ -480,16 +478,14 @@ where
                             &filter,
                             block_receipts.block,
                             block_receipts.timestamp,
-                            block_receipts
-                                .tx_receipts
-                                .iter()
-                                .map(|(tx, receipt)| (*tx, receipt)),
+                            block_receipts.tx_receipts.iter().map(|(tx, receipt)| (*tx, receipt)),
                             removed,
                         ));
                     }
                 }
 
                 futures::stream::iter(all_logs)
-            })
+            },
+        )
     }
 }

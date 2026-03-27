@@ -134,9 +134,8 @@ where
     /// `gas` field for the callTracer entry, matching geth/erigon behavior where the
     /// top-level `gas` equals the transaction's gas limit.
     fn fix_mux_frame_gas_limit(frame: &mut MuxFrame, gas_limit: u64) {
-        if let Some(GethTrace::CallTracer(call_frame)) = frame
-            .0
-            .get_mut(&GethDebugBuiltInTracerType::CallTracer)
+        if let Some(GethTrace::CallTracer(call_frame)) =
+            frame.0.get_mut(&GethDebugBuiltInTracerType::CallTracer)
         {
             call_frame.gas = U256::from(gas_limit);
         }

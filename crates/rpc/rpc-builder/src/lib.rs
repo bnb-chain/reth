@@ -574,7 +574,7 @@ where
         )
     }
 
-    /// Creates a new, empty instance with an optional [`ReceiptFilter`].
+    /// Creates a new, empty instance with an optional receipt filter.
     ///
     /// The receipt filter allows excluding certain receipts from log queries
     /// and PubSub log subscriptions.
