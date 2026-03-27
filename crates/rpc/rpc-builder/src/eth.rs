@@ -33,7 +33,7 @@ where
     /// Returns a new instance with an optional [`ReceiptFilter`].
     ///
     /// The receipt filter allows excluding certain receipts from log queries
-    /// and PubSub log subscriptions (e.g., BSC system transaction logs).
+    /// and `PubSub` log subscriptions (e.g., BSC system transaction logs).
     pub fn bootstrap_with_receipt_filter(
         config: EthConfig,
         executor: Box<dyn TaskSpawner + 'static>,

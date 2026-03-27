@@ -577,7 +577,7 @@ where
     /// Creates a new, empty instance with an optional receipt filter.
     ///
     /// The receipt filter allows excluding certain receipts from log queries
-    /// and PubSub log subscriptions.
+    /// and `PubSub` log subscriptions.
     #[expect(clippy::too_many_arguments)]
     pub fn new_with_receipt_filter(
         provider: Provider,
