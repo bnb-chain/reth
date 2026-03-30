@@ -2888,30 +2888,56 @@ where
 
         // if invalid block, we check the validation error. Otherwise return the fatal
         // error.
-        let validation_err = error.ensure_validation_error()?;
+        match error.ensure_validation_error() {
+            Ok(validation_err) => {
+                // Permanent validation error: cache in invalid_headers so that
+                // descendants are immediately rejected without re-execution.
+                warn!(
+                    target: "engine::tree",
+                    invalid_hash=%block.hash(),
+                    invalid_number=block.number(),
+                    %validation_err,
+                    "Invalid block error on new payload",
+                );
+                let latest_valid_hash =
+                    self.latest_valid_hash_for_invalid_payload(block.parent_hash())?;
 
-        // If the error was due to an invalid payload, the payload is added to the
-        // invalid headers cache and `Ok` with [PayloadStatusEnum::Invalid] is
-        // returned.
-        warn!(
-            target: "engine::tree",
-            invalid_hash=%block.hash(),
-            invalid_number=block.number(),
-            %validation_err,
-            "Invalid block error on new payload",
-        );
-        let latest_valid_hash = self.latest_valid_hash_for_invalid_payload(block.parent_hash())?;
+                // keep track of the invalid header
+                self.state.invalid_headers.insert(block.block_with_parent());
+                self.emit_event(EngineApiEvent::BeaconConsensus(
+                    ConsensusEngineEvent::InvalidBlock(Box::new(block)),
+                ));
 
-        // keep track of the invalid header
-        self.state.invalid_headers.insert(block.block_with_parent());
-        self.emit_event(EngineApiEvent::BeaconConsensus(ConsensusEngineEvent::InvalidBlock(
-            Box::new(block),
-        )));
+                Ok(PayloadStatus::new(
+                    PayloadStatusEnum::Invalid { validation_error: validation_err.to_string() },
+                    latest_valid_hash,
+                ))
+            }
+            Err(fatal) => match fatal {
+                // Internal block execution error (e.g., BSC transient FutureBlock).
+                // Reject the block but do NOT cache in invalid_headers — the error
+                // may be transient and the block (or its descendants) could become
+                // processable later.
+                InsertBlockFatalError::BlockExecutionError(err) => {
+                    warn!(
+                        target: "engine::tree",
+                        block_hash=%block.hash(),
+                        block_number=block.number(),
+                        %err,
+                        "Internal block execution error on new payload (not caching as invalid)",
+                    );
 
-        Ok(PayloadStatus::new(
-            PayloadStatusEnum::Invalid { validation_error: validation_err.to_string() },
-            latest_valid_hash,
-        ))
+                    Ok(PayloadStatus::new(
+                        PayloadStatusEnum::Invalid {
+                            validation_error: err.to_string(),
+                        },
+                        None,
+                    ))
+                }
+                // Provider errors are truly fatal — propagate to shut down the engine.
+                fatal @ InsertBlockFatalError::Provider(_) => Err(fatal),
+            },
+        }
     }
 
     /// Handles a [`NewPayloadError`] by converting it to a [`PayloadStatus`].
