@@ -2,6 +2,8 @@
 
 use std::sync::Arc;
 
+use alloy_consensus::{BlockHeader, Transaction};
+use alloy_eips::{eip2718::Encodable2718, BlockNumHash};
 use alloy_primitives::TxHash;
 use alloy_rpc_types_eth::{
     pubsub::{Params, PubSubSyncStatus, SubscriptionKind, SyncStatusMetadata},
@@ -13,11 +15,12 @@ use jsonrpsee::{
 };
 use reth_chain_state::CanonStateSubscriptions;
 use reth_network_api::NetworkInfo;
+use reth_primitives_traits::BlockBody;
 use reth_rpc_convert::RpcHeader;
 use reth_rpc_eth_api::{
     pubsub::EthPubSubApiServer, EthApiTypes, RpcConvert, RpcNodeCore, RpcTransaction,
 };
-use reth_rpc_eth_types::logs_utils;
+use reth_rpc_eth_types::logs_utils::{self, ReceiptFilter};
 use reth_rpc_server_types::result::{internal_rpc_err, invalid_params_rpc_err};
 use reth_storage_api::BlockNumReader;
 use reth_tasks::{TaskSpawner, TokioTaskExecutor};
@@ -50,7 +53,20 @@ impl<Eth> EthPubSub<Eth> {
 
     /// Creates a new, shareable instance.
     pub fn with_spawner(eth_api: Eth, subscription_task_spawner: Box<dyn TaskSpawner>) -> Self {
-        let inner = EthPubSubInner { eth_api, subscription_task_spawner };
+        Self::with_spawner_and_receipt_filter(eth_api, subscription_task_spawner, None)
+    }
+
+    /// Creates a new, shareable instance with an optional [`ReceiptFilter`].
+    ///
+    /// The receipt filter allows excluding certain receipts from log subscriptions.
+    /// For example, BSC uses this to filter out system transaction logs from
+    /// `eth_subscribe("logs")`.
+    pub fn with_spawner_and_receipt_filter(
+        eth_api: Eth,
+        subscription_task_spawner: Box<dyn TaskSpawner>,
+        receipt_filter: Option<Arc<dyn ReceiptFilter>>,
+    ) -> Self {
+        let inner = EthPubSubInner { eth_api, subscription_task_spawner, receipt_filter };
         Self { inner: Arc::new(inner) }
     }
 }
@@ -289,6 +305,9 @@ struct EthPubSubInner<EthApi> {
     eth_api: EthApi,
     /// The type that's used to spawn subscription tasks.
     subscription_task_spawner: Box<dyn TaskSpawner>,
+    /// Optional receipt filter for excluding certain receipts from log subscriptions.
+    /// Used by BSC to filter out system transaction logs from `eth_subscribe("logs")`.
+    receipt_filter: Option<Arc<dyn ReceiptFilter>>,
 }
 
 // == impl EthPubSubInner ===
@@ -365,21 +384,108 @@ where
     }
 
     /// Returns a stream that yields all logs that match the given filter.
+    ///
+    /// When a receipt filter is present, iterates blocks from the canonical state directly
+    /// to access transaction data (signer, recipient, gas price) needed for filtering.
+    /// When no receipt filter is present, uses the efficient `block_receipts()` path.
     fn log_stream(&self, filter: Filter) -> impl Stream<Item = Log> {
-        BroadcastStream::new(self.eth_api.provider().subscribe_to_canonical_state())
-            .map(move |canon_state| {
-                canon_state.expect("new block subscription never ends").block_receipts()
-            })
-            .flat_map(futures::stream::iter)
-            .flat_map(move |(block_receipts, removed)| {
-                let all_logs = logs_utils::matching_block_logs_with_tx_hashes(
-                    &filter,
-                    block_receipts.block,
-                    block_receipts.timestamp,
-                    block_receipts.tx_receipts.iter().map(|(tx, receipt)| (*tx, receipt)),
-                    removed,
-                );
+        let receipt_filter = self.receipt_filter.clone();
+        BroadcastStream::new(self.eth_api.provider().subscribe_to_canonical_state()).flat_map(
+            move |canon_state| {
+                let notification = canon_state.expect("new block subscription never ends");
+                let mut all_logs = Vec::new();
+
+                if let Some(rf) = receipt_filter.as_ref() {
+                    // Receipt filter present — iterate blocks directly so we can access
+                    // transaction data (signer, to, max_fee_per_gas) for the filter.
+
+                    // Process reverted chain (removed = true)
+                    if let Some(old) = notification.reverted() {
+                        for (block, receipts) in old.blocks_and_receipts() {
+                            let block_num_hash = BlockNumHash::new(block.number(), block.hash());
+                            let beneficiary = block.header().beneficiary();
+                            let senders = block.senders();
+                            let txs = block.body().transactions();
+
+                            let rf_ref = rf.as_ref();
+                            let logs = logs_utils::matching_block_logs_with_tx_hashes_filtered(
+                                &filter,
+                                block_num_hash,
+                                block.timestamp(),
+                                txs.iter()
+                                    .zip(receipts.iter())
+                                    .map(|(tx, receipt)| (tx.trie_hash(), receipt)),
+                                true, // removed
+                                |idx| {
+                                    if let (Some(&signer), Some(tx)) =
+                                        (senders.get(idx), txs.get(idx))
+                                    {
+                                        !rf_ref.should_include(
+                                            block_num_hash,
+                                            idx,
+                                            beneficiary,
+                                            signer,
+                                            tx.to(),
+                                            tx.max_fee_per_gas(),
+                                        )
+                                    } else {
+                                        false // include by default if data missing
+                                    }
+                                },
+                            );
+                            all_logs.extend(logs);
+                        }
+                    }
+
+                    // Process committed chain (removed = false)
+                    for (block, receipts) in notification.committed().blocks_and_receipts() {
+                        let block_num_hash = BlockNumHash::new(block.number(), block.hash());
+                        let beneficiary = block.header().beneficiary();
+                        let senders = block.senders();
+                        let txs = block.body().transactions();
+
+                        let rf_ref = rf.as_ref();
+                        let logs = logs_utils::matching_block_logs_with_tx_hashes_filtered(
+                            &filter,
+                            block_num_hash,
+                            block.timestamp(),
+                            txs.iter()
+                                .zip(receipts.iter())
+                                .map(|(tx, receipt)| (tx.trie_hash(), receipt)),
+                            false, // not removed
+                            |idx| {
+                                if let (Some(&signer), Some(tx)) = (senders.get(idx), txs.get(idx))
+                                {
+                                    !rf_ref.should_include(
+                                        block_num_hash,
+                                        idx,
+                                        beneficiary,
+                                        signer,
+                                        tx.to(),
+                                        tx.max_fee_per_gas(),
+                                    )
+                                } else {
+                                    false // include by default if data missing
+                                }
+                            },
+                        );
+                        all_logs.extend(logs);
+                    }
+                } else {
+                    // No receipt filter — use the efficient block_receipts() path.
+                    for (block_receipts, removed) in notification.block_receipts() {
+                        all_logs.extend(logs_utils::matching_block_logs_with_tx_hashes(
+                            &filter,
+                            block_receipts.block,
+                            block_receipts.timestamp,
+                            block_receipts.tx_receipts.iter().map(|(tx, receipt)| (*tx, receipt)),
+                            removed,
+                        ));
+                    }
+                }
+
                 futures::stream::iter(all_logs)
-            })
+            },
+        )
     }
 }
