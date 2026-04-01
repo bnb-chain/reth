@@ -375,32 +375,6 @@ where
         )
     }
 
-    /// Converts the builder into a [`RpcRegistryInner`] with an optional receipt filter.
-    pub fn into_registry_with_receipt_filter<EthApi>(
-        self,
-        config: RpcModuleConfig,
-        eth: EthApi,
-        engine_events: EventSender<ConsensusEngineEvent<N>>,
-        receipt_filter: Option<std::sync::Arc<dyn reth_rpc_eth_types::logs_utils::ReceiptFilter>>,
-    ) -> RpcRegistryInner<Provider, Pool, Network, EthApi, EvmConfig, Consensus>
-    where
-        EthApi: FullEthApiServer<Provider = Provider, Pool = Pool>,
-    {
-        let Self { provider, pool, network, executor, consensus, evm_config, .. } = self;
-        RpcRegistryInner::new_with_receipt_filter(
-            provider,
-            pool,
-            network,
-            executor,
-            consensus,
-            config,
-            evm_config,
-            eth,
-            engine_events,
-            receipt_filter,
-        )
-    }
-
     /// Configures all [`RpcModule`]s specific to the given [`TransportRpcModuleConfig`] which can
     /// be used to start the transport server(s).
     pub fn build<EthApi>(
@@ -560,50 +534,9 @@ where
     where
         EvmConfig: ConfigureEvm<Primitives = N>,
     {
-        Self::new_with_receipt_filter(
-            provider,
-            pool,
-            network,
-            executor,
-            consensus,
-            config,
-            evm_config,
-            eth_api,
-            engine_events,
-            None,
-        )
-    }
-
-    /// Creates a new, empty instance with an optional receipt filter.
-    ///
-    /// The receipt filter allows excluding certain receipts from log queries
-    /// and `PubSub` log subscriptions.
-    #[expect(clippy::too_many_arguments)]
-    pub fn new_with_receipt_filter(
-        provider: Provider,
-        pool: Pool,
-        network: Network,
-        executor: Box<dyn TaskSpawner + 'static>,
-        consensus: Consensus,
-        config: RpcModuleConfig,
-        evm_config: EvmConfig,
-        eth_api: EthApi,
-        engine_events: EventSender<
-            ConsensusEngineEvent<<EthApi::Provider as NodePrimitivesProvider>::Primitives>,
-        >,
-        receipt_filter: Option<std::sync::Arc<dyn reth_rpc_eth_types::logs_utils::ReceiptFilter>>,
-    ) -> Self
-    where
-        EvmConfig: ConfigureEvm<Primitives = N>,
-    {
         let blocking_pool_guard = BlockingTaskGuard::new(config.eth.max_tracing_requests);
 
-        let eth = EthHandlers::bootstrap_with_receipt_filter(
-            config.eth.clone(),
-            executor.clone(),
-            eth_api,
-            receipt_filter,
-        );
+        let eth = EthHandlers::bootstrap(config.eth.clone(), executor.clone(), eth_api);
 
         Self {
             provider,

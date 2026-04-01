@@ -23,9 +23,7 @@ use reth_rpc_eth_api::{
     RpcNodeCoreExt, RpcTransaction,
 };
 use reth_rpc_eth_types::{
-    logs_utils::{
-        self, append_matching_block_logs_with_receipt_filter, ProviderOrBlock, ReceiptFilter,
-    },
+    logs_utils::{self, append_matching_block_logs, ProviderOrBlock},
     EthApiError, EthFilterConfig, EthStateCache, EthSubscriptionIdProvider,
 };
 use reth_rpc_server_types::{result::rpc_error_with_code, ToRpcResult};
@@ -139,20 +137,6 @@ where
     /// let filter = EthFilter::new(eth_api, Default::default(), TokioTaskExecutor::default().boxed());
     /// ```
     pub fn new(eth_api: Eth, config: EthFilterConfig, task_spawner: Box<dyn TaskSpawner>) -> Self {
-        Self::new_with_receipt_filter(eth_api, config, task_spawner, None)
-    }
-
-    /// Creates a new, shareable instance with an optional [`ReceiptFilter`].
-    ///
-    /// The receipt filter allows excluding certain receipts from log queries.
-    /// For example, BSC uses this to filter out system transaction logs from
-    /// `eth_getLogs` responses.
-    pub fn new_with_receipt_filter(
-        eth_api: Eth,
-        config: EthFilterConfig,
-        task_spawner: Box<dyn TaskSpawner>,
-        receipt_filter: Option<Arc<dyn ReceiptFilter>>,
-    ) -> Self {
         let EthFilterConfig { max_blocks_per_filter, max_logs_per_response, stale_filter_ttl } =
             config;
         let inner = EthFilterInner {
@@ -163,7 +147,6 @@ where
             task_spawner,
             stale_filter_ttl,
             query_limits: QueryLimits { max_blocks_per_filter, max_logs_per_response },
-            receipt_filter,
         };
 
         let eth_filter = Self { inner: Arc::new(inner) };
@@ -440,6 +423,7 @@ where
 }
 
 /// Container type `EthFilter`
+#[derive(Debug)]
 struct EthFilterInner<Eth: EthApiTypes> {
     /// Inner `eth` API implementation.
     eth_api: Eth,
@@ -455,22 +439,6 @@ struct EthFilterInner<Eth: EthApiTypes> {
     task_spawner: Box<dyn TaskSpawner>,
     /// Duration since the last filter poll, after which the filter is considered stale
     stale_filter_ttl: Duration,
-    /// Optional receipt filter for excluding certain receipts from log queries.
-    /// Used by BSC to filter out system transaction logs.
-    receipt_filter: Option<Arc<dyn ReceiptFilter>>,
-}
-
-impl<Eth: EthApiTypes> std::fmt::Debug for EthFilterInner<Eth> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("EthFilterInner")
-            .field("active_filters", &self.active_filters)
-            .field("id_provider", &self.id_provider)
-            .field("query_limits", &self.query_limits)
-            .field("max_headers_range", &self.max_headers_range)
-            .field("stale_filter_ttl", &self.stale_filter_ttl)
-            .field("receipt_filter", &self.receipt_filter.as_ref().map(|_| ".."))
-            .finish()
-    }
 }
 
 impl<Eth> EthFilterInner<Eth>
@@ -518,7 +486,7 @@ where
                 let block_num_hash = BlockNumHash::new(header.number(), block_hash);
 
                 let mut all_logs = Vec::new();
-                append_matching_block_logs_with_receipt_filter(
+                append_matching_block_logs(
                     &mut all_logs,
                     maybe_block
                         .map(ProviderOrBlock::Block)
@@ -528,7 +496,6 @@ where
                     &receipts,
                     false,
                     header.timestamp(),
-                    self.receipt_filter.as_deref(),
                 )?;
 
                 Ok(all_logs)
@@ -556,7 +523,7 @@ where
                             let mut all_logs = Vec::new();
                             let timestamp = pending_block.block.timestamp();
                             let block_num_hash = pending_block.block.num_hash();
-                            append_matching_block_logs_with_receipt_filter(
+                            append_matching_block_logs(
                                 &mut all_logs,
                                 ProviderOrBlock::<Eth::Provider>::Block(pending_block.block),
                                 &filter,
@@ -564,7 +531,6 @@ where
                                 &pending_block.receipts,
                                 false, // removed = false for pending blocks
                                 timestamp,
-                                self.receipt_filter.as_deref(),
                             )?;
                             return Ok(all_logs);
                         }
@@ -731,7 +697,7 @@ where
             range_mode.next().await?
         {
             let num_hash = header.num_hash();
-            append_matching_block_logs_with_receipt_filter(
+            append_matching_block_logs(
                 &mut all_logs,
                 recovered_block
                     .map(ProviderOrBlock::Block)
@@ -741,7 +707,6 @@ where
                 &receipts,
                 false,
                 header.timestamp(),
-                self.receipt_filter.as_deref(),
             )?;
 
             // size check but only if range is multiple blocks, so we always return all
