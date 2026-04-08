@@ -502,6 +502,13 @@ where
                     })?;
                     return Poll::Ready(Some(Err(P2PStreamError::Disconnected(reason))))
                 }
+                // BSC UpgradeStatus (0x0b) — pass through for BSC handshake.
+                // This message falls in the P2P reserved range (0x04–0x0f) but is
+                // required by BSC's eth handshake extension (geth-bsc sends it).
+                _ if id == 0x0b => {
+                    decompress_buf[0] = id;
+                    return Poll::Ready(Some(Ok(decompress_buf)))
+                }
                 _ if id > MAX_P2P_MESSAGE_ID && id <= MAX_RESERVED_MESSAGE_ID => {
                     // we have received an unknown reserved message
                     return Poll::Ready(Some(Err(P2PStreamError::UnknownReservedMessageId(id))))
