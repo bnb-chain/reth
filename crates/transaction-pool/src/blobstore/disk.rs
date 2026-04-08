@@ -43,8 +43,10 @@ impl DiskFileBlobStore {
         let DiskFileBlobStoreConfig { max_cached_entries, .. } = opts;
         let inner = DiskFileBlobStoreInner::new(blob_dir, max_cached_entries);
 
-        // initialize the blob store
-        inner.delete_all()?;
+        // Initialize the blob store directory.
+        // NOTE(BSC): Do NOT wipe existing blob files on startup.
+        // Sidecars must survive restarts to serve GetBlockBodies to peers.
+        // The pool maintenance task handles delayed deletion via FINALIZED_BLOCK_OFFSET.
         inner.create_blob_dir()?;
 
         Ok(Self { inner: Arc::new(inner) })
@@ -341,6 +343,7 @@ impl DiskFileBlobStoreInner {
     }
 
     /// Deletes the entire blob store.
+    #[allow(dead_code)]
     fn delete_all(&self) -> Result<(), DiskFileBlobStoreError> {
         match fs::remove_dir_all(&self.blob_dir) {
             Ok(_) => {
