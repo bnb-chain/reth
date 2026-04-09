@@ -32,7 +32,7 @@ use reth_node_core::{
 use reth_node_events::node;
 use reth_provider::{
     providers::{BlockchainProvider, NodeTypesForProvider},
-    BlockNumReader, MetadataProvider,
+    BlockNumReader, HeaderProvider, MetadataProvider,
 };
 use reth_tasks::TaskExecutor;
 use reth_tokio_util::EventSender;
@@ -392,6 +392,9 @@ impl EngineNodeLauncher {
                                         timestamp: head.timestamp(),
                                         total_difficulty: chainspec.final_paris_total_difficulty()
                                             .filter(|_| chainspec.is_paris_active_at_block(head.number()))
+                                            .or_else(|| {
+                                                provider.header_td_by_number(head.number()).ok().flatten()
+                                            })
                                             .unwrap_or_default(),
                                     };
                                     network_handle.update_status(head_block);
