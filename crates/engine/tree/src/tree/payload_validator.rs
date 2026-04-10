@@ -392,47 +392,6 @@ where
             .into())
         };
 
-        // Safety guard: when no difflayers are available, verify that the parent state root
-        // matches the pathdb disk layer.  After a restart, in-memory difflayers are lost and
-        // pathdb only holds the state at the last flushed block.  If the parent is beyond
-        // that point, triedb would silently read stale nodes and compute a wrong state root.
-        // In that case we skip the triedb state-root check and trust the block header's root,
-        // accepting the block without a difflayer.  Persistence will recompute the difflayer
-        // later when flushing this block to pathdb (via save_blocks).
-        let skip_triedb_root = if difflayers.is_none() {
-            match triedb.latest_persist_state() {
-                Ok((persist_block, persist_root)) => {
-                    if parent_block.state_root() != persist_root {
-                        warn!(
-                            target: "engine::tree",
-                            block = ?block_num_hash,
-                            parent = ?parent_hash,
-                            parent_state_root = ?parent_block.state_root(),
-                            pathdb_block = persist_block,
-                            pathdb_root = ?persist_root,
-                            "Triedb pathdb gap detected: no difflayers and parent state root \
-                             diverges from pathdb disk layer — skipping triedb state root \
-                             validation for this block"
-                        );
-                        true
-                    } else {
-                        false
-                    }
-                }
-                Err(e) => {
-                    warn!(
-                        target: "engine::tree",
-                        block = ?block_num_hash,
-                        error = ?e,
-                        "Failed to query pathdb latest_persist_state, proceeding with triedb validation"
-                    );
-                    false
-                }
-            }
-        } else {
-            false
-        };
-
         let evm_env = self.evm_env_for(&input).map_err(NewPayloadError::other)?;
 
         let env = ExecutionEnv { evm_env, hash: input.hash(), parent_hash: input.parent_hash() };
@@ -496,31 +455,6 @@ where
 
         let output = Arc::new(output);
         let valid_block_tx = handle.terminate_caching(Some(output.clone()));
-
-        // When pathdb gap is detected, skip the triedb state root calculation entirely.
-        // The block is accepted with its declared state root; persistence will recompute
-        // the difflayer when flushing (save_blocks uses latest_persist_state sequentially).
-        if skip_triedb_root {
-            triedb.clean();
-
-            if let Some(valid_block_tx) = valid_block_tx {
-                let _ = valid_block_tx.send(());
-            }
-
-            info!(
-                target: "engine::tree",
-                block = ?block_num_hash,
-                state_root = ?block.state_root(),
-                "Accepted block without triedb state root validation (pathdb gap)"
-            );
-
-            return Ok(ExecutedBlock {
-                recovered_block: Arc::new(block),
-                execution_output: output,
-                trie_data: DeferredTrieData::ready(ComputedTrieData::default()),
-                difflayer: None,
-            });
-        }
 
         // Wait for the prefetcher result (may be None if prefetch failed/wasn't available).
         let prefetch_state = match handle.triedb_preftch_result() {
