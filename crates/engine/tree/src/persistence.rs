@@ -4,19 +4,22 @@ use crossbeam_channel::Sender as CrossbeamSender;
 use reth_chain_state::ExecutedBlock;
 use reth_errors::ProviderError;
 use reth_ethereum_primitives::EthPrimitives;
-use reth_primitives_traits::NodePrimitives;
+use reth_primitives_traits::{AlloyBlockHeader, NodePrimitives};
+use alloy_consensus::EMPTY_ROOT_HASH;
 use reth_provider::{
     providers::ProviderNodeTypes, BlockExecutionWriter, BlockHashReader, ChainStateBlockWriter,
-    DBProvider, DatabaseProviderFactory, ProviderFactory, SaveBlocksMode,
+    DBProvider, DatabaseProviderFactory, HeaderProvider, ProviderFactory, SaveBlocksMode,
 };
 use reth_prune::{PrunerError, PrunerOutput, PrunerWithFactory};
 use reth_stages_api::{MetricEvent, MetricEventsSender};
+use reth_trie::{HashedPostState, KeccakKeyHasher};
+use rust_eth_triedb::{get_global_triedb, triedb_manager::is_triedb_active};
 use std::{
     sync::mpsc::{Receiver, SendError, Sender},
     time::Instant,
 };
 use thiserror::Error;
-use tracing::{debug, error};
+use tracing::{debug, error, info, warn};
 
 /// Writes parts of reth's in memory tree state to the database and static files.
 ///
@@ -128,6 +131,110 @@ where
         let provider_rw = self.provider.database_provider_rw()?;
 
         let new_tip_hash = provider_rw.block_hash(new_tip_num)?;
+
+        // Rewind pathdb when it is ahead of the new tip (e.g. after a reorg where the
+        // miner's blocks were flushed to pathdb but the canonical chain rolled back).
+        // We must do this BEFORE removing the changeset from MDBX, because the reverse
+        // diff is derived from the changeset data.
+        if is_triedb_active() {
+            let mut triedb = get_global_triedb();
+            match triedb.latest_persist_state() {
+                Ok((pathdb_block, pathdb_root)) if pathdb_block > new_tip_num => {
+                    // Use take_block_and_execution_above to extract the changeset (it also
+                    // removes it from MDBX).  The returned execution state contains the
+                    // reverse diff we need to roll pathdb back.
+                    let chain = provider_rw.take_block_and_execution_above(new_tip_num)?;
+                    let execution_state = chain.execution_outcome();
+
+                    let hashed_post_state =
+                        HashedPostState::from_bundle_state_to_unwind::<KeccakKeyHasher>(
+                            execution_state.bundle.state(),
+                        );
+                    let triedb_hashed_post_state =
+                        hashed_post_state.to_triedb_hashed_post_state();
+
+                    let validate_root = if new_tip_num == 0 {
+                        EMPTY_ROOT_HASH
+                    } else {
+                        provider_rw
+                            .sealed_header(new_tip_num)?
+                            .map(|h| h.state_root())
+                            .ok_or_else(|| {
+                                ProviderError::HeaderNotFound(new_tip_num.into())
+                            })?
+                    };
+
+                    info!(
+                        target: "engine::persistence",
+                        pathdb_block,
+                        ?pathdb_root,
+                        new_tip_num,
+                        ?validate_root,
+                        "Rewinding pathdb to match new canonical tip after reorg"
+                    );
+
+                    let (new_root, difflayer) = triedb
+                        .intermediate_and_commit_hashed_post_state(
+                            pathdb_root,
+                            None,
+                            &triedb_hashed_post_state,
+                            None,
+                        )
+                        .map_err(|e| ProviderError::other(e))?;
+
+                    if new_root != validate_root {
+                        warn!(
+                            target: "engine::persistence",
+                            ?new_root,
+                            ?validate_root,
+                            new_tip_num,
+                            "Pathdb rewind produced mismatched state root"
+                        );
+                        return Err(ProviderError::Database(
+                            reth_db::DatabaseError::Other(format!(
+                                "pathdb rewind failed: new_root({:?}) != validate_root({:?}), new_tip={}",
+                                new_root, validate_root, new_tip_num
+                            )),
+                        ).into());
+                    }
+
+                    triedb
+                        .flush(new_tip_num, new_root, &Some(difflayer))
+                        .map_err(|e| ProviderError::other(e))?;
+
+                    info!(
+                        target: "engine::persistence",
+                        new_tip_num,
+                        ?new_root,
+                        "Successfully rewound pathdb"
+                    );
+
+                    // take_block_and_execution_above already removed state + blocks +
+                    // updated pipeline stages, so we can skip to commit.
+                    provider_rw.commit()?;
+
+                    debug!(target: "engine::persistence", ?new_tip_num, ?new_tip_hash, "Removed blocks from disk (with pathdb rewind)");
+                    self.metrics.remove_blocks_above_duration_seconds.record(start_time.elapsed());
+                    return Ok(new_tip_hash.map(|hash| BlockNumHash { hash, number: new_tip_num }));
+                }
+                Ok((pathdb_block, _)) => {
+                    debug!(
+                        target: "engine::persistence",
+                        pathdb_block,
+                        new_tip_num,
+                        "Pathdb already at or behind new tip, no rewind needed"
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        target: "engine::persistence",
+                        ?e,
+                        "Failed to query pathdb latest_persist_state during reorg"
+                    );
+                }
+            }
+        }
+
         provider_rw.remove_block_and_execution_above(new_tip_num)?;
         provider_rw.commit()?;
 
