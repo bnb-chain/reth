@@ -2823,6 +2823,46 @@ where
             Ok(Some(_)) => {}
         }
 
+        // Safety guard: when triedb is active but no difflayers bridge the pathdb disk
+        // layer to the block's parent, we cannot compute a correct state root.  Rather
+        // than executing with stale trie data, buffer the block as Disconnected so the
+        // P2P layer fetches ancestors sequentially from the disk layer height, rebuilding
+        // difflayers one block at a time.
+        if rust_eth_triedb::triedb_manager::is_triedb_active() {
+            let difflayers =
+                self.state.tree_state.merged_difflayer_by_hash(block_id.parent);
+            if difflayers.is_none() {
+                let triedb = rust_eth_triedb::triedb_manager::get_global_triedb();
+                if let Ok((_persist_block, persist_root)) = triedb.latest_persist_state() {
+                    if let Ok(Some(parent_header)) =
+                        self.sealed_header_by_hash(block_id.parent)
+                    {
+                        if parent_header.state_root() != persist_root {
+                            warn!(
+                                target: "engine::tree",
+                                block = ?block_num_hash,
+                                parent = ?block_id.parent,
+                                parent_state_root = ?parent_header.state_root(),
+                                pathdb_persist_root = ?persist_root,
+                                "Triedb pathdb gap: no difflayers and parent state root \
+                                 diverges from pathdb disk layer — buffering block as \
+                                 Disconnected for sequential P2P recovery"
+                            );
+                            let block = convert_to_block(self, input)?;
+                            let missing_ancestor = block.parent_num_hash();
+                            self.state.buffer.insert_block(block);
+                            return Ok(InsertPayloadOk::Inserted(
+                                BlockStatus::Disconnected {
+                                    head: self.state.tree_state.current_canonical_head,
+                                    missing_ancestor,
+                                },
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
         // determine whether we are on a fork chain by comparing the block number with the
         // canonical head. This is a simple check that is sufficient for the event emission below.
         // A block is considered a fork if its number is less than or equal to the canonical head,
