@@ -553,6 +553,11 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
             let triedb_active = is_triedb_active();
             let mut triedb_opt = triedb_active.then(get_global_triedb);
 
+            // Collect pending TrieDB flushes to execute on a parallel thread.
+            // This avoids blocking MDBX writes with RocksDB I/O.
+            // Each entry: (block_number, state_root, difflayer_arc).
+            let mut pending_triedb_flushes = Vec::new();
+
             for (i, block) in blocks.iter().enumerate() {
                 let recovered_block = block.recovered_block();
                 let block_number = recovered_block.number();
@@ -590,18 +595,20 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
 
                         if let Some(ref difflayer) = block.difflayer {
                             // The difflayer was precomputed during validation (newPayload).
-                            // Root was already verified there, so just flush to disk.
+                            // Root was already verified there. Defer flush to parallel thread
+                            // so RocksDB I/O doesn't block MDBX writes.
                             debug!(
                                 target: "providers::db",
                                 block_number,
                                 state_root = ?state_root,
-                                "Flushing precomputed triedb difflayer in save_blocks",
+                                "Deferring precomputed triedb difflayer flush in save_blocks",
                             );
-                            triedb
-                                .flush(block_number, state_root, &Some(difflayer.clone()))
-                                .map_err(ProviderError::other)?;
+                            pending_triedb_flushes.push((block_number, state_root, difflayer.clone()));
                         } else {
                             // No precomputed difflayer; compute and commit from hashed state.
+                            // Flush synchronously because intermediate_and_commit reads
+                            // latest_persist_state() which requires prior flushes to have
+                            // updated RocksDB.
                             let (latest_block_number, latest_state_root) =
                                 triedb.latest_persist_state().map_err(ProviderError::other)?;
 
@@ -656,6 +663,24 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
                     }
                 }
             }
+
+            // Spawn a parallel thread to flush deferred TrieDB difflayers to RocksDB.
+            // Runs concurrently with trie updates, history index updates, and pipeline
+            // stage updates below, reducing sequential I/O on the persistence thread.
+            let triedb_flush_handle = if !pending_triedb_flushes.is_empty() {
+                let mut flush_triedb = get_global_triedb();
+                Some(s.spawn(move || -> ProviderResult<std::time::Duration> {
+                    let start = Instant::now();
+                    for (block_number, state_root, difflayer) in pending_triedb_flushes {
+                        flush_triedb
+                            .flush(block_number, state_root, &Some(difflayer))
+                            .map_err(ProviderError::other)?;
+                    }
+                    Ok(start.elapsed())
+                }))
+            } else {
+                None
+            };
 
             // Write all trie updates in a single batch.
             // This reduces cursor open/close overhead from N calls to 1.
@@ -727,6 +752,14 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
             #[cfg(all(unix, feature = "rocksdb"))]
             if let Some(handle) = rocksdb_handle {
                 timings.rocksdb = handle.join().expect("RocksDB thread panicked")?;
+            }
+
+            // Wait for TrieDB flush thread
+            if let Some(handle) = triedb_flush_handle {
+                let flush_elapsed = handle
+                    .join()
+                    .map_err(|_| ProviderError::Database(DatabaseError::Other("triedb flush thread panicked".to_string())))??;
+                timings.write_hashed_state += flush_elapsed;
             }
 
             timings.total = total_start.elapsed();
@@ -3670,26 +3703,55 @@ impl<TX: DbTx + 'static, N: NodeTypes + 'static> DBProvider for DatabaseProvider
 
             self.static_file_provider.commit()?;
         } else {
-            // Normal path: finalize() will call sync_all() if not already synced
+            // Normal path: run SF finalize, RocksDB commit, and MDBX commit in parallel.
+            // These are independent storage engines whose fsync operations can overlap,
+            // reducing wall-clock time from sum(sf + rocksdb + mdbx) to max(sf, rocksdb, mdbx).
             let mut timings = metrics::CommitTimings::default();
 
-            let start = Instant::now();
-            self.static_file_provider.finalize()?;
-            timings.sf = start.elapsed();
+            let sf_provider = &self.static_file_provider;
 
             #[cfg(all(unix, feature = "rocksdb"))]
-            {
-                let start = Instant::now();
-                let batches = std::mem::take(&mut *self.pending_rocksdb_batches.lock());
-                for batch in batches {
-                    self.rocksdb_provider.commit_batch(batch)?;
-                }
-                timings.rocksdb = start.elapsed();
-            }
+            let batches = std::mem::take(&mut *self.pending_rocksdb_batches.lock());
+            #[cfg(all(unix, feature = "rocksdb"))]
+            let rocksdb_provider = &self.rocksdb_provider;
 
-            let start = Instant::now();
-            self.tx.commit()?;
-            timings.mdbx = start.elapsed();
+            thread::scope(|s| {
+                // Static file finalize (fsync) in parallel
+                let sf_handle = s.spawn(|| {
+                    let start = Instant::now();
+                    sf_provider.finalize()?;
+                    Ok::<_, ProviderError>(start.elapsed())
+                });
+
+                // RocksDB batch commits in parallel
+                #[cfg(all(unix, feature = "rocksdb"))]
+                let rocksdb_handle = s.spawn(move || {
+                    let start = Instant::now();
+                    for batch in batches {
+                        rocksdb_provider.commit_batch(batch)?;
+                    }
+                    Ok::<_, ProviderError>(start.elapsed())
+                });
+
+                // MDBX commit (fsync) on main thread
+                let start = Instant::now();
+                self.tx.commit()?;
+                timings.mdbx = start.elapsed();
+
+                // Collect parallel results
+                timings.sf = sf_handle
+                    .join()
+                    .map_err(|_| ProviderError::Database(DatabaseError::Other("static file commit thread panicked".to_string())))??;
+
+                #[cfg(all(unix, feature = "rocksdb"))]
+                {
+                    timings.rocksdb = rocksdb_handle
+                        .join()
+                        .map_err(|_| ProviderError::Database(DatabaseError::Other("rocksdb commit thread panicked".to_string())))??;
+                }
+
+                Ok::<_, ProviderError>(())
+            })?;
 
             self.metrics.record_commit(&timings);
         }
