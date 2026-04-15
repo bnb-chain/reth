@@ -37,6 +37,9 @@ dyn-clone.workspace = true
 # serialization
 serde = { workspace = true, features = ["derive"] }
 
+# tracing
+tracing.workspace = true
+
 [dev-dependencies]
 serde_json.workspace = true
 

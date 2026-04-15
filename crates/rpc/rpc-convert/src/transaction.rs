@@ -1,6 +1,7 @@
 //! Compatibility functions for rpc `Transaction` type.
 use crate::{
-    RpcHeader, RpcReceipt, RpcTransaction, RpcTxReq, RpcTypes, SignableTxRequest, TryIntoTxEnv,
+    calculate_millisecond_timestamp, RpcHeader, RpcReceipt, RpcTransaction, RpcTxReq, RpcTypes,
+    SignableTxRequest, TryIntoTxEnv,
 };
 use alloy_consensus::{error::ValueError, transaction::Recovered};
 use alloy_primitives::{Address, U256};
@@ -12,7 +13,7 @@ use reth_primitives_traits::{
     BlockTy, HeaderTy, NodePrimitives, SealedBlock, SealedHeader, SealedHeaderFor, TransactionMeta,
     TxTy,
 };
-use reth_rpc_traits::{FromConsensusHeader, FromConsensusTx, TryIntoSimTx, TxInfoMapper};
+use reth_rpc_traits::{FromConsensusTx, TryIntoSimTx, TxInfoMapper};
 use std::{error::Error, fmt, fmt::Debug, marker::PhantomData};
 
 /// Input for [`RpcConvert::convert_receipts`].
@@ -77,9 +78,37 @@ where
         &self,
         header: SealedHeader<Consensus>,
         block_size: usize,
-        _td: Option<U256>,
+        td: Option<U256>,
     ) -> Rpc {
-        Rpc::from_consensus_header(header, block_size)
+        Rpc::from_consensus_header(header, block_size, td)
+    }
+}
+
+/// Conversion trait for obtaining RPC header from a consensus header.
+pub trait FromConsensusHeader<T> {
+    /// Takes a consensus header and converts it into `self`.
+    fn from_consensus_header(header: SealedHeader<T>, block_size: usize, td: Option<U256>) -> Self;
+}
+
+impl FromConsensusHeader<alloy_consensus::Header>
+    for crate::CustomRpcHeader<alloy_consensus::Header>
+{
+    fn from_consensus_header(
+        header: SealedHeader<alloy_consensus::Header>,
+        block_size: usize,
+        td: Option<U256>,
+    ) -> Self {
+        let header_hash = header.hash();
+        let consensus_header = header.into_header();
+        let milli_timestamp = Some(U256::from(calculate_millisecond_timestamp(&consensus_header)));
+
+        Self {
+            hash: header_hash,
+            inner: consensus_header,
+            total_difficulty: td,
+            size: Some(U256::from(block_size)),
+            milli_timestamp,
+        }
     }
 }
 
