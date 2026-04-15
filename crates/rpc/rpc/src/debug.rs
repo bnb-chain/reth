@@ -141,7 +141,7 @@ where
             .spawn_with_state_at_block(block.parent_hash(), move |eth_api, mut db| {
                 let mut results = Vec::with_capacity(block.body().transactions().len());
 
-                eth_api.apply_pre_execution_changes(&block, &mut db)?;
+                eth_api.apply_pre_execution_changes(&block, &mut db, evm_env.clone())?;
 
                 let mut transactions = block.transactions_recovered().enumerate().peekable();
                 let mut inspector = None;
@@ -253,7 +253,7 @@ where
                 // configure env for the target transaction
                 let tx = transaction.into_recovered();
 
-                eth_api.apply_pre_execution_changes(&block, &mut db)?;
+                eth_api.apply_pre_execution_changes(&block, &mut db, evm_env.clone())?;
 
                 // replay all transactions prior to the targeted transaction
                 let index = eth_api.replay_transactions_until(
@@ -588,7 +588,7 @@ where
         self.eth_api()
             .spawn_with_state_at_block(state_at, move |eth_api, mut db| {
                 // 1. apply pre-execution changes
-                eth_api.apply_pre_execution_changes(&block, &mut db)?;
+                eth_api.apply_pre_execution_changes(&block, &mut db, evm_env.clone())?;
 
                 // 2. replay the required number of transactions
                 eth_api.replay_transactions_until(
@@ -669,7 +669,7 @@ where
                 if replay_block_txs {
                     // only need to replay the transactions in the block if not all transactions are
                     // to be replayed
-                    eth_api.apply_pre_execution_changes(&block, &mut db)?;
+                    eth_api.apply_pre_execution_changes(&block, &mut db, evm_env.clone())?;
 
                     let transactions = block.transactions_recovered().take(num_txs);
 
@@ -1067,7 +1067,7 @@ where
                 // Enable transition tracking so that merge_transitions works
                 db.transition_state = Some(Default::default());
 
-                eth_api.apply_pre_execution_changes(&block, &mut db)?;
+                eth_api.apply_pre_execution_changes(&block, &mut db, evm_env.clone())?;
 
                 let mut roots = Vec::with_capacity(block.body().transactions().len());
                 for tx in block.transactions_recovered() {
