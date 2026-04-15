@@ -14,10 +14,10 @@ use alloy_eips::{
 };
 use alloy_primitives::{
     map::{hash_map, HashMap},
-    Address, BlockHash, BlockNumber, TxHash, TxNumber, B256,
+    Address, BlockHash, BlockNumber, TxHash, TxNumber, B256, U256,
 };
 use reth_chain_state::{BlockState, CanonicalInMemoryState, MemoryOverlayStateProviderRef};
-use reth_chainspec::ChainInfo;
+use reth_chainspec::{ChainInfo, EthChainSpec};
 use reth_db_api::models::{AccountBeforeTx, BlockNumberAddress, StoredBlockBodyIndices};
 use reth_execution_types::{BundleStateInit, ExecutionOutcome, RevertsInit};
 use reth_node_types::{BlockTy, HeaderTy, ReceiptTy, TxTy};
@@ -46,6 +46,8 @@ use tracing::trace;
 #[derive(Debug)]
 #[doc(hidden)] // triggers ICE for `cargo docs`
 pub struct ConsistentProvider<N: ProviderNodeTypes> {
+    /// Chain spec.
+    chain_spec: Arc<N::ChainSpec>,
     /// Storage provider.
     storage_provider: <ProviderFactory<N> as DatabaseProviderFactory>::Provider,
     /// Head block at time of [`Self`] creation
@@ -61,6 +63,7 @@ impl<N: ProviderNodeTypes> ConsistentProvider<N> {
     /// [`ProviderFactory::database_provider_ro`] effectively maintaining one single snapshotted
     /// view of memory and database.
     pub fn new(
+        chain_spec: Arc<N::ChainSpec>,
         storage_provider_factory: ProviderFactory<N>,
         state: CanonicalInMemoryState<N::Primitives>,
     ) -> ProviderResult<Self> {
@@ -73,7 +76,7 @@ impl<N: ProviderNodeTypes> ConsistentProvider<N> {
         // entirely. Resulting in gaps on the range.
         let head_block = state.head_state();
         let storage_provider = storage_provider_factory.database_provider_ro()?;
-        Ok(Self { storage_provider, head_block, canonical_in_memory_state: state })
+        Ok(Self { chain_spec, storage_provider, head_block, canonical_in_memory_state: state })
     }
 
     // Helper function to convert range bounds
@@ -675,6 +678,58 @@ impl<N: ProviderNodeTypes> HeaderProvider for ConsistentProvider<N> {
             |db_provider| db_provider.header_by_number(num),
             |block_state| Ok(Some(block_state.block_ref().recovered_block().clone_header())),
         )
+    }
+
+    fn header_td(&self, hash: &BlockHash) -> ProviderResult<Option<U256>> {
+        if let Some(num) = self.block_number(*hash)? {
+            self.header_td_by_number(num)
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn header_td_by_number(&self, number: BlockNumber) -> ProviderResult<Option<U256>> {
+        // BSC TD calculation logic
+        if self.chain_spec.final_paris_total_difficulty().is_none() {
+            let latest_block_number = self.last_block_number()?;
+            if number <= latest_block_number {
+                return self.storage_provider.header_td_by_number(number);
+            }
+            // found head in memory, calculate td by adding in-memory canonical tds
+            let mut td = self
+                .storage_provider
+                .header_td_by_number(latest_block_number)?
+                .ok_or(ProviderError::HeaderNotFound(latest_block_number.into()))?;
+            for num in latest_block_number + 1..=number {
+                let header =
+                    self.header_by_number(num)?.ok_or(ProviderError::HeaderNotFound(num.into()))?;
+                td = td.wrapping_add(header.difficulty());
+            }
+            return Ok(Some(td));
+        }
+
+        // ETH TD calculation logic
+        let number =
+            if self.head_block.as_ref().and_then(|b| b.block_on_chain(number.into())).is_some() {
+                // If the block exists in memory, we should return a TD for it.
+                //
+                // The canonical in memory state should only store post-merge blocks. Post-merge
+                // blocks have zero difficulty. This means we can use the total
+                // difficulty for the last finalized block number if present (so
+                // that we are not affected by reorgs), if not the last number in
+                // the database will be used.
+                if let Some(last_finalized_num_hash) =
+                    self.canonical_in_memory_state.get_finalized_num_hash()
+                {
+                    last_finalized_num_hash.number
+                } else {
+                    self.last_block_number()?
+                }
+            } else {
+                // Otherwise, return what we have on disk for the input block
+                number
+            };
+        self.storage_provider.header_td_by_number(number)
     }
 
     fn headers_range(
