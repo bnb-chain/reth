@@ -10,7 +10,6 @@ use reth_db::{
 use reth_db_api::{
     cursor::{DbCursorRO, DbDupCursorRO},
     database::Database,
-    models::CompactU256,
     table::{Compress, Decompress, DupSort, Table},
     tables,
     transaction::DbTx,
@@ -123,22 +122,22 @@ impl Command {
                     StaticFileSegment::Headers => (
                         table_key::<tables::Headers>(&key)?,
                         None,
-                        <HeaderWithHashMask<HeaderTy<N>>>::MASK,
+                        <HeaderWithHashMask<HeaderTy<N>> as ColumnSelectorTwo>::MASK,
                     ),
                     StaticFileSegment::Transactions => (
                         table_key::<tables::Transactions>(&key)?,
                         None,
-                        <TransactionMask<TxTy<N>>>::MASK,
+                        <TransactionMask<TxTy<N>> as ColumnSelectorOne>::MASK,
                     ),
                     StaticFileSegment::Receipts => (
                         table_key::<tables::Receipts>(&key)?,
                         None,
-                        <ReceiptMask<ReceiptTy<N>>>::MASK,
+                        <ReceiptMask<ReceiptTy<N>> as ColumnSelectorOne>::MASK,
                     ),
                     StaticFileSegment::TransactionSenders => (
                         table_key::<tables::TransactionSenders>(&key)?,
                         None,
-                        TransactionSenderMask::MASK,
+                        <TransactionSenderMask as ColumnSelectorOne>::MASK,
                     ),
                     StaticFileSegment::AccountChangeSets => {
                         let subkey =
@@ -146,7 +145,7 @@ impl Command {
                         (
                             table_key::<tables::AccountChangeSets>(&key)?,
                             subkey,
-                            AccountChangesetMask::MASK,
+                            <AccountChangesetMask as ColumnSelectorOne>::MASK,
                         )
                     }
                     StaticFileSegment::StorageChangeSets => {
@@ -201,13 +200,10 @@ impl Command {
                             match segment {
                                 StaticFileSegment::Headers => {
                                     let header = HeaderTy::<N>::decompress(content[0].as_slice())?;
-                                    let total_difficulty =
-                                        CompactU256::decompress(content[1].as_slice())?;
-                                    let block_hash = BlockHash::decompress(content[2].as_slice())?;
+                                    let block_hash = BlockHash::decompress(content[1].as_slice())?;
                                     println!(
-                                        "Header\n{}\n\nTotalDifficulty\n{}\n\nBlockHash\n{}",
+                                        "Header\n{}\n\nBlockHash\n{}",
                                         serde_json::to_string_pretty(&header)?,
-                                        total_difficulty.0,
                                         serde_json::to_string_pretty(&block_hash)?
                                     );
                                 }
