@@ -647,7 +647,7 @@ impl DatabaseEnv {
 
     /// Copy the database to the specified path.
     ///
-    /// This is a wrapper around MDBX's native copy, similar to Erigon's mdbx_to_mdbx
+    /// This is a wrapper around MDBX's native copy, similar to Erigon's `mdbx_to_mdbx`
     /// but using the high-performance C implementation instead of record-by-record copying.
     pub fn copy_to_path(
         &self,
