@@ -626,12 +626,10 @@ impl<N: ProviderNodeTypes> HeaderProvider for ProviderFactory<N> {
     type Header = HeaderTy<N>;
 
     fn header(&self, block_hash: BlockHash) -> ProviderResult<Option<Self::Header>> {
-        info!("HeaderProvider ProviderFactory header, block_hash: {:?}", block_hash);
         self.provider()?.header(block_hash)
     }
 
     fn header_by_number(&self, num: BlockNumber) -> ProviderResult<Option<Self::Header>> {
-        info!("HeaderProvider ProviderFactory header_by_number, num: {:?}", num);
         self.static_file_provider.get_with_static_file_or_database(
             StaticFileSegment::Headers,
             num,
@@ -651,7 +649,6 @@ impl<N: ProviderNodeTypes> HeaderProvider for ProviderFactory<N> {
         &self,
         number: BlockNumber,
     ) -> ProviderResult<Option<SealedHeader<Self::Header>>> {
-        info!("ProviderFactory sealed_header, number: {:?}", number);
         self.static_file_provider.get_with_static_file_or_database(
             StaticFileSegment::Headers,
             number,
@@ -678,7 +675,6 @@ impl<N: ProviderNodeTypes> HeaderProvider for ProviderFactory<N> {
 
 impl<N: ProviderNodeTypes> BlockHashReader for ProviderFactory<N> {
     fn block_hash(&self, number: u64) -> ProviderResult<Option<B256>> {
-        info!("BlockHashReader block_hash, number: {:?}", number);
         self.static_file_provider.get_with_static_file_or_database(
             StaticFileSegment::Headers,
             number,
