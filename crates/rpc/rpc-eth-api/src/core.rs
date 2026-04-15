@@ -512,6 +512,7 @@ where
         full: bool,
     ) -> RpcResult<Option<RpcBlock<T::NetworkTypes>>> {
         trace!(target: "rpc::eth", ?number, ?full, "Serving eth_getBlockByNumber");
+        check_pending_tag(&number)?;
         Ok(EthBlocks::rpc_block(self, number.into(), full).await?)
     }
 
@@ -527,6 +528,7 @@ where
         number: BlockNumberOrTag,
     ) -> RpcResult<Option<U256>> {
         trace!(target: "rpc::eth", ?number, "Serving eth_getBlockTransactionCountByNumber");
+        check_pending_tag(&number)?;
         Ok(EthBlocks::block_transaction_count(self, number.into()).await?.map(U256::from))
     }
 
@@ -547,6 +549,7 @@ where
         number: BlockNumberOrTag,
     ) -> RpcResult<Option<U256>> {
         trace!(target: "rpc::eth", ?number, "Serving eth_getUncleCountByBlockNumber");
+        check_pending_tag(&number)?;
 
         if let Some(block) = self.block_by_number(number, false).await? {
             Ok(Some(U256::from(block.uncles.len())))
@@ -581,6 +584,7 @@ where
         index: Index,
     ) -> RpcResult<Option<RpcBlock<T::NetworkTypes>>> {
         trace!(target: "rpc::eth", ?number, ?index, "Serving eth_getUncleByBlockNumberAndIndex");
+        check_pending_tag(&number)?;
         Ok(EthBlocks::ommer_by_block_and_index(self, number.into(), index).await?)
     }
 
@@ -640,6 +644,7 @@ where
         index: Index,
     ) -> RpcResult<Option<Bytes>> {
         trace!(target: "rpc::eth", ?number, ?index, "Serving eth_getRawTransactionByBlockNumberAndIndex");
+        check_pending_tag(&number)?;
         Ok(EthTransactions::raw_transaction_by_block_and_tx_index(
             self,
             number.into(),
@@ -655,6 +660,7 @@ where
         index: Index,
     ) -> RpcResult<Option<RpcTransaction<T::NetworkTypes>>> {
         trace!(target: "rpc::eth", ?number, ?index, "Serving eth_getTransactionByBlockNumberAndIndex");
+        check_pending_tag(&number)?;
         Ok(EthTransactions::transaction_by_block_and_tx_index(self, number.into(), index.into())
             .await?)
     }
@@ -674,6 +680,7 @@ where
         number: BlockNumberOrTag,
     ) -> RpcResult<Option<Vec<RpcTransaction<T::NetworkTypes>>>> {
         trace!(target: "rpc::eth", ?number, "Serving eth_getTransactionsByBlockNumber");
+        check_pending_tag(&number)?;
         Ok(EthTransactions::transactions_by_block_id(self, number.into()).await?)
     }
 
@@ -759,6 +766,7 @@ where
         block_number: BlockNumberOrTag,
     ) -> RpcResult<Option<RpcHeader<T::NetworkTypes>>> {
         trace!(target: "rpc::eth", ?block_number, "Serving eth_getHeaderByNumber");
+        check_pending_tag(&block_number)?;
         Ok(EthBlocks::rpc_block_header(self, block_number.into()).await?)
     }
 
@@ -889,6 +897,7 @@ where
         reward_percentiles: Option<Vec<f64>>,
     ) -> RpcResult<FeeHistory> {
         trace!(target: "rpc::eth", ?block_count, ?newest_block, ?reward_percentiles, "Serving eth_feeHistory");
+        check_pending_tag(&newest_block)?;
         Ok(EthFees::fee_history(self, block_count.to(), newest_block, reward_percentiles).await?)
     }
 
@@ -1008,5 +1017,14 @@ where
 
         let bal = self.get_block_access_list(number.into()).await?;
         Ok(bal.map(|b: BlockAccessList| alloy_rlp::encode(b).into()))
+    }
+}
+
+/// Helper function to check if `BlockNumberOrTag` is pending and return error if so
+fn check_pending_tag(block_number: &BlockNumberOrTag) -> RpcResult<()> {
+    if matches!(block_number, BlockNumberOrTag::Pending) {
+        Err(internal_rpc_err("Unsupported pending tag"))
+    } else {
+        Ok(())
     }
 }

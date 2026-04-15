@@ -2,6 +2,7 @@
 
 use alloy_network::primitives::HeaderResponse;
 use alloy_primitives::{BlockHash, U256};
+use tracing::info;
 
 /// Custom RPC header that extends the standard header with additional fields
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -163,28 +164,6 @@ where
 // RpcObject is automatically implemented via blanket impl for types that implement Serialize +
 // Deserialize
 
-impl<H> reth_rpc_traits::FromConsensusHeader<H> for CustomRpcHeader<H>
-where
-    H: reth_primitives_traits::BlockHeader + Clone,
-{
-    fn from_consensus_header(
-        header: reth_primitives_traits::SealedHeader<H>,
-        block_size: usize,
-    ) -> Self {
-        let header_hash = header.hash();
-        let consensus_header = header.into_header();
-        let milli_timestamp = Some(U256::from(calculate_millisecond_timestamp(&consensus_header)));
-
-        Self {
-            hash: header_hash,
-            inner: consensus_header,
-            total_difficulty: None,
-            size: Some(U256::from(block_size)),
-            milli_timestamp,
-        }
-    }
-}
-
 /// Type alias for the standard Ethereum custom header
 pub type EthereumCustomHeader = CustomRpcHeader<alloy_consensus::Header>;
 
@@ -202,6 +181,7 @@ where
         block_size: usize,
         td: Option<alloy_primitives::U256>,
     ) -> CustomRpcHeader<H> {
+        info!("td in CustomHeaderConverter convert_header: {:?}", td);
         let header_hash = header.hash();
         let consensus_header = header.into_header();
         let milli_timestamp = Some(U256::from(calculate_millisecond_timestamp(&consensus_header)));
