@@ -537,6 +537,13 @@ tables! {
         type Key = String;
         type Value = Vec<u8>;
     }
+
+    /// Stores BSC Parlia checkpoint snapshots (compressed CBOR bytes).
+    /// Defined here for schema registration and database initialization.
+    table ParliaSnapshots {
+        type Key = BlockNumber;
+        type Value = crate::models::ParliaSnapshotBlob;
+    }
 }
 
 /// Packed-encoding view of the [`AccountsTrie`] table.

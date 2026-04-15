@@ -5,7 +5,7 @@ use crate::{
     DatabaseError,
 };
 use alloy_primitives::{Address, B256, U256};
-use reth_codecs::{add_arbitrary_tests, impl_compression_for_compact, Compact};
+use reth_codecs::{add_arbitrary_tests, impl_compression_for_compact, Compact, DecompressError};
 use reth_prune_types::PruneSegment;
 use reth_trie_common::{StoredNibbles, StoredNibblesSubKey, *};
 use serde::{Deserialize, Serialize};
@@ -208,6 +208,54 @@ impl Decode for ClientVersion {
 }
 
 impl_compression_for_compact!(StoredBlockOmmers<H>, CompactU256);
+
+// -----------------------------------------------------------------------------
+//  Parlia snapshot raw blob (BNB Smart Chain checkpoints)
+// -----------------------------------------------------------------------------
+
+/// Raw binary blob storing a Parlia consensus snapshot for BNB Smart Chain checkpoints.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ParliaSnapshotBlob(pub Vec<u8>);
+
+impl crate::table::Compress for ParliaSnapshotBlob {
+    type Compressed = Vec<u8>;
+
+    fn uncompressable_ref(&self) -> Option<&[u8]> {
+        Some(&self.0)
+    }
+
+    fn compress(self) -> Self::Compressed {
+        self.0
+    }
+
+    fn compress_to_buf<B: bytes::BufMut + AsMut<[u8]>>(&self, buf: &mut B) {
+        buf.put_slice(&self.0);
+    }
+}
+
+impl crate::table::Decompress for ParliaSnapshotBlob {
+    fn decompress(value: &[u8]) -> Result<Self, DecompressError> {
+        Ok(Self(value.to_vec()))
+    }
+}
+
+impl crate::table::Encode for ParliaSnapshotBlob {
+    type Encoded = Vec<u8>;
+
+    fn encode(self) -> Self::Encoded {
+        self.0
+    }
+}
+
+impl crate::table::Decode for ParliaSnapshotBlob {
+    fn decode(value: &[u8]) -> Result<Self, DatabaseError> {
+        Ok(Self(value.to_vec()))
+    }
+
+    fn decode_owned(value: Vec<u8>) -> Result<Self, DatabaseError> {
+        Ok(Self(value))
+    }
+}
 
 /// Adds wrapper structs for some primitive types so they can use `StructFlags` from Compact, when
 /// used as pure table values.
