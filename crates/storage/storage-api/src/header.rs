@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 use alloy_eips::BlockHashOrNumber;
-use alloy_primitives::{BlockHash, BlockNumber};
+use alloy_primitives::{BlockHash, BlockNumber, U256};
 use core::ops::RangeBounds;
 use reth_primitives_traits::{BlockHeader, SealedHeader};
 use reth_storage_errors::provider::ProviderResult;
@@ -32,6 +32,16 @@ pub trait HeaderProvider: Send {
 
     /// Get header by block number
     fn header_by_number(&self, num: u64) -> ProviderResult<Option<Self::Header>>;
+
+    /// Get total difficulty by block hash.
+    fn header_td(&self, _hash: &BlockHash) -> ProviderResult<Option<U256>> {
+        Ok(None)
+    }
+
+    /// Get total difficulty by block number.
+    fn header_td_by_number(&self, _number: BlockNumber) -> ProviderResult<Option<U256>> {
+        Ok(None)
+    }
 
     /// Get header by block number or hash
     fn header_by_hash_or_number(
