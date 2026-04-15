@@ -3,7 +3,7 @@
 //! Similar to Erigon's mdbx_to_mdbx implementation, this copies data from one
 //! MDBX database to another, table by table.
 //!
-//! Reference: https://github.com/erigontech/erigon/blob/devel/cmd/integration/commands/backup.go
+//! Reference: <https://github.com/erigontech/erigon/blob/devel/cmd/integration/commands/backup.go>
 
 use clap::Parser;
 use reth_db::DatabaseEnv;
