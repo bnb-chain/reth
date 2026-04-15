@@ -1043,6 +1043,17 @@ Engine:
 
           The builder also anchors the trie at the built block's state root, so if the next `newPayload` is not on top of that block, the trie cache is invalidated and cleared.
 
+      --engine.skip-state-root-validation
+          Skip state root validation for fastnode mode
+
+      --engine.min-blocks-for-pipeline-run <MIN_BLOCKS_FOR_PIPELINE_RUN>
+          Configure the minimum number of blocks required to trigger a pipeline run for backfilling. When the local head is behind the forkchoice head by more than this threshold, the pipeline will be used to backfill blocks instead of downloading them individually
+
+          [default: 32]
+
+      --engine.enable-proof-v2
+          Enable V2 storage proofs for state root calculations
+
 ERA:
       --era.enable
           Enable import from ERA1 files
