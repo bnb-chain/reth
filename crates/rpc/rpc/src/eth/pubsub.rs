@@ -340,8 +340,11 @@ where
                 .committed()
                 .blocks_iter()
                 .filter_map(|block| {
-                    match converter.convert_header(block.clone_sealed_header(), block.rlp_length())
-                    {
+                    match converter.convert_header(
+                        block.clone_sealed_header(),
+                        block.rlp_length(),
+                        None,
+                    ) {
                         Ok(header) => Some(header),
                         Err(err) => {
                             error!(target = "rpc", %err, "Failed to convert header");

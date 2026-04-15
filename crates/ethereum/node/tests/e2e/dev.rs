@@ -68,6 +68,7 @@ async fn can_run_dev_node_custom_attributes() -> eyre::Result<()> {
             .unwrap()
             .unwrap()
             .header
+            .inner
             .beneficiary ==
             fee_recipient
     );

@@ -157,6 +157,16 @@ This project based on the excellent community versions as foundation, We extend 
   - [@loocapro](https://github.com/loocapro)
   - All contributors on reth for reth-bsc
 
+## Acknowledgements from BNBChain team
+
+This project based on the excellent community versions as foundation, We extend our sincere appreciation to the teams below:
+- [Reth](https://github.com/paradigmxyz/reth) - The reth project
+- [Reth-bsc](https://github.com/loocapro/reth-bsc) - The BSC Reth implementation from community
+- Especially thanks to:
+  - [@mattsse](https://github.com/mattsse)
+  - [@klkvr](https://github.com/klkvr)
+  - [@loocapro](https://github.com/loocapro)
+  - All contributors on reth for reth-bsc
 
 ## Warning
 

@@ -749,7 +749,7 @@ where
                 .clone_into_rpc_block(
                     BlockTransactionsKind::Full,
                     |tx, tx_info| self.eth_api().converter().fill(tx, tx_info),
-                    |header, size| self.eth_api().converter().convert_header(header, size),
+                    |header, size| self.eth_api().converter().convert_header(header, size, None),
                 )
                 .map_err(|err| Eth::Error::from(err).into())?;
 

@@ -3,7 +3,7 @@ use crate::{
     RpcHeader, RpcReceipt, RpcTransaction, RpcTxReq, RpcTypes, SignableTxRequest, TryIntoTxEnv,
 };
 use alloy_consensus::{error::ValueError, transaction::Recovered};
-use alloy_primitives::Address;
+use alloy_primitives::{Address, U256};
 use alloy_rpc_types_eth::TransactionInfo;
 use core::error;
 use dyn_clone::DynClone;
@@ -13,7 +13,7 @@ use reth_primitives_traits::{
     TxTy,
 };
 use reth_rpc_traits::{FromConsensusHeader, FromConsensusTx, TryIntoSimTx, TxInfoMapper};
-use std::{convert::Infallible, error::Error, fmt, fmt::Debug, marker::PhantomData};
+use std::{error::Error, fmt, fmt::Debug, marker::PhantomData};
 
 /// Input for [`RpcConvert::convert_receipts`].
 #[derive(Debug, Clone)]
@@ -58,15 +58,13 @@ pub trait ReceiptConverter<N: NodePrimitives>: Debug + 'static {
 
 /// A type that knows how to convert a consensus header into an RPC header.
 pub trait HeaderConverter<Consensus, Rpc>: Send + Sync + Unpin + Clone + 'static {
-    /// An associated RPC conversion error.
-    type Err: error::Error;
-
     /// Converts a consensus header into an RPC header.
     fn convert_header(
         &self,
         header: SealedHeader<Consensus>,
         block_size: usize,
-    ) -> Result<Rpc, Self::Err>;
+        td: Option<U256>,
+    ) -> Rpc;
 }
 
 /// Default implementation of [`HeaderConverter`] that uses [`FromConsensusHeader`] to convert
@@ -75,29 +73,13 @@ impl<Consensus, Rpc> HeaderConverter<Consensus, Rpc> for ()
 where
     Rpc: FromConsensusHeader<Consensus>,
 {
-    type Err = Infallible;
-
     fn convert_header(
         &self,
         header: SealedHeader<Consensus>,
         block_size: usize,
-    ) -> Result<Rpc, Self::Err> {
-        Ok(Rpc::from_consensus_header(header, block_size))
-    }
-}
-
-impl<Consensus, Rpc, F> HeaderConverter<Consensus, Rpc> for F
-where
-    F: Fn(SealedHeader<Consensus>, usize) -> Rpc + Send + Sync + Unpin + Clone + 'static,
-{
-    type Err = Infallible;
-
-    fn convert_header(
-        &self,
-        header: SealedHeader<Consensus>,
-        block_size: usize,
-    ) -> Result<Rpc, Self::Err> {
-        Ok(self(header, block_size))
+        _td: Option<U256>,
+    ) -> Rpc {
+        Rpc::from_consensus_header(header, block_size)
     }
 }
 
@@ -182,6 +164,7 @@ pub trait RpcConvert: Send + Sync + Unpin + Debug + DynClone + 'static {
         &self,
         header: SealedHeaderFor<Self::Primitives>,
         block_size: usize,
+        td: Option<U256>,
     ) -> Result<RpcHeader<Self::Network>, Self::Error>;
 }
 
@@ -682,7 +665,6 @@ where
                        + From<TxEnv::Error>
                        + From<<Map as TxInfoMapper<TxTy<N>>>::Err>
                        + From<RpcTx::Err>
-                       + From<Header::Err>
                        + Error
                        + Unpin
                        + Sync
@@ -753,7 +735,8 @@ where
         &self,
         header: SealedHeaderFor<Self::Primitives>,
         block_size: usize,
+        td: Option<U256>,
     ) -> Result<RpcHeader<Self::Network>, Self::Error> {
-        Ok(self.header_converter.convert_header(header, block_size)?)
+        Ok(self.header_converter.convert_header(header, block_size, td))
     }
 }

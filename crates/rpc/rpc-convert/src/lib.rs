@@ -10,9 +10,13 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+pub mod custom_header;
 mod rpc;
 pub mod transaction;
 
+pub use custom_header::{
+    calculate_millisecond_timestamp, CustomHeaderConverter, CustomRpcHeader, EthereumCustomHeader,
+};
 pub use rpc::*;
 pub use transaction::{RpcConvert, RpcConverter, TransactionConversionError};
 
