@@ -1,9 +1,7 @@
 //! Database migration tool
 //!
-//! This tool copies data from one MDBX database to another, table by table.
-//! It supports two modes:
-//! - Fast mode: uses MDBX native copy API for maximum speed
-//! - Custom mode: allows parameter customization (page size, max size, etc.)
+//! Copies data from one MDBX database to another, table by table.
+//! Allows customization of database parameters (page size, max size, growth step, etc.).
 
 use clap::Parser;
 use reth_db::DatabaseEnv;
@@ -43,17 +41,9 @@ pub struct Command {
     #[arg(long, default_value = "4GB", value_parser = parse_byte_size)]
     growth_step: usize,
 
-    /// Use fast mode (native MDBX copy, ignores custom parameters).
-    #[arg(long)]
-    fast: bool,
-
     /// Commit every N records. Smaller = less memory, slower.
     #[arg(long, default_value = "100000")]
     commit_every: usize,
-
-    /// Skip confirmation prompt.
-    #[arg(long, short)]
-    force: bool,
 
     /// Suppress progress messages.
     #[arg(long, short)]
@@ -67,28 +57,6 @@ impl Command {
         src_env: &DatabaseEnv,
         db_args: &reth_db::mdbx::DatabaseArguments,
     ) -> eyre::Result<()> {
-        use std::io::Write;
-
-        // Determine mode
-        let mode = if self.fast {
-            "fast (MDBX native copy)"
-        } else {
-            "record-by-record (with parameter customization)"
-        };
-
-        if !self.force {
-            print!("Copy database to {:?}? Mode: {}. (y/N): ", self.to, mode);
-            std::io::stdout().flush()?;
-
-            let mut input = String::new();
-            std::io::stdin().read_line(&mut input)?;
-
-            if !input.trim().eq_ignore_ascii_case("y") {
-                info!("Copy aborted!");
-                return Ok(());
-            }
-        }
-
         // Ensure destination doesn't exist
         if self.to.exists() {
             eyre::bail!("Destination {:?} already exists", self.to);
@@ -102,20 +70,12 @@ impl Command {
         }
 
         if !self.quiet {
-            info!(target: "reth::cli", "Starting database copy...");
-            info!(target: "reth::cli", "Mode: {}", mode);
+            info!(target: "reth::cli", "Starting database migration...");
             info!(target: "reth::cli", "Destination: {:?}", self.to);
         }
 
         let start = Instant::now();
-
-        if self.fast {
-            // Fast mode: use MDBX native copy
-            self.execute_fast_copy(src_env)?;
-        } else {
-            // Default mode: record-by-record copy with parameter customization
-            self.execute_custom_copy(src_env, db_args)?;
-        }
+        self.execute_custom_copy(src_env, db_args)?;
 
         let elapsed = start.elapsed();
 
@@ -131,13 +91,13 @@ impl Command {
 
                 if dst_size < src_size {
                     let reduction = ((src_size - dst_size) as f64 / src_size as f64) * 100.0;
-                    info!(target: "reth::cli", 
+                    info!(target: "reth::cli",
                           "Size reduction: {} ({:.2}% smaller due to defragmentation)",
                           format_byte_size(src_size - dst_size),
                           reduction);
-                    info!(target: "reth::cli", 
+                    info!(target: "reth::cli",
                           "  Note: This is normal. The copy process eliminates fragmentation,");
-                    info!(target: "reth::cli", 
+                    info!(target: "reth::cli",
                           "  empty pages, and compacts the data structure.");
                 }
             }
@@ -146,17 +106,7 @@ impl Command {
         Ok(())
     }
 
-    /// Fast copy using MDBX native copy API
-    fn execute_fast_copy(&self, src_env: &DatabaseEnv) -> eyre::Result<()> {
-        if !self.quiet {
-            info!(target: "reth::cli", "Using MDBX native copy (ignoring custom parameters)");
-        }
-
-        src_env.copy_to_path(&self.to, false, false)?;
-        Ok(())
-    }
-
-    /// Custom copy with parameter customization
+    /// Execute database copy with parameter customization
     fn execute_custom_copy(
         &self,
         src_env: &DatabaseEnv,
@@ -172,7 +122,6 @@ impl Command {
 
         // Start with system database arguments (includes log_level, exclusive, max_readers, etc.)
         // then override with user-specified parameters
-        let client_version = base_db_args.client_version().clone();
         let mut dst_args = base_db_args.clone();
 
         // Determine target parameters
@@ -191,49 +140,26 @@ impl Command {
 
         if !self.quiet {
             info!(target: "reth::cli", "Source database parameters:");
-            info!(
-                target: "reth::cli",
-                "  Page size: {}",
-                format_byte_size(src_page_size as usize)
-            );
+            info!(target: "reth::cli", "  Page size: {}", format_byte_size(src_page_size as usize));
             info!(target: "reth::cli", "  Map size: {}", format_byte_size(src_map_size));
             info!(target: "reth::cli", "Target database parameters:");
             if let Some(page_size) = self.page_size {
-                info!(
-                    target: "reth::cli",
-                    "  Page size: {} (custom)",
-                    format_byte_size(page_size)
-                );
+                info!(target: "reth::cli", "  Page size: {} (custom)", format_byte_size(page_size));
             } else {
-                info!(
-                    target: "reth::cli",
-                    "  Page size: {} (using system default)",
-                    format_byte_size(src_page_size as usize)
-                );
+                info!(target: "reth::cli", "  Page size: {} (using system default)",
+                      format_byte_size(src_page_size as usize));
             }
             info!(target: "reth::cli", "  Map size: {}", format_byte_size(max_size_bytes));
-            info!(
-                target: "reth::cli",
-                "  Growth step: {}",
-                format_byte_size(growth_step_bytes)
-            );
-            info!(
-                target: "reth::cli",
-                "  (Other settings: log_level, exclusive, max_readers, etc. inherited from system config)"
-            );
+            info!(target: "reth::cli", "  Growth step: {}", format_byte_size(growth_step_bytes));
+            info!(target: "reth::cli", "  (Other settings: log_level, exclusive, max_readers, etc. inherited from system config)");
         }
 
-        // Create destination database with custom parameters
-        // We use create_db() instead of init_db() because:
-        // - init_db() pre-creates all tables (unnecessary, wastes time)
-        // - Tables will be automatically created when we open them during copy
-        let dst_env = reth_db::create_db(&self.to, dst_args)?;
-
-        // Record client version for compatibility tracking
-        dst_env.record_client_version(client_version)?;
+        // Create destination database and initialize all tables
+        // Using init_db() to properly create all tables and record client version
+        let dst_env = reth_db::init_db(&self.to, dst_args)?;
 
         if !self.quiet {
-            info!(target: "reth::cli", "Destination database created (tables will be created during copy)");
+            info!(target: "reth::cli", "Destination database initialized");
         }
 
         // Determine which tables to copy
@@ -255,34 +181,20 @@ impl Command {
 
         if !self.quiet {
             info!(target: "reth::cli", "Copying {} tables", tables_to_copy.len());
+            if !self.tables.is_empty() {
+                info!(target: "reth::cli", "  Note: Only copying selected tables. Other tables will be empty.");
+            }
         }
 
         // Copy each table using table-specific implementations
         let total_tables = tables_to_copy.len();
         for (idx, table_name) in tables_to_copy.iter().enumerate() {
             if !self.quiet {
-                info!(
-                    target: "reth::cli",
-                    "[{}/{}] Copying table: {}",
-                    idx + 1,
-                    total_tables,
-                    table_name
-                );
+                info!(target: "reth::cli", "[{}/{}] Copying table: {}",
+                      idx + 1, total_tables, table_name);
             }
 
-            let table_start = Instant::now();
-            let copied = self.copy_table_generic(src_env, &dst_env, table_name)?;
-            let table_elapsed = table_start.elapsed();
-
-            if !self.quiet && copied > 0 {
-                info!(
-                    target: "reth::cli",
-                    "  Copied {} records in {:.2}s ({:.0} rec/s)",
-                    copied,
-                    table_elapsed.as_secs_f64(),
-                    copied as f64 / table_elapsed.as_secs_f64()
-                );
-            }
+            self.copy_table_generic(src_env, &dst_env, table_name)?;
         }
 
         Ok(())
