@@ -1097,9 +1097,14 @@ where
     /// - Gap > [`alignment::MAX_STARTUP_UNWIND_BLOCKS`]
     /// - `pathdb_root` does not match the MDBX header state root at `pathdb_block`
     ///
-    /// Must be called before any pipeline or engine work — i.e. before
-    /// `check_pipeline_consistency` and before the engine service is built.
-    /// Called from [`Self::initial_backfill_target`].
+    /// Must be called before the consensus engine and pipeline are built
+    /// (i.e. before `check_pipeline_consistency`). The RPC server may be
+    /// accepting connections by the time this runs; that is safe because the
+    /// unwind commit is atomic under MDBX MVCC — any concurrent RO
+    /// transaction sees either the pre-unwind or the post-unwind state, never
+    /// a mix. The `node.update_sync_state(SyncState::Syncing)` flag set
+    /// earlier in launch also tells well-behaved clients not to trust the
+    /// data as canonical. Called from [`Self::initial_backfill_target`].
     pub fn align_mdbx_to_triedb_at_startup(&self) -> ProviderResult<()>
     where
         <T::Provider as DatabaseProviderFactory>::ProviderRW: BlockExecutionWriter,
@@ -1204,12 +1209,24 @@ where
                 Err(ProviderError::TriedbMdbxRootMismatch { block, triedb_root, mdbx_root })
             }
             AlignmentOutcome::NeedsUnwind { to } => {
+                // Mirror the genesis-unwind guard in create_provider_factory:
+                // unwinding to block 0 wipes the chain and leaves MDBX with a
+                // huge free list. If pathdb is at 0 while MDBX has progressed,
+                // the far more likely cause is a misconfigured pathdb
+                // directory, not a real crash window.
+                assert_ne!(
+                    to, 0,
+                    "startup alignment would unwind MDBX to genesis \
+                     (pathdb_block=0, mdbx_tip={mdbx_tip}); verify pathdb path \
+                     or resync from scratch"
+                );
                 let gap = mdbx_tip - to;
                 info!(
                     target: "reth::cli",
                     mdbx_tip,
                     pathdb_block = to,
                     gap,
+                    outcome = "unwinding",
                     "Startup alignment: unwinding MDBX to match TrieDB pathdb tip"
                 );
 

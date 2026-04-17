@@ -119,23 +119,25 @@ mod tests {
     #[test]
     fn gap_at_exactly_limit_is_allowed() {
         let r = root(4);
-        let tip = MAX_STARTUP_UNWIND_BLOCKS;
+        let pathdb = 100;
+        let tip = pathdb + MAX_STARTUP_UNWIND_BLOCKS;
         assert_eq!(
-            decide_startup_alignment(0, r, tip, r, MAX_STARTUP_UNWIND_BLOCKS),
-            AlignmentOutcome::NeedsUnwind { to: 0 }
+            decide_startup_alignment(pathdb, r, tip, r, MAX_STARTUP_UNWIND_BLOCKS),
+            AlignmentOutcome::NeedsUnwind { to: pathdb }
         );
     }
 
     #[test]
     fn gap_exceeds_limit_returns_exceeds_limit() {
         let r = root(5);
-        let tip = MAX_STARTUP_UNWIND_BLOCKS + 1;
+        let pathdb = 100;
+        let tip = pathdb + MAX_STARTUP_UNWIND_BLOCKS + 1;
         assert_eq!(
-            decide_startup_alignment(0, r, tip, r, MAX_STARTUP_UNWIND_BLOCKS),
+            decide_startup_alignment(pathdb, r, tip, r, MAX_STARTUP_UNWIND_BLOCKS),
             AlignmentOutcome::ExceedsLimit {
                 mdbx_tip: tip,
-                pathdb_block: 0,
-                gap: tip,
+                pathdb_block: pathdb,
+                gap: MAX_STARTUP_UNWIND_BLOCKS + 1,
                 limit: MAX_STARTUP_UNWIND_BLOCKS,
             }
         );
@@ -157,13 +159,14 @@ mod tests {
         // the pathdb root looks corrupt — the operator should investigate both.
         let triedb_r = root(8);
         let mdbx_r = root(9);
-        let tip = MAX_STARTUP_UNWIND_BLOCKS + 1;
+        let pathdb = 100;
+        let tip = pathdb + MAX_STARTUP_UNWIND_BLOCKS + 1;
         assert_eq!(
-            decide_startup_alignment(0, triedb_r, tip, mdbx_r, MAX_STARTUP_UNWIND_BLOCKS),
+            decide_startup_alignment(pathdb, triedb_r, tip, mdbx_r, MAX_STARTUP_UNWIND_BLOCKS),
             AlignmentOutcome::ExceedsLimit {
                 mdbx_tip: tip,
-                pathdb_block: 0,
-                gap: tip,
+                pathdb_block: pathdb,
+                gap: MAX_STARTUP_UNWIND_BLOCKS + 1,
                 limit: MAX_STARTUP_UNWIND_BLOCKS,
             }
         );
