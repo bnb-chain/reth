@@ -1118,6 +1118,9 @@ where
 
         let mdbx_tip = self.blockchain_db().last_block_number()?;
 
+        let gap = mdbx_tip.saturating_sub(pathdb_block);
+        metrics::gauge!("reth_startup_alignment_last_gap").set(gap as f64);
+
         // Fast-path Aligned / TriedbAhead without asking for a header — we
         // don't need one unless we're about to unwind.
         if mdbx_tip == pathdb_block {
@@ -1213,6 +1216,7 @@ where
                 let provider_rw = self.blockchain_db().database_provider_rw()?;
                 provider_rw.remove_block_and_execution_above(to)?;
                 provider_rw.commit()?;
+                metrics::counter!("reth_startup_alignment_unwinds_total").increment(1);
 
                 info!(
                     target: "reth::cli",
