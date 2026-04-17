@@ -83,6 +83,49 @@ pub enum ProviderError {
     /// Unable to find the safe block.
     #[error("safe block does not exist")]
     SafeBlockNotFound,
+    /// TrieDB pathdb is ahead of MDBX — invariant violation, not automatically
+    /// recoverable.
+    #[error(
+        "triedb pathdb (block #{pathdb_block}) is ahead of mdbx tip (block #{mdbx_tip}); \
+         this invariant is maintained by save_blocks ordering and cannot be repaired \
+         automatically — restore pathdb from snapshot or resync"
+    )]
+    TriedbAheadOfMdbx {
+        /// Block number reported by pathdb `latest_persist_state`.
+        pathdb_block: BlockNumber,
+        /// MDBX tip as reported by `last_block_number`.
+        mdbx_tip: BlockNumber,
+    },
+    /// TrieDB pathdb root does not match the header state root at `pathdb_block` —
+    /// one of the two backends is corrupted.
+    #[error(
+        "triedb/mdbx state root mismatch at block #{block}: triedb={triedb_root:?}, \
+         mdbx header={mdbx_root:?}"
+    )]
+    TriedbMdbxRootMismatch {
+        /// Block number where the mismatch was detected.
+        block: BlockNumber,
+        /// State root as reported by pathdb.
+        triedb_root: B256,
+        /// State root from the MDBX header at `block`.
+        mdbx_root: B256,
+    },
+    /// Gap between MDBX tip and TrieDB pathdb tip exceeds the hard safety limit.
+    #[error(
+        "startup alignment refused: mdbx tip #{mdbx_tip} is {gap} blocks ahead of \
+         triedb pathdb #{pathdb_block} (limit {limit}); verify pathdb path / chain \
+         config or run `reth stage unwind` explicitly before restarting"
+    )]
+    StartupUnwindExceedsLimit {
+        /// MDBX tip.
+        mdbx_tip: BlockNumber,
+        /// TrieDB pathdb tip.
+        pathdb_block: BlockNumber,
+        /// `mdbx_tip - pathdb_block`.
+        gap: u64,
+        /// The hard limit (`MAX_STARTUP_UNWIND_BLOCKS`).
+        limit: u64,
+    },
     /// Thrown when we failed to lookup a block for the pending state.
     #[error("unknown block {_0}")]
     UnknownBlockHash(B256),
