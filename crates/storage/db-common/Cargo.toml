@@ -51,11 +51,12 @@ tracing.workspace = true
 
 [features]
 io-uring = ["rust-eth-triedb/io-uring"]
-edge = ["reth-db-api/edge", "reth-provider/rocksdb"]
+edge = ["reth-db-api/edge"]
 
 [dev-dependencies]
 reth-db = { workspace = true, features = ["mdbx"] }
 reth-provider = { workspace = true, features = ["test-utils"] }
+reth-tasks.workspace = true
 
 [lints]
 workspace = true

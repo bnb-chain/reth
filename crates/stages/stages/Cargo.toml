@@ -51,6 +51,7 @@ reth-testing-utils = { workspace = true, optional = true }
 
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
+alloy-rlp.workspace = true
 alloy-consensus.workspace = true
 alloy-trie.workspace = true
 
@@ -123,5 +124,6 @@ test-utils = [
     "dep:reth-ethereum-primitives",
     "reth-ethereum-primitives?/test-utils",
     "reth-evm-ethereum/test-utils",
+    "reth-trie-common/test-utils",
     "reth-tasks/test-utils",
 ]

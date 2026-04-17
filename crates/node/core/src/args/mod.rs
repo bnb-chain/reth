@@ -80,5 +80,9 @@ pub use static_files::{StaticFilesArgs, MINIMAL_BLOCKS_PER_FILE};
 mod statedb;
 pub use statedb::StateDbArgs;
 
+/// `StorageArgs` for configuring storage layout (v1/v2).
+mod storage;
+pub use storage::{DefaultStorageValues, StorageArgs};
+
 mod error;
 pub mod types;

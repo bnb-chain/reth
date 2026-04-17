@@ -45,9 +45,9 @@ arbitrary = { workspace = true, features = ["derive"], optional = true }
 # misc
 rayon = { workspace = true, optional = true }
 
-# triedb dependencies (always available)
-rust-eth-triedb = { workspace = true }
-rust-eth-triedb-state-trie = { workspace = true }
+# triedb dependencies (require std)
+rust-eth-triedb = { workspace = true, optional = true }
+rust-eth-triedb-state-trie = { workspace = true, optional = true }
 
 [dev-dependencies]
 reth-primitives-traits = { workspace = true, features = ["serde"] }
@@ -71,7 +71,7 @@ revm-state.workspace = true
 
 [features]
 default = ["std"]
-io-uring = ["rust-eth-triedb/io-uring"]
+io-uring = ["rust-eth-triedb?/io-uring"]
 std = [
     "alloy-consensus/std",
     "alloy-genesis/std",
@@ -91,6 +91,8 @@ std = [
     "revm-database/std",
     "revm-state/std",
     "reth-codecs?/std",
+    "dep:rust-eth-triedb",
+    "dep:rust-eth-triedb-state-trie",
 ]
 eip1186 = ["alloy-rpc-types-eth/serde", "dep:alloy-serde"]
 serde = [
@@ -134,5 +136,6 @@ arbitrary = [
     "nybbles/arbitrary",
     "reth-codecs/arbitrary",
     "alloy-rpc-types-eth?/arbitrary",
+    "rust-eth-triedb-state-trie?/arbitrary",
 ]
 rayon = ["dep:rayon"]

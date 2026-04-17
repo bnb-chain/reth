@@ -40,12 +40,15 @@ use reth_storage_api::{
 };
 use reth_tasks::{pool::BlockingTaskGuard, Runtime};
 use reth_trie_common::{updates::TrieUpdates, HashedPostState};
-use rust_eth_triedb::triedb_manager::is_triedb_active;
-use revm::{context_interface::Transaction, state::EvmState, DatabaseCommit};
+use revm::{
+    context_interface::Block as BlockEnvTrait, database::states::bundle_state::BundleRetention,
+    state::EvmState, DatabaseCommit,
+};
 use revm_inspectors::tracing::{
     DebugInspector, FourByteInspector, MuxInspector, TracingInspector, TracingInspectorConfig,
     TransactionContext,
 };
+use rust_eth_triedb::triedb_manager::is_triedb_active;
 use serde::{Deserialize, Serialize};
 use std::{collections::VecDeque, sync::Arc};
 use tokio::sync::{AcquireError, OwnedSemaphorePermit};

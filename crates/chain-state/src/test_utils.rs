@@ -9,6 +9,7 @@ use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use core::marker::PhantomData;
 use rand::Rng;
+use rayon::iter::IntoParallelRefIterator;
 use reth_chainspec::{ChainSpec, EthereumHardfork, MIN_TRANSACTION_GAS};
 use reth_ethereum_primitives::{
     Block, BlockBody, EthPrimitives, Receipt, Transaction, TransactionSigned,
@@ -293,7 +294,7 @@ impl<N: NodePrimitives> TestBlockBuilder<N> {
 
         let hashed_state = reth_trie::HashedPostState::from_bundle_state::<
             reth_trie::KeccakKeyHasher,
-        >(bundle.state.iter())
+        >(bundle.state.par_iter())
         .into_sorted();
 
         let block_receipts = if receipts.is_empty() {

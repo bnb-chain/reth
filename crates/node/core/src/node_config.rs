@@ -3,7 +3,7 @@
 use crate::{
     args::{
         DatabaseArgs, DatadirArgs, DebugArgs, DevArgs, EngineArgs, NetworkArgs, PayloadBuilderArgs,
-        PruningArgs, RpcServerArgs, StateDbArgs, StaticFilesArgs, TxPoolArgs,
+        PruningArgs, RpcServerArgs, StateDbArgs, StaticFilesArgs, StorageArgs, TxPoolArgs,
     },
     dirs::{ChainPath, DataDirPath},
     utils::get_single_header,
@@ -21,6 +21,7 @@ use reth_primitives_traits::SealedHeader;
 use reth_stages_types::StageId;
 use reth_storage_api::{
     BlockHashReader, DatabaseProviderFactory, HeaderProvider, StageCheckpointReader,
+    StorageSettings,
 };
 use reth_storage_errors::provider::ProviderResult;
 use reth_transaction_pool::TransactionPool;
@@ -153,6 +154,9 @@ pub struct NodeConfig<ChainSpec> {
 
     /// All state database related arguments
     pub statedb: StateDbArgs,
+
+    /// Storage layout configuration (v1/v2)
+    pub storage: StorageArgs,
 }
 
 impl NodeConfig<ChainSpec> {
@@ -185,6 +189,7 @@ impl<ChainSpec> NodeConfig<ChainSpec> {
             era: EraArgs::default(),
             static_files: StaticFilesArgs::default(),
             statedb: StateDbArgs::default(),
+            storage: StorageArgs::default(),
         }
     }
 
@@ -260,6 +265,7 @@ impl<ChainSpec> NodeConfig<ChainSpec> {
             era,
             static_files,
             statedb,
+            storage,
             ..
         } = self;
         NodeConfig {
@@ -280,6 +286,7 @@ impl<ChainSpec> NodeConfig<ChainSpec> {
             era,
             static_files,
             statedb,
+            storage,
         }
     }
 
@@ -350,6 +357,12 @@ impl<ChainSpec> NodeConfig<ChainSpec> {
         self
     }
 
+    /// Set the storage args for the node
+    pub const fn with_storage(mut self, storage: StorageArgs) -> Self {
+        self.storage = storage;
+        self
+    }
+
     /// Set the pruning args for the node
     pub fn with_pruning(mut self, pruning: PruningArgs) -> Self {
         self.pruning = pruning;
@@ -362,6 +375,19 @@ impl<ChainSpec> NodeConfig<ChainSpec> {
         ChainSpec: EthereumHardforks,
     {
         self.pruning.prune_config(&self.chain)
+    }
+
+    /// Returns the effective storage settings for this node.
+    ///
+    /// Determined by the `--storage.v2` flag (defaults to `true`).
+    /// Existing databases retain whatever settings are persisted in their
+    /// metadata (checked during genesis init).
+    pub const fn storage_settings(&self) -> StorageSettings {
+        if self.storage.v2 {
+            StorageSettings::v2()
+        } else {
+            StorageSettings::v1()
+        }
     }
 
     /// Returns the max block that the node should run to, looking it up from the network if
@@ -559,6 +585,7 @@ impl<ChainSpec> NodeConfig<ChainSpec> {
             era: self.era,
             statedb: self.statedb,
             static_files: self.static_files,
+            storage: self.storage,
         }
     }
 
@@ -601,6 +628,7 @@ impl<ChainSpec> Clone for NodeConfig<ChainSpec> {
             era: self.era.clone(),
             statedb: self.statedb.clone(),
             static_files: self.static_files,
+            storage: self.storage,
         }
     }
 }

@@ -21,7 +21,9 @@ exclude_crates=(
   reth-dns-discovery
   reth-downloaders
   reth-e2e-test-utils
+  reth-engine-primitives # reth-trie-common/std -> rust-eth-triedb
   reth-engine-service
+  reth-ethereum-engine-primitives # reth-trie-common/std -> rust-eth-triedb
   reth-execution-cache
   reth-engine-tree
   reth-engine-util
@@ -34,12 +36,14 @@ exclude_crates=(
   reth-ipc
   reth-net-nat
   reth-network
+  reth-network-api # reth-trie-common/std -> rust-eth-triedb
   reth-node-api
   reth-node-builder
   reth-node-core
   reth-node-ethereum
   reth-node-events
   reth-node-metrics
+  reth-node-types # reth-trie-common/std -> rust-eth-triedb
   reth-rpc
   reth-rpc-api
   reth-rpc-api-testing-util
@@ -50,6 +54,7 @@ exclude_crates=(
   reth-rpc-eth-api
   reth-rpc-eth-types
   reth-rpc-layer
+  reth-rpc-server-types # reth-trie-common/std -> rust-eth-triedb
   reth-stages
   reth-engine-local
   reth-ress-protocol
@@ -62,6 +67,7 @@ exclude_crates=(
   reth-libmdbx # mdbx
   reth-mdbx-sys # mdbx
   reth-payload-builder # reth-metrics
+  reth-payload-builder-primitives # reth-trie-common/std -> rust-eth-triedb
   reth-provider # tokio
   reth-prune # tokio
   reth-prune-static-files # reth-provider
@@ -70,6 +76,7 @@ exclude_crates=(
   reth-static-file # tokio
   reth-transaction-pool # c-kzg
   reth-payload-util # reth-transaction-pool
+  reth-trie-db # rust-eth-triedb (rocksdb/jemalloc)
   reth-trie-parallel # tokio
   reth-trie-sparse-parallel # rayon
   reth-testing-utils
