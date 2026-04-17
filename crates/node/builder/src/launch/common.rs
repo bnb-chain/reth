@@ -1164,6 +1164,17 @@ where
                 Ok(())
             }
             AlignmentOutcome::TriedbAhead { pathdb_block, mdbx_tip } => {
+                // Unreachable in practice: the fast-path above already handles
+                // mdbx_tip < pathdb_block and emits this log. Keep the log here
+                // so future refactors that relocate the fast-path don't cause a
+                // silent-abort regression.
+                error!(
+                    target: "reth::cli",
+                    mdbx_tip,
+                    pathdb_block,
+                    outcome = "failed:triedb_ahead",
+                    "Startup alignment: triedb pathdb is ahead of mdbx — aborting"
+                );
                 Err(ProviderError::TriedbAheadOfMdbx { pathdb_block, mdbx_tip })
             }
             AlignmentOutcome::ExceedsLimit { mdbx_tip, pathdb_block, gap, limit } => {
