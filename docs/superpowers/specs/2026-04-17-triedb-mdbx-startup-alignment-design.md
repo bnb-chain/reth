@@ -238,6 +238,32 @@ Add one counter metric `reth_startup_alignment_unwinds_total` and a gauge
 `reth_startup_alignment_last_gap` for operators to alert on repeated
 alignments after crashes.
 
+## Relationship to runtime pathdb rewind
+
+The `on_remove_blocks_above` handler in `crates/engine/tree/src/persistence.rs`
+(the block starting at "Rewind pathdb when it is ahead of the new tip") handles
+a *different* scenario: **in-process reorgs during live sync** where
+`pathdb_tip > new_tip_num` because miner blocks or a dropped canonical branch
+were already persisted to pathdb. It uses MDBX changesets to synthesize a
+reverse diff and rolls pathdb back via
+`intermediate_and_commit_hashed_post_state`.
+
+This design does **not** replace or subsume that runtime path:
+
+- Startup alignment runs once per process lifetime, at boot, and only ever
+  unwinds **MDBX down to pathdb**. It never touches pathdb.
+- Runtime rewind fires on every reorg while the engine is live and only ever
+  rolls **pathdb down to the new canonical tip**. It never alters the startup
+  contract.
+
+Both are required. Immediately after startup alignment the invariant
+`pathdb_tip == mdbx_tip` holds; a subsequent reorg to some lower height leaves
+pathdb ahead of the new tip and the runtime path is the only code that can
+recover it (pathdb has no journal and cannot be unwound without the MDBX
+changesets that `take_block_and_execution_above` extracts).
+
+Do not delete the runtime rewind block when this design is implemented.
+
 ## Out of scope
 
 - Concurrent MDBX readers during alignment (none exist — this runs before
@@ -246,6 +272,11 @@ alignments after crashes.
 - CLI command for manual alignment. The startup path is the only supported
   entry today; if we later want an explicit command, it can delegate to the
   same function.
+- Changes to the runtime pathdb rewind in `on_remove_blocks_above` (see
+  "Relationship to runtime pathdb rewind" above). A small tightening of its
+  `Err(_)` fallback — currently warns and falls through to
+  `remove_block_and_execution_above`, leaving backends inconsistent — is worth
+  doing in a follow-up PR, not this one.
 
 ## Follow-ups (separate PRs)
 
@@ -253,3 +284,6 @@ alignments after crashes.
 - Extend the pathdb-gap guard in the engine tree to trust a freshly aligned
   backend (today it re-checks on every incoming block, which is harmless but
   costs one triedb read per block).
+- Tighten the `Err(_)` branch of the runtime pathdb rewind in
+  `on_remove_blocks_above` from warn-and-fallthrough to a fatal error, matching
+  this design's "backends disagree → stop" philosophy.
