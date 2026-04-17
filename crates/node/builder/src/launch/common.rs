@@ -67,9 +67,10 @@ use reth_node_metrics::{
 };
 use reth_provider::{
     providers::{NodeTypesForProvider, ProviderNodeTypes, RocksDBProvider, StaticFileProvider},
-    BlockHashReader, BlockNumReader, BlockReaderIdExt, DatabaseProviderFactory, HeaderProvider,
-    ProviderError, ProviderFactory, ProviderResult, RocksDBProviderFactory, StageCheckpointReader,
-    StaticFileProviderBuilder, StaticFileProviderFactory,
+    BlockExecutionWriter, BlockHashReader, BlockNumReader, BlockReaderIdExt, DBProvider,
+    DatabaseProviderFactory, HeaderProvider, ProviderError, ProviderFactory, ProviderResult,
+    RocksDBProviderFactory, StageCheckpointReader, StaticFileProviderBuilder,
+    StaticFileProviderFactory,
 };
 use reth_prune::{PruneModes, PrunerBuilder};
 use reth_rpc_builder::config::RethRpcServerConfig;
@@ -1033,7 +1034,15 @@ where
     /// This returns the configured `debug.tip` if set, otherwise it will check if backfill was
     /// previously interrupted and returns the block hash of the last checkpoint, see also
     /// [`Self::check_pipeline_consistency`]
-    pub fn initial_backfill_target(&self) -> ProviderResult<Option<B256>> {
+    pub fn initial_backfill_target(&self) -> ProviderResult<Option<B256>>
+    where
+        <T::Provider as DatabaseProviderFactory>::ProviderRW: BlockExecutionWriter,
+    {
+        // Make MDBX and TrieDB agree on the canonical tip before anything else
+        // consults disk state. After this call either returns Ok, the two
+        // backends are in sync (or TrieDB is inactive).
+        self.align_mdbx_to_triedb_at_startup()?;
+
         let mut initial_target = self.node_config().debug.tip;
 
         if initial_target.is_none() {
@@ -1072,6 +1081,143 @@ where
         }
 
         Ok(())
+    }
+
+    /// Align MDBX to TrieDB pathdb at startup.
+    ///
+    /// When TrieDB is active, this reads pathdb's persisted tip
+    /// (`latest_persist_state`) and MDBX's tip (`last_block_number`). If MDBX
+    /// is ahead, it unwinds MDBX (state + blocks + static files + stage
+    /// checkpoints) down to the pathdb tip via
+    /// [`BlockExecutionWriter::remove_block_and_execution_above`], committing
+    /// atomically. Equal tips are a no-op.
+    ///
+    /// Fails hard on three backend-disagreement cases:
+    /// - TrieDB ahead of MDBX (invariant violated; not automatically recoverable)
+    /// - Gap > [`alignment::MAX_STARTUP_UNWIND_BLOCKS`]
+    /// - `pathdb_root` does not match the MDBX header state root at `pathdb_block`
+    ///
+    /// Must be called before any pipeline or engine work — i.e. before
+    /// `check_pipeline_consistency` and before the engine service is built.
+    /// Called from [`Self::initial_backfill_target`].
+    pub fn align_mdbx_to_triedb_at_startup(&self) -> ProviderResult<()>
+    where
+        <T::Provider as DatabaseProviderFactory>::ProviderRW: BlockExecutionWriter,
+    {
+        use crate::launch::alignment::{
+            decide_startup_alignment, AlignmentOutcome, MAX_STARTUP_UNWIND_BLOCKS,
+        };
+
+        if !is_triedb_active() {
+            return Ok(());
+        }
+
+        let triedb = rust_eth_triedb::get_global_triedb();
+        let (pathdb_block, pathdb_root) =
+            triedb.latest_persist_state().map_err(ProviderError::other)?;
+
+        let mdbx_tip = self.blockchain_db().last_block_number()?;
+
+        // Fast-path Aligned / TriedbAhead without asking for a header — we
+        // don't need one unless we're about to unwind.
+        if mdbx_tip == pathdb_block {
+            info!(
+                target: "reth::cli",
+                mdbx_tip,
+                pathdb_block,
+                gap = 0u64,
+                outcome = "noop",
+                "Startup alignment: backends already in sync"
+            );
+            return Ok(());
+        }
+        if mdbx_tip < pathdb_block {
+            error!(
+                target: "reth::cli",
+                mdbx_tip,
+                pathdb_block,
+                outcome = "failed:triedb_ahead",
+                "Startup alignment: triedb pathdb is ahead of mdbx — aborting"
+            );
+            return Err(ProviderError::TriedbAheadOfMdbx { pathdb_block, mdbx_tip });
+        }
+
+        // mdbx_tip > pathdb_block: need a header at pathdb_block to validate
+        // roots before unwinding.
+        let mdbx_root_at_pathdb_block = self
+            .blockchain_db()
+            .header_by_number(pathdb_block)?
+            .ok_or_else(|| ProviderError::HeaderNotFound(pathdb_block.into()))?
+            .state_root();
+
+        let outcome = decide_startup_alignment(
+            pathdb_block,
+            pathdb_root,
+            mdbx_tip,
+            mdbx_root_at_pathdb_block,
+            MAX_STARTUP_UNWIND_BLOCKS,
+        );
+
+        match outcome {
+            AlignmentOutcome::Aligned => {
+                // Already handled above; unreachable in practice but harmless.
+                Ok(())
+            }
+            AlignmentOutcome::TriedbAhead { pathdb_block, mdbx_tip } => {
+                Err(ProviderError::TriedbAheadOfMdbx { pathdb_block, mdbx_tip })
+            }
+            AlignmentOutcome::ExceedsLimit { mdbx_tip, pathdb_block, gap, limit } => {
+                error!(
+                    target: "reth::cli",
+                    mdbx_tip,
+                    pathdb_block,
+                    gap,
+                    limit,
+                    outcome = "failed:exceeds_limit",
+                    "Startup alignment: gap exceeds safety limit — aborting"
+                );
+                Err(ProviderError::StartupUnwindExceedsLimit {
+                    mdbx_tip,
+                    pathdb_block,
+                    gap,
+                    limit,
+                })
+            }
+            AlignmentOutcome::RootMismatch { block, triedb_root, mdbx_root } => {
+                error!(
+                    target: "reth::cli",
+                    block,
+                    ?triedb_root,
+                    ?mdbx_root,
+                    outcome = "failed:root_mismatch",
+                    "Startup alignment: pathdb root disagrees with mdbx header — aborting"
+                );
+                Err(ProviderError::TriedbMdbxRootMismatch { block, triedb_root, mdbx_root })
+            }
+            AlignmentOutcome::NeedsUnwind { to } => {
+                let gap = mdbx_tip - to;
+                info!(
+                    target: "reth::cli",
+                    mdbx_tip,
+                    pathdb_block = to,
+                    gap,
+                    "Startup alignment: unwinding MDBX to match TrieDB pathdb tip"
+                );
+
+                let provider_rw = self.blockchain_db().database_provider_rw()?;
+                provider_rw.remove_block_and_execution_above(to)?;
+                provider_rw.commit()?;
+
+                info!(
+                    target: "reth::cli",
+                    new_tip = to,
+                    gap,
+                    outcome = "unwound",
+                    "Startup alignment: MDBX unwound; proceeding"
+                );
+                Ok(())
+            }
+        }
     }
 
     /// Check if the pipeline is consistent (all stages have the checkpoint block numbers no less
