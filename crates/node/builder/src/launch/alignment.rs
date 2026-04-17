@@ -47,10 +47,18 @@ pub(crate) enum AlignmentOutcome {
 
 /// Evaluate alignment purely from its inputs. No I/O.
 ///
-/// `mdbx_root_at_pathdb_block` is `None` only when MDBX does not have a header
-/// at `pathdb_block` (unexpected — caller should convert to a `HeaderNotFound`
-/// before invoking this function). If it is provided but does not match
-/// `pathdb_root`, the returned outcome is `RootMismatch`.
+/// `mdbx_root_at_pathdb_block` is the MDBX header's state root at
+/// `pathdb_block`. Callers fetch it only when they know they might need to
+/// unwind (i.e. `mdbx_tip > pathdb_block`); if the header is missing the
+/// caller should return `ProviderError::HeaderNotFound` before invoking this
+/// function. If it does not match `pathdb_root`, the returned outcome is
+/// `RootMismatch`.
+///
+/// `max_unwind` is the hard cap on the gap (`mdbx_tip - pathdb_block`) we are
+/// willing to tolerate. Gaps exceeding this return `ExceedsLimit` and take
+/// precedence over `RootMismatch` — a very large gap signals misconfiguration
+/// (wrong pathdb directory, mixed chains) and must be resolved by the
+/// operator, not by silent recovery.
 pub(crate) fn decide_startup_alignment(
     pathdb_block: BlockNumber,
     pathdb_root: B256,
