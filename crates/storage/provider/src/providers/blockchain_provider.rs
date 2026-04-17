@@ -1008,10 +1008,14 @@ mod tests {
                 let execution_output = (*lowest_memory_block.execution_output).clone();
                 lowest_memory_block.execution_output = Arc::new(execution_output);
 
-                // Push to disk
+                // Push to disk. MockNodeTypesWithDB does not activate TrieDB so
+                // no pending flushes are produced.
                 let provider_rw = hook_provider.database_provider_rw().unwrap();
-                provider_rw.save_blocks(vec![lowest_memory_block], SaveBlocksMode::Full).unwrap();
+                let pending = provider_rw
+                    .save_blocks(vec![lowest_memory_block], SaveBlocksMode::Full)
+                    .unwrap();
                 provider_rw.commit().unwrap();
+                debug_assert!(pending.is_empty());
 
                 // Remove from memory
                 hook_provider.canonical_in_memory_state.remove_persisted_blocks(num_hash);

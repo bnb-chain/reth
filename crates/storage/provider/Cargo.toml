@@ -29,6 +29,7 @@ reth-trie-db = { workspace = true, features = ["metrics"] }
 
 # triedb
 rust-eth-triedb.workspace = true
+rust-eth-triedb-common.workspace = true
 reth-nippy-jar.workspace = true
 reth-codecs.workspace = true
 reth-chain-state.workspace = true

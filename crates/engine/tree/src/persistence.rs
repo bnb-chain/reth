@@ -198,6 +198,22 @@ where
                         ).into());
                     }
 
+                    // Cross-backend ordering (rewind direction):
+                    //
+                    // The system-wide invariant is `pathdb_tip <= mdbx_tip` (pathdb
+                    // never has state for blocks MDBX doesn't know about, because
+                    // pathdb cannot be unwound without MDBX changesets).
+                    //
+                    // Forward direction (save_blocks): MDBX commits first, then
+                    // pathdb flushes. On mid-way crash, pathdb lags MDBX → recoverable.
+                    //
+                    // Backward direction (this branch): pathdb must flush first,
+                    // then MDBX commits. On mid-way crash, pathdb lags MDBX (pathdb
+                    // already at new lower tip, MDBX still at old higher tip) → still
+                    // recoverable. The reversed order would leave pathdb ahead of
+                    // MDBX, which is the unrecoverable "pathdb gap" deadlock.
+                    //
+                    // DO NOT reorder these two calls.
                     triedb
                         .flush(new_tip_num, new_root, &Some(difflayer))
                         .map_err(|e| ProviderError::other(e))?;
@@ -257,8 +273,27 @@ where
         if last_block.is_some() {
             let provider_rw = self.provider.database_provider_rw()?;
 
-            provider_rw.save_blocks(blocks, SaveBlocksMode::Full)?;
+            // TrieDB flushes are intentionally deferred: we first commit MDBX so it
+            // becomes the canonical source of truth for the tip, then apply the
+            // pathdb flushes. A crash between commit and apply leaves MDBX ahead of
+            // TrieDB (recoverable via re-execution / P2P backfill), never the
+            // reverse (which manifested as the "Triedb pathdb gap" deadlock).
+            let pending_triedb_flushes =
+                provider_rw.save_blocks(blocks, SaveBlocksMode::Full)?;
             provider_rw.commit()?;
+
+            for pending in pending_triedb_flushes {
+                let block_number = pending.block_number();
+                if let Err(err) = pending.apply() {
+                    error!(
+                        target: "engine::persistence",
+                        ?err,
+                        block_number,
+                        "Failed to apply deferred triedb flush after MDBX commit"
+                    );
+                    return Err(err.into());
+                }
+            }
         }
 
         debug!(target: "engine::persistence", first=?first_block, last=?last_block, "Saved range of blocks");
