@@ -35,7 +35,9 @@ use reth_primitives_traits::{
 };
 use reth_revm::{cached::CachedReads, database::StateProviderDatabase};
 use reth_rpc_api::BlockSubmissionValidationApiServer;
-use reth_rpc_server_types::result::{internal_rpc_err, invalid_params_rpc_err, rpc_error_with_code};
+use reth_rpc_server_types::result::{
+    internal_rpc_err, invalid_params_rpc_err, rpc_error_with_code,
+};
 use reth_storage_api::{BlockReaderIdExt, StateProviderFactory};
 use reth_tasks::Runtime;
 use revm_primitives::{Address, B256, U256};
@@ -209,7 +211,7 @@ where
 
         // Check if TrieDB is active, return error if so
         if is_triedb_active() {
-            return Err(ValidationApiError::MissingTrieNode.into())
+            return Err(ValidationApiError::MissingTrieNode)
         }
 
         let state_root =

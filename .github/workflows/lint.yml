@@ -54,6 +54,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+      - name: Install liburing-dev
+        run: sudo apt-get update && sudo apt-get install -y liburing-dev
       - run: cargo clippy --workspace --lib --examples --tests --benches --all-features --locked
         env:
           RUSTFLAGS: -D warnings
@@ -145,6 +147,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+      - name: Install liburing-dev
+        run: sudo apt-get update && sudo apt-get install -y liburing-dev
       - run: cargo docs --document-private-items
         env:
           # Keep in sync with ./book.yml:jobs.build
@@ -178,6 +182,8 @@ jobs:
         with:
           cache-on-failure: true
       - uses: taiki-e/install-action@cargo-udeps
+      - name: Install liburing-dev
+        run: sudo apt-get update && sudo apt-get install -y liburing-dev
       - run: cargo udeps --workspace --lib --examples --tests --benches --all-features --locked
 
   book:

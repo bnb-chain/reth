@@ -102,6 +102,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+      - name: Install liburing-dev
+        run: sudo apt-get update && sudo apt-get install -y liburing-dev
       - name: Run doctests
         run: cargo test --doc --workspace --all-features
 

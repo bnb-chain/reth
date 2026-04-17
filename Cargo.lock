@@ -5633,6 +5633,7 @@ dependencies = [
  "libc",
  "libz-sys",
  "lz4-sys",
+ "pkg-config",
  "tikv-jemalloc-sys",
  "zstd-sys",
 ]
@@ -7760,6 +7761,7 @@ dependencies = [
  "reth-trie",
  "reth-trie-common",
  "reth-trie-db",
+ "rust-eth-triedb",
  "secp256k1 0.30.0",
  "serde",
  "serde_json",
@@ -7975,6 +7977,7 @@ dependencies = [
  "alloy-consensus",
  "alloy-genesis",
  "alloy-primitives",
+ "alloy-trie",
  "boyer-moore-magiclen",
  "eyre",
  "reth-chainspec",
@@ -7993,6 +7996,9 @@ dependencies = [
  "reth-tasks",
  "reth-trie",
  "reth-trie-db",
+ "rust-eth-triedb",
+ "rust-eth-triedb-common",
+ "rust-eth-triedb-state-trie",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -8325,6 +8331,7 @@ dependencies = [
  "revm",
  "revm-primitives",
  "revm-state",
+ "rust-eth-triedb",
  "schnellru",
  "serde_json",
  "thiserror 2.0.18",
@@ -9219,6 +9226,7 @@ dependencies = [
  "reth-tracing",
  "reth-transaction-pool",
  "reth-trie-db",
+ "rust-eth-triedb",
  "secp256k1 0.30.0",
  "serde_json",
  "tempfile",
@@ -9584,6 +9592,7 @@ dependencies = [
  "revm-database-interface",
  "revm-state",
  "rocksdb",
+ "rust-eth-triedb",
  "strum",
  "tempfile",
  "tokio",
@@ -9734,6 +9743,7 @@ dependencies = [
  "revm",
  "revm-inspectors",
  "revm-primitives",
+ "rust-eth-triedb",
  "serde",
  "serde_json",
  "sha2",
@@ -9968,6 +9978,7 @@ dependencies = [
  "reth-trie-common",
  "revm",
  "revm-inspectors",
+ "rust-eth-triedb",
  "serde_json",
  "tokio",
  "tracing",
@@ -10077,6 +10088,7 @@ dependencies = [
  "alloy-genesis",
  "alloy-primitives",
  "alloy-rlp",
+ "alloy-trie",
  "assert_matches",
  "eyre",
  "futures-util",
@@ -10123,7 +10135,9 @@ dependencies = [
  "reth-testing-utils",
  "reth-tracing",
  "reth-trie",
+ "reth-trie-common",
  "reth-trie-db",
+ "rust-eth-triedb",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -10480,6 +10494,8 @@ dependencies = [
  "reth-primitives-traits",
  "revm-database",
  "revm-state",
+ "rust-eth-triedb",
+ "rust-eth-triedb-state-trie",
  "serde",
  "serde_json",
  "serde_with",
@@ -10510,6 +10526,7 @@ dependencies = [
  "reth-trie-common",
  "revm",
  "revm-database",
+ "rust-eth-triedb",
  "serde_json",
  "similar-asserts",
  "tracing",
@@ -10948,6 +10965,76 @@ name = "ruint-macro"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48fd7bd8a6377e15ad9d42a8ec25371b94ddc67abe7c8b9127bec79bebaaae18"
+
+[[package]]
+name = "rust-eth-triedb"
+version = "0.1.0"
+source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?tag=v0.0.1#2dc40833ebb7fe554a4bf9969abcdd41d2a47ca3"
+dependencies = [
+ "alloy-primitives",
+ "alloy-trie",
+ "metrics",
+ "once_cell",
+ "rayon",
+ "reth-metrics",
+ "rust-eth-triedb-common",
+ "rust-eth-triedb-pathdb",
+ "rust-eth-triedb-state-trie",
+ "schnellru",
+ "serde",
+ "thiserror 1.0.69",
+ "tikv-jemallocator",
+ "tracing",
+]
+
+[[package]]
+name = "rust-eth-triedb-common"
+version = "0.1.0"
+source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?tag=v0.0.1#2dc40833ebb7fe554a4bf9969abcdd41d2a47ca3"
+dependencies = [
+ "alloy-primitives",
+ "auto_impl",
+ "thiserror 1.0.69",
+ "tikv-jemallocator",
+]
+
+[[package]]
+name = "rust-eth-triedb-pathdb"
+version = "0.1.0"
+source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?tag=v0.0.1#2dc40833ebb7fe554a4bf9969abcdd41d2a47ca3"
+dependencies = [
+ "alloy-primitives",
+ "alloy-trie",
+ "metrics",
+ "reth-metrics",
+ "rocksdb",
+ "rust-eth-triedb-common",
+ "schnellru",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tikv-jemallocator",
+ "tracing",
+]
+
+[[package]]
+name = "rust-eth-triedb-state-trie"
+version = "0.1.0"
+source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?tag=v0.0.1#2dc40833ebb7fe554a4bf9969abcdd41d2a47ca3"
+dependencies = [
+ "alloy-primitives",
+ "alloy-rlp",
+ "alloy-trie",
+ "arbitrary",
+ "auto_impl",
+ "hex",
+ "rand 0.8.5",
+ "rayon",
+ "rust-eth-triedb-common",
+ "rust-eth-triedb-pathdb",
+ "thiserror 1.0.69",
+ "tikv-jemallocator",
+ "tracing",
+]
 
 [[package]]
 name = "rustc-demangle"

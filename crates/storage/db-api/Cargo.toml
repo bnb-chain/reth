@@ -58,6 +58,7 @@ proptest.workspace = true
 proptest-arbitrary-interop.workspace = true
 
 [features]
+edge = []
 test-utils = [
     "arbitrary",
     "reth-primitives-traits/test-utils",

@@ -57,7 +57,8 @@ use reth_trie_sparse::debug_recorder::TrieDebugRecorder;
 
 use crate::tree::payload_processor::receipt_root_task::{IndexedReceipt, ReceiptRootTaskHandle};
 use reth_chain_state::{
-    CanonicalInMemoryState, DeferredTrieData, ExecutedBlock, ExecutionTimingStats, LazyOverlay,
+    CanonicalInMemoryState, ComputedTrieData, DeferredTrieData, ExecutedBlock,
+    ExecutionTimingStats, LazyOverlay,
 };
 use reth_consensus::{ConsensusError, FullConsensus, ReceiptRootBloom};
 use reth_engine_primitives::{
@@ -367,7 +368,12 @@ where
     }
 
     /// Validates a block that has already been converted from a payload with triedb.
-    pub fn validate_block_with_state_with_triedb<T: PayloadTypes<BuiltPayload: BuiltPayload<Primitives = N>>>(
+    ///
+    /// This is a simplified path that skips state root computation since the triedb backend
+    /// handles state root verification independently.
+    pub fn validate_block_with_state_with_triedb<
+        T: PayloadTypes<BuiltPayload: BuiltPayload<Primitives = N>>,
+    >(
         &mut self,
         input: BlockOrPayload<T>,
         mut ctx: TreeCtx<'_, N>,
@@ -376,93 +382,95 @@ where
         V: PayloadValidator<T, Block = N::Block>,
         Evm: ConfigureEngineEvm<T::ExecutionData, Primitives = N>,
     {
-         /// A helper macro that returns the block in case there was an error
-         macro_rules! ensure_ok {
-            ($expr:expr) => {
-                match $expr {
-                    Ok(val) => val,
-                    Err(e) => {
-                        let block = self.convert_to_block(input)?;
-                        return Err(InsertBlockError::new(block.into_sealed_block(), e.into()).into())
-                    }
-                }
-            };
-        }
-
         let parent_hash = input.parent_hash();
         let block_num_hash = input.num_hash();
 
-        trace!(target: "engine::tree", block=?block_num_hash, parent=?parent_hash, "Fetching block state provider");
-        let Some(provider_builder) =
-            ensure_ok!(self.state_provider_builder(parent_hash, ctx.state()))
-        else {
-            // this is pre-validated in the tree
-            return Err(InsertBlockError::new(
-                self.convert_to_block(input)?.into_sealed_block(),
-                ProviderError::HeaderNotFound(parent_hash.into()).into(),
-            )
-            .into())
+        trace!(target: "engine::tree", block=?block_num_hash, parent=?parent_hash, "Fetching block state provider (triedb path)");
+
+        let provider_builder = match self.state_provider_builder(parent_hash, ctx.state()) {
+            Ok(Some(pb)) => pb,
+            Ok(None) => {
+                return Err(InsertBlockError::new(
+                    self.convert_to_block(input)?,
+                    ProviderError::HeaderNotFound(parent_hash.into()).into(),
+                )
+                .into())
+            }
+            Err(e) => {
+                return Err(InsertBlockError::new(self.convert_to_block(input)?, e.into()).into())
+            }
         };
 
-        let state_provider = ensure_ok!(provider_builder.build());
-
-        // fetch parent block
-        let Some(parent_block) = ensure_ok!(self.sealed_header_by_hash(parent_hash, ctx.state()))
-        else {
-            return Err(InsertBlockError::new(
-                self.convert_to_block(input)?.into_sealed_block(),
-                ProviderError::HeaderNotFound(parent_hash.into()).into(),
-            )
-            .into())
+        let state_provider = match provider_builder.build() {
+            Ok(sp) => sp,
+            Err(e) => {
+                return Err(InsertBlockError::new(self.convert_to_block(input)?, e.into()).into())
+            }
         };
 
-        let evm_env = self.evm_env_for(&input);
+        let parent_block = match self.sealed_header_by_hash(parent_hash, ctx.state()) {
+            Ok(Some(pb)) => pb,
+            Ok(None) => {
+                return Err(InsertBlockError::new(
+                    self.convert_to_block(input)?,
+                    ProviderError::HeaderNotFound(parent_hash.into()).into(),
+                )
+                .into())
+            }
+            Err(e) => {
+                return Err(InsertBlockError::new(self.convert_to_block(input)?, e.into()).into())
+            }
+        };
 
-        let env = ExecutionEnv { evm_env, hash: input.hash(), parent_hash: input.parent_hash() };
+        let evm_env = match self.evm_env_for(&input) {
+            Ok(env) => env,
+            Err(e) => {
+                return Err(InsertBlockError::new(
+                    self.convert_to_block(input)?,
+                    InsertBlockErrorKind::Other(Box::new(NewPayloadError::other(e))),
+                )
+                .into())
+            }
+        };
+
+        let env = ExecutionEnv {
+            evm_env,
+            hash: input.hash(),
+            parent_hash: input.parent_hash(),
+            parent_state_root: parent_block.state_root(),
+            transaction_count: input.transaction_count(),
+            gas_used: input.gas_used(),
+            withdrawals: input.withdrawals().map(|w| w.to_vec()),
+        };
 
         let txs = self.tx_iterator_for(&input)?;
-        let mut handle = self.payload_processor.spawn_cache_exclusive(
-            env.clone(),
-            txs,
-            provider_builder,
-        );
+        let mut handle =
+            self.payload_processor.spawn_cache_exclusive(env.clone(), txs, provider_builder, None);
 
-        // Use cached state provider before executing, used in execution after prewarming threads
-        // complete
-        let state_provider = CachedStateProvider::new_with_caches(
-            state_provider,
-            handle.caches(),
-            handle.cache_metrics(),
-        );
+        let mut state_provider: Box<dyn StateProvider + Send> = Box::new(state_provider);
+        if let Some((caches, cache_metrics)) = handle.caches().zip(handle.cache_metrics()) {
+            state_provider =
+                Box::new(CachedStateProvider::new(state_provider, caches, cache_metrics));
+        }
 
-        let output = if self.config.state_provider_metrics() {
-            let state_provider = InstrumentedStateProvider::from_state_provider(&state_provider);
-            let output = ensure_ok!(self.execute_block(&state_provider, env, &input, &mut handle));
-            state_provider.record_total_latency();
-            output
-        } else {
-            ensure_ok!(self.execute_block(&state_provider, env, &input, &mut handle))
-        };
-        // after executing the block we can stop executing transactions
+        let (output, senders, _receipt_rx) =
+            match self.execute_block(state_provider, env, &input, &mut handle) {
+                Ok(result) => result,
+                Err(e) => {
+                    return Err(InsertBlockError::new(self.convert_to_block(input)?, e).into())
+                }
+            };
+
         handle.stop_prewarming_execution();
 
         let block = self.convert_to_block(input)?;
+        let block = block.with_senders(senders);
 
-        // A helper macro that returns the block in case there was an error
-        macro_rules! ensure_ok {
-            ($expr:expr) => {
-                match $expr {
-                    Ok(val) => val,
-                    Err(e) => return Err(InsertBlockError::new(block.into_sealed_block(), e.into()).into()),
-                }
-            };
+        trace!(target: "engine::tree", block=?block_num_hash, "Validating block consensus (triedb)");
+        if let Err(e) = self.validate_block_inner(&block, None) {
+            return Err(InsertBlockError::new(block.into_sealed_block(), e.into()).into())
         }
 
-        trace!(target: "engine::tree", block=?block_num_hash, "Validating block consensus");
-        // validate block consensus rules
-        ensure_ok!(self.validate_block_inner(&block));
-
-        // now validate against the parent
         if let Err(e) =
             self.consensus.validate_header_against_parent(block.sealed_header(), &parent_block)
         {
@@ -470,8 +478,8 @@ where
             return Err(InsertBlockError::new(block.into_sealed_block(), e.into()).into())
         }
 
-        if let Err(err) = self.consensus.validate_block_post_execution(&block, &output) {
-            // call post-block hook
+        if let Err(err) = self.consensus.validate_block_post_execution(&block, &output.result, None)
+        {
             self.on_invalid_block(&parent_block, &block, &output, None, ctx.state_mut());
             return Err(InsertBlockError::new(block.into_sealed_block(), err.into()).into())
         }
@@ -481,21 +489,22 @@ where
         if let Err(err) =
             self.validator.validate_block_post_execution_with_hashed_state(&hashed_state, &block)
         {
-            // call post-block hook
             self.on_invalid_block(&parent_block, &block, &output, None, ctx.state_mut());
             return Err(InsertBlockError::new(block.into_sealed_block(), err.into()).into())
         }
-        // terminate prewarming task with good state output
-        handle.terminate_caching(Some(output.state.clone()));
 
-        Ok(ExecutedBlockWithTrieUpdates {
-            block: ExecutedBlock {
-                recovered_block: Arc::new(block),
-                execution_output: Arc::new(ExecutionOutcome::from((output, block_num_hash.number))),
-                hashed_state: Arc::new(hashed_state),
-            },
-            trie: ExecutedTrieUpdates::Present(Arc::new(TrieUpdates::default())),
-        })
+        let output = Arc::new(output);
+        handle.terminate_caching(Some(output.clone()));
+
+        // Skip state root computation — triedb handles state verification.
+        let trie_data = ComputedTrieData {
+            hashed_state: Arc::new(hashed_state.into_sorted()),
+            trie_updates: Arc::new(Default::default()),
+            anchored_trie_input: None,
+        };
+        let executed_block = ExecutedBlock::new(Arc::new(block), output, trie_data);
+
+        Ok((executed_block, None))
     }
 
     /// Validates a block that has already been converted from a payload.
