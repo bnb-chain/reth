@@ -1066,9 +1066,9 @@ where
     /// This checks for OP-Mainnet and ensures we have all the necessary data to progress (past
     /// bedrock height)
     fn ensure_chain_specific_db_checks(&self) -> ProviderResult<()> {
-        if self.chain_spec().is_optimism() &&
-            !self.is_dev() &&
-            self.chain_id() == Chain::optimism_mainnet()
+        if self.chain_spec().is_optimism()
+            && !self.is_dev()
+            && self.chain_id() == Chain::optimism_mainnet()
         {
             let latest = self.blockchain_db().last_block_number()?;
             // bedrock height
@@ -1187,12 +1187,7 @@ where
                     outcome = "failed:exceeds_limit",
                     "Startup alignment: gap exceeds safety limit — aborting"
                 );
-                Err(ProviderError::StartupUnwindExceedsLimit {
-                    mdbx_tip,
-                    pathdb_block,
-                    gap,
-                    limit,
-                })
+                Err(ProviderError::StartupUnwindExceedsLimit { mdbx_tip, pathdb_block, gap, limit })
             }
             AlignmentOutcome::RootMismatch { block, triedb_root, mdbx_root } => {
                 error!(
@@ -1300,6 +1295,14 @@ where
     }
 
     /// Check if the pipeline is consistent under `TrieDB`.
+    ///
+    /// **Precondition:** [`Self::align_mdbx_to_triedb_at_startup`] has already
+    /// run and guarantees `mdbx_tip == pathdb_tip`. This function therefore
+    /// only needs to detect *pipeline-interrupt* inconsistencies — stages
+    /// whose checkpoints trail the first stage because a previous pipeline run
+    /// died mid-flight (e.g. before `TrieDB` was ever written). Backend
+    /// cross-alignment is not handled here; the earlier alignment step is the
+    /// only place that unwinds MDBX for that reason.
     pub fn check_pipeline_consistency_under_triedb(&self) -> ProviderResult<Option<B256>> {
         // If no target was provided, check if the stages are congruent - check if the
         // checkpoint of the last stage matches the checkpoint of the first.
@@ -1310,11 +1313,11 @@ where
             .block_number;
 
         let triedb = rust_eth_triedb::get_global_triedb();
-        let (triedb_checkpoint_block_number, triedb_checkpoint_state_root) =
-            triedb.latest_persist_state().unwrap();
+        let (triedb_checkpoint_block_number, _triedb_checkpoint_state_root) =
+            triedb.latest_persist_state().map_err(ProviderError::other)?;
 
-        // Skip the first stage as we've already retrieved it and comparing all other checkpoints
-        // against it.
+        // Skip the first stage as we've already retrieved it and comparing all other
+        // checkpoints against it.
         for stage_id in &StageId::ALL {
             let stage_checkpoint = self
                 .blockchain_db()
@@ -1322,8 +1325,9 @@ where
                 .unwrap_or_default()
                 .block_number;
 
-            // If the checkpoint of any stage is less than the checkpoint of the first stage,
-            // retrieve and return the block hash of the latest header and use it as the target.
+            // If the checkpoint of any stage is less than the checkpoint of the first
+            // stage, retrieve and return the block hash of the latest header and use
+            // it as the target.
             if stage_checkpoint < first_stage_checkpoint {
                 if triedb_checkpoint_block_number > first_stage_checkpoint {
                     info!(
@@ -1345,43 +1349,10 @@ where
             }
         }
 
-        info!(target: "consensus::engine", "Pipeline sync progress is consistent, will check live sync progress");
-
-        let last_persisted_block_number = self.blockchain_db().last_block_number()?;
-        let last_persisted_header = self
-            .blockchain_db()
-            .header_by_number(last_persisted_block_number)?
-            .ok_or_else(|| {
-                reth_provider::ProviderError::HeaderNotFound(alloy_eips::BlockHashOrNumber::Number(
-                    last_persisted_block_number,
-                ))
-            })?;
-        let last_persisted_state_root = last_persisted_header.state_root();
-
-        if last_persisted_block_number > triedb_checkpoint_block_number {
-            info!(target: "consensus::engine",
-            last_persisted_block_number,
-            last_persisted_state_root = ?last_persisted_state_root,
-            triedb_checkpoint_block_number,
-            triedb_checkpoint_state_root = ?triedb_checkpoint_state_root,
-            "Last persisted state is ahead of the TrieDB state, start pipeline sync to align");
-            return self.blockchain_db().block_hash(last_persisted_block_number);
-        } else if last_persisted_block_number < triedb_checkpoint_block_number {
-            info!(target: "consensus::engine",
-            last_persisted_block_number,
-            last_persisted_state_root = ?last_persisted_state_root,
-            triedb_checkpoint_block_number,
-            triedb_checkpoint_state_root = ?triedb_checkpoint_state_root,
-            "Last persisted state is behind of the TrieDB state, start pipeline sync to align");
-            return self.blockchain_db().block_hash(last_persisted_block_number);
-        }
-
-        info!(target: "consensus::engine",
-            last_persisted_block_number,
-            last_persisted_state_root = ?last_persisted_state_root,
-            triedb_checkpoint_block_number,
-            triedb_checkpoint_state_root = ?triedb_checkpoint_state_root,
-            "Last persisted state equal TrieDB state, start live sync");
+        info!(
+            target: "consensus::engine",
+            "Pipeline sync progress is consistent and backends are aligned; starting live sync"
+        );
 
         Ok(None)
     }
@@ -1394,11 +1365,9 @@ where
     where
         T: FullNodeTypes<Provider: StaticFileProviderFactory>,
     {
-        if self.node_config().pruning.bodies_pre_merge &&
-            let Some(merge_block) = self
-                .chain_spec()
-                .ethereum_fork_activation(EthereumHardfork::Paris)
-                .block_number()
+        if self.node_config().pruning.bodies_pre_merge
+            && let Some(merge_block) =
+                self.chain_spec().ethereum_fork_activation(EthereumHardfork::Paris).block_number()
         {
             let merge_block = BlockNumber::from(merge_block);
             // Ensure we only expire transactions after we synced past the merge block.
@@ -1534,8 +1503,8 @@ where
             while let Some(event) = engine_events.next().await {
                 use reth_engine_primitives::ConsensusEngineEvent;
                 match event {
-                    ConsensusEngineEvent::ForkBlockAdded(executed, duration) |
-                    ConsensusEngineEvent::CanonicalBlockAdded(executed, duration) => {
+                    ConsensusEngineEvent::ForkBlockAdded(executed, duration)
+                    | ConsensusEngineEvent::CanonicalBlockAdded(executed, duration) => {
                         let block_hash = executed.recovered_block.num_hash().hash;
                         let block_number = executed.recovered_block.num_hash().number;
                         if let Err(e) = ethstats_for_events
