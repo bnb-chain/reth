@@ -24,25 +24,13 @@ pub(crate) enum AlignmentOutcome {
         to: BlockNumber,
     },
     /// `mdbx_tip < pathdb_block`. Invariant violation; caller must fail hard.
-    TriedbAhead {
-        pathdb_block: BlockNumber,
-        mdbx_tip: BlockNumber,
-    },
+    TriedbAhead { pathdb_block: BlockNumber, mdbx_tip: BlockNumber },
     /// `mdbx_tip - pathdb_block > MAX_STARTUP_UNWIND_BLOCKS`. Caller must fail
     /// hard and tell the operator to investigate.
-    ExceedsLimit {
-        mdbx_tip: BlockNumber,
-        pathdb_block: BlockNumber,
-        gap: u64,
-        limit: u64,
-    },
+    ExceedsLimit { mdbx_tip: BlockNumber, pathdb_block: BlockNumber, gap: u64, limit: u64 },
     /// `pathdb_root != mdbx_header.state_root()` at `pathdb_block`. Caller
     /// must fail hard; data integrity problem.
-    RootMismatch {
-        block: BlockNumber,
-        triedb_root: B256,
-        mdbx_root: B256,
-    },
+    RootMismatch { block: BlockNumber, triedb_root: B256, mdbx_root: B256 },
 }
 
 /// Evaluate alignment purely from its inputs. No I/O.
@@ -159,11 +147,7 @@ mod tests {
         let mdbx_r = root(7);
         assert_eq!(
             decide_startup_alignment(100, triedb_r, 105, mdbx_r, MAX_STARTUP_UNWIND_BLOCKS),
-            AlignmentOutcome::RootMismatch {
-                block: 100,
-                triedb_root: triedb_r,
-                mdbx_root: mdbx_r,
-            }
+            AlignmentOutcome::RootMismatch { block: 100, triedb_root: triedb_r, mdbx_root: mdbx_r }
         );
     }
 
