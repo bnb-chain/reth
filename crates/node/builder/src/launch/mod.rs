@@ -5,6 +5,7 @@ mod exex;
 pub mod invalid_block_hook;
 
 pub(crate) mod debug;
+pub(crate) mod alignment;
 pub(crate) mod engine;
 
 pub use common::LaunchContext;
