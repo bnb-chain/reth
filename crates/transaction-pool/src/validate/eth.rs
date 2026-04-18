@@ -419,6 +419,12 @@ where
             EIP4844_TX_TYPE_ID if !self.eip4844 => {
                 return Err(InvalidTransactionError::Eip4844Disabled.into())
             }
+            // Reject blob transactions with zero max_fee_per_blob_gas
+            EIP4844_TX_TYPE_ID if transaction.max_fee_per_blob_gas() == Some(0) => {
+                return Err(InvalidPoolTransactionError::Eip4844(
+                    Eip4844PoolTransactionError::ZeroBlobFee,
+                ));
+            }
             // Reject EIP-7702 transactions.
             EIP7702_TX_TYPE_ID if !self.eip7702 => {
                 return Err(InvalidTransactionError::Eip7702Disabled.into())

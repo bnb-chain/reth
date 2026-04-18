@@ -94,4 +94,5 @@ allow-git = [
     "https://github.com/paradigmxyz/jsonrpsee",
     "https://github.com/DaniPopes/slotmap.git",
     "https://github.com/bnb-chain/reth-bsc-triedb.git",
+    "https://github.com/bnb-chain/reth-core.git",
 ]

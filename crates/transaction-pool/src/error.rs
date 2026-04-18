@@ -197,6 +197,9 @@ pub enum Eip4844PoolTransactionError {
     /// Thrown if blob transaction has an EIP-7594 style sidecar but EIP-7594 support is disabled.
     #[error("eip-7594 sidecar disallowed")]
     Eip7594SidecarDisallowed,
+    /// Thrown if blob transaction has a zero `max_fee_per_blob_gas`
+    #[error("blob transaction with zero max_fee_per_blob_gas")]
+    ZeroBlobFee,
 }
 
 /// Represents all errors that can happen when validating transactions for the pool for EIP-7702
@@ -397,6 +400,11 @@ impl InvalidPoolTransactionError {
                         // for now we do not want to penalize peers for broadcasting different
                         // sidecars
                         false
+                    }
+                    Eip4844PoolTransactionError::ZeroBlobFee => {
+                        // this is a malformed transaction with zero blob fee and should not be sent
+                        // over the network
+                        true
                     }
                 }
             }
