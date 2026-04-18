@@ -414,6 +414,15 @@ impl<T: EthPoolTransaction> TransactionValidator for MockTransactionValidator<T>
                 InvalidPoolTransactionError::Underpriced,
             );
         }
+        // Reject blob transactions with zero max_fee_per_blob_gas
+        if transaction.max_fee_per_blob_gas() == Some(0) {
+            return TransactionValidationOutcome::Invalid(
+                transaction,
+                InvalidPoolTransactionError::Eip4844(
+                    crate::error::Eip4844PoolTransactionError::ZeroBlobFee,
+                ),
+            );
+        }
         let maybe_sidecar = transaction.take_blob().maybe_sidecar().cloned();
         // we return `balance: U256::MAX` to simulate a valid transaction which will never go into
         // overdraft
