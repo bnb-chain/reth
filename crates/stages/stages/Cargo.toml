@@ -103,6 +103,21 @@ tempfile.workspace = true
 
 [features]
 io-uring = ["rust-eth-triedb/io-uring"]
+jemalloc = [
+    "rust-eth-triedb/jemalloc",
+    "reth-db-common/jemalloc",
+    "reth-provider/jemalloc",
+    "reth-trie-common/jemalloc",
+    "reth-trie-db/jemalloc",
+]
+asm-keccak = [
+    "rust-eth-triedb/asm-keccak",
+    "alloy-primitives/asm-keccak",
+    "reth-db-common/asm-keccak",
+    "reth-provider/asm-keccak",
+    "reth-trie-common/asm-keccak",
+    "reth-trie-db/asm-keccak",
+]
 test-utils = [
     "reth-network-p2p/test-utils",
     "reth-db/test-utils",

@@ -162,7 +162,7 @@ pub trait EthState: LoadState + SpawnBlocking {
         Ok(async move {
             // Check if TrieDB is active, return error if so
             if is_triedb_active() {
-                return Err(EthApiError::MissingTrieNode.into())
+                return Err(EthApiError::MethodNotAvailable("eth_getProof".to_string()).into())
             }
 
             let _permit = self
@@ -195,7 +195,7 @@ pub trait EthState: LoadState + SpawnBlocking {
         self.spawn_blocking_io_fut(move |this| async move {
             // Check if TrieDB is active, return error if so
             if is_triedb_active() {
-                return Err(EthApiError::MissingTrieNode.into())
+                return Err(EthApiError::MethodNotAvailable("eth_getAccount".to_string()).into())
             }
 
             let state = this.state_at_block_id(block_id).await?;

@@ -13,7 +13,13 @@ workspace = true
 
 [features]
 ef-tests = []
-asm-keccak = ["alloy-primitives/asm-keccak", "revm/asm-keccak", "reth-provider/asm-keccak"]
+asm-keccak = [
+    "alloy-primitives/asm-keccak",
+    "revm/asm-keccak",
+    "reth-provider/asm-keccak",
+    "reth-db-common/asm-keccak",
+    "reth-trie-db/asm-keccak",
+]
 
 [dependencies]
 reth-chainspec.workspace = true

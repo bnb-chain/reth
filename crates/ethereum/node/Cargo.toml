@@ -89,6 +89,9 @@ asm-keccak = [
     "reth-node-core/asm-keccak",
     "revm/asm-keccak",
     "reth-provider/asm-keccak",
+    "reth-node-builder/asm-keccak",
+    "reth-rpc/asm-keccak",
+    "reth-rpc-eth-api/asm-keccak",
 ]
 keccak-cache-global = [
     "alloy-primitives/keccak-cache-global",

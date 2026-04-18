@@ -44,11 +44,15 @@ dev = ["reth-cli-commands/arbitrary"]
 asm-keccak = [
     "reth-node-core/asm-keccak",
     "reth-node-ethereum/asm-keccak",
+    "reth-cli-commands/asm-keccak",
+    "reth-node-builder/asm-keccak",
 ]
 
 jemalloc = [
     "reth-node-core/jemalloc",
     "reth-node-metrics/jemalloc",
+    "reth-cli-commands/jemalloc",
+    "reth-node-builder/jemalloc",
 ]
 jemalloc-prof = [
     "jemalloc",

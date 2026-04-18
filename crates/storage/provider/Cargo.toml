@@ -90,8 +90,16 @@ tokio = { workspace = true, features = ["sync", "macros", "rt-multi-thread"] }
 
 [features]
 io-uring = ["rust-eth-triedb/io-uring"]
-jemalloc = ["rust-eth-triedb/jemalloc", "rocksdb/jemalloc"]
-asm-keccak = ["rust-eth-triedb/asm-keccak", "alloy-primitives/asm-keccak"]
+jemalloc = [
+    "rust-eth-triedb/jemalloc",
+    "rocksdb/jemalloc",
+    "reth-trie-db/jemalloc",
+]
+asm-keccak = [
+    "rust-eth-triedb/asm-keccak",
+    "alloy-primitives/asm-keccak",
+    "reth-trie-db/asm-keccak",
+]
 test-utils = [
     "reth-db/test-utils",
     "reth-nippy-jar/test-utils",

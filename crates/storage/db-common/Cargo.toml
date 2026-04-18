@@ -52,6 +52,21 @@ tracing.workspace = true
 [features]
 io-uring = ["rust-eth-triedb/io-uring"]
 edge = ["reth-db-api/edge"]
+jemalloc = [
+    "rust-eth-triedb/jemalloc",
+    "reth-provider/jemalloc",
+    "reth-trie-db/jemalloc",
+    "rust-eth-triedb-common/jemalloc",
+    "rust-eth-triedb-state-trie/jemalloc",
+]
+asm-keccak = [
+    "rust-eth-triedb/asm-keccak",
+    "alloy-primitives/asm-keccak",
+    "reth-provider/asm-keccak",
+    "reth-trie-db/asm-keccak",
+    "rust-eth-triedb-common/asm-keccak",
+    "rust-eth-triedb-state-trie/asm-keccak",
+]
 
 [dev-dependencies]
 reth-db = { workspace = true, features = ["mdbx"] }
