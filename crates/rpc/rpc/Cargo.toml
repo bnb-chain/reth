@@ -106,6 +106,22 @@ jsonrpsee = { workspace = true, features = ["client"] }
 
 [features]
 io-uring = ["rust-eth-triedb/io-uring"]
+jemalloc = [
+    "rust-eth-triedb/jemalloc",
+    "reth-provider/jemalloc",
+    "reth-rpc-eth-api/jemalloc",
+    "reth-trie-common/jemalloc",
+]
+asm-keccak = [
+    "rust-eth-triedb/asm-keccak",
+    "alloy-evm/asm-keccak",
+    "alloy-primitives/asm-keccak",
+    "reth-provider/asm-keccak",
+    "reth-rpc-eth-api/asm-keccak",
+    "reth-trie-common/asm-keccak",
+    "revm/asm-keccak",
+    "revm-primitives/asm-keccak",
+]
 js-tracer = [
     "revm-inspectors/js-tracer",
     "reth-rpc-eth-types/js-tracer",

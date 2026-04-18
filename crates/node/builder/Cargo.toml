@@ -99,6 +99,29 @@ reth-evm-ethereum = { workspace = true, features = ["test-utils"] }
 [features]
 default = []
 io-uring = ["rust-eth-triedb/io-uring"]
+jemalloc = [
+    "rust-eth-triedb/jemalloc",
+    "reth-db-common/jemalloc",
+    "reth-engine-tree/jemalloc",
+    "reth-node-core/jemalloc",
+    "reth-node-metrics/jemalloc",
+    "reth-provider/jemalloc",
+    "reth-rpc/jemalloc",
+    "reth-stages/jemalloc",
+    "reth-trie-db/jemalloc",
+]
+asm-keccak = [
+    "rust-eth-triedb/asm-keccak",
+    "alloy-primitives/asm-keccak",
+    "reth-db-common/asm-keccak",
+    "reth-engine-tree/asm-keccak",
+    "reth-node-core/asm-keccak",
+    "reth-node-ethereum/asm-keccak",
+    "reth-provider/asm-keccak",
+    "reth-rpc/asm-keccak",
+    "reth-stages/asm-keccak",
+    "reth-trie-db/asm-keccak",
+]
 js-tracer = [
     "reth-rpc/js-tracer",
     "reth-node-ethereum/js-tracer",

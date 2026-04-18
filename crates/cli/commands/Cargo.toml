@@ -116,6 +116,31 @@ tempfile.workspace = true
 [features]
 default = []
 io-uring = ["rust-eth-triedb/io-uring"]
+jemalloc = [
+    "rust-eth-triedb/jemalloc",
+    "reth-cli-util/jemalloc",
+    "reth-db-common/jemalloc",
+    "reth-ethereum-cli/jemalloc",
+    "reth-node-builder/jemalloc",
+    "reth-node-core/jemalloc",
+    "reth-node-metrics/jemalloc",
+    "reth-provider/jemalloc",
+    "reth-stages/jemalloc",
+    "reth-trie-common?/jemalloc",
+    "reth-trie-db/jemalloc",
+]
+asm-keccak = [
+    "rust-eth-triedb/asm-keccak",
+    "alloy-primitives/asm-keccak",
+    "reth-db-common/asm-keccak",
+    "reth-ethereum-cli/asm-keccak",
+    "reth-node-builder/asm-keccak",
+    "reth-node-core/asm-keccak",
+    "reth-provider/asm-keccak",
+    "reth-stages/asm-keccak",
+    "reth-trie-common?/asm-keccak",
+    "reth-trie-db/asm-keccak",
+]
 arbitrary = [
     "dep:proptest",
     "dep:arbitrary",

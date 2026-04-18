@@ -77,6 +77,8 @@ jemalloc = [
     "reth-node-core/jemalloc",
     "reth-ethereum-cli/jemalloc",
     "reth-provider/jemalloc",
+    "reth-engine-tree/jemalloc",
+    "reth-node-builder/jemalloc",
 ]
 
 asm-keccak = [
@@ -88,6 +90,8 @@ asm-keccak = [
     "revm/asm-keccak",
     "revm-primitives/asm-keccak",
     "reth-provider/asm-keccak",
+    "reth-engine-tree/asm-keccak",
+    "reth-node-builder/asm-keccak",
 ]
 
 min-debug-logs = [
