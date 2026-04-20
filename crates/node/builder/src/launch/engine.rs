@@ -140,8 +140,8 @@ impl EngineNodeLauncher {
             })?
             .with_components(components_builder, on_component_initialized).await?;
 
-        let engine_tree_config = if is_triedb_active() &&
-            engine_tree_config.memory_block_buffer_target() < 256
+        let engine_tree_config = if is_triedb_active()
+            && engine_tree_config.memory_block_buffer_target() < 256
         {
             info!(target: "reth::cli", "TrieDB is active, setting memory block buffer target to 256, old target={}", engine_tree_config.memory_block_buffer_target());
             engine_tree_config.with_memory_block_buffer_target(256)
@@ -358,14 +358,36 @@ impl EngineNodeLauncher {
                         // EngineShutdown::shutdown() already handed ownership of its own
                         // done_tx to engine-tree.
                         _guard = &mut graceful, if !terminating => {
-                            debug!(target: "reth::cli", "received graceful shutdown signal; triggering engine terminate");
+                            let canonical_tip = provider.best_block_number().ok();
+                            let persisted_before = provider.last_block_number().ok();
+                            info!(
+                                target: "reth::cli",
+                                ?canonical_tip,
+                                ?persisted_before,
+                                "Graceful shutdown: starting engine flush",
+                            );
+                            let flush_start = std::time::Instant::now();
                             let (done_tx, done_rx) = oneshot::channel();
                             engine_service.orchestrator_mut().handler_mut().handler_mut().on_event(
                                 FromOrchestrator::Terminate { tx: done_tx }.into()
                             );
                             match done_rx.await {
-                                Ok(()) => debug!(target: "reth::cli", "engine flush complete; exiting consensus loop"),
-                                Err(err) => warn!(target: "reth::cli", %err, "engine shutdown done-channel closed before completion"),
+                                Ok(()) => {
+                                    let persisted_after = provider.last_block_number().ok();
+                                    info!(
+                                        target: "reth::cli",
+                                        duration_ms = flush_start.elapsed().as_millis() as u64,
+                                        ?persisted_before,
+                                        ?persisted_after,
+                                        "Graceful shutdown: engine flush complete",
+                                    );
+                                }
+                                Err(err) => warn!(
+                                    target: "reth::cli",
+                                    %err,
+                                    duration_ms = flush_start.elapsed().as_millis() as u64,
+                                    "Graceful shutdown: done-channel closed before completion",
+                                ),
                             }
                             // NOTE: we deliberately do NOT set `terminating = true` here. The `break`
                             // below is the sole enforcement of the "first shutdown wins" invariant

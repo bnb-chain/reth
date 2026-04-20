@@ -424,12 +424,21 @@ the flush is interrupted and the warning is logged, and that the default
 
 Add these log lines (target `reth::cli` unless stated):
 
-| Event | Level | Message |
+| Event | Level | Message (structured fields) |
 |-------|-------|---------|
-| Consensus-engine graceful arm entered | `debug` | `graceful shutdown signal; triggering engine terminate` |
-| `done_rx` resolved `Ok` | `debug` | `engine flush complete; exiting consensus loop` |
-| `done_rx` resolved `Err` | `warn` | `engine shutdown done-channel closed before completion` |
+| Consensus-engine graceful arm entered | `info` | `Graceful shutdown: starting engine flush` (`canonical_tip`, `persisted_before`) |
+| `done_rx` resolved `Ok` | `info` | `Graceful shutdown: engine flush complete` (`duration_ms`, `persisted_before`, `persisted_after`) |
+| `done_rx` resolved `Err` | `warn` | `Graceful shutdown: done-channel closed before completion` (`duration_ms`) |
 | Engine-tree persist loop (already exists) | `debug` (`engine::tree`) | `persistence complete, signaling termination` |
+
+The two `info` lines form a matched bracket: every successful graceful
+shutdown emits exactly one "starting" log and one "complete" log. Operators
+running at default `RUST_LOG=info` can compute the number of blocks
+persisted as `persisted_after - persisted_before` and the wall-clock cost
+as `duration_ms`. If `duration_ms` approaches `graceful_shutdown_timeout`
+across many shutdowns, that is the signal to either lower
+`--engine.persistence-threshold` / `--engine.memory-block-buffer-target`
+or raise the CLI timeout.
 
 Operators monitor the `gap` field on the next startup's `Startup alignment:
 ...` line (already emitted by the 2026-04-17 alignment design). If a graceful
