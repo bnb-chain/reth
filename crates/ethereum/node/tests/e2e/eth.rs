@@ -187,6 +187,70 @@ async fn test_engine_graceful_shutdown() -> eyre::Result<()> {
 }
 
 #[tokio::test]
+async fn test_engine_graceful_shutdown_via_signal() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let (mut nodes, tasks, wallet) = setup::<EthereumNode>(
+        1,
+        Arc::new(
+            ChainSpecBuilder::default()
+                .chain(MAINNET.chain)
+                .genesis(serde_json::from_str(include_str!("../assets/genesis.json")).unwrap())
+                .cancun_activated()
+                .build(),
+        ),
+        false,
+        eth_payload_attributes,
+    )
+    .await?;
+
+    let mut node = nodes.pop().unwrap();
+
+    let raw_tx = TransactionTestContext::transfer_tx_bytes(1, wallet.inner).await;
+    let tx_hash = node.rpc.inject_tx(raw_tx).await?;
+    let payload = node.advance_block().await?;
+    node.assert_new_block(tx_hash, payload.block().hash(), payload.block().number).await?;
+
+    // Precondition: block is in-memory but not yet persisted.
+    assert_eq!(node.inner.provider.best_block_number()?, 1, "expected 1 block before shutdown");
+    assert_eq!(node.inner.provider.last_block_number()?, 0, "block should not be persisted yet");
+
+    // Simulate the production SIGTERM path: TaskManager::graceful_shutdown_with_timeout.
+    // This is what `run_until_ctrl_c` causes the runner to invoke after catching
+    // SIGTERM/Ctrl-C (see `cli/runner/src/lib.rs:83`). It fires the Shutdown signal
+    // that every `GracefulShutdown` future in the node is awaiting, which in turn
+    // should drive the consensus engine's graceful arm added by this change.
+    //
+    // `graceful_shutdown_with_timeout` consumes `self` and spins synchronously, so
+    // we move it to a dedicated OS thread and keep the tokio test runtime alive to
+    // drive the actual flush work.
+    let shutdown_thread = std::thread::Builder::new()
+        .name("test-graceful-shutdown".into())
+        .spawn(move || tasks.graceful_shutdown_with_timeout(std::time::Duration::from_secs(30)))
+        .expect("failed to spawn shutdown thread");
+
+    // Poll the database for up to 30 s until the pre-kill head lands on disk.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut db_block = 0u64;
+    while std::time::Instant::now() < deadline {
+        db_block = node.inner.provider.last_block_number()?;
+        if db_block == 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    let shutdown_completed = shutdown_thread.join().expect("shutdown thread panicked");
+
+    assert_eq!(
+        db_block, 1,
+        "database should have persisted block 1 via graceful signal path (shutdown_completed={shutdown_completed})",
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_testing_build_block_v1_osaka() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
     let tasks = TaskManager::current();
