@@ -480,10 +480,11 @@ The design is accepted when:
    the engine-tree `done` oneshot, and the existing explicit `shutdown_rx`
    arm remains as a programmatic entry point.
 2. `DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT` is 60 s.
-3. The existing e2e test
-   `crates/ethereum/node/tests/e2e/eth.rs::persists_in_memory_blocks_on_shutdown`
-   (or its successor) is split to cover both the explicit `EngineShutdown`
-   path and the new graceful-signal path.
+3. Two e2e tests in `crates/ethereum/node/tests/e2e/eth.rs` cover the two
+   paths into `finish_termination`: `test_engine_graceful_shutdown` (pre-
+   existing, exercises the explicit `EngineShutdown::shutdown()` RPC path)
+   and `test_engine_graceful_shutdown_via_signal` (new, exercises the
+   `TaskManager::graceful_shutdown_with_timeout` signal path added here).
 4. A BSC qanet `SIGTERM` restart with
    `--engine.persistence-threshold 256 --engine.memory-block-buffer-target 128`
    leaves `best_block_number` equal to pre-kill canonical head (verified by

@@ -367,6 +367,16 @@ impl EngineNodeLauncher {
                                 Ok(()) => debug!(target: "reth::cli", "engine flush complete; exiting consensus loop"),
                                 Err(err) => warn!(target: "reth::cli", %err, "engine shutdown done-channel closed before completion"),
                             }
+                            // NOTE: we deliberately do NOT set `terminating = true` here. The `break`
+                            // below is the sole enforcement of the "first shutdown wins" invariant
+                            // on this path — after `break` the loop exits and no further select
+                            // iteration can observe the flag. Rustc flags a written-but-never-read
+                            // store as `unused_assignments`. If you ever remove this `break` (e.g.
+                            // to drain remaining events before exiting), you MUST set
+                            // `terminating = true;` above this comment so the `shutdown_rx` arm's
+                            // `if !terminating` guard disables it for the remaining iterations —
+                            // otherwise a racing `EngineShutdown::shutdown()` would double-send
+                            // `FromOrchestrator::Terminate` into engine-tree.
                             break;
                         }
                         shutdown_req = &mut shutdown_rx, if !terminating => {
