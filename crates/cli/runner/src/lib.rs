@@ -218,7 +218,17 @@ pub struct CliContext {
 }
 
 /// Default timeout for graceful shutdown of tasks.
-const DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+///
+/// This bounds how long the runner waits for graceful tasks (including the
+/// consensus engine's final `persist_until_complete` flush) to finish after
+/// a `SIGTERM` / `Ctrl-C` is received. It must be large enough to let the
+/// engine-tree flush every in-memory canonical block up to the head; with
+/// `--engine.persistence-threshold` / `--engine.memory-block-buffer-target`
+/// set to production-validator values (hundreds of blocks in-memory at any
+/// time), 5 s is not enough on debug builds or slow disks. 60 s is a
+/// conservative default; operators can still override via
+/// `CliRunnerConfig::with_graceful_shutdown_timeout`.
+const DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Configuration for [`CliRunner`].
 #[derive(Debug, Clone)]
