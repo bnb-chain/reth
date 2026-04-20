@@ -332,7 +332,7 @@ where
     PruneStage: Stage<Provider>,
 {
     fn builder(self) -> StageSetBuilder<Provider> {
-        ExecutionStages::new(
+        let mut builder = ExecutionStages::new(
             self.evm_config,
             self.consensus,
             self.stages_config.clone(),
@@ -342,18 +342,24 @@ where
         // If sender recovery prune mode is set, add the prune sender recovery stage.
         .add_stage_opt(self.prune_modes.sender_recovery.map(|prune_mode| {
             PruneSenderRecoveryStage::new(prune_mode, self.stages_config.prune.commit_threshold)
-        }))
-        .add_set(HashingStages { stages_config: self.stages_config.clone() })
-        .add_set(HistoryIndexingStages {
-            stages_config: self.stages_config.clone(),
-            prune_modes: self.prune_modes.clone(),
-        })
-        // Prune stage should be added after all hashing stages, because otherwise it will
-        // delete
-        .add_stage(PruneStage::new(
-            self.prune_modes.clone(),
-            self.stages_config.prune.commit_threshold,
-        ))
+        }));
+
+        // Only add hashing stages if not disabled for fastnode mode
+        if !self.stages_config.disable_hashing_stages {
+            builder = builder.add_set(HashingStages { stages_config: self.stages_config.clone() });
+        }
+
+        builder
+            .add_set(HistoryIndexingStages {
+                stages_config: self.stages_config.clone(),
+                prune_modes: self.prune_modes.clone(),
+            })
+            // Prune stage should be added after all hashing stages, because otherwise it will
+            // delete
+            .add_stage(PruneStage::new(
+                self.prune_modes.clone(),
+                self.stages_config.prune.commit_threshold,
+            ))
     }
 }
 
