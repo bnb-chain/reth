@@ -232,9 +232,7 @@ impl<N: NetworkPrimitives> NetworkState<N> {
                 peer.blocks.insert(msg.hash);
 
                 count += 1;
-            }
-
-            if count > num_propagate && self.peers_manager.is_proxied_peer(peer_id) {
+            } else if self.peers_manager.is_proxied_peer(peer_id) {
                 debug!("peer:{} is proxied, sending new block:{}", peer_id, number);
                 self.queued_messages
                     .push_back(StateAction::NewBlock { peer_id: *peer_id, block: msg.clone() });
@@ -378,7 +376,7 @@ impl<N: NetworkPrimitives> NetworkState<N> {
                 let peer_id = record.id;
                 let tcp_addr = record.tcp_addr();
                 if tcp_addr.port() == 0 {
-                    return
+                    return;
                 }
                 let udp_addr = record.udp_addr();
                 let addr = PeerAddr::new(tcp_addr, Some(udp_addr));

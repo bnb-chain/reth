@@ -1131,6 +1131,25 @@ impl<Client, Evm> EthTransactionValidatorBuilder<Client, Evm> {
         self
     }
 
+    /// Disables EIP-7594 blob sidecar support.
+    ///
+    /// When disabled, EIP-7594 (v1) blob sidecars are always rejected and EIP-4844 (v0)
+    /// sidecars are always accepted, regardless of Osaka fork activation.
+    ///
+    /// Use this for chains that do not adopt EIP-7594 (`PeerDAS`).
+    pub const fn no_eip7594(self) -> Self {
+        self.set_eip7594(false)
+    }
+
+    /// Set EIP-7594 blob sidecar support.
+    ///
+    /// When true (default), standard Ethereum behavior applies: v0 sidecars before Osaka,
+    /// v1 sidecars after Osaka. When false, v1 sidecars are always rejected.
+    pub const fn set_eip7594(mut self, eip7594: bool) -> Self {
+        self.eip7594 = eip7594;
+        self
+    }
+
     /// Disables the support for EIP-2718 transactions.
     pub const fn no_eip2718(self) -> Self {
         self.set_eip2718(false)
@@ -1172,25 +1191,6 @@ impl<Client, Evm> EthTransactionValidatorBuilder<Client, Evm> {
     /// Set the support for EIP-7702 transactions.
     pub const fn set_eip7702(mut self, eip7702: bool) -> Self {
         self.eip7702 = eip7702;
-        self
-    }
-
-    /// Disables EIP-7594 blob sidecar support.
-    ///
-    /// When disabled, EIP-7594 (v1) blob sidecars are always rejected and EIP-4844 (v0)
-    /// sidecars are always accepted, regardless of Osaka fork activation.
-    ///
-    /// Use this for chains that do not adopt EIP-7594 (`PeerDAS`).
-    pub const fn no_eip7594(self) -> Self {
-        self.set_eip7594(false)
-    }
-
-    /// Set EIP-7594 blob sidecar support.
-    ///
-    /// When true (default), standard Ethereum behavior applies: v0 sidecars before Osaka,
-    /// v1 sidecars after Osaka. When false, v1 sidecars are always rejected.
-    pub const fn set_eip7594(mut self, eip7594: bool) -> Self {
-        self.eip7594 = eip7594;
         self
     }
 
