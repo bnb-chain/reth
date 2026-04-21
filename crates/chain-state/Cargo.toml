@@ -44,6 +44,9 @@ pin-project.workspace = true
 rayon = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 
+# triedb
+rust-eth-triedb-common.workspace = true
+
 # optional deps for test-utils
 alloy-signer = { workspace = true, optional = true }
 alloy-signer-local = { workspace = true, optional = true }

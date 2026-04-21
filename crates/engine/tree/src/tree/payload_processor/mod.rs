@@ -34,6 +34,9 @@ use reth_trie_parallel::{
 use reth_trie_sparse::{
     ArenaParallelSparseTrie, ConfigurableSparseTrie, RevealableSparseTrie, SparseStateTrie,
 };
+use rust_eth_triedb::triedb_reth::TrieDBPrefetchState;
+use rust_eth_triedb_common::DiffLayers;
+use rust_eth_triedb_pathdb::PathDB;
 use std::{
     ops::Not,
     sync::{
@@ -50,8 +53,10 @@ mod preserved_sparse_trie;
 pub mod prewarm;
 pub mod receipt_root_task;
 pub mod sparse_trie;
+pub mod triedb_prefetcher;
 
 use preserved_sparse_trie::{PreservedSparseTrie, SharedPreservedSparseTrie};
+use triedb_prefetcher::TrieDBPrefetchHandle;
 
 /// Default node capacity for shrinking the sparse trie. This is used to limit the number of trie
 /// nodes in allocated sparse tries.
@@ -286,6 +291,7 @@ where
             state_root_handle: Some(state_root_handle),
             prewarm_handle,
             transactions: execution_rx,
+            trie_db_prefetch_result_rx: None,
             _span: span,
         }
     }
@@ -311,6 +317,65 @@ where
             state_root_handle: None,
             prewarm_handle,
             transactions: execution_rx,
+            trie_db_prefetch_result_rx: None,
+            _span: Span::current(),
+        }
+    }
+
+    /// Spawn cache prewarming with triedb prefetcher.
+    ///
+    /// Returns a [`PayloadHandle`] to communicate with the task.
+    #[allow(clippy::type_complexity)]
+    pub(super) fn spawn_cache_with_triedb_prefetcher<P, I: ExecutableTxIterator<Evm>>(
+        &self,
+        root_hash: B256,
+        path_db: PathDB,
+        difflayers: Option<DiffLayers>,
+        env: ExecutionEnv<Evm>,
+        transactions: I,
+        provider_builder: StateProviderBuilder<N, P>,
+    ) -> IteratorPayloadHandle<Evm, I, N>
+    where
+        P: BlockReader + StateProviderFactory + StateReader + Clone + 'static,
+    {
+        let (prewarm_rx, execution_rx) =
+            self.spawn_tx_iterator(transactions, env.transaction_count);
+
+        // Create a crossbeam channel for multi-proof messages (required by spawn_caching_with).
+        let (to_multi_proof, crossbeam_rx) = crossbeam_channel::unbounded::<MultiProofMessage>();
+
+        // Bridge the crossbeam receiver to a std::sync::mpsc channel because
+        // TrieDBPrefetchHandle::new expects a std::sync::mpsc::Receiver.
+        let (mpsc_tx, rev_multi_proof) = std::sync::mpsc::channel::<MultiProofMessage>();
+        self.executor.spawn_blocking(move || {
+            while let Ok(msg) = crossbeam_rx.recv() {
+                if mpsc_tx.send(msg).is_err() {
+                    break;
+                }
+            }
+        });
+
+        let prewarm_handle =
+            self.spawn_caching_with(env, prewarm_rx, provider_builder, Some(to_multi_proof), None);
+
+        let (prefetch_handle, prefetch_result_rx) = TrieDBPrefetchHandle::new(
+            root_hash,
+            path_db,
+            difflayers,
+            self.executor.clone(),
+            rev_multi_proof,
+        )
+        .expect("Failed to create TrieDBPrefetchHandle");
+
+        self.executor.spawn_blocking(move || {
+            prefetch_handle.run();
+        });
+
+        PayloadHandle {
+            state_root_handle: None,
+            prewarm_handle,
+            transactions: execution_rx,
+            trie_db_prefetch_result_rx: Some(prefetch_result_rx),
             _span: Span::current(),
         }
     }
@@ -759,11 +824,42 @@ pub struct PayloadHandle<Tx, Err, R> {
     prewarm_handle: CacheTaskHandle<R>,
     /// Stream of block transactions
     transactions: mpsc::Receiver<Result<Tx, Err>>,
+    /// Receiver for the trie db prefetch results
+    trie_db_prefetch_result_rx: Option<mpsc::Receiver<triedb_prefetcher::TrieDBPrefetchResult>>,
     /// Span for tracing
     _span: Span,
 }
 
 impl<Tx, Err, R: Send + Sync + 'static> PayloadHandle<Tx, Err, R> {
+    /// Receives the trie db prefetch result
+    ///
+    /// # Panics
+    ///
+    /// If payload processing was started without background prefetch task.
+    pub fn triedb_preftch_result(
+        &mut self,
+    ) -> Result<Option<Arc<TrieDBPrefetchState<PathDB>>>, ParallelStateRootError> {
+        let result = self
+            .trie_db_prefetch_result_rx
+            .take()
+            .expect("trie_db_prefetch_result_rx is None")
+            .recv()
+            .map_err(|_| {
+                ParallelStateRootError::Other(
+                    "trie db prefetch result receiver dropped".to_string(),
+                )
+            })?;
+
+        match result {
+            triedb_prefetcher::TrieDBPrefetchResult::PrefetchAccountResult(state) => {
+                Ok(Some(state))
+            }
+            triedb_prefetcher::TrieDBPrefetchResult::PrefetchStorageResult((_, _, _)) => {
+                panic!("received prefetch storage result, but expected prefetch account result");
+            }
+        }
+    }
+
     /// Awaits the state root
     ///
     /// # Panics

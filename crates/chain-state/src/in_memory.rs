@@ -21,6 +21,7 @@ use reth_trie::{
     updates::TrieUpdatesSorted, HashedPostStateSorted, LazyTrieData, SortedTrieData,
     TrieInputSorted,
 };
+use rust_eth_triedb_common::DiffLayer;
 use std::{collections::BTreeMap, sync::Arc, time::Instant};
 use tokio::sync::{broadcast, watch};
 
@@ -760,6 +761,11 @@ pub struct ExecutedBlock<N: NodePrimitives = EthPrimitives> {
     /// This allows deferring the computation of the trie data which can be expensive.
     /// The data can be populated asynchronously after the block was validated.
     pub trie_data: DeferredTrieData,
+    /// Difflayer that result from triedb commit during mining.
+    ///
+    /// If present, this precomputed difflayer can be used directly when persisting
+    /// to triedb, avoiding re-computation from hashed state.
+    pub difflayer: Option<Arc<DiffLayer>>,
 }
 
 impl<N: NodePrimitives> Default for ExecutedBlock<N> {
@@ -776,6 +782,7 @@ impl<N: NodePrimitives> Default for ExecutedBlock<N> {
                 state: Default::default(),
             }),
             trie_data: DeferredTrieData::ready(ComputedTrieData::default()),
+            difflayer: None,
         }
     }
 }
@@ -798,7 +805,12 @@ impl<N: NodePrimitives> ExecutedBlock<N> {
         execution_output: Arc<BlockExecutionOutput<N::Receipt>>,
         trie_data: ComputedTrieData,
     ) -> Self {
-        Self { recovered_block, execution_output, trie_data: DeferredTrieData::ready(trie_data) }
+        Self {
+            recovered_block,
+            execution_output,
+            trie_data: DeferredTrieData::ready(trie_data),
+            difflayer: None,
+        }
     }
 
     /// Create a new [`ExecutedBlock`] with deferred trie data.
@@ -820,7 +832,7 @@ impl<N: NodePrimitives> ExecutedBlock<N> {
         execution_output: Arc<BlockExecutionOutput<N::Receipt>>,
         trie_data: DeferredTrieData,
     ) -> Self {
-        Self { recovered_block, execution_output, trie_data }
+        Self { recovered_block, execution_output, trie_data, difflayer: None }
     }
 
     /// Returns a reference to an inner [`SealedBlock`]

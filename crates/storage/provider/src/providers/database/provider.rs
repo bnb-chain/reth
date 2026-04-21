@@ -735,66 +735,77 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
                     )?;
                     timings.write_state += start.elapsed();
 
+                    let trie_data = block.trie_data();
+
                     if let Some(ref mut triedb) = triedb_opt {
                         // TrieDB mode: update TrieDB instead of writing hashed state to MDBX
                         let start = Instant::now();
 
-                        let trie_data = block.trie_data();
+                        if let Some(ref difflayer) = block.difflayer {
+                            // The difflayer was precomputed during validation (newPayload).
+                            // Root was already verified there, so just flush to disk.
+                            debug!(
+                                target: "providers::db",
+                                block_number,
+                                state_root = ?state_root,
+                                "Flushing precomputed triedb difflayer in save_blocks",
+                            );
+                            triedb
+                                .flush(block_number, state_root, &Some(difflayer.clone()))
+                                .map_err(ProviderError::other)?;
+                        } else {
+                            // No precomputed difflayer; compute and commit from hashed state.
+                            let (latest_block_number, latest_state_root) =
+                                triedb.latest_persist_state().map_err(ProviderError::other)?;
 
-                        let (latest_block_number, latest_state_root) =
-                            triedb.latest_persist_state().map_err(ProviderError::other)?;
+                            if block_number > 0 && latest_block_number != block_number - 1 {
+                                return Err(ProviderError::Database(reth_db_api::DatabaseError::Other(format!(
+                                    "triedb state gap in save_blocks: latest_block_number={}, expected={}, block_number={}",
+                                    latest_block_number,
+                                    block_number - 1,
+                                    block_number
+                                ))));
+                            }
 
-                        // Validate that triedb state is consistent
-                        if block_number > 0 && latest_block_number != block_number - 1 {
-                            return Err(ProviderError::Database(reth_db_api::DatabaseError::Other(format!(
-                                "triedb state gap in save_blocks: latest_block_number={}, expected={}, block_number={}",
-                                latest_block_number,
-                                block_number - 1,
-                                block_number
-                            ))));
+                            let triedb_hashed_post_state =
+                                trie_data.hashed_state.to_triedb_hashed_post_state();
+
+                            debug!(
+                                target: "providers::db",
+                                block_number,
+                                latest_triedb_block = latest_block_number,
+                                parent_root = ?latest_state_root,
+                                expected_root = ?state_root,
+                                "Computing triedb state root in save_blocks",
+                            );
+
+                            let (new_root, difflayer) = triedb
+                                .intermediate_and_commit_hashed_post_state(
+                                    latest_state_root,
+                                    None,
+                                    &triedb_hashed_post_state,
+                                    None,
+                                )
+                                .map_err(ProviderError::other)?;
+
+                            if new_root != state_root {
+                                return Err(ProviderError::Database(reth_db_api::DatabaseError::Other(format!(
+                                    "triedb update failed in save_blocks: new_root({:?}) != expected_root({:?}), block_number={}",
+                                    new_root,
+                                    state_root,
+                                    block_number
+                                ))));
+                            }
+
+                            triedb
+                                .flush(block_number, new_root, &Some(difflayer))
+                                .map_err(ProviderError::other)?;
                         }
-
-                        let triedb_hashed_post_state =
-                            trie_data.hashed_state.to_triedb_hashed_post_state();
-
-                        debug!(
-                            target: "providers::db",
-                            "Begin update triedb in save_blocks, block_number={}, latest_triedb_block={}, parent_root={:?}, expected_root={:?}",
-                            block_number,
-                            latest_block_number,
-                            latest_state_root,
-                            state_root,
-                        );
-
-                        let (new_root, difflayer) = triedb
-                            .commit_hashed_post_state(
-                                latest_state_root,
-                                None,
-                                &triedb_hashed_post_state,
-                            )
-                            .map_err(ProviderError::other)?;
-
-                        if new_root != state_root {
-                            return Err(ProviderError::Database(reth_db_api::DatabaseError::Other(format!(
-                                "triedb update failed in save_blocks: new_root({:?}) != expected_root({:?}), block_number={}",
-                                new_root,
-                                state_root,
-                                block_number
-                            ))));
-                        }
-
-                        triedb
-                            .flush(block_number, new_root, &difflayer)
-                            .map_err(ProviderError::other)?;
-
-                        debug!(
-                            target: "providers::db",
-                            "End update triedb in save_blocks, block_number={}, new_root={:?}",
-                            block_number,
-                            new_root
-                        );
 
                         timings.write_hashed_state += start.elapsed();
+                    } else {
+                        // Non-TrieDB mode: write hashed state to MDBX
+                        self.write_hashed_state(&trie_data.hashed_state)?;
                     }
                 }
             }
