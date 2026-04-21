@@ -148,7 +148,10 @@ struct TestHarness {
         MockEvmConfig,
     >,
     to_tree_tx: crossbeam_channel::Sender<
-        FromEngine<EngineApiRequest<EthEngineTypes, EthPrimitives>, Block>,
+        FromEngine<
+            EngineApiRequest<EthEngineTypes, EthPrimitives, MockEthProvider, MockEvmConfig>,
+            Block,
+        >,
     >,
     from_tree_rx: UnboundedReceiver<EngineApiEvent>,
     blocks: Vec<ExecutedBlock>,

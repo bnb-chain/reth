@@ -39,6 +39,9 @@ reth-trie-db.workspace = true
 
 # triedb
 rust-eth-triedb.workspace = true
+rust-eth-triedb-common.workspace = true
+rust-eth-triedb-pathdb.workspace = true
+rust-eth-triedb-state-trie.workspace = true
 
 # alloy
 alloy-evm.workspace = true
@@ -111,6 +114,9 @@ rand_08.workspace = true
 io-uring = ["rust-eth-triedb/io-uring"]
 jemalloc = [
     "rust-eth-triedb/jemalloc",
+    "rust-eth-triedb-common/jemalloc",
+    "rust-eth-triedb-pathdb/jemalloc",
+    "rust-eth-triedb-state-trie/jemalloc",
     "reth-db-common/jemalloc",
     "reth-provider/jemalloc",
     "reth-stages?/jemalloc",
@@ -119,6 +125,9 @@ jemalloc = [
 ]
 asm-keccak = [
     "rust-eth-triedb/asm-keccak",
+    "rust-eth-triedb-common/asm-keccak",
+    "rust-eth-triedb-pathdb/asm-keccak",
+    "rust-eth-triedb-state-trie/asm-keccak",
     "alloy-evm/asm-keccak",
     "alloy-primitives/asm-keccak",
     "reth-db-common/asm-keccak",
@@ -151,7 +160,6 @@ test-utils = [
     "reth-trie-common/test-utils",
     "reth-trie-db/test-utils",
     "reth-trie-sparse/test-utils",
-    "reth-prune-types?/test-utils",
     "reth-trie-parallel/test-utils",
     "reth-ethereum-primitives/test-utils",
     "reth-node-ethereum/test-utils",
