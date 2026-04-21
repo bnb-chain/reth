@@ -546,6 +546,10 @@ pub struct BlockValidationMetrics {
     pub anchored_overlay_trie_updates_size: Histogram,
     /// Size of `AnchoredTrieInput` overlay `HashedPostStateSorted` (`total_len`)
     pub anchored_overlay_hashed_state_size: Histogram,
+    /// Total number of times the triedb validation path was entered.
+    pub triedb_validate_entry_total: Counter,
+    /// Histogram of triedb validation duration.
+    pub triedb_validate_entry_duration: Histogram,
 }
 
 impl BlockValidationMetrics {

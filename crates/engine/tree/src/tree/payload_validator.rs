@@ -533,7 +533,23 @@ where
         Evm: ConfigureEngineEvm<T::ExecutionData, Primitives = N>,
     {
         if rust_eth_triedb::triedb_manager::is_triedb_active() {
-            return self.validate_block_with_state_with_triedb(input, ctx);
+            let block_num_hash = input.num_hash();
+            let start = Instant::now();
+            self.metrics.block_validation.triedb_validate_entry_total.increment(1);
+
+            let res = self.validate_block_with_state_with_triedb(input, ctx);
+
+            let elapsed = start.elapsed().as_secs_f64();
+            self.metrics.block_validation.triedb_validate_entry_duration.record(elapsed);
+
+            tracing::debug!(
+                target: "engine::tree",
+                block = ?block_num_hash,
+                elapsed_ms = (elapsed * 1000.0),
+                "Triedb validate_block_with_state completed"
+            );
+
+            return res;
         }
 
         // Spawn payload conversion on a background thread so it runs concurrently with the
@@ -801,7 +817,11 @@ where
 
         let (state_root, trie_output, root_elapsed) = if self.config.skip_state_root_validation() {
             debug!(target: "engine::tree::payload_validator", "Skipping state root calculation in fastnode mode");
-            (block.header().state_root(), Arc::new(TrieUpdates::default()), std::time::Duration::ZERO)
+            (
+                block.header().state_root(),
+                Arc::new(TrieUpdates::default()),
+                std::time::Duration::ZERO,
+            )
         } else {
             let root_time = Instant::now();
             let mut maybe_state_root = None;
@@ -916,7 +936,10 @@ where
                 );
 
                 if state_root_task_failed {
-                    self.metrics.block_validation.state_root_task_fallback_success_total.increment(1);
+                    self.metrics
+                        .block_validation
+                        .state_root_task_fallback_success_total
+                        .increment(1);
                 }
 
                 (root, Arc::new(updates), root_time.elapsed())
@@ -928,7 +951,7 @@ where
             .record_state_root_gas_bucket(block.header().gas_used(), root_elapsed.as_secs_f64());
         debug!(target: "engine::tree::payload_validator", ?root_elapsed, "Calculated state root");
 
-        // ensure state root matches
+        // ensure state root matches (validation already skipped in fastnode mode)
         if !self.config.skip_state_root_validation() && state_root != block.header().state_root() {
             #[cfg(feature = "trie-debug")]
             Self::write_trie_debug_recorders(block.header().number(), &trie_debug_recorders);

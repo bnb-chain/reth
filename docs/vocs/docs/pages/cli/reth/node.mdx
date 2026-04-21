@@ -995,6 +995,9 @@ Engine:
       --engine.account-worker-count <ACCOUNT_WORKER_COUNT>
           Configure the number of account proof workers in the Tokio blocking pool. If not specified, defaults to the same count as storage workers
 
+      --engine.skip-state-root-validation
+          Skip state root validation for fastnode mode. This disables validation of state root hashes during live sync and also automatically disables hashing stages for maximum sync speed at the cost of reduced validation
+
       --engine.prewarming-threads <PREWARMING_THREADS>
           Configure the number of prewarming threads. If not specified, defaults to available parallelism
 
@@ -1047,9 +1050,6 @@ Engine:
           The engine and payload builder contend for the same trie — if a builder task is still running when `newPayload` arrives, the engine will block until the trie is stored back.
 
           The builder also anchors the trie at the built block's state root, so if the next `newPayload` is not on top of that block, the trie cache is invalidated and cleared.
-
-      --engine.skip-state-root-validation
-          Skip state root validation for fastnode mode
 
       --engine.min-blocks-for-pipeline-run <MIN_BLOCKS_FOR_PIPELINE_RUN>
           Configure the minimum number of blocks required to trigger a pipeline run for backfilling. When the local head is behind the forkchoice head by more than this threshold, the pipeline will be used to backfill blocks instead of downloading them individually

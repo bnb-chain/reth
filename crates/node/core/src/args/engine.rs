@@ -487,10 +487,6 @@ pub struct EngineArgs {
     )]
     pub proof_jitter: Option<Duration>,
 
-    /// Skip state root validation for fastnode mode.
-    #[arg(long = "engine.skip-state-root-validation", default_value_t = false)]
-    pub skip_state_root_validation: bool,
-
     /// Configure the minimum number of blocks required to trigger a pipeline run for backfilling.
     /// When the local head is behind the forkchoice head by more than this threshold,
     /// the pipeline will be used to backfill blocks instead of downloading them individually.
