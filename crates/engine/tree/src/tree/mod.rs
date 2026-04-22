@@ -8,7 +8,7 @@ use crate::{
 use alloy_consensus::BlockHeader;
 use alloy_eips::{eip1898::BlockWithParent, BlockNumHash, NumHash};
 use alloy_evm::block::StateChangeSource;
-use alloy_primitives::{B256, BlockHash, BlockNumber};
+use alloy_primitives::{BlockHash, BlockNumber, B256};
 use alloy_rpc_types_engine::{
     ForkchoiceState, PayloadStatus, PayloadStatusEnum, PayloadValidationError,
 };
@@ -22,7 +22,7 @@ use reth_engine_primitives::{
     BeaconEngineMessage, BeaconOnNewPayloadError, ConsensusEngineEvent, ExecutionPayload,
     ForkchoiceStateTracker, OnForkChoiceUpdated,
 };
-use reth_errors::{ConsensusError, ProviderResult};
+use reth_errors::{ConsensusError, ProviderResult, RethError, RethResult};
 use reth_evm::{ConfigureEvm, OnStateHook};
 use reth_payload_builder::PayloadBuilderHandle;
 use reth_payload_primitives::{
@@ -39,8 +39,15 @@ use reth_stages_api::ControlFlow;
 use reth_trie_db::ChangesetCache;
 use revm::state::EvmState;
 use revm_primitives::U256;
+use rust_eth_triedb_common::{DiffLayer, DiffLayers};
 use state::TreeState;
-use std::{fmt::Debug, ops, sync::Arc, time::Instant};
+use std::{
+    fmt::{Debug, Display},
+    marker::PhantomData,
+    ops,
+    sync::Arc,
+    time::Instant,
+};
 
 use crossbeam_channel::{Receiver, Sender};
 use tokio::sync::{
@@ -84,8 +91,8 @@ pub mod state;
 /// an epoch has slots), then this exceeds the threshold at which the pipeline should be used to
 /// backfill this gap.
 ///
-/// This is kept for backwards compatibility with tests. Use `TreeConfig::min_blocks_for_pipeline_run()`
-/// for configurable threshold.
+/// This is kept for backwards compatibility with tests. Use
+/// `TreeConfig::min_blocks_for_pipeline_run()` for configurable threshold.
 #[cfg(test)]
 pub(crate) const MIN_BLOCKS_FOR_PIPELINE_RUN: u64 = DEFAULT_MIN_BLOCKS_FOR_PIPELINE_RUN;
 
@@ -155,6 +162,36 @@ impl<N: NodePrimitives> EngineApiTreeState<N> {
             tree_state: TreeState::new(canonical_block, engine_kind),
             forkchoice_state_tracker: ForkchoiceStateTracker::default(),
         }
+    }
+
+    /// Returns merged difflayers by parent block hash
+    pub(crate) fn merged_difflayer_by_hash(&self, parent_block_hash: B256) -> Option<DiffLayers> {
+        self.tree_state.merged_difflayer_by_hash(parent_block_hash)
+    }
+
+    /// Returns the difflayer for a specific block by its hash.
+    ///
+    /// This retrieves the single difflayer that was generated when the block was executed.
+    /// Returns `None` if the block is not found or has no difflayer.
+    pub fn difflayer_by_block_hash(&self, block_hash: B256) -> Option<Arc<DiffLayer>> {
+        self.tree_state.blocks_by_hash.get(&block_hash).and_then(|block| block.difflayer.clone())
+    }
+
+    /// Returns merged difflayers accumulated from the parent block hash up to the tip.
+    ///
+    /// This method walks back from the given parent block hash, merging all difflayers
+    /// from ancestor blocks that are in memory (not yet persisted).
+    ///
+    /// # Arguments
+    ///
+    /// * `parent_block_hash` - The hash of the parent block to start accumulating from
+    ///
+    /// # Returns
+    ///
+    /// Returns `Some(DiffLayers)` with all accumulated diff layers, or `None` if no
+    /// difflayers are found or the parent block is not in memory.
+    pub fn get_merged_difflayers(&self, parent_block_hash: B256) -> Option<DiffLayers> {
+        self.merged_difflayer_by_hash(parent_block_hash)
     }
 }
 
@@ -234,6 +271,7 @@ impl OnStateHook for MeteredStateHook {
 ///
 /// This type is responsible for processing engine API requests, maintaining the canonical state and
 /// emitting events.
+#[allow(clippy::type_complexity)]
 pub struct EngineApiTreeHandler<N, P, T, V, C>
 where
     N: NodePrimitives,
@@ -253,9 +291,9 @@ where
     /// them one by one so that we can handle incoming engine API in between and don't become
     /// unresponsive. This can happen during live sync transition where we're trying to close the
     /// gap (up to 3 epochs of blocks in the worst case).
-    incoming_tx: Sender<FromEngine<EngineApiRequest<T, N>, N::Block>>,
+    incoming_tx: Sender<FromEngine<EngineApiRequest<T, N, P, C>, N::Block>>,
     /// Incoming engine API requests.
-    incoming: Receiver<FromEngine<EngineApiRequest<T, N>, N::Block>>,
+    incoming: Receiver<FromEngine<EngineApiRequest<T, N, P, C>, N::Block>>,
     /// Outgoing events that are emitted to the handler.
     outgoing: UnboundedSender<EngineApiEvent<N>>,
     /// Channels to the persistence layer.
@@ -384,8 +422,10 @@ where
         kind: EngineApiKind,
         evm_config: C,
         changeset_cache: ChangesetCache,
-    ) -> (Sender<FromEngine<EngineApiRequest<T, N>, N::Block>>, UnboundedReceiver<EngineApiEvent<N>>)
-    {
+    ) -> (
+        Sender<FromEngine<EngineApiRequest<T, N, P, C>, N::Block>>,
+        UnboundedReceiver<EngineApiEvent<N>>,
+    ) {
         let best_block_number = provider.best_block_number().unwrap_or(0);
         let header = provider.sealed_header(best_block_number).ok().flatten().unwrap_or_default();
 
@@ -423,8 +463,74 @@ where
     }
 
     /// Returns a new [`Sender`] to send messages to this type.
-    pub fn sender(&self) -> Sender<FromEngine<EngineApiRequest<T, N>, N::Block>> {
+    #[allow(clippy::type_complexity)]
+    pub fn sender(&self) -> Sender<FromEngine<EngineApiRequest<T, N, P, C>, N::Block>> {
         self.incoming_tx.clone()
+    }
+
+    /// Returns the difflayer for a specific block by its hash.
+    ///
+    /// This retrieves the single difflayer that was generated when the block was executed
+    /// and is currently held in memory (not yet persisted to disk).
+    ///
+    /// # Arguments
+    ///
+    /// * `block_hash` - The hash of the block to retrieve the difflayer for
+    ///
+    /// # Returns
+    ///
+    /// Returns `Some(Arc<DiffLayer>)` if the block exists in memory and has a difflayer,
+    /// `None` otherwise.
+    ///
+    /// # Use Cases
+    ///
+    /// - Get the difflayer for a single specific block
+    /// - Inspect state changes made by a particular block
+    pub fn difflayer_by_block_hash(&self, block_hash: B256) -> Option<Arc<DiffLayer>> {
+        self.state.difflayer_by_block_hash(block_hash)
+    }
+
+    /// Returns merged difflayers accumulated from the parent block hash.
+    ///
+    /// This method walks back from the given parent block hash through the chain
+    /// of in-memory blocks, merging all difflayers to provide a consolidated view
+    /// of state changes since the last persisted block.
+    ///
+    /// # Arguments
+    ///
+    /// * `parent_block_hash` - The hash of the parent block to start accumulating from
+    ///
+    /// # Returns
+    ///
+    /// Returns `Some(DiffLayers)` with all accumulated diff layers merged together,
+    /// or `None` if:
+    /// - The parent block is not found in memory
+    /// - No difflayers exist in the chain
+    /// - The parent block is already persisted to disk
+    ///
+    /// # Use Cases
+    ///
+    /// - When building block N+1, pass block N's hash to get all accumulated changes
+    /// - Essential for validator nodes to calculate state roots for new blocks
+    /// - Used with `calculate_state_root_with_triedb` for efficient trie updates
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Building block N+1 after block N
+    /// let parent_hash = block_n.hash();
+    /// let difflayers = engine_handler.get_merged_difflayers(parent_hash)?;
+    ///
+    /// // Use difflayers to calculate state root for new block
+    /// let (state_root, _) = validator.calculate_state_root_with_triedb(
+    ///     new_block_payload,
+    ///     difflayers,
+    ///     hashed_state,
+    ///     Some(&engine_state),
+    /// )?;
+    /// ```
+    pub fn get_merged_difflayers(&self, parent_block_hash: B256) -> Option<DiffLayers> {
+        self.state.get_merged_difflayers(parent_block_hash)
     }
 
     /// Run the engine API handler.
@@ -472,7 +578,7 @@ where
     ///
     /// Uses biased selection to prioritize persistence completion to update in-memory state and
     /// unblock further writes.
-    fn wait_for_event(&mut self) -> LoopEvent<T, N> {
+    fn wait_for_event(&mut self) -> LoopEvent<T, N, P, C> {
         // Take ownership of persistence rx if present
         let maybe_persistence = self.persistence_state.rx.take();
 
@@ -1404,16 +1510,65 @@ where
     /// Returns `ControlFlow::Break(())` if the engine should terminate.
     fn on_engine_message(
         &mut self,
-        msg: FromEngine<EngineApiRequest<T, N>, N::Block>,
+        msg: FromEngine<EngineApiRequest<T, N, P, C>, N::Block>,
     ) -> Result<ops::ControlFlow<()>, InsertBlockFatalError> {
+        const SLOW_HANDLER_WARN_THRESHOLD: std::time::Duration =
+            std::time::Duration::from_millis(300);
+
+        #[inline]
+        fn log_handler_duration(kind: &'static str, elapsed: std::time::Duration) {
+            tracing::debug!(
+                target: "engine::tree",
+                handler = kind,
+                elapsed_ms = elapsed.as_millis(),
+                "engine-tree handler finished"
+            );
+            if elapsed >= SLOW_HANDLER_WARN_THRESHOLD {
+                tracing::warn!(
+                    target: "engine::tree",
+                    handler = kind,
+                    elapsed_ms = elapsed.as_millis(),
+                    "engine-tree handler is slow"
+                );
+            }
+        }
+
+        #[inline]
+        fn log_handler_duration_with_block<B: core::fmt::Debug>(
+            kind: &'static str,
+            block: &B,
+            elapsed: std::time::Duration,
+        ) {
+            tracing::debug!(
+                target: "engine::tree",
+                handler = kind,
+                block = ?block,
+                elapsed_ms = elapsed.as_millis(),
+                "engine-tree handler finished"
+            );
+            if elapsed >= SLOW_HANDLER_WARN_THRESHOLD {
+                tracing::warn!(
+                    target: "engine::tree",
+                    handler = kind,
+                    block = ?block,
+                    elapsed_ms = elapsed.as_millis(),
+                    "engine-tree handler is slow"
+                );
+            }
+        }
+
         match msg {
             FromEngine::Event(event) => match event {
                 FromOrchestrator::BackfillSyncStarted => {
+                    let start = Instant::now();
                     debug!(target: "engine::tree", "received backfill sync started event");
                     self.backfill_sync_state = BackfillSyncState::Active;
+                    log_handler_duration("event.backfill_sync_started", start.elapsed());
                 }
                 FromOrchestrator::BackfillSyncFinished(ctrl) => {
+                    let start = Instant::now();
                     self.on_backfill_sync_finished(ctrl)?;
+                    log_handler_duration("event.backfill_sync_finished", start.elapsed());
                 }
                 FromOrchestrator::Terminate { tx } => {
                     debug!(target: "engine::tree", "received terminate request");
@@ -1426,9 +1581,14 @@ where
             FromEngine::Request(request) => {
                 match request {
                     EngineApiRequest::InsertExecutedBlock(block) => {
+                        let start = Instant::now();
                         let block_num_hash = block.recovered_block().num_hash();
                         if block_num_hash.number <= self.state.tree_state.canonical_block_number() {
                             // outdated block that can be skipped
+                            log_handler_duration(
+                                "request.insert_executed_block(outdated)",
+                                start.elapsed(),
+                            );
                             return Ok(ops::ControlFlow::Continue(()))
                         }
 
@@ -1450,6 +1610,7 @@ where
                         self.emit_event(EngineApiEvent::BeaconConsensus(
                             ConsensusEngineEvent::CanonicalBlockAdded(block, now.elapsed()),
                         ));
+                        log_handler_duration("request.insert_executed_block", start.elapsed());
                     }
                     EngineApiRequest::Beacon(request) => {
                         match request {
@@ -1497,8 +1658,13 @@ where
                                         .increment(1);
                                     error!(target: "engine::tree", ?state, elapsed=?start.elapsed(), "Failed to send event: {err:?}");
                                 }
+                                log_handler_duration(
+                                    "request.beacon.forkchoice_updated",
+                                    start.elapsed(),
+                                );
                             }
                             BeaconEngineMessage::NewPayload { payload, tx } => {
+                                let block_num_hash = payload.num_hash();
                                 let start = Instant::now();
                                 let gas_used = payload.gas_used();
                                 let num_hash = payload.num_hash();
@@ -1526,25 +1692,48 @@ where
 
                                 // handle the event if any
                                 self.on_maybe_tree_event(maybe_event)?;
+                                log_handler_duration_with_block(
+                                    "request.beacon.new_payload",
+                                    &block_num_hash,
+                                    start.elapsed(),
+                                );
                             }
                             BeaconEngineMessage::QueryTd { number, hash, tx } => {
+                                let start = Instant::now();
                                 debug!(target: "engine::tree", number=?number, hash=?hash, "querying header and TD by engine message");
                                 let output = self.query_header_with_td(number, hash);
 
-                                if let Err(err) =
-                                    tx.send(output.map(|o| o.1).map_err(Into::into))
-                                {
+                                if let Err(err) = tx.send(output.map(|o| o.1).map_err(Into::into)) {
                                     error!(target: "engine::tree", "Failed to send event: {err:?}");
                                 }
+                                log_handler_duration("request.beacon.query_td", start.elapsed());
                             }
                         }
                     }
+                    EngineApiRequest::Custom(request) => match request {
+                        CustomRequestMessage::RequestDiffLayer { parent_hash, tx, .. } => {
+                            let start = Instant::now();
+                            let output = self
+                                .state
+                                .get_merged_difflayers(parent_hash)
+                                .ok_or_else(|| "DiffLayers not found".to_string());
+                            if tx.send(output.map_err(RethError::msg)).is_err() {
+                                error!(target: "engine::tree", "Failed to send event");
+                            }
+                            log_handler_duration(
+                                "request.custom.request_difflayer",
+                                start.elapsed(),
+                            );
+                        }
+                    },
                 }
             }
             FromEngine::DownloadedBlocks(blocks) => {
+                let start = Instant::now();
                 if let Some(event) = self.on_downloaded(blocks)? {
                     self.on_tree_event(event)?;
                 }
+                log_handler_duration("downloaded_blocks", start.elapsed());
             }
         }
         Ok(ops::ControlFlow::Continue(()))
@@ -2219,7 +2408,7 @@ where
     ///
     /// If the `local_tip` is greater than the `block`, then this will return false.
     #[inline]
-    fn exceeds_backfill_run_threshold(&self, local_tip: u64, block: u64) -> bool {
+    const fn exceeds_backfill_run_threshold(&self, local_tip: u64, block: u64) -> bool {
         block > local_tip && block - local_tip > self.config.min_blocks_for_pipeline_run()
     }
 
@@ -2680,14 +2869,8 @@ where
             .engine
             .block_insert_total_duration
             .record(block_insert_start.elapsed().as_secs_f64());
-        self.metrics
-            .engine
-            .block_insert_mgasps
-            .set(gas_used as f64 / elapsed.as_secs_f64());
-        self.metrics
-            .engine
-            .block_insert_timestamp_delay
-            .record(timestamp_delay_nanos);
+        self.metrics.engine.block_insert_mgasps.set(gas_used as f64 / elapsed.as_secs_f64());
+        self.metrics.engine.block_insert_timestamp_delay.record(timestamp_delay_nanos);
         debug!(target: "engine::tree", block=?block_num_hash, "Finished inserting block");
         Ok(InsertPayloadOk::Inserted(BlockStatus::Valid))
     }
@@ -2975,12 +3158,18 @@ where
 
     /// Query the header and TD of the given block number and hash.
     /// If the block is not found, the header and TD of the last block will be returned.
-    pub fn query_header_with_td(&self, number: BlockNumber, hash: BlockHash) -> ProviderResult<(N::BlockHeader, Option<U256>)> {
+    pub fn query_header_with_td(
+        &self,
+        number: BlockNumber,
+        hash: BlockHash,
+    ) -> ProviderResult<(N::BlockHeader, Option<U256>)> {
         // query header td from canonical chain
         if let Some(block_number) = self.provider.block_number(hash)? {
             tracing::debug!(target: "engine::tree", number=?number, hash=?hash, "querying TD from canonical chain");
-            let header = self.provider.header_by_number(block_number)?.
-                ok_or(ProviderError::HeaderNotFound(block_number.into()))?;
+            let header = self
+                .provider
+                .header_by_number(block_number)?
+                .ok_or(ProviderError::HeaderNotFound(block_number.into()))?;
             let td = self.provider.header_td_by_number(block_number)?;
             return Ok((header, td))
         }
@@ -3042,13 +3231,14 @@ where
 
 /// Events received in the main engine loop.
 #[derive(Debug)]
-enum LoopEvent<T, N>
+enum LoopEvent<T, N, P, C>
 where
     N: NodePrimitives,
     T: PayloadTypes,
+    C: ConfigureEvm<Primitives = N>,
 {
     /// An engine API message was received.
-    EngineMessage(FromEngine<EngineApiRequest<T, N>, N::Block>),
+    EngineMessage(FromEngine<EngineApiRequest<T, N, P, C>, N::Block>),
     /// A persistence task completed.
     PersistenceComplete {
         /// The result of the persistence operation.
@@ -3097,4 +3287,43 @@ enum PersistTarget {
     Threshold,
     /// Persist all blocks up to and including the canonical head.
     Head,
+}
+
+/// A custom request message for the engine tree handler.
+///
+/// Used by `reth-bsc` in `TrieDB` mode: during the miner flow, the miner needs the
+/// merged `DiffLayers` from the in-memory tree state so that `TrieDB` can compute
+/// the state root incrementally on top of the parent block's trie.
+#[derive(Debug)]
+pub enum CustomRequestMessage<P, Evm, N>
+where
+    Evm: ConfigureEvm<Primitives = N>,
+    N: NodePrimitives,
+{
+    /// Request the merged diff layers for a given parent hash.
+    ///
+    /// The miner sends this before calling `intermediate_and_commit_hashed_post_state`
+    /// so that `TrieDB` can apply cached trie diffs instead of reading everything from disk.
+    RequestDiffLayer {
+        /// The parent hash to get the diff layers for.
+        parent_hash: BlockHash,
+        /// The sender for returning the diff layers.
+        tx: oneshot::Sender<RethResult<DiffLayers>>,
+        /// Phantom data to hold the generic types.
+        _phantom: PhantomData<(P, Evm, N)>,
+    },
+}
+
+impl<P, Evm, N> Display for CustomRequestMessage<P, Evm, N>
+where
+    Evm: ConfigureEvm<Primitives = N>,
+    N: NodePrimitives,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RequestDiffLayer { parent_hash, .. } => {
+                write!(f, "RequestDiffLayer(parent_hash: {:?})", parent_hash)
+            }
+        }
+    }
 }

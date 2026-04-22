@@ -657,6 +657,13 @@ TxPool:
 
           [default: 10800]
 
+      --txpool.reannouncetime <DURATION>
+          Age threshold for hash-only reannouncement of local pending transactions.
+
+          Default is effectively disabled at 10 years. Minimum is 1 minute.
+
+          [default: 315360000]
+
       --txpool.transactions-backup <PATH>
           Path to store the local transaction backup at, to survive node restarts
 
@@ -783,11 +790,16 @@ Database:
       --db.page-size <PAGE_SIZE>
           Database page size (e.g., 4KB, 8KB, 16KB).
 
-          Specifies the page size used by the MDBX database.
+          NOTE: Page size can only be set when creating a new database and cannot be changed later.
+          The page size must be a power of 2 between 256 bytes and 64KB.
+          If not specified, uses the system default (typically 4KB on Linux, 16KB on macOS).
 
-          The page size determines the maximum database size. MDBX supports up to 2^31 pages, so with the default 4KB page size, the maximum database size is 8TB. To allow larger databases, increase this value to 8KB or higher.
+          The page size determines the maximum database size.
+          MDBX supports up to 2^31 pages, so with the default 4KB page size, the maximum
+          database size is 8TB. To allow larger databases, increase this value to 8KB or higher.
 
-          WARNING: This setting is only configurable at database creation; changing it later requires re-syncing.
+          WARNING: Changing page size on an existing database will cause errors.
+          Only use this flag when initializing a new node.
 
       --db.growth-step <GROWTH_STEP>
           Database growth step (e.g., 4GB, 4KB)
@@ -969,6 +981,14 @@ Engine:
       --engine.account-worker-count <ACCOUNT_WORKER_COUNT>
           Configure the number of account proof workers in the Tokio blocking pool. If not specified, defaults to the same count as storage workers
 
+      --engine.skip-state-root-validation
+          Skip state root validation for fastnode mode. This disables validation of state root hashes during live sync and also automatically disables hashing stages for maximum sync speed at the cost of reduced validation
+
+      --engine.min-blocks-for-pipeline-run <MIN_BLOCKS_FOR_PIPELINE_RUN>
+          Configure the minimum number of blocks required to trigger a pipeline run for backfilling. When the local head is behind the forkchoice head by more than this threshold, the pipeline will be used to backfill blocks instead of downloading them individually
+
+          [default: 32]
+
       --engine.enable-proof-v2
           Enable V2 storage proofs for state root calculations
 
@@ -1024,6 +1044,10 @@ Static Files:
 
           Note: This setting can only be configured at genesis initialization. Once the node has been initialized, changing this flag requires re-syncing from scratch.
 
+State Database:
+      --statedb.triedb
+          Use `TrieDB` instead of MDBX for state database
+
 Ress:
       --ress.enable
           Enable support for `ress` subprotocol
@@ -1054,7 +1078,6 @@ Logging:
 
           Possible values:
           - json:     Represents JSON formatting for logs. This format outputs log records as JSON objects, making it suitable for structured logging
-          - log-fmt:  Represents logfmt (key=value) formatting for logs. This format is concise and human-readable, typically used in command-line applications
           - terminal: Represents terminal-friendly formatting for logs
 
           [default: terminal]
@@ -1069,7 +1092,6 @@ Logging:
 
           Possible values:
           - json:     Represents JSON formatting for logs. This format outputs log records as JSON objects, making it suitable for structured logging
-          - log-fmt:  Represents logfmt (key=value) formatting for logs. This format is concise and human-readable, typically used in command-line applications
           - terminal: Represents terminal-friendly formatting for logs
 
           [default: terminal]

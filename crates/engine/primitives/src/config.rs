@@ -1,6 +1,27 @@
 //! Engine tree configuration.
 
 use alloy_eips::merge::EPOCH_SLOTS;
+use core::sync::atomic::{AtomicBool, Ordering};
+
+/// Global flag indicating whether the node is running in fastnode mode
+/// (i.e., `--engine.skip-state-root-validation` is enabled).
+///
+/// When active, trie-dependent RPC methods such as `eth_getProof` and `eth_getAccount`
+/// are unavailable because the hashing stages and state root computation are skipped,
+/// meaning the trie tables in the database are not kept up to date.
+static FASTNODE_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Activate fastnode mode globally.
+///
+/// This should be called once during node startup when `skip_state_root_validation` is enabled.
+pub fn activate_fastnode() {
+    FASTNODE_ACTIVE.store(true, Ordering::SeqCst);
+}
+
+/// Returns `true` if the node is running in fastnode mode.
+pub fn is_fastnode_active() -> bool {
+    FASTNODE_ACTIVE.load(Ordering::SeqCst)
+}
 
 /// Triggers persistence when the number of canonical blocks in memory exceeds this threshold.
 pub const DEFAULT_PERSISTENCE_THRESHOLD: u64 = 2;
@@ -144,7 +165,7 @@ pub struct TreeConfig {
     /// This disables validation of state root hashes during live sync.
     skip_state_root_validation: bool,
     /// The minimum number of blocks required to trigger a pipeline run for backfilling.
-    /// 
+    ///
     /// When the local head is behind the forkchoice head by more than this threshold,
     /// the pipeline will be used to backfill blocks instead of downloading them individually.
     min_blocks_for_pipeline_run: u64,

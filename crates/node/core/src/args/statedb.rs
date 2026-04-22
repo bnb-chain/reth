@@ -6,8 +6,7 @@ use clap::Args;
 #[derive(Debug, Clone, Args, PartialEq, Eq, Default)]
 #[command(next_help_heading = "State Database")]
 pub struct StateDbArgs {
-    /// Use TrieDB instead of MDBX for state database.
+    /// Use `TrieDB` instead of MDBX for state database.
     #[arg(long = "statedb.triedb", default_value_t = false)]
     pub triedb: bool,
 }
-

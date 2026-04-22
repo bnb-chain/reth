@@ -752,7 +752,9 @@ where
         }
 
         if needs_cleanup {
-            self.pending_transaction_listener.write().retain(|listener| !listener.sender.is_closed());
+            self.pending_transaction_listener
+                .write()
+                .retain(|listener| !listener.sender.is_closed());
         }
 
         let listener_count_after = self.pending_transaction_listener.read().len();
@@ -1273,9 +1275,13 @@ where
     }
 
     fn update_blob_store_metrics(&self) {
-        if let Some(data_size) = self.blob_store.data_size_hint() {
-            self.blob_store_metrics.blobstore_byte_size.set(data_size as f64);
-        }
+        let data_size = self.blob_store.data_size_hint().unwrap_or(0);
+        self.blob_store_metrics.blobstore_byte_size.set(data_size as f64);
+        // geth-compatible blobpool metrics: dataused tracks actual blob data,
+        // datareal tracks total footprint (in reth both are the same since we don't
+        // have shelf-based storage with gaps like geth)
+        metrics::gauge!("blobpool.dataused").set(data_size as f64);
+        metrics::gauge!("blobpool.datareal").set(data_size as f64);
         self.blob_store_metrics.blobstore_entries.set(self.blob_store.blobs_len() as f64);
     }
 

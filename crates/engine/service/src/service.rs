@@ -37,10 +37,15 @@ use std::{
 pub type EngineMessageStream<T> = Pin<Box<dyn Stream<Item = BeaconEngineMessage<T>> + Send + Sync>>;
 
 /// Alias for chain orchestrator.
-type EngineServiceType<N, Client> = ChainOrchestrator<
+type EngineServiceType<N, Client, Evm> = ChainOrchestrator<
     EngineHandler<
         EngineApiRequestHandler<
-            EngineApiRequest<<N as NodeTypes>::Payload, <N as NodeTypes>::Primitives>,
+            EngineApiRequest<
+                <N as NodeTypes>::Payload,
+                <N as NodeTypes>::Primitives,
+                BlockchainProvider<N>,
+                Evm,
+            >,
             <N as NodeTypes>::Primitives,
         >,
         EngineMessageStream<<N as NodeTypes>::Payload>,
@@ -55,22 +60,24 @@ type EngineServiceType<N, Client> = ChainOrchestrator<
 // TODO(mattsse): remove hidden once fixed : <https://github.com/rust-lang/rust/issues/135363>
 //  otherwise rustdoc fails to resolve the alias
 #[doc(hidden)]
-pub struct EngineService<N, Client>
+pub struct EngineService<N, Client, Evm>
 where
     N: ProviderNodeTypes,
     Client: BlockClient<Block = BlockTy<N>> + 'static,
+    Evm: ConfigureEvm<Primitives = N::Primitives> + Send + Sync + 'static,
 {
-    orchestrator: EngineServiceType<N, Client>,
+    orchestrator: EngineServiceType<N, Client, Evm>,
 }
 
-impl<N, Client> EngineService<N, Client>
+impl<N, Client, Evm> EngineService<N, Client, Evm>
 where
     N: ProviderNodeTypes,
     Client: BlockClient<Block = BlockTy<N>> + 'static,
+    Evm: ConfigureEvm<Primitives = N::Primitives> + Send + Sync + 'static,
 {
     /// Constructor for `EngineService`.
     #[expect(clippy::too_many_arguments)]
-    pub fn new<V, C>(
+    pub fn new<V>(
         consensus: Arc<dyn FullConsensus<N::Primitives>>,
         chain_spec: Arc<N::ChainSpec>,
         client: Client,
@@ -84,12 +91,11 @@ where
         payload_validator: V,
         tree_config: TreeConfig,
         sync_metrics_tx: MetricEventsSender,
-        evm_config: C,
+        evm_config: Evm,
         changeset_cache: ChangesetCache,
     ) -> Self
     where
         V: EngineValidator<N::Payload>,
-        C: ConfigureEvm<Primitives = N::Primitives> + 'static,
     {
         let engine_kind =
             if chain_spec.is_optimism() { EngineApiKind::OpStack } else { EngineApiKind::Ethereum };
@@ -123,15 +129,16 @@ where
     }
 
     /// Returns a mutable reference to the orchestrator.
-    pub fn orchestrator_mut(&mut self) -> &mut EngineServiceType<N, Client> {
+    pub fn orchestrator_mut(&mut self) -> &mut EngineServiceType<N, Client, Evm> {
         &mut self.orchestrator
     }
 }
 
-impl<N, Client> Stream for EngineService<N, Client>
+impl<N, Client, Evm> Stream for EngineService<N, Client, Evm>
 where
     N: ProviderNodeTypes,
     Client: BlockClient<Block = BlockTy<N>> + 'static,
+    Evm: ConfigureEvm<Primitives = N::Primitives> + Send + Sync + 'static,
 {
     type Item = ChainEvent<ConsensusEngineEvent<N::Primitives>>;
 

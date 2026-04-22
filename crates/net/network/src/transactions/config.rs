@@ -1,10 +1,10 @@
 use core::fmt;
-use std::{fmt::Debug, str::FromStr};
+use std::{fmt::Debug, str::FromStr, time::Duration};
 
 use super::{
-    PeerMetadata, DEFAULT_MAX_COUNT_TRANSACTIONS_SEEN_BY_PEER,
+    PeerMetadata, DEFAULT_MAX_COUNT_TRANSACTIONS_SEEN_BY_PEER, DEFAULT_REANNOUNCE_TIME,
     DEFAULT_SOFT_LIMIT_BYTE_SIZE_POOLED_TRANSACTIONS_RESP_ON_PACK_GET_POOLED_TRANSACTIONS_REQ,
-    SOFT_LIMIT_BYTE_SIZE_POOLED_TRANSACTIONS_RESPONSE,
+    MIN_REANNOUNCE_TIME, SOFT_LIMIT_BYTE_SIZE_POOLED_TRANSACTIONS_RESPONSE,
 };
 use crate::transactions::constants::tx_fetcher::{
     DEFAULT_MAX_CAPACITY_CACHE_PENDING_FETCH, DEFAULT_MAX_COUNT_CONCURRENT_REQUESTS,
@@ -15,6 +15,11 @@ use alloy_primitives::B256;
 use derive_more::{Constructor, Display};
 use reth_eth_wire::NetworkPrimitives;
 use reth_network_types::peers::kind::PeerKind;
+use tracing::warn;
+
+const fn default_reannounce_time() -> Duration {
+    DEFAULT_REANNOUNCE_TIME
+}
 
 /// Configuration for managing transactions within the network.
 #[derive(Debug, Clone)]
@@ -30,6 +35,9 @@ pub struct TransactionsManagerConfig {
     /// Which peers we accept incoming transactions or announcements from.
     #[cfg_attr(feature = "serde", serde(default))]
     pub ingress_policy: TransactionIngressPolicy,
+    /// Age threshold for periodically reannouncing local pending transactions as hashes.
+    #[cfg_attr(feature = "serde", serde(default = "default_reannounce_time"))]
+    pub reannounce_time: Duration,
 }
 
 impl Default for TransactionsManagerConfig {
@@ -39,7 +47,25 @@ impl Default for TransactionsManagerConfig {
             max_transactions_seen_by_peer_history: DEFAULT_MAX_COUNT_TRANSACTIONS_SEEN_BY_PEER,
             propagation_mode: TransactionPropagationMode::default(),
             ingress_policy: TransactionIngressPolicy::default(),
+            reannounce_time: default_reannounce_time(),
         }
+    }
+}
+
+impl TransactionsManagerConfig {
+    /// Returns a config with any invalid reannounce interval clamped to the supported minimum.
+    pub fn sanitized(mut self) -> Self {
+        if self.reannounce_time < MIN_REANNOUNCE_TIME {
+            warn!(
+                target: "net::tx",
+                provided = ?self.reannounce_time,
+                updated = ?MIN_REANNOUNCE_TIME,
+                "Sanitizing invalid transaction reannounce time"
+            );
+            self.reannounce_time = MIN_REANNOUNCE_TIME;
+        }
+
+        self
     }
 }
 
@@ -358,5 +384,16 @@ mod tests {
         assert!(TransactionPropagationMode::from_str("max:").is_err());
         assert!(TransactionPropagationMode::from_str("max").is_err());
         assert!(TransactionPropagationMode::from_str("").is_err());
+    }
+
+    #[test]
+    fn test_reannounce_time_sanitized() {
+        let config = TransactionsManagerConfig {
+            reannounce_time: Duration::from_secs(1),
+            ..Default::default()
+        }
+        .sanitized();
+
+        assert_eq!(config.reannounce_time, MIN_REANNOUNCE_TIME);
     }
 }

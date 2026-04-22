@@ -206,7 +206,8 @@ pub(crate) struct EngineMetrics {
     pub(crate) block_insert_total_duration: Histogram,
     /// Block insert throughput in mgas/s
     pub(crate) block_insert_mgasps: Gauge,
-    /// Block insertion delay: the difference between current timestamp and block header timestamp (in nanoseconds)
+    /// Block insertion delay: the difference between current timestamp and block header timestamp
+    /// (in nanoseconds)
     pub(crate) block_insert_timestamp_delay: Histogram,
 }
 
@@ -383,6 +384,15 @@ pub(crate) struct BlockValidationMetrics {
     pub(crate) anchored_overlay_trie_updates_size: Histogram,
     /// Size of `AnchoredTrieInput` overlay `HashedPostStateSorted` (`total_len`)
     pub(crate) anchored_overlay_hashed_state_size: Histogram,
+    /// triedb validate execution duration
+    pub(crate) triedb_validate_execution_duration: Histogram,
+    /// triedb validate root duration
+    pub(crate) triedb_validate_root_duration: Histogram,
+    /// Total number of triedb validation calls dispatched from `validate_block_with_state`
+    pub(crate) triedb_validate_entry_total: Counter,
+    /// Histogram of total time spent in triedb validation as measured at the
+    /// `validate_block_with_state` entry point.
+    pub(crate) triedb_validate_entry_duration: Histogram,
 }
 
 impl BlockValidationMetrics {
