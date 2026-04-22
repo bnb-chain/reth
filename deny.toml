@@ -12,6 +12,9 @@ ignore = [
     "RUSTSEC-2025-0141",
     # https://rustsec.org/advisories/RUSTSEC-2023-0089 atomic-polyfill is unmaintained, transitive dep via test-fuzz
     "RUSTSEC-2023-0089",
+    # https://rustsec.org/advisories/RUSTSEC-2026-0009 time DoS via stack exhaustion, fixed in 0.3.47
+    # TODO: upgrade when upstream deps adopt time >=0.3.47
+    "RUSTSEC-2026-0009",
     # https://rustsec.org/advisories/RUSTSEC-2026-0097 rand unsoundness with custom logger, no fix available yet
     "RUSTSEC-2026-0097",
     # https://rustsec.org/advisories/RUSTSEC-2026-0105 core2 is unmaintained
