@@ -305,6 +305,8 @@ jobs:
 
   deny:
     uses: tempoxyz/ci/.github/workflows/deny.yml@main
+    with:
+      rust-toolchain: ${{ env.PINNED_NIGHTLY }}
 
   lint-success:
     name: lint success
