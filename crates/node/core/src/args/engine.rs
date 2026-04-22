@@ -392,6 +392,17 @@ impl Default for EngineArgs {
 impl EngineArgs {
     /// Creates a [`TreeConfig`] from the engine arguments.
     pub fn tree_config(&self) -> TreeConfig {
+        // Echo key persistence-sizing knobs so operators can confirm what
+        // actually landed after CLI parsing + default merging. At 2000+ TPS
+        // these values determine whether save_blocks runs with tiny or
+        // healthy batch sizes.
+        tracing::info!(
+            target: "reth::cli",
+            persistence_threshold = self.persistence_threshold,
+            memory_block_buffer_target = self.memory_block_buffer_target,
+            cross_block_cache_size = self.cross_block_cache_size,
+            "Engine tree config"
+        );
         let mut config = TreeConfig::default()
             .with_persistence_threshold(self.persistence_threshold)
             .with_memory_block_buffer_target(self.memory_block_buffer_target)
