@@ -483,11 +483,9 @@ impl PeersManager {
     /// reputation changes that can be attributed to network conditions. If the peer is a
     /// trusted peer, it will also be less strict with the reputation slashing.
     pub(crate) fn apply_reputation_change(&mut self, peer_id: &PeerId, rep: ReputationChangeKind) {
-        trace!(target: "net::peers", ?peer_id, reputation=?rep, "applying reputation change");
-
-        let outcome = if let Some(peer) = self.peers.get_mut(peer_id) {
+        let (outcome, new_reputation) = if let Some(peer) = self.peers.get_mut(peer_id) {
             // First check if we should reset the reputation
-            if rep.is_reset() {
+            let outcome = if rep.is_reset() {
                 peer.reset_reputation()
             } else {
                 let mut reputation_change = self.reputation_weights.change(rep).as_i32();
@@ -510,10 +508,35 @@ impl PeersManager {
                     }
                 }
                 peer.apply_reputation(reputation_change, rep)
-            }
+            };
+            (outcome, peer.reputation)
         } else {
             return;
         };
+
+        // Visibility: log every successful reputation change. DEBUG for
+        // None (no ban-state change); INFO when the change transitions
+        // the peer's ban state.
+        match outcome {
+            ReputationChangeOutcome::None => tracing::debug!(
+                target: "net::peers",
+                ?peer_id,
+                kind = ?rep,
+                new_reputation,
+                ?outcome,
+                "reputation change applied",
+            ),
+            ReputationChangeOutcome::Ban
+            | ReputationChangeOutcome::DisconnectAndBan
+            | ReputationChangeOutcome::Unban => tracing::info!(
+                target: "net::peers",
+                ?peer_id,
+                kind = ?rep,
+                new_reputation,
+                ?outcome,
+                "reputation change applied",
+            ),
+        }
 
         match outcome {
             ReputationChangeOutcome::None => {}
