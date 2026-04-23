@@ -555,9 +555,6 @@ pub struct RpcAddOns<
     rpc_middleware: RpcMiddleware,
     /// Optional custom tokio runtime for the RPC server.
     tokio_runtime: Option<tokio::runtime::Handle>,
-    /// Optional receipt filter for excluding certain receipts from log queries.
-    /// Used by chains like BSC to filter system transaction logs from `eth_getLogs`.
-    receipt_filter: Option<Arc<dyn reth_rpc_eth_types::logs_utils::ReceiptFilter>>,
 }
 
 impl<Node, EthB, PVB, EB, EVB, RpcMiddleware> Debug
@@ -602,21 +599,7 @@ where
             engine_validator_builder,
             rpc_middleware,
             tokio_runtime: None,
-            receipt_filter: None,
         }
-    }
-
-    /// Sets a custom receipt filter for filtering log queries.
-    ///
-    /// The receipt filter allows excluding certain receipts from `eth_getLogs`
-    /// and related RPC responses. For example, BSC uses this to filter out
-    /// system transaction logs.
-    pub fn with_receipt_filter(
-        mut self,
-        receipt_filter: Arc<dyn reth_rpc_eth_types::logs_utils::ReceiptFilter>,
-    ) -> Self {
-        self.receipt_filter = Some(receipt_filter);
-        self
     }
 
     /// Maps the [`EngineApiBuilder`] builder type.
@@ -631,7 +614,6 @@ where
             engine_validator_builder,
             rpc_middleware,
             tokio_runtime,
-            receipt_filter,
             ..
         } = self;
         RpcAddOns {
@@ -642,7 +624,6 @@ where
             engine_validator_builder,
             rpc_middleware,
             tokio_runtime,
-            receipt_filter,
         }
     }
 
@@ -658,7 +639,6 @@ where
             engine_validator_builder,
             rpc_middleware,
             tokio_runtime,
-            receipt_filter,
             ..
         } = self;
         RpcAddOns {
@@ -669,7 +649,6 @@ where
             engine_validator_builder,
             rpc_middleware,
             tokio_runtime,
-            receipt_filter,
         }
     }
 
@@ -685,7 +664,6 @@ where
             engine_api_builder,
             rpc_middleware,
             tokio_runtime,
-            receipt_filter,
             ..
         } = self;
         RpcAddOns {
@@ -696,7 +674,6 @@ where
             engine_validator_builder,
             rpc_middleware,
             tokio_runtime,
-            receipt_filter,
         }
     }
 
@@ -749,7 +726,6 @@ where
             engine_api_builder,
             engine_validator_builder,
             tokio_runtime,
-            receipt_filter,
             ..
         } = self;
         RpcAddOns {
@@ -760,7 +736,6 @@ where
             engine_validator_builder,
             rpc_middleware,
             tokio_runtime,
-            receipt_filter,
         }
     }
 
@@ -775,7 +750,6 @@ where
             engine_validator_builder,
             engine_api_builder,
             rpc_middleware,
-            receipt_filter,
             ..
         } = self;
         Self {
@@ -786,7 +760,6 @@ where
             engine_api_builder,
             rpc_middleware,
             tokio_runtime,
-            receipt_filter,
         }
     }
 
@@ -803,7 +776,6 @@ where
             engine_validator_builder,
             rpc_middleware,
             tokio_runtime,
-            receipt_filter,
         } = self;
         let rpc_middleware = Stack::new(rpc_middleware, layer);
         RpcAddOns {
@@ -814,7 +786,6 @@ where
             engine_validator_builder,
             rpc_middleware,
             tokio_runtime,
-            receipt_filter,
         }
     }
 
@@ -1028,7 +999,7 @@ where
     where
         F: FnOnce(RpcModuleContainer<'_, N, EthB::EthApi>) -> eyre::Result<()>,
     {
-        let Self { eth_api_builder, engine_api_builder, hooks, receipt_filter, .. } = self;
+        let Self { eth_api_builder, engine_api_builder, hooks, .. } = self;
 
         let engine_api = engine_api_builder.build_engine_api(&ctx).await?;
         let AddOnsContext { node, config, beacon_engine_handle, jwt_secret, engine_events } = ctx;
@@ -1063,23 +1034,14 @@ where
         let module_config = config.rpc.transport_rpc_module_config();
         debug!(target: "reth::cli", http=?module_config.http(), ws=?module_config.ws(), "Using RPC module config");
 
-        let rpc_module_builder = RpcModuleBuilder::default()
+        let (mut modules, mut auth_module, registry) = RpcModuleBuilder::default()
             .with_provider(node.provider().clone())
             .with_pool(node.pool().clone())
             .with_network(node.network().clone())
             .with_executor(Box::new(node.task_executor().clone()))
             .with_evm_config(node.evm_config().clone())
-            .with_consensus(node.consensus().clone());
-
-        let config_inner = module_config.config().cloned().unwrap_or_default();
-        let mut registry = rpc_module_builder.into_registry_with_receipt_filter(
-            config_inner,
-            eth_api,
-            engine_events.clone(),
-            receipt_filter,
-        );
-        let mut modules = registry.create_transport_rpc_modules(module_config);
-        let mut auth_module = registry.create_auth_module(engine_api);
+            .with_consensus(node.consensus().clone())
+            .build_with_auth_server(module_config, engine_api, eth_api, engine_events.clone());
 
         // in dev mode we generate 20 random dev-signer accounts
         if config.dev.dev {
