@@ -657,6 +657,13 @@ TxPool:
 
           [default: 10800]
 
+      --txpool.reannouncetime <DURATION>
+          Age threshold for hash-only reannouncement of local pending transactions.
+
+          Default is effectively disabled at 10 years. Minimum is 1 minute.
+
+          [default: 315360000]
+
       --txpool.transactions-backup <PATH>
           Path to store the local transaction backup at, to survive node restarts
 
