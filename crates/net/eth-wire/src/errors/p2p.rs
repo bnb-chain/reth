@@ -68,7 +68,7 @@ pub enum P2PStreamError {
     SendBufferFull,
 
     /// Disconnected error.
-    #[error("disconnected")]
+    #[error("disconnected: {0}")]
     Disconnected(DisconnectReason),
 
     /// Unknown disconnect reason error.
@@ -129,4 +129,22 @@ pub enum PingerError {
     /// An unexpected pong was received while the pinger was in the `Ready` state.
     #[error("pong received while ready")]
     UnexpectedPong,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn p2p_disconnected_display_includes_reason() {
+        let err = P2PStreamError::Disconnected(DisconnectReason::UselessPeer);
+        assert_eq!(format!("{err}"), "disconnected: useless peer");
+    }
+
+    #[test]
+    fn p2p_handshake_disconnected_display_shape_unchanged() {
+        // Regression: the handshake variant already includes the reason.
+        let err = P2PHandshakeError::Disconnected(DisconnectReason::UselessPeer);
+        assert_eq!(format!("{err}"), "disconnected by peer: useless peer");
+    }
 }
