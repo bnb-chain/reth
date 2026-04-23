@@ -15,6 +15,11 @@ ignore = [
     # https://rustsec.org/advisories/RUSTSEC-2026-0009 time DoS via stack exhaustion, fixed in 0.3.47
     # TODO: upgrade when upstream deps adopt time >=0.3.47
     "RUSTSEC-2026-0009",
+    # https://rustsec.org/advisories/RUSTSEC-2026-0097 rand unsound only when combined with a custom
+    # log-level trace logger calling rand::rng() during reseed; not reachable in reth's logging path.
+    "RUSTSEC-2026-0097",
+    # https://rustsec.org/advisories/RUSTSEC-2026-0105 core2 unmaintained, all versions yanked (no replacement)
+    "RUSTSEC-2026-0105",
 ]
 
 # This section is considered when running `cargo deny check bans`.
