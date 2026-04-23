@@ -352,6 +352,13 @@ impl PeersManager {
         // we only need to check the peer id here as the ip address will have been checked at
         // on_incoming_pending_session. We also check if the peer is in the backoff list here.
         if self.ban_list.is_banned_peer(&peer_id) {
+            tracing::warn!(
+                target: "net::peers",
+                ?peer_id,
+                ?addr,
+                reason = "banned_by_list",
+                "rejecting established inbound session",
+            );
             self.queued_actions.push_back(PeerAction::DisconnectBannedIncoming { peer_id });
             return;
         }
@@ -359,6 +366,13 @@ impl PeersManager {
         // check if the peer is trustable or not
         let mut is_trusted = self.trusted_peer_ids.contains(&peer_id);
         if self.trusted_nodes_only && !is_trusted {
+            tracing::warn!(
+                target: "net::peers",
+                ?peer_id,
+                ?addr,
+                reason = "trusted_nodes_only",
+                "rejecting established inbound session",
+            );
             self.queued_actions.push_back(PeerAction::DisconnectUntrustedIncoming { peer_id });
             return;
         }
@@ -370,6 +384,13 @@ impl PeersManager {
             Entry::Occupied(mut entry) => {
                 let peer = entry.get_mut();
                 if peer.is_banned() {
+                    tracing::warn!(
+                        target: "net::peers",
+                        ?peer_id,
+                        ?addr,
+                        reason = "reputation_below_threshold",
+                        "rejecting established inbound session",
+                    );
                     self.queued_actions.push_back(PeerAction::DisconnectBannedIncoming { peer_id });
                     return;
                 }
@@ -408,15 +429,25 @@ impl PeersManager {
 
     /// Bans the peer temporarily with the configured ban timeout
     fn ban_peer(&mut self, peer_id: PeerId) {
-        let ban_duration = if let Some(peer) = self.peers.get(&peer_id) &&
-            (peer.is_trusted() || peer.is_static())
-        {
+        let peer_entry = self.peers.get(&peer_id);
+        let trusted_or_static =
+            peer_entry.is_some_and(|p| p.is_trusted() || p.is_static());
+
+        let ban_duration = if trusted_or_static {
             // For misbehaving trusted or static peers, we provide a bit more leeway when
             // penalizing them.
             self.backoff_durations.low / 2
         } else {
             self.ban_duration
         };
+
+        tracing::warn!(
+            target: "net::peers",
+            ?peer_id,
+            duration = ?ban_duration,
+            trusted = trusted_or_static,
+            "banning peer",
+        );
 
         self.ban_list.ban_peer_until(peer_id, std::time::Instant::now() + ban_duration);
         self.queued_actions.push_back(PeerAction::BanPeer { peer_id });
@@ -671,6 +702,13 @@ impl PeersManager {
 
         if err.is_fatal_protocol_error() {
             trace!(target: "net::peers", ?remote_addr, ?peer_id, %err, "fatal connection error");
+            tracing::warn!(
+                target: "net::peers",
+                ?remote_addr,
+                ?peer_id,
+                err = %err,
+                "removing and banning peer on fatal protocol error",
+            );
             // remove the peer to which we can't establish a connection due to protocol related
             // issues.
             if let Entry::Occupied(mut entry) = self.peers.entry(*peer_id) {
