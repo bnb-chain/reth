@@ -2928,9 +2928,7 @@ where
                     );
 
                     Ok(PayloadStatus::new(
-                        PayloadStatusEnum::Invalid {
-                            validation_error: err.to_string(),
-                        },
+                        PayloadStatusEnum::Invalid { validation_error: err.to_string() },
                         None,
                     ))
                 }
