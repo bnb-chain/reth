@@ -1635,7 +1635,7 @@ mod tests {
             &socket_addr,
             &peer,
             &EthStreamError::P2PStreamError(P2PStreamError::Disconnected(
-                DisconnectReason::UselessPeer,
+                DisconnectReason::ProtocolBreach,
             )),
         );
 
@@ -1659,6 +1659,50 @@ mod tests {
         .await;
 
         assert!(!peers.peers.contains_key(&peer));
+    }
+
+    #[tokio::test]
+    async fn test_useless_peer_does_not_ban_on_active_drop() {
+        let peer = PeerId::random();
+        let socket_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 1, 2)), 8008);
+        let mut peers = PeersManager::default();
+        peers.add_peer(peer, PeerAddr::from_tcp(socket_addr), None);
+
+        // Consume the PeerAdded + Connect actions.
+        match event!(peers) {
+            PeerAction::PeerAdded(peer_id) => assert_eq!(peer_id, peer),
+            _ => unreachable!(),
+        }
+        match event!(peers) {
+            PeerAction::Connect { peer_id, .. } => assert_eq!(peer_id, peer),
+            _ => unreachable!(),
+        }
+
+        poll_fn(|cx| {
+            assert!(peers.poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+
+        // Remote drops us with UselessPeer. After the fix this must NOT ban the peer.
+        peers.on_active_session_dropped(
+            &socket_addr,
+            &peer,
+            &EthStreamError::P2PStreamError(P2PStreamError::Disconnected(
+                DisconnectReason::UselessPeer,
+            )),
+        );
+
+        // No PeerRemoved or BanPeer action should surface. Poll once to confirm the
+        // queue stays pending.
+        poll_fn(|cx| {
+            assert!(peers.poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+
+        assert!(peers.peers.contains_key(&peer), "peer should remain in the table");
+        assert!(!peers.ban_list.is_banned_peer(&peer), "peer should not be banned");
     }
 
     #[tokio::test]
@@ -1746,7 +1790,7 @@ mod tests {
             &socket_addr,
             &peer,
             &PendingSessionHandshakeError::Eth(EthStreamError::P2PStreamError(
-                P2PStreamError::Disconnected(DisconnectReason::UselessPeer),
+                P2PStreamError::Disconnected(DisconnectReason::ProtocolBreach),
             )),
         );
 
@@ -1909,7 +1953,7 @@ mod tests {
         assert_eq!(peers.connection_info.num_pending_in, 1);
         let err = PendingSessionHandshakeError::Eth(EthStreamError::P2PStreamError(
             P2PStreamError::HandshakeError(P2PHandshakeError::Disconnected(
-                DisconnectReason::UselessPeer,
+                DisconnectReason::ProtocolBreach,
             )),
         ));
 

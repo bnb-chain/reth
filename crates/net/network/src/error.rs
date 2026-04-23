@@ -143,8 +143,7 @@ impl SessionError for EthStreamError {
                             P2PHandshakeError::HelloNotInHandshake |
                             P2PHandshakeError::NonHelloMessageInHandshake |
                             P2PHandshakeError::Disconnected(
-                                DisconnectReason::UselessPeer |
-                                    DisconnectReason::IncompatibleP2PProtocolVersion |
+                                DisconnectReason::IncompatibleP2PProtocolVersion |
                                     DisconnectReason::ProtocolBreach
                             )
                     ) | P2PStreamError::UnknownReservedMessageId(_) |
@@ -152,8 +151,7 @@ impl SessionError for EthStreamError {
                         P2PStreamError::ParseSharedCapability(_) |
                         P2PStreamError::CapabilityNotShared |
                         P2PStreamError::Disconnected(
-                            DisconnectReason::UselessPeer |
-                                DisconnectReason::IncompatibleP2PProtocolVersion |
+                            DisconnectReason::IncompatibleP2PProtocolVersion |
                                 DisconnectReason::ProtocolBreach
                         ) |
                         P2PStreamError::MismatchedProtocolVersion { .. }
@@ -315,9 +313,11 @@ mod tests {
 
     #[test]
     fn test_is_fatal_disconnect() {
+        // ProtocolBreach is the canonical example of a truly fatal disconnect:
+        // the remote observed us violating the protocol and we have no way back.
         let err = PendingSessionHandshakeError::Eth(EthStreamError::P2PStreamError(
             P2PStreamError::HandshakeError(P2PHandshakeError::Disconnected(
-                DisconnectReason::UselessPeer,
+                DisconnectReason::ProtocolBreach,
             )),
         ));
 
@@ -352,5 +352,47 @@ mod tests {
 
             assert!(err.to_string().contains(kind.flags()));
         }
+    }
+
+    #[test]
+    fn test_useless_peer_not_fatal_during_handshake() {
+        let err = PendingSessionHandshakeError::Eth(EthStreamError::P2PStreamError(
+            P2PStreamError::HandshakeError(P2PHandshakeError::Disconnected(
+                DisconnectReason::UselessPeer,
+            )),
+        ));
+        assert!(!err.is_fatal_protocol_error());
+    }
+
+    #[test]
+    fn test_useless_peer_not_fatal_post_handshake() {
+        let err = EthStreamError::P2PStreamError(P2PStreamError::Disconnected(
+            DisconnectReason::UselessPeer,
+        ));
+        assert!(!err.is_fatal_protocol_error());
+    }
+
+    #[test]
+    fn test_protocol_breach_remains_fatal_post_handshake() {
+        let err = EthStreamError::P2PStreamError(P2PStreamError::Disconnected(
+            DisconnectReason::ProtocolBreach,
+        ));
+        assert!(err.is_fatal_protocol_error());
+    }
+
+    #[test]
+    fn test_incompatible_p2p_version_remains_fatal_post_handshake() {
+        let err = EthStreamError::P2PStreamError(P2PStreamError::Disconnected(
+            DisconnectReason::IncompatibleP2PProtocolVersion,
+        ));
+        assert!(err.is_fatal_protocol_error());
+    }
+
+    #[test]
+    fn test_useless_peer_backoff_is_high() {
+        let err = EthStreamError::P2PStreamError(P2PStreamError::Disconnected(
+            DisconnectReason::UselessPeer,
+        ));
+        assert_eq!(err.should_backoff(), Some(BackoffKind::High));
     }
 }
