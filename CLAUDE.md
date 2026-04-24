@@ -115,6 +115,20 @@ Reth is a high-performance Ethereum execution client written in Rust, focusing o
    RUSTFLAGS="-D warnings" cargo +nightly clippy --workspace --lib --examples --tests --benches --all-features --locked
    ```
 
+   **Doc comments — `clippy::doc_markdown` is enforced.** Any bare
+   identifier that matches a type, module, constant, path, or CamelCase
+   name in a `///` or `//!` comment must be wrapped in backticks, or
+   clippy fails under `-D warnings`. Examples:
+   - `tree_state` (module), `MockEthProvider` (type), `B256::ZERO`
+     (path), `HeaderNotFound` (variant) → all need backticks.
+   - Plain English words, arguments documented via `?arg`, and code
+     inside `` ```rust `` blocks do not.
+
+   Also backtick-wrap crate/URL-looking tokens: `bnb-chain/reth`,
+   `paradigmxyz/reth`, `std::fs`, etc. When unsure, run clippy before
+   committing — the fix is usually a one-character change but the
+   rebuild to verify is slow.
+
 3. **Testing**: Use nextest for faster test execution
    ```bash
    cargo nextest run --workspace
