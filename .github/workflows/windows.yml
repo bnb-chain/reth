@@ -24,7 +24,7 @@ jobs:
         with:
           target: x86_64-pc-windows-gnu
       - uses: taiki-e/install-action@cross
-      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: mozilla-actions/sccache-action@v0.0.10
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
@@ -44,7 +44,7 @@ jobs:
         with:
           target: x86_64-pc-windows-gnu
       - uses: taiki-e/install-action@cross
-      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: mozilla-actions/sccache-action@v0.0.10
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
