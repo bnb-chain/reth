@@ -67,9 +67,10 @@ use reth_node_metrics::{
 };
 use reth_provider::{
     providers::{NodeTypesForProvider, ProviderNodeTypes, RocksDBProvider, StaticFileProvider},
-    BlockHashReader, BlockNumReader, BlockReaderIdExt, DatabaseProviderFactory, HeaderProvider,
-    ProviderError, ProviderFactory, ProviderResult, RocksDBProviderFactory, StageCheckpointReader,
-    StaticFileProviderBuilder, StaticFileProviderFactory,
+    BlockExecutionWriter, BlockHashReader, BlockNumReader, BlockReaderIdExt, DBProvider,
+    DatabaseProviderFactory, HeaderProvider, ProviderError, ProviderFactory, ProviderResult,
+    RocksDBProviderFactory, StageCheckpointReader, StaticFileProviderBuilder,
+    StaticFileProviderFactory,
 };
 use reth_prune::{PruneModes, PrunerBuilder};
 use reth_rpc_builder::config::RethRpcServerConfig;
@@ -1033,7 +1034,15 @@ where
     /// This returns the configured `debug.tip` if set, otherwise it will check if backfill was
     /// previously interrupted and returns the block hash of the last checkpoint, see also
     /// [`Self::check_pipeline_consistency`]
-    pub fn initial_backfill_target(&self) -> ProviderResult<Option<B256>> {
+    pub fn initial_backfill_target(&self) -> ProviderResult<Option<B256>>
+    where
+        <T::Provider as DatabaseProviderFactory>::ProviderRW: BlockExecutionWriter,
+    {
+        // Make MDBX and TrieDB agree on the canonical tip before anything else
+        // consults on-disk state. After this returns Ok the two backends are
+        // in sync (or TrieDB is inactive).
+        self.align_mdbx_to_triedb_at_startup()?;
+
         let mut initial_target = self.node_config().debug.tip;
 
         if initial_target.is_none() {
@@ -1072,6 +1081,147 @@ where
         }
 
         Ok(())
+    }
+
+    /// Align MDBX to `TrieDB` pathdb at startup.
+    ///
+    /// When `TrieDB` is active, reads pathdb's persisted tip and MDBX's tip. If MDBX is
+    /// ahead, unwinds MDBX (state + blocks + static files + stage checkpoints) down to
+    /// the pathdb tip. Equal tips are a no-op. Hard-fails on:
+    ///   - pathdb ahead of MDBX (system invariant violation),
+    ///   - gap > [`alignment::MAX_STARTUP_UNWIND_BLOCKS`] (operator must investigate),
+    ///   - pathdb root disagrees with the MDBX header state root at `pathdb_block`.
+    ///
+    /// Called from [`Self::initial_backfill_target`] before the consensus engine and
+    /// pipeline are built, so no other subsystem observes a transient mismatch. The
+    /// MDBX unwind commits atomically; concurrent RO readers (RPC already up) see
+    /// either the pre- or post-unwind state under MDBX MVCC.
+    pub fn align_mdbx_to_triedb_at_startup(&self) -> ProviderResult<()>
+    where
+        <T::Provider as DatabaseProviderFactory>::ProviderRW: BlockExecutionWriter,
+    {
+        use crate::launch::alignment::{
+            decide_startup_alignment, AlignmentOutcome, MAX_STARTUP_UNWIND_BLOCKS,
+        };
+
+        if !is_triedb_active() {
+            return Ok(());
+        }
+
+        let triedb = rust_eth_triedb::get_global_triedb();
+        let (pathdb_block, pathdb_root) =
+            triedb.latest_persist_state().map_err(ProviderError::other)?;
+
+        let mdbx_tip = self.blockchain_db().last_block_number()?;
+        let gap = mdbx_tip.saturating_sub(pathdb_block);
+        metrics::gauge!("reth_startup_alignment_last_gap").set(gap as f64);
+
+        // Fast-path the no-unwind cases without fetching a header.
+        if mdbx_tip == pathdb_block {
+            info!(
+                target: "reth::cli",
+                mdbx_tip, pathdb_block, gap = 0u64, outcome = "noop",
+                "Startup alignment: backends already in sync",
+            );
+            return Ok(());
+        }
+        if mdbx_tip < pathdb_block {
+            error!(
+                target: "reth::cli",
+                mdbx_tip, pathdb_block, outcome = "failed:triedb_ahead",
+                "Startup alignment: triedb pathdb is ahead of mdbx — aborting",
+            );
+            return Err(ProviderError::other(std::io::Error::other(format!(
+                "triedb pathdb (#{pathdb_block}) is ahead of mdbx tip (#{mdbx_tip}); \
+                 invariant is maintained by save_blocks ordering and is not \
+                 automatically recoverable — restore pathdb from snapshot or resync"
+            ))));
+        }
+
+        // mdbx_tip > pathdb_block: need the header at pathdb_block for root validation.
+        let mdbx_root_at_pathdb_block = self
+            .blockchain_db()
+            .header_by_number(pathdb_block)?
+            .ok_or_else(|| ProviderError::HeaderNotFound(pathdb_block.into()))?
+            .state_root();
+
+        let outcome = decide_startup_alignment(
+            pathdb_block,
+            pathdb_root,
+            mdbx_tip,
+            mdbx_root_at_pathdb_block,
+            MAX_STARTUP_UNWIND_BLOCKS,
+        );
+
+        match outcome {
+            AlignmentOutcome::Aligned => Ok(()), // unreachable; fast-path handled above
+            AlignmentOutcome::TriedbAhead { .. } => {
+                // unreachable; fast-path handled above
+                Ok(())
+            }
+            AlignmentOutcome::ExceedsLimit { mdbx_tip, pathdb_block, gap, limit } => {
+                error!(
+                    target: "reth::cli",
+                    mdbx_tip, pathdb_block, gap, limit,
+                    outcome = "failed:exceeds_limit",
+                    "Startup alignment: gap exceeds safety limit — aborting",
+                );
+                Err(ProviderError::other(std::io::Error::other(format!(
+                    "startup alignment refused: mdbx tip #{mdbx_tip} is {gap} blocks \
+                     ahead of triedb pathdb #{pathdb_block} (limit {limit}); verify \
+                     pathdb path / chain config or run `reth stage unwind` explicitly"
+                ))))
+            }
+            AlignmentOutcome::RootMismatch { block, triedb_root, mdbx_root } => {
+                error!(
+                    target: "reth::cli",
+                    block, ?triedb_root, ?mdbx_root,
+                    outcome = "failed:root_mismatch",
+                    "Startup alignment: pathdb root disagrees with mdbx header — aborting",
+                );
+                Err(ProviderError::other(std::io::Error::other(format!(
+                    "triedb/mdbx state root mismatch at block #{block}: \
+                     triedb={triedb_root:?}, mdbx header={mdbx_root:?}"
+                ))))
+            }
+            AlignmentOutcome::NeedsUnwind { to } => {
+                // Unwinding to block 0 wipes the chain and leaves MDBX with a huge
+                // free list. If pathdb reports block 0 while MDBX has progressed,
+                // the likely cause is a misconfigured pathdb directory — fail loudly
+                // instead of blindly wiping state.
+                if to == 0 {
+                    error!(
+                        target: "reth::cli",
+                        mdbx_tip, pathdb_block = to,
+                        outcome = "failed:unwind_to_genesis",
+                        "Startup alignment: refusing to unwind MDBX to genesis — verify pathdb path",
+                    );
+                    return Err(ProviderError::other(std::io::Error::other(format!(
+                        "startup alignment would unwind MDBX to genesis \
+                         (pathdb_block=0, mdbx_tip={mdbx_tip}); verify pathdb path \
+                         or resync from scratch"
+                    ))));
+                }
+                let gap = mdbx_tip - to;
+                info!(
+                    target: "reth::cli",
+                    mdbx_tip, pathdb_block = to, gap, outcome = "unwinding",
+                    "Startup alignment: unwinding MDBX to match TrieDB pathdb tip",
+                );
+
+                let provider_rw = self.blockchain_db().database_provider_rw()?;
+                provider_rw.remove_block_and_execution_above(to)?;
+                provider_rw.commit()?;
+                metrics::counter!("reth_startup_alignment_unwinds_total").increment(1);
+
+                info!(
+                    target: "reth::cli",
+                    new_tip = to, gap, outcome = "unwound",
+                    "Startup alignment: MDBX unwound; proceeding",
+                );
+                Ok(())
+            }
+        }
     }
 
     /// Check if the pipeline is consistent (all stages have the checkpoint block numbers no less
@@ -1143,21 +1293,23 @@ where
     }
 
     /// Check if the pipeline is consistent under `TrieDB`.
+    ///
+    /// Precondition: [`Self::align_mdbx_to_triedb_at_startup`] has already run, so
+    /// `mdbx_tip == pathdb_tip`. This function only detects pipeline-interrupt
+    /// inconsistencies — stages whose checkpoints trail the first stage because a
+    /// prior pipeline run died mid-flight. Cross-backend alignment is the
+    /// exclusive job of the alignment step.
     pub fn check_pipeline_consistency_under_triedb(&self) -> ProviderResult<Option<B256>> {
-        // If no target was provided, check if the stages are congruent - check if the
-        // checkpoint of the last stage matches the checkpoint of the first.
-        let mut first_stage_checkpoint = self
+        let first_stage_checkpoint = self
             .blockchain_db()
             .get_stage_checkpoint(*StageId::ALL.first().unwrap())?
             .unwrap_or_default()
             .block_number;
 
         let triedb = rust_eth_triedb::get_global_triedb();
-        let (triedb_checkpoint_block_number, triedb_checkpoint_state_root) =
-            triedb.latest_persist_state().unwrap();
+        let (triedb_checkpoint_block_number, _triedb_checkpoint_state_root) =
+            triedb.latest_persist_state().map_err(ProviderError::other)?;
 
-        // Skip the first stage as we've already retrieved it and comparing all other checkpoints
-        // against it.
         for stage_id in &StageId::ALL {
             let stage_checkpoint = self
                 .blockchain_db()
@@ -1165,67 +1317,36 @@ where
                 .unwrap_or_default()
                 .block_number;
 
-            // If the checkpoint of any stage is less than the checkpoint of the first stage,
-            // retrieve and return the block hash of the latest header and use it as the target.
             if stage_checkpoint < first_stage_checkpoint {
-                if triedb_checkpoint_block_number > first_stage_checkpoint {
+                // If pathdb progressed past the first stage (prior pipeline run wrote
+                // triedb then died before advancing stage checkpoints), target the
+                // pathdb tip so the backfill resumes from there.
+                let target = if triedb_checkpoint_block_number > first_stage_checkpoint {
                     info!(
                         target: "consensus::engine",
                         triedb_checkpoint_block_number,
                         first_stage_checkpoint,
-                        "TrieDB checkpoint is ahead of the first stage checkpoint, using TrieDB checkpoint as the target"
+                        "TrieDB checkpoint ahead of first stage checkpoint; targeting TrieDB",
                     );
-                    first_stage_checkpoint = triedb_checkpoint_block_number;
-                }
+                    triedb_checkpoint_block_number
+                } else {
+                    first_stage_checkpoint
+                };
                 info!(
                     target: "consensus::engine",
-                    first_stage_checkpoint,
+                    first_stage_checkpoint = target,
                     inconsistent_stage_id = %stage_id,
                     inconsistent_stage_checkpoint = stage_checkpoint,
-                    "Pipeline sync progress is inconsistent"
+                    "Pipeline sync progress is inconsistent",
                 );
-                return self.blockchain_db().block_hash(first_stage_checkpoint);
+                return self.blockchain_db().block_hash(target);
             }
         }
 
-        info!(target: "consensus::engine", "Pipeline sync progress is consistent, will check live sync progress");
-
-        let last_persisted_block_number = self.blockchain_db().last_block_number()?;
-        let last_persisted_header = self
-            .blockchain_db()
-            .header_by_number(last_persisted_block_number)?
-            .ok_or_else(|| {
-                reth_provider::ProviderError::HeaderNotFound(alloy_eips::BlockHashOrNumber::Number(
-                    last_persisted_block_number,
-                ))
-            })?;
-        let last_persisted_state_root = last_persisted_header.state_root();
-
-        if last_persisted_block_number > triedb_checkpoint_block_number {
-            info!(target: "consensus::engine",
-            last_persisted_block_number,
-            last_persisted_state_root = ?last_persisted_state_root,
-            triedb_checkpoint_block_number,
-            triedb_checkpoint_state_root = ?triedb_checkpoint_state_root,
-            "Last persisted state is ahead of the TrieDB state, start pipeline sync to align");
-            return self.blockchain_db().block_hash(last_persisted_block_number);
-        } else if last_persisted_block_number < triedb_checkpoint_block_number {
-            info!(target: "consensus::engine",
-            last_persisted_block_number,
-            last_persisted_state_root = ?last_persisted_state_root,
-            triedb_checkpoint_block_number,
-            triedb_checkpoint_state_root = ?triedb_checkpoint_state_root,
-            "Last persisted state is behind of the TrieDB state, start pipeline sync to align");
-            return self.blockchain_db().block_hash(last_persisted_block_number);
-        }
-
-        info!(target: "consensus::engine",
-            last_persisted_block_number,
-            last_persisted_state_root = ?last_persisted_state_root,
-            triedb_checkpoint_block_number,
-            triedb_checkpoint_state_root = ?triedb_checkpoint_state_root,
-            "Last persisted state equal TrieDB state, start live sync");
-
+        info!(
+            target: "consensus::engine",
+            "Pipeline sync progress is consistent and backends are aligned; starting live sync",
+        );
         Ok(None)
     }
     /// Expire the pre-merge transactions if the node is configured to do so and the chain has a

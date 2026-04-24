@@ -82,6 +82,7 @@ jsonrpsee.workspace = true
 fdlimit.workspace = true
 rayon.workspace = true
 serde_json.workspace = true
+metrics.workspace = true
 
 ## triedb
 rust-eth-triedb.workspace = true

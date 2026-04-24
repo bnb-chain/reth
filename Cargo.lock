@@ -9371,6 +9371,7 @@ dependencies = [
  "fdlimit",
  "futures",
  "jsonrpsee",
+ "metrics",
  "parking_lot",
  "rayon",
  "reth-basic-payload-builder",
