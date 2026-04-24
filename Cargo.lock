@@ -7809,8 +7809,7 @@ dependencies = [
 [[package]]
 name = "reth-codecs"
 version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a96e584e01478c951911946a7864f18e967c1cd90965e136e2d1b51aa3da9126"
+source = "git+https://github.com/bnb-chain/reth-core.git?branch=v0.1.1-v2#5e11acfdc8e02201f3e83635b7ff9724ab36f63a"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -7830,8 +7829,7 @@ dependencies = [
 [[package]]
 name = "reth-codecs-derive"
 version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c342ae46f5a886b8bf506205b9501b1032b896defd0f4f156edb423007fef880"
+source = "git+https://github.com/bnb-chain/reth-core.git?branch=v0.1.1-v2#5e11acfdc8e02201f3e83635b7ff9724ab36f63a"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -9517,8 +9515,7 @@ dependencies = [
 [[package]]
 name = "reth-primitives-traits"
 version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ca36e245593498020c31e707154fc13391164eb90444da76d67361f646e7669"
+source = "git+https://github.com/bnb-chain/reth-core.git?branch=v0.1.1-v2#5e11acfdc8e02201f3e83635b7ff9724ab36f63a"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -10067,8 +10064,7 @@ dependencies = [
 [[package]]
 name = "reth-rpc-traits"
 version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "66ebbc3cc6f1808c2838bf8da9928f3ef9b8a6f969c6522174c1598ddb34bc0f"
+source = "git+https://github.com/bnb-chain/reth-core.git?branch=v0.1.1-v2#5e11acfdc8e02201f3e83635b7ff9724ab36f63a"
 dependencies = [
  "alloy-consensus",
  "alloy-network",
@@ -10602,8 +10598,7 @@ dependencies = [
 [[package]]
 name = "reth-zstd-compressors"
 version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a621aef55fe4da8935abede9d1d105f227bcb673f212b3575a748a6a2f8f688e"
+source = "git+https://github.com/bnb-chain/reth-core.git?branch=v0.1.1-v2#5e11acfdc8e02201f3e83635b7ff9724ab36f63a"
 dependencies = [
  "zstd",
 ]
@@ -14013,28 +14008,3 @@ dependencies = [
  "cc",
  "pkg-config",
 ]
-
-[[patch.unused]]
-name = "reth-codecs"
-version = "0.3.0"
-source = "git+https://github.com/bnb-chain/reth-core.git?branch=main#c75e1970c2bb0dd6b7c522841d490237e4c5f756"
-
-[[patch.unused]]
-name = "reth-codecs-derive"
-version = "0.3.0"
-source = "git+https://github.com/bnb-chain/reth-core.git?branch=main#c75e1970c2bb0dd6b7c522841d490237e4c5f756"
-
-[[patch.unused]]
-name = "reth-primitives-traits"
-version = "0.3.0"
-source = "git+https://github.com/bnb-chain/reth-core.git?branch=main#c75e1970c2bb0dd6b7c522841d490237e4c5f756"
-
-[[patch.unused]]
-name = "reth-rpc-traits"
-version = "0.3.0"
-source = "git+https://github.com/bnb-chain/reth-core.git?branch=main#c75e1970c2bb0dd6b7c522841d490237e4c5f756"
-
-[[patch.unused]]
-name = "reth-zstd-compressors"
-version = "0.3.0"
-source = "git+https://github.com/bnb-chain/reth-core.git?branch=main#c75e1970c2bb0dd6b7c522841d490237e4c5f756"
