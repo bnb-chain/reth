@@ -1985,6 +1985,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_dropped_incoming() {
+        // Uses ProtocolBreach (not UselessPeer) because this test asserts the
+        // fatal-drop path overwrites the pending-connection throttle with the
+        // shorter ban_duration — UselessPeer was declassified from the fatal
+        // list, so using it here would leave the 30s throttle in place and the
+        // post-sleep unban check would never fire.
         let socket_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 0, 1, 2)), 8008);
         let ban_duration = Duration::from_millis(500);
         let config = PeersConfig { ban_duration, ..PeersConfig::test() };
@@ -1994,7 +1999,7 @@ mod tests {
         assert_eq!(peers.connection_info.num_pending_in, 1);
         let err = PendingSessionHandshakeError::Eth(EthStreamError::P2PStreamError(
             P2PStreamError::HandshakeError(P2PHandshakeError::Disconnected(
-                DisconnectReason::UselessPeer,
+                DisconnectReason::ProtocolBreach,
             )),
         ));
 

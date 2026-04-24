@@ -483,9 +483,9 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
     /// Use [`SaveBlocksMode::BlocksOnly`] for block structure only (used by `insert_block`).
     ///
     /// When `TrieDB` is active, precomputed-difflayer blocks are validated here but
-    /// their rocksdb flush is deferred and returned as [`TriedbPendingFlush`]. The
+    /// their rocksdb flush is deferred and returned as `TriedbPendingFlush`. The
     /// caller MUST call [`Self::commit`] on the MDBX transaction before applying
-    /// the returned flushes — see [`TriedbPendingFlush`] for the invariant. In
+    /// the returned flushes — see `TriedbPendingFlush` for the invariant. In
     /// non-TrieDB mode the returned vector is always empty.
     #[instrument(level = "debug", target = "providers::db", skip_all, fields(block_count = blocks.len()))]
     pub fn save_blocks(

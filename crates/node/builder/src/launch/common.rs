@@ -1089,7 +1089,7 @@ where
     /// ahead, unwinds MDBX (state + blocks + static files + stage checkpoints) down to
     /// the pathdb tip. Equal tips are a no-op. Hard-fails on:
     ///   - pathdb ahead of MDBX (system invariant violation),
-    ///   - gap > [`alignment::MAX_STARTUP_UNWIND_BLOCKS`] (operator must investigate),
+    ///   - gap > `MAX_STARTUP_UNWIND_BLOCKS` (operator must investigate),
     ///   - pathdb root disagrees with the MDBX header state root at `pathdb_block`.
     ///
     /// Called from [`Self::initial_backfill_target`] before the consensus engine and
