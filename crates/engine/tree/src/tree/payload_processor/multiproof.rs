@@ -19,6 +19,7 @@ use reth_trie_parallel::{
     proof_task::{
         AccountMultiproofInput, ProofResultContext, ProofResultMessage, ProofWorkerHandle,
     },
+    root::ParallelStateRootError,
 };
 use revm_primitives::map::{hash_map, B256Map};
 use std::{collections::BTreeMap, sync::Arc, time::Instant};
@@ -361,6 +362,9 @@ impl MultiproofManager {
         };
 
         if let Err(e) = self.proof_worker_handle.dispatch_account_multiproof(input) {
+            // NOTE: `dispatch_account_multiproof` already sends a `ProofResultMessage` with the
+            // error through the proof result channel before returning `Err`, so the error will
+            // reach `MultiProofTask::run()` and be forwarded to the sparse trie task.
             error!(target: "engine::tree::payload_processor::multiproof", ?e, "Failed to dispatch account multiproof");
             return;
         }
@@ -545,8 +549,8 @@ pub(super) struct MultiProofTask {
     tx: CrossbeamSender<MultiProofMessage>,
     /// Receiver for proof results directly from workers.
     proof_result_rx: CrossbeamReceiver<ProofResultMessage>,
-    /// Sender for state updates emitted by this type.
-    to_sparse_trie: std::sync::mpsc::Sender<SparseTrieUpdate>,
+    /// Sender for state updates (or fatal errors) emitted by this type.
+    to_sparse_trie: std::sync::mpsc::Sender<Result<SparseTrieUpdate, ParallelStateRootError>>,
     /// Proof targets that have been already fetched.
     fetched_proof_targets: MultiProofTargets,
     /// Tracks keys which have been added and removed throughout the entire block.
@@ -568,7 +572,7 @@ impl MultiProofTask {
     /// `proof_result_rx`.
     pub(super) fn new(
         proof_worker_handle: ProofWorkerHandle,
-        to_sparse_trie: std::sync::mpsc::Sender<SparseTrieUpdate>,
+        to_sparse_trie: std::sync::mpsc::Sender<Result<SparseTrieUpdate, ParallelStateRootError>>,
         chunk_size: Option<usize>,
         tx: CrossbeamSender<MultiProofMessage>,
         rx: CrossbeamReceiver<MultiProofMessage>,
@@ -873,7 +877,7 @@ impl MultiProofTask {
                                 sequence_number,
                                 SparseTrieUpdate { state, multiproof: Default::default() },
                             ) {
-                                let _ = self.to_sparse_trie.send(combined_update);
+                                let _ = self.to_sparse_trie.send(Ok(combined_update));
                             }
                         }
                         Ok(other_msg) => {
@@ -1005,7 +1009,7 @@ impl MultiProofTask {
                     sequence_number,
                     SparseTrieUpdate { state, multiproof: Default::default() },
                 ) {
-                    let _ = self.to_sparse_trie.send(combined_update);
+                    let _ = self.to_sparse_trie.send(Ok(combined_update));
                 }
 
                 if self.is_done(batch_metrics, ctx) {
@@ -1112,11 +1116,16 @@ impl MultiProofTask {
                                     if let Some(combined_update) =
                                         self.on_proof(proof_result.sequence_number, update)
                                     {
-                                        let _ = self.to_sparse_trie.send(combined_update);
+                                        let _ = self.to_sparse_trie.send(Ok(combined_update));
                                     }
                                 }
                                 Err(error) => {
                                     error!(target: "engine::tree::payload_processor::multiproof", ?error, "proof calculation error from worker");
+                                    let _ = self.to_sparse_trie.send(Err(
+                                        ParallelStateRootError::Other(format!(
+                                            "proof calculation error from worker: {error}"
+                                        )),
+                                    ));
                                     return
                                 }
                             }
@@ -1131,6 +1140,11 @@ impl MultiProofTask {
                         }
                         Err(_) => {
                             error!(target: "engine::tree::payload_processor::multiproof", "Proof result channel closed unexpectedly");
+                            let _ = self.to_sparse_trie.send(Err(
+                                ParallelStateRootError::Other(
+                                    "proof result channel closed unexpectedly".to_string(),
+                                ),
+                            ));
                             return
                         }
                     }
@@ -1140,6 +1154,11 @@ impl MultiProofTask {
                         Ok(m) => m,
                         Err(_) => {
                             error!(target: "engine::tree::payload_processor::multiproof", "State root related message channel closed unexpectedly");
+                            let _ = self.to_sparse_trie.send(Err(
+                                ParallelStateRootError::Other(
+                                    "state root message channel closed unexpectedly".to_string(),
+                                ),
+                            ));
                             return
                         }
                     };

@@ -24,8 +24,8 @@ where
     BPF::AccountNodeProvider: TrieNodeProvider + Send + Sync,
     BPF::StorageNodeProvider: TrieNodeProvider + Send + Sync,
 {
-    /// Receives updates from the state root task.
-    pub(super) updates: mpsc::Receiver<SparseTrieUpdate>,
+    /// Receives updates (or fatal errors) from the multiproof task.
+    pub(super) updates: mpsc::Receiver<Result<SparseTrieUpdate, ParallelStateRootError>>,
     /// `SparseStateTrie` used for computing the state root.
     pub(super) trie: SparseStateTrie<A, S>,
     pub(super) metrics: MultiProofTaskMetrics,
@@ -43,7 +43,7 @@ where
 {
     /// Creates a new sparse trie, pre-populating with a [`ClearedSparseStateTrie`].
     pub(super) fn new_with_cleared_trie(
-        updates: mpsc::Receiver<SparseTrieUpdate>,
+        updates: mpsc::Receiver<Result<SparseTrieUpdate, ParallelStateRootError>>,
         blinded_provider_factory: BPF,
         metrics: MultiProofTaskMetrics,
         sparse_state_trie: ClearedSparseStateTrie<A, S>,
@@ -82,14 +82,17 @@ where
 
         let mut num_iterations = 0;
 
-        while let Ok(mut update) = self.updates.recv() {
+        while let Ok(result) = self.updates.recv() {
+            // Propagate fatal errors from the multiproof task immediately.
+            let mut update = result?;
+
             num_iterations += 1;
             let mut num_updates = 1;
             let _enter =
                 debug_span!(target: "engine::tree::payload_processor::sparse_trie", "drain updates")
                     .entered();
             while let Ok(next) = self.updates.try_recv() {
-                update.extend(next);
+                update.extend(next?);
                 num_updates += 1;
             }
             drop(_enter);
