@@ -3245,6 +3245,29 @@ where
         }
 
         if current_number < last_block_number {
+            // The loop walks fork blocks backwards while `current_number >=
+            // last_block_number`. When the fork attaches exactly at the tip of
+            // the canonical chain (fork parent is at `last_block_number`), the
+            // loop body never runs and we fall through with current_hash
+            // pointing at a canonical ancestor. Do one more lookup instead of
+            // returning None — otherwise the fork reports TD=None and loses the
+            // td-comparison race to peers that look it up correctly.
+            if let Some(block_number) = self.provider.block_number(current_hash)? {
+                return match self.provider.header_td_by_number(block_number)? {
+                    Some(td) => {
+                        ret_td = ret_td.wrapping_add(td);
+                        Ok((ret_header, Some(ret_td)))
+                    }
+                    None => {
+                        tracing::warn!(
+                            target: "engine::tree",
+                            ?current_number, ?current_hash,
+                            "header td not found for canonical ancestor, return none",
+                        );
+                        Ok((ret_header, None))
+                    }
+                }
+            }
             tracing::warn!(target: "engine::tree", current_number=?current_number, current_hash=?current_hash, last_block_number=?last_block_number,
                  "cannot find header td for block number, query beyond last block number, just return none");
             return Ok((ret_header, None))
