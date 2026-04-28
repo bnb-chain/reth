@@ -2823,6 +2823,41 @@ where
             Ok(Some(_)) => {}
         }
 
+        // Pathdb gap: when TrieDB is active, executing this block requires either a
+        // chain of in-memory difflayers to bridge back to the pathdb disk layer, or a
+        // parent whose state root equals that disk layer. After a restart the
+        // difflayer chain is empty, and if we reconnect to a fork whose parent
+        // diverges from pathdb's last flush, re-executing would read stale trie nodes
+        // and compute a wrong state root. Buffer as Disconnected so the P2P layer
+        // walks ancestors sequentially until a block touches the disk layer.
+        if rust_eth_triedb::triedb_manager::is_triedb_active() {
+            let has_difflayers =
+                self.state.tree_state.merged_difflayer_by_hash(block_id.parent).is_some();
+            if !has_difflayers {
+                let triedb = rust_eth_triedb::triedb_manager::get_global_triedb();
+                if let Ok((_, persist_root)) = triedb.latest_persist_state() &&
+                    let Ok(Some(parent_header)) = self.sealed_header_by_hash(block_id.parent) &&
+                    parent_header.state_root() != persist_root
+                {
+                    warn!(
+                        target: "engine::tree",
+                        block = ?block_num_hash,
+                        parent = ?block_id.parent,
+                        parent_state_root = ?parent_header.state_root(),
+                        pathdb_persist_root = ?persist_root,
+                        "Triedb pathdb gap: no difflayers and parent state root diverges from disk layer; buffering as Disconnected",
+                    );
+                    let block = convert_to_block(self, input)?;
+                    let missing_ancestor = block.parent_num_hash();
+                    self.state.buffer.insert_block(block);
+                    return Ok(InsertPayloadOk::Inserted(BlockStatus::Disconnected {
+                        head: self.state.tree_state.current_canonical_head,
+                        missing_ancestor,
+                    }));
+                }
+            }
+        }
+
         // determine whether we are on a fork chain by comparing the block number with the
         // canonical head. This is a simple check that is sufficient for the event emission below.
         // A block is considered a fork if its number is less than or equal to the canonical head,
@@ -3180,16 +3215,25 @@ where
         Ok(None)
     }
 
-    /// Query the header and TD of the given block number and hash.
-    /// If the block is not found, the header and TD of the last block will be returned.
+    /// Query the header and TD of the given `(number, hash)`.
+    ///
+    /// - If `hash` is on the canonical chain, returns the provider's header and TD directly.
+    /// - If `hash` is an in-memory fork block held in `tree_state`, walks its parent chain
+    ///   (accumulating each fork block's difficulty) until a canonical ancestor is reached, and
+    ///   adds the canonical TD as the base.
+    /// - Returns `Ok((fork_header, None))` when a canonical ancestor is found but its TD entry is
+    ///   missing, or when the walk falls below `last_block_number` and the final canonical lookup
+    ///   also fails. Callers treat `None` as "TD unknown".
+    /// - Returns `Err(ProviderError::HeaderNotFound)` when `hash` itself is in neither place, or
+    ///   when the walk above `last_block_number` reaches a parent that is in neither.
     pub fn query_header_with_td(
         &self,
         number: BlockNumber,
         hash: BlockHash,
     ) -> ProviderResult<(N::BlockHeader, Option<U256>)> {
-        // query header td from canonical chain
+        // Canonical DB hit: return header and TD directly.
         if let Some(block_number) = self.provider.block_number(hash)? {
-            tracing::debug!(target: "engine::tree", number=?number, hash=?hash, "querying TD from canonical chain");
+            tracing::debug!(target: "engine::tree", ?number, ?hash, "querying TD from canonical chain");
             let header = self
                 .provider
                 .header_by_number(block_number)?
@@ -3198,9 +3242,7 @@ where
             return Ok((header, td))
         }
 
-        // query header td from last block number
-        tracing::debug!(target: "engine::tree", number=?number, hash=?hash, "querying TD from fork headers");
-        let mut ret_td = U256::ZERO;
+        tracing::debug!(target: "engine::tree", ?number, ?hash, "querying TD from fork headers");
         let ret_header = self
             .state
             .tree_state
@@ -3208,48 +3250,76 @@ where
             .get(&hash)
             .map(|b| b.recovered_block.clone_header())
             .ok_or(ProviderError::HeaderNotFound(hash.into()))?;
-        ret_td = ret_td.wrapping_add(ret_header.difficulty());
+        let mut ret_td = ret_header.difficulty();
 
         let last_block_number = self.provider.last_block_number()?;
-        let (mut current_number, mut current_hash) = (number - 1, ret_header.parent_hash());
+        let mut current_number = number - 1;
+        let mut current_hash = ret_header.parent_hash();
+
+        // Walk fork parents while still above the persisted canonical tip.
+        // Each hop either hits a canonical ancestor (done) or steps to the
+        // next in-memory fork parent; a parent that is in neither place at
+        // this level is a real gap and surfaces as `HeaderNotFound`.
         while current_number >= last_block_number {
-            match self.provider.block_number(current_hash)? {
-                Some(block_number) => {
-                    // add canonical chain td
-                    match self.provider.header_td_by_number(block_number)? {
-                        Some(td) => {
-                            ret_td = ret_td.wrapping_add(td);
-                            return Ok((ret_header, Some(ret_td)))
-                        }
-                        None => {
-                            tracing::warn!(target: "engine::tree", current_number=?current_number, current_hash=?current_hash,
-                                "header td not found for block number, just return none");
-                            return Ok((ret_header, None))
-                        }
-                    }
-                }
-                None => {
-                    // continue to query forks
-                    let header = self
-                        .state
-                        .tree_state
-                        .blocks_by_hash
-                        .get(&current_hash)
-                        .map(|b| b.recovered_block.header())
-                        .ok_or(ProviderError::HeaderNotFound(current_hash.into()))?;
-                    current_hash = header.parent_hash();
-                    ret_td = ret_td.wrapping_add(header.difficulty());
-                }
+            if let Some(block_number) = self.provider.block_number(current_hash)? {
+                return self.resolve_fork_td(ret_header, ret_td, block_number)
             }
+            let parent = self
+                .state
+                .tree_state
+                .blocks_by_hash
+                .get(&current_hash)
+                .map(|b| b.recovered_block.clone_header())
+                .ok_or(ProviderError::HeaderNotFound(current_hash.into()))?;
+            ret_td = ret_td.wrapping_add(parent.difficulty());
+            current_hash = parent.parent_hash();
             current_number -= 1;
         }
 
-        if current_number < last_block_number {
-            tracing::warn!(target: "engine::tree", current_number=?current_number, current_hash=?current_hash, last_block_number=?last_block_number,
-                 "cannot find header td for block number, query beyond last block number, just return none");
-            return Ok((ret_header, None))
+        // Fork at or below the canonical tip — the loop above was skipped,
+        // so `current_hash` still points at the fork's direct parent,
+        // which is typically a canonical ancestor we can resolve with one
+        // more lookup.
+        //
+        //   canonical:  …──●──●   ← tip (last_block_number)
+        //                     ↑
+        //                     └── current_hash: probe once more
+        //
+        // If this lookup also misses, return `Ok((ret_header, None))`
+        // ("TD unknown"), not `Err` — callers depend on that contract.
+        if let Some(block_number) = self.provider.block_number(current_hash)? {
+            return self.resolve_fork_td(ret_header, ret_td, block_number)
         }
-        Ok((ret_header, Some(ret_td)))
+        tracing::warn!(
+            target: "engine::tree",
+            ?current_number, ?current_hash, ?last_block_number,
+            "fork walked below last_block_number without hitting a canonical ancestor",
+        );
+        Ok((ret_header, None))
+    }
+
+    /// Combines the accumulated fork-chain difficulty `ret_td` with the TD
+    /// of the canonical ancestor at `block_number` to produce the total
+    /// difficulty of the fork block identified by `ret_header`. If the
+    /// canonical TD entry is missing, returns `(ret_header, None)` —
+    /// callers treat `None` as "TD unknown".
+    fn resolve_fork_td(
+        &self,
+        ret_header: N::BlockHeader,
+        ret_td: U256,
+        block_number: BlockNumber,
+    ) -> ProviderResult<(N::BlockHeader, Option<U256>)> {
+        Ok(match self.provider.header_td_by_number(block_number)? {
+            Some(td) => (ret_header, Some(ret_td.wrapping_add(td))),
+            None => {
+                tracing::warn!(
+                    target: "engine::tree",
+                    ?block_number,
+                    "canonical ancestor has no TD entry; returning None",
+                );
+                (ret_header, None)
+            }
+        })
     }
 }
 

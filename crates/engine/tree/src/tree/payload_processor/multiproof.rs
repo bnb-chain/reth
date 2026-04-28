@@ -2009,6 +2009,17 @@ mod tests {
             }
             other => panic!("Expected PrefetchProofs2 in channel, got {:?}", other),
         }
+
+        // Close worker channels and give the proof workers a brief window to
+        // finish their current jobs and release the RocksDB handles they hold
+        // from `test_provider_factory`. Without this, Linux CI hits
+        // `pthread lock: Invalid argument` at process exit because the static
+        // tokio Runtime (in `get_test_runtime_handle`) is never dropped
+        // gracefully, so workers are killed mid-op while holding RocksDB
+        // background-thread mutexes.
+        drop(task);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        drop(test_provider);
     }
 
     /// Verifies that BAL messages are processed correctly and generate state updates.
@@ -2049,5 +2060,12 @@ mod tests {
 
         // Should need to wait for the results of those proofs to arrive
         assert!(!should_finish, "Should continue waiting for proofs");
+
+        // Give workers a moment to release their RocksDB handles before
+        // process exit — see `test_pending_message_processed_before_next_iteration`
+        // for the underlying pthread-at-exit issue on Linux CI.
+        drop(task);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        drop(test_provider);
     }
 }

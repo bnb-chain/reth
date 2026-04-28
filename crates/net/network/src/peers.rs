@@ -352,6 +352,11 @@ impl PeersManager {
         // we only need to check the peer id here as the ip address will have been checked at
         // on_incoming_pending_session. We also check if the peer is in the backoff list here.
         if self.ban_list.is_banned_peer(&peer_id) {
+            tracing::warn!(
+                target: "net::peers",
+                ?peer_id, ?addr, reason = "banned_by_list",
+                "rejecting established inbound session",
+            );
             self.queued_actions.push_back(PeerAction::DisconnectBannedIncoming { peer_id });
             return;
         }
@@ -359,6 +364,11 @@ impl PeersManager {
         // check if the peer is trustable or not
         let mut is_trusted = self.trusted_peer_ids.contains(&peer_id);
         if self.trusted_nodes_only && !is_trusted {
+            tracing::warn!(
+                target: "net::peers",
+                ?peer_id, ?addr, reason = "trusted_nodes_only",
+                "rejecting established inbound session",
+            );
             self.queued_actions.push_back(PeerAction::DisconnectUntrustedIncoming { peer_id });
             return;
         }
@@ -370,6 +380,11 @@ impl PeersManager {
             Entry::Occupied(mut entry) => {
                 let peer = entry.get_mut();
                 if peer.is_banned() {
+                    tracing::warn!(
+                        target: "net::peers",
+                        ?peer_id, ?addr, reason = "reputation_below_threshold",
+                        "rejecting established inbound session",
+                    );
                     self.queued_actions.push_back(PeerAction::DisconnectBannedIncoming { peer_id });
                     return;
                 }
@@ -408,15 +423,22 @@ impl PeersManager {
 
     /// Bans the peer temporarily with the configured ban timeout
     fn ban_peer(&mut self, peer_id: PeerId) {
-        let ban_duration = if let Some(peer) = self.peers.get(&peer_id) &&
-            (peer.is_trusted() || peer.is_static())
-        {
+        let trusted_or_static =
+            self.peers.get(&peer_id).is_some_and(|p| p.is_trusted() || p.is_static());
+
+        let ban_duration = if trusted_or_static {
             // For misbehaving trusted or static peers, we provide a bit more leeway when
             // penalizing them.
             self.backoff_durations.low / 2
         } else {
             self.ban_duration
         };
+
+        tracing::warn!(
+            target: "net::peers",
+            ?peer_id, duration = ?ban_duration, trusted = trusted_or_static,
+            "banning peer",
+        );
 
         self.ban_list.ban_peer_until(peer_id, std::time::Instant::now() + ban_duration);
         self.queued_actions.push_back(PeerAction::BanPeer { peer_id });
@@ -483,11 +505,9 @@ impl PeersManager {
     /// reputation changes that can be attributed to network conditions. If the peer is a
     /// trusted peer, it will also be less strict with the reputation slashing.
     pub(crate) fn apply_reputation_change(&mut self, peer_id: &PeerId, rep: ReputationChangeKind) {
-        trace!(target: "net::peers", ?peer_id, reputation=?rep, "applying reputation change");
-
-        let outcome = if let Some(peer) = self.peers.get_mut(peer_id) {
+        let (outcome, new_reputation) = if let Some(peer) = self.peers.get_mut(peer_id) {
             // First check if we should reset the reputation
-            if rep.is_reset() {
+            let outcome = if rep.is_reset() {
                 peer.reset_reputation()
             } else {
                 let mut reputation_change = self.reputation_weights.change(rep).as_i32();
@@ -510,10 +530,27 @@ impl PeersManager {
                     }
                 }
                 peer.apply_reputation(reputation_change, rep)
-            }
+            };
+            (outcome, peer.reputation)
         } else {
             return;
         };
+
+        // DEBUG when the change leaves ban-state unchanged; INFO when it transitions it.
+        match outcome {
+            ReputationChangeOutcome::None => tracing::debug!(
+                target: "net::peers",
+                ?peer_id, kind = ?rep, new_reputation, ?outcome,
+                "reputation change applied",
+            ),
+            ReputationChangeOutcome::Ban |
+            ReputationChangeOutcome::DisconnectAndBan |
+            ReputationChangeOutcome::Unban => tracing::info!(
+                target: "net::peers",
+                ?peer_id, kind = ?rep, new_reputation, ?outcome,
+                "reputation change applied",
+            ),
+        }
 
         match outcome {
             ReputationChangeOutcome::None => {}
@@ -648,6 +685,11 @@ impl PeersManager {
 
         if err.is_fatal_protocol_error() {
             trace!(target: "net::peers", ?remote_addr, ?peer_id, %err, "fatal connection error");
+            tracing::warn!(
+                target: "net::peers",
+                ?remote_addr, ?peer_id, err = %err,
+                "removing and banning peer on fatal protocol error",
+            );
             // remove the peer to which we can't establish a connection due to protocol related
             // issues.
             if let Entry::Occupied(mut entry) = self.peers.entry(*peer_id) {
@@ -1635,7 +1677,7 @@ mod tests {
             &socket_addr,
             &peer,
             &EthStreamError::P2PStreamError(P2PStreamError::Disconnected(
-                DisconnectReason::UselessPeer,
+                DisconnectReason::ProtocolBreach,
             )),
         );
 
@@ -1659,6 +1701,49 @@ mod tests {
         .await;
 
         assert!(!peers.peers.contains_key(&peer));
+    }
+
+    #[tokio::test]
+    async fn test_useless_peer_does_not_ban_on_active_drop() {
+        // Regression: cross-region peers flag each other as useless while still being
+        // valid neighbors. UselessPeer must not remove + ban — otherwise repeated
+        // handshakes drain the peer pool.
+        let peer = PeerId::random();
+        let socket_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 1, 2)), 8008);
+        let mut peers = PeersManager::default();
+        peers.add_peer(peer, PeerAddr::from_tcp(socket_addr), None);
+
+        match event!(peers) {
+            PeerAction::PeerAdded(peer_id) => assert_eq!(peer_id, peer),
+            _ => unreachable!(),
+        }
+        match event!(peers) {
+            PeerAction::Connect { peer_id, .. } => assert_eq!(peer_id, peer),
+            _ => unreachable!(),
+        }
+
+        poll_fn(|cx| {
+            assert!(peers.poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+
+        peers.on_active_session_dropped(
+            &socket_addr,
+            &peer,
+            &EthStreamError::P2PStreamError(P2PStreamError::Disconnected(
+                DisconnectReason::UselessPeer,
+            )),
+        );
+
+        poll_fn(|cx| {
+            assert!(peers.poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+
+        assert!(peers.peers.contains_key(&peer), "peer should remain in the table");
+        assert!(!peers.ban_list.is_banned_peer(&peer), "peer should not be banned");
     }
 
     #[tokio::test]
@@ -1746,7 +1831,7 @@ mod tests {
             &socket_addr,
             &peer,
             &PendingSessionHandshakeError::Eth(EthStreamError::P2PStreamError(
-                P2PStreamError::Disconnected(DisconnectReason::UselessPeer),
+                P2PStreamError::Disconnected(DisconnectReason::ProtocolBreach),
             )),
         );
 
@@ -1857,7 +1942,7 @@ mod tests {
 
         let err = PendingSessionHandshakeError::Eth(EthStreamError::P2PStreamError(
             P2PStreamError::HandshakeError(P2PHandshakeError::Disconnected(
-                DisconnectReason::UselessPeer,
+                DisconnectReason::ProtocolBreach,
             )),
         ));
 
@@ -1900,6 +1985,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_dropped_incoming() {
+        // Uses ProtocolBreach (not UselessPeer) because this test asserts the
+        // fatal-drop path overwrites the pending-connection throttle with the
+        // shorter ban_duration — UselessPeer was declassified from the fatal
+        // list, so using it here would leave the 30s throttle in place and the
+        // post-sleep unban check would never fire.
         let socket_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 0, 1, 2)), 8008);
         let ban_duration = Duration::from_millis(500);
         let config = PeersConfig { ban_duration, ..PeersConfig::test() };
@@ -1909,7 +1999,7 @@ mod tests {
         assert_eq!(peers.connection_info.num_pending_in, 1);
         let err = PendingSessionHandshakeError::Eth(EthStreamError::P2PStreamError(
             P2PStreamError::HandshakeError(P2PHandshakeError::Disconnected(
-                DisconnectReason::UselessPeer,
+                DisconnectReason::ProtocolBreach,
             )),
         ));
 
