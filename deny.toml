@@ -19,8 +19,6 @@ ignore = [
     "RUSTSEC-2026-0097",
     # https://rustsec.org/advisories/RUSTSEC-2026-0105 core2 is unmaintained
     "RUSTSEC-2026-0105",
-    # https://rustsec.org/advisories/RUSTSEC-2026-0104 rustls-webpki vulnerability, no fix available yet
-    "RUSTSEC-2026-0104",
 ]
 
 # This section is considered when running `cargo deny check bans`.
