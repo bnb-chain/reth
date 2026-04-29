@@ -95,6 +95,10 @@ pub struct PeersManager {
     ip_filter: IpFilter,
     /// The map of proxied node ids.
     proxied_node_ids_map: Arc<RwLock<HashSet<PeerId>>>,
+    /// Counters for reputation-driven peer-management actions, broken out by
+    /// change kind and ban outcome. Lets observers correlate peer-pool drains
+    /// with their reputation-layer cause.
+    metrics: crate::metrics::ReputationMetrics,
 }
 
 impl PeersManager {
@@ -181,6 +185,7 @@ impl PeersManager {
             incoming_ip_throttle_duration,
             ip_filter,
             proxied_node_ids_map,
+            metrics: Default::default(),
         }
     }
 
@@ -505,6 +510,11 @@ impl PeersManager {
     /// reputation changes that can be attributed to network conditions. If the peer is a
     /// trusted peer, it will also be less strict with the reputation slashing.
     pub(crate) fn apply_reputation_change(&mut self, peer_id: &PeerId, rep: ReputationChangeKind) {
+        // Count every change kind, including ones we ultimately ignore (trusted
+        // peers, unknown peers). The kind-counter answers "what's hitting us"
+        // — outcome counters below answer "did we punish for it".
+        self.metrics.increment_kind(rep);
+
         let (outcome, new_reputation) = if let Some(peer) = self.peers.get_mut(peer_id) {
             // First check if we should reset the reputation
             let outcome = if rep.is_reset() {
@@ -555,10 +565,15 @@ impl PeersManager {
         match outcome {
             ReputationChangeOutcome::None => {}
             ReputationChangeOutcome::Ban => {
+                self.metrics.bans_total.increment(1);
                 self.ban_peer(*peer_id);
             }
-            ReputationChangeOutcome::Unban => self.unban_peer(*peer_id),
+            ReputationChangeOutcome::Unban => {
+                self.metrics.unbans_total.increment(1);
+                self.unban_peer(*peer_id);
+            }
             ReputationChangeOutcome::DisconnectAndBan => {
+                self.metrics.disconnect_and_bans_total.increment(1);
                 self.queued_actions.push_back(PeerAction::Disconnect {
                     peer_id: *peer_id,
                     reason: Some(DisconnectReason::DisconnectRequested),

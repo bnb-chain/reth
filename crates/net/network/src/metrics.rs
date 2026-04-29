@@ -5,6 +5,7 @@ use reth_metrics::{
     metrics::{Counter, Gauge},
     Metrics,
 };
+use reth_network_types::peers::reputation::ReputationChangeKind;
 
 /// Scope for monitoring transactions sent from the manager to the tx manager
 pub(crate) const NETWORK_POOL_TRANSACTIONS_SCOPE: &str = "network.pool.transactions";
@@ -308,6 +309,81 @@ impl DisconnectMetrics {
             DisconnectReason::ConnectedToSelf => self.connected_to_self.increment(1),
             DisconnectReason::PingTimeout => self.ping_timeout.increment(1),
             DisconnectReason::SubprotocolSpecific => self.subprotocol_specific.increment(1),
+        }
+    }
+}
+
+/// Metrics for reputation-driven peer-management actions, broken out by
+/// [`ReputationChangeKind`] (the reason a change was applied) and by outcome
+/// (whether the change crossed a banning threshold).
+///
+/// Without these counters, a peer-pool drain induced by reputation bans is
+/// invisible at the metrics layer: ban events go to the `ban_list`, which is
+/// not exposed as a gauge, and the `DisconnectMetrics` counters cannot tell
+/// whether a `DisconnectRequested` was a graceful close or a rep-driven kick.
+/// Tracking change-kind frequency and ban outcomes makes it possible to
+/// correlate peer-count drops with their root cause (e.g. a flood of
+/// `BadBlock` penalties from a network-layer issue).
+#[derive(Metrics)]
+#[metrics(scope = "network")]
+pub struct ReputationMetrics {
+    /// Reputation change applied due to an unspecific bad message.
+    pub(crate) reputation_changes_bad_message: Counter,
+    /// Reputation change applied due to a bad block (pre-merge / `PoW` only).
+    pub(crate) reputation_changes_bad_block: Counter,
+    /// Reputation change applied due to a bad transaction.
+    pub(crate) reputation_changes_bad_transactions: Counter,
+    /// Reputation change applied due to a bad announcement.
+    pub(crate) reputation_changes_bad_announcement: Counter,
+    /// Reputation change applied due to a peer re-announcing a hash/tx already
+    /// known to be seen by that peer.
+    pub(crate) reputation_changes_already_seen_transaction: Counter,
+    /// Reputation change applied due to a peer response timeout.
+    pub(crate) reputation_changes_timeout: Counter,
+    /// Reputation change applied due to a peer protocol violation.
+    pub(crate) reputation_changes_bad_protocol: Counter,
+    /// Reputation change applied due to a failed connection attempt.
+    pub(crate) reputation_changes_failed_to_connect: Counter,
+    /// Reputation change applied due to the peer dropping the connection.
+    pub(crate) reputation_changes_dropped: Counter,
+    /// Reputation reset (back to the default value).
+    pub(crate) reputation_changes_reset: Counter,
+    /// Custom reputation change applied via [`ReputationChangeKind::Other`].
+    pub(crate) reputation_changes_other: Counter,
+
+    /// Reputation changes that crossed the banning threshold and resulted in
+    /// the peer being added to the ban list (without an explicit disconnect).
+    pub(crate) bans_total: Counter,
+    /// Reputation changes that resulted in both an enqueued `Disconnect` and
+    /// a ban — the dominant ban path in practice.
+    pub(crate) disconnect_and_bans_total: Counter,
+    /// Reputation resets that crossed the un-ban threshold.
+    pub(crate) unbans_total: Counter,
+}
+
+impl ReputationMetrics {
+    /// Increments the per-`ReputationChangeKind` counter.
+    pub(crate) fn increment_kind(&self, kind: ReputationChangeKind) {
+        match kind {
+            ReputationChangeKind::BadMessage => self.reputation_changes_bad_message.increment(1),
+            ReputationChangeKind::BadBlock => self.reputation_changes_bad_block.increment(1),
+            ReputationChangeKind::BadTransactions => {
+                self.reputation_changes_bad_transactions.increment(1)
+            }
+            ReputationChangeKind::BadAnnouncement => {
+                self.reputation_changes_bad_announcement.increment(1)
+            }
+            ReputationChangeKind::AlreadySeenTransaction => {
+                self.reputation_changes_already_seen_transaction.increment(1)
+            }
+            ReputationChangeKind::Timeout => self.reputation_changes_timeout.increment(1),
+            ReputationChangeKind::BadProtocol => self.reputation_changes_bad_protocol.increment(1),
+            ReputationChangeKind::FailedToConnect => {
+                self.reputation_changes_failed_to_connect.increment(1)
+            }
+            ReputationChangeKind::Dropped => self.reputation_changes_dropped.increment(1),
+            ReputationChangeKind::Reset => self.reputation_changes_reset.increment(1),
+            ReputationChangeKind::Other(_) => self.reputation_changes_other.increment(1),
         }
     }
 }
