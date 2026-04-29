@@ -74,6 +74,7 @@ use revm_database::states::{
     PlainStateReverts, PlainStorageChangeset, PlainStorageRevert, StateChangeset,
 };
 use rust_eth_triedb::{get_global_triedb, triedb_manager::is_triedb_active};
+use rust_eth_triedb_common::DiffLayer;
 use std::{
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet},
@@ -99,6 +100,38 @@ impl CommitOrder {
     /// Returns true if this is unwind commit order.
     pub const fn is_unwind(&self) -> bool {
         matches!(self, Self::Unwind)
+    }
+}
+
+/// A precomputed `TrieDB` flush produced by [`DatabaseProvider::save_blocks`] and
+/// deferred so the caller can commit the MDBX transaction first.
+///
+/// System invariant: `pathdb_tip <= mdbx_tip`. If pathdb ever exceeds MDBX, the
+/// node cannot unwind (MDBX lacks the changeset for blocks pathdb still thinks
+/// are persisted) — this is the "Triedb pathdb gap" deadlock. To preserve the
+/// invariant on the forward path, the MDBX commit must precede [`Self::apply`].
+/// If a crash happens between the two, pathdb lags MDBX, which is recoverable
+/// via re-execution or P2P backfill.
+#[derive(Debug, Clone)]
+pub struct TriedbPendingFlush {
+    block_number: BlockNumber,
+    state_root: B256,
+    difflayer: Arc<DiffLayer>,
+}
+
+impl TriedbPendingFlush {
+    /// Flush the pending difflayer to the global `TrieDB`.
+    pub fn apply(self) -> ProviderResult<()> {
+        let mut triedb = get_global_triedb();
+        triedb
+            .flush(self.block_number, self.state_root, &Some(self.difflayer))
+            .map_err(ProviderError::other)?;
+        Ok(())
+    }
+
+    /// The block number this flush is associated with.
+    pub const fn block_number(&self) -> BlockNumber {
+        self.block_number
     }
 }
 
@@ -585,15 +618,21 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
     ///
     /// Use [`SaveBlocksMode::Full`] for production (includes receipts, state, trie).
     /// Use [`SaveBlocksMode::BlocksOnly`] for block structure only (used by `insert_block`).
+    ///
+    /// When `TrieDB` is active, precomputed-difflayer blocks are validated here but
+    /// their rocksdb flush is deferred and returned as `TriedbPendingFlush`. The
+    /// caller MUST call [`Self::commit`] on the MDBX transaction before applying
+    /// the returned flushes — see `TriedbPendingFlush` for the invariant. In
+    /// non-TrieDB mode the returned vector is always empty.
     #[instrument(level = "debug", target = "providers::db", skip_all, fields(block_count = blocks.len()))]
     pub fn save_blocks(
         &self,
         blocks: Vec<ExecutedBlock<N::Primitives>>,
         save_mode: SaveBlocksMode,
-    ) -> ProviderResult<()> {
+    ) -> ProviderResult<Vec<TriedbPendingFlush>> {
         if blocks.is_empty() {
             debug!(target: "providers::db", "Attempted to write empty block range");
-            return Ok(())
+            return Ok(Vec::new())
         }
 
         let total_start = Instant::now();
@@ -639,6 +678,12 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
         // Propagate tracing context into rayon-spawned threads so that static file
         // and RocksDB write spans appear as children of save_blocks in traces.
         let span = tracing::Span::current();
+
+        // Deferred TrieDB flushes collected during MDBX writes; moved out of the
+        // in_place_scope closure so the caller can apply them after MDBX commit.
+        let mut pending_flushes: Vec<TriedbPendingFlush> = Vec::new();
+        let pending_flushes_ref = &mut pending_flushes;
+
         runtime.storage_pool().in_place_scope(|s| {
             // SF writes
             s.spawn(|_| {
@@ -743,18 +788,38 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
 
                         if let Some(ref difflayer) = block.difflayer {
                             // The difflayer was precomputed during validation (newPayload).
-                            // Root was already verified there, so just flush to disk.
+                            // Root was already verified there, so defer the flush until the
+                            // caller has committed MDBX.
                             debug!(
                                 target: "providers::db",
                                 block_number,
                                 state_root = ?state_root,
-                                "Flushing precomputed triedb difflayer in save_blocks",
+                                "Deferring precomputed triedb difflayer flush until after MDBX commit",
                             );
-                            triedb
-                                .flush(block_number, state_root, &Some(difflayer.clone()))
-                                .map_err(ProviderError::other)?;
+                            pending_flushes_ref.push(TriedbPendingFlush {
+                                block_number,
+                                state_root,
+                                difflayer: difflayer.clone(),
+                            });
                         } else {
-                            // No precomputed difflayer; compute and commit from hashed state.
+                            // Compute-path: this needs pathdb at block_number - 1 for
+                            // parent_root, so it must flush inline. Mixing compute-path
+                            // with pending precomputed flushes would require draining
+                            // pending to pathdb BEFORE MDBX commit, which opens a
+                            // pathdb > mdbx crash window. The precomputed path covers
+                            // every validator flow — reject the mix instead of silently
+                            // risking the invariant.
+                            if !pending_flushes_ref.is_empty() {
+                                return Err(ProviderError::Database(
+                                    reth_db_api::DatabaseError::Other(format!(
+                                        "triedb save_blocks batch mixes precomputed and compute-path blocks \
+                                         (block_number={block_number}, {} pending precomputed flushes); \
+                                         refuse to flush pathdb before MDBX commit",
+                                        pending_flushes_ref.len()
+                                    )),
+                                ));
+                            }
+
                             let (latest_block_number, latest_state_root) =
                                 triedb.latest_persist_state().map_err(ProviderError::other)?;
 
@@ -866,7 +931,7 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
         self.metrics.record_save_blocks(&timings);
         debug!(target: "providers::db", range = ?first_number..=last_block_number, "Appended block data");
 
-        Ok(())
+        Ok(pending_flushes)
     }
 
     /// Writes MDBX-only data for a block (indices, lookups, and senders if configured for MDBX).
@@ -3661,8 +3726,10 @@ impl<TX: DbTxMut + DbTx + 'static, N: NodeTypesForProvider> BlockWriter
             ComputedTrieData::default(),
         );
 
-        // Delegate to save_blocks with BlocksOnly mode (skips receipts/state/trie)
-        self.save_blocks(vec![executed_block], SaveBlocksMode::BlocksOnly)?;
+        // Delegate to save_blocks with BlocksOnly mode (skips receipts/state/trie).
+        // BlocksOnly never touches triedb, so the returned vec is always empty.
+        let _pending = self.save_blocks(vec![executed_block], SaveBlocksMode::BlocksOnly)?;
+        debug_assert!(_pending.is_empty());
 
         // Return the body indices
         self.block_body_indices(block_number)?

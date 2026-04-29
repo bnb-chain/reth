@@ -193,8 +193,11 @@ pub struct CliContext {
     pub task_executor: TaskExecutor,
 }
 
-/// Default timeout for graceful shutdown of tasks.
-const DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+/// Default timeout for graceful shutdown of tasks. Must cover the
+/// engine-tree's final `persist_until_complete` flush of every in-memory
+/// canonical block up to the head; 5 s is not enough with production-validator
+/// buffer sizes on debug builds or slow disks.
+const DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Configuration for [`CliRunner`].
 #[derive(Debug, Clone)]

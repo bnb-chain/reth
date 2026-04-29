@@ -30,6 +30,7 @@ reth-trie-db = { workspace = true, features = ["metrics"] }
 
 # triedb
 rust-eth-triedb.workspace = true
+rust-eth-triedb-common.workspace = true
 reth-nippy-jar.workspace = true
 reth-codecs.workspace = true
 reth-chain-state.workspace = true
@@ -94,9 +95,11 @@ jemalloc = [
     "rust-eth-triedb/jemalloc",
     "rocksdb/jemalloc",
     "reth-trie-db/jemalloc",
+    "rust-eth-triedb-common/jemalloc",
 ]
 asm-keccak = [
     "rust-eth-triedb/asm-keccak",
+    "rust-eth-triedb-common/asm-keccak",
     "alloy-primitives/asm-keccak",
     "reth-trie-db/asm-keccak",
 ]
