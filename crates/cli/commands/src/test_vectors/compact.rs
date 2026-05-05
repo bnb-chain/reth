@@ -194,7 +194,7 @@ where
     T: for<'a> Arbitrary<'a> + reth_codecs::Compact,
 {
     let type_name = type_name::<T>();
-    print!("{}", &type_name);
+    print!("{}", type_name);
 
     let mut bytes = std::iter::repeat_n(0u8, 256).collect::<Vec<u8>>();
     let mut compact_buffer = vec![];
@@ -221,7 +221,7 @@ where
         };
         let res = obj.to_compact(&mut compact_buffer);
 
-        if IDENTIFIER_TYPE.contains(&type_name) {
+        if IDENTIFIER_TYPE.contains(type_name) {
             compact_buffer.push(res as u8);
         }
 
@@ -230,7 +230,7 @@ where
 
     serde_json::to_writer(
         std::io::BufWriter::new(
-            std::fs::File::create(format!("{VECTORS_FOLDER}/{}.json", &type_name)).unwrap(),
+            std::fs::File::create(format!("{VECTORS_FOLDER}/{}.json", type_name)).unwrap(),
         ),
         &values,
     )?;
@@ -247,10 +247,10 @@ where
     T: reth_codecs::Compact,
 {
     let type_name = type_name::<T>();
-    print!("{}", &type_name);
+    print!("{}", type_name);
 
     // Read the file where the vectors are stored
-    let file_path = format!("{VECTORS_FOLDER}/{}.json", &type_name);
+    let file_path = format!("{VECTORS_FOLDER}/{}.json", type_name);
     let file =
         File::open(&file_path).wrap_err_with(|| format!("Failed to open vector {type_name}."))?;
     let reader = BufReader::new(file);
@@ -263,7 +263,7 @@ where
         let mut identifier = None;
         buffer.clear();
 
-        if IDENTIFIER_TYPE.contains(&type_name) {
+        if IDENTIFIER_TYPE.contains(type_name) {
             identifier = compact_bytes.pop().map(|b| b as usize);
         }
         let len_or_identifier = identifier.unwrap_or(compact_bytes.len());
