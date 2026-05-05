@@ -291,15 +291,14 @@ impl<
             }
             HistoryInfo::InPlainState | HistoryInfo::MaybeInPlainState => {
                 if let Some((exec_tip, hist_tip)) =
-                    self.pipeline_consistency.account_inconsistency()
+                    self.pipeline_consistency.account_inconsistency() &&
+                    self.block_number > hist_tip
                 {
-                    if self.block_number > hist_tip {
-                        return Err(ProviderError::HistoryStateInconsistent {
-                            block: self.block_number,
-                            execution_tip: exec_tip,
-                            history_tip: hist_tip,
-                        })
-                    }
+                    return Err(ProviderError::HistoryStateInconsistent {
+                        block: self.block_number,
+                        execution_tip: exec_tip,
+                        history_tip: hist_tip,
+                    })
                 }
                 Ok(self.tx().get_by_encoded_key::<tables::PlainAccountState>(address)?)
             }
@@ -471,15 +470,14 @@ impl<
             )),
             HistoryInfo::InPlainState | HistoryInfo::MaybeInPlainState => {
                 if let Some((exec_tip, hist_tip)) =
-                    self.pipeline_consistency.storage_inconsistency()
+                    self.pipeline_consistency.storage_inconsistency() &&
+                    self.block_number > hist_tip
                 {
-                    if self.block_number > hist_tip {
-                        return Err(ProviderError::HistoryStateInconsistent {
-                            block: self.block_number,
-                            execution_tip: exec_tip,
-                            history_tip: hist_tip,
-                        })
-                    }
+                    return Err(ProviderError::HistoryStateInconsistent {
+                        block: self.block_number,
+                        execution_tip: exec_tip,
+                        history_tip: hist_tip,
+                    })
                 }
                 Ok(self
                     .tx()
