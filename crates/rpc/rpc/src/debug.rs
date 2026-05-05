@@ -431,6 +431,7 @@ where
                                             evm_env.block_env.number().saturating_to(),
                                         ),
                                         base_fee: Some(evm_env.block_env.basefee()),
+                                        block_timestamp: Some(evm_env.block_env.timestamp().saturating_to()),
                                         hash: None,
                                         block_hash: None,
                                         index: None,
@@ -861,6 +862,7 @@ where
             block_hash: transaction_context.as_ref().map(|c| c.block_hash).unwrap_or_default(),
             block_number: Some(evm_env.block_env.number().saturating_to()),
             base_fee: Some(evm_env.block_env.basefee()),
+            block_timestamp: Some(evm_env.block_env.timestamp().saturating_to()),
         };
 
         if let Some(tracer) = tracer {
