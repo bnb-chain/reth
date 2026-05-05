@@ -342,9 +342,7 @@ pub trait BlockBuilder {
     fn execute_transaction_with_commit_condition(
         &mut self,
         tx: impl ExecutorTx<Self::Executor>,
-        f: impl FnOnce(
-            &ExecutionResult<<<Self::Executor as BlockExecutor>::Evm as Evm>::HaltReason>,
-        ) -> CommitChanges,
+        f: impl FnOnce(&<Self::Executor as BlockExecutor>::Result) -> CommitChanges,
     ) -> Result<Option<u64>, BlockExecutionError>;
 
     /// Invokes [`BlockExecutor::execute_transaction_with_result_closure`] and saves the
@@ -352,7 +350,7 @@ pub trait BlockBuilder {
     fn execute_transaction_with_result_closure(
         &mut self,
         tx: impl ExecutorTx<Self::Executor>,
-        f: impl FnOnce(&ExecutionResult<<<Self::Executor as BlockExecutor>::Evm as Evm>::HaltReason>),
+        f: impl FnOnce(&<Self::Executor as BlockExecutor>::Result),
     ) -> Result<u64, BlockExecutionError> {
         self.execute_transaction_with_commit_condition(tx, |res| {
             f(res);
@@ -495,16 +493,14 @@ where
     fn execute_transaction_with_commit_condition(
         &mut self,
         tx: impl ExecutorTx<Self::Executor>,
-        f: impl FnOnce(
-            &ExecutionResult<<<Self::Executor as BlockExecutor>::Evm as Evm>::HaltReason>,
-        ) -> CommitChanges,
+        f: impl FnOnce(&<Self::Executor as BlockExecutor>::Result) -> CommitChanges,
     ) -> Result<Option<u64>, BlockExecutionError> {
         let (tx_env, tx) = tx.into_parts();
         if let Some(gas_used) =
             self.executor.execute_transaction_with_commit_condition((tx_env, &tx), f)?
         {
             self.transactions.push(tx);
-            Ok(Some(gas_used))
+            Ok(Some(gas_used.tx_gas_used()))
         } else {
             Ok(None)
         }

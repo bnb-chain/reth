@@ -46,7 +46,6 @@ reth-trie-common.workspace = true
 rust-eth-triedb.workspace = true
 
 # ethereum
-alloy-eip7928.workspace = true
 alloy-evm = { workspace = true, features = ["overrides"] }
 alloy-consensus.workspace = true
 alloy-signer.workspace = true

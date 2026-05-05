@@ -1181,6 +1181,7 @@ mod tests {
             &self,
             _input: TrieInput,
             _target: HashedPostState,
+            _mode: reth_trie::ExecutionWitnessMode,
         ) -> ProviderResult<Vec<Bytes>> {
             Ok(Vec::default())
         }

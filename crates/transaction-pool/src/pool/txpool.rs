@@ -32,13 +32,18 @@ use alloy_eips::{
 };
 #[cfg(test)]
 use alloy_primitives::Address;
-use alloy_primitives::{map::AddressSet, TxHash, B256};
+use alloy_primitives::{
+    map::{AddressSet, B256Map, B256Set},
+    TxHash, B256,
+};
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
+#[cfg(test)]
+use std::collections::{HashMap, HashSet};
 use std::{
     cmp::Ordering,
-    collections::{btree_map::Entry, hash_map, BTreeMap, HashMap, HashSet},
+    collections::{btree_map::Entry, hash_map, BTreeMap},
     fmt,
     ops::Bound::{Excluded, Unbounded},
     sync::Arc,
@@ -971,8 +976,8 @@ impl<T: TransactionOrdering> TxPool<T> {
     ///    of the standard limit. This is due to the possibility of the account being sweeped by an
     ///    unrelated account.
     /// 2. In case the pool is tracking a pending / queued transaction from a specific account, at
-    ///    most one in-flight transaction is allowed; any additional delegated transactions from
-    ///    that account will be rejected.
+    ///    most the configured inflight delegation slot limit of in-flight transactions is allowed;
+    ///    any additional delegated transactions from that account will be rejected.
     fn validate_auth(
         &self,
         transaction: &ValidPoolTransaction<T::Transaction>,
@@ -984,8 +989,13 @@ impl<T: TransactionOrdering> TxPool<T> {
 
         if let Some(authority_list) = &transaction.authority_ids {
             for sender_id in authority_list {
-                // Ensure authority has at most 1 inflight transaction.
-                if self.all_transactions.txs_iter(*sender_id).nth(1).is_some() {
+                // Ensure authority does not exceed the configured inflight delegation slot limit.
+                if self
+                    .all_transactions
+                    .txs_iter(*sender_id)
+                    .nth(self.config.max_inflight_delegated_slot_limit)
+                    .is_some()
+                {
                     return Err(PoolError::new(
                         *transaction.hash(),
                         PoolErrorKind::InvalidTransaction(InvalidPoolTransactionError::Eip7702(
@@ -1414,7 +1424,7 @@ pub(crate) struct AllTransactions<T: PoolTransaction> {
     /// Max number of executable transaction slots guaranteed per account
     max_account_slots: usize,
     /// _All_ transactions identified by their hash.
-    by_hash: HashMap<TxHash, Arc<ValidPoolTransaction<T>>>,
+    by_hash: B256Map<Arc<ValidPoolTransaction<T>>>,
     /// _All_ transaction in the pool sorted by their sender and nonce pair.
     txs: BTreeMap<TransactionId, PoolInternalTransaction<T>>,
     /// Contains the currently known information about the senders.
@@ -1432,7 +1442,7 @@ pub(crate) struct AllTransactions<T: PoolTransaction> {
     /// How to handle [`TransactionOrigin::Local`](crate::TransactionOrigin) transactions.
     local_transactions_config: LocalTransactionConfig,
     /// All accounts with a pooled authorization
-    auths: FxHashMap<SenderId, HashSet<TxHash>>,
+    auths: FxHashMap<SenderId, B256Set>,
     /// All Transactions metrics
     metrics: AllTransactionsMetrics,
 }
