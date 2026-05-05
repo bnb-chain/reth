@@ -221,7 +221,7 @@ where
         };
         let res = obj.to_compact(&mut compact_buffer);
 
-        if IDENTIFIER_TYPE.contains(type_name) {
+        if IDENTIFIER_TYPE.contains(&type_name) {
             compact_buffer.push(res as u8);
         }
 
@@ -263,7 +263,7 @@ where
         let mut identifier = None;
         buffer.clear();
 
-        if IDENTIFIER_TYPE.contains(type_name) {
+        if IDENTIFIER_TYPE.contains(&type_name) {
             identifier = compact_bytes.pop().map(|b| b as usize);
         }
         let len_or_identifier = identifier.unwrap_or(compact_bytes.len());
