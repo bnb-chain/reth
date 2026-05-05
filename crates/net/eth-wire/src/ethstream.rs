@@ -42,7 +42,6 @@ fn record_eth_message_metric(direction: &str, version: EthVersion, msg_id: u8, b
 // https://github.com/ethereum/go-ethereum/blob/30602163d5d8321fbc68afdcbbaf2362b2641bde/eth/protocols/eth/protocol.go#L50
 pub const MAX_MESSAGE_SIZE: usize = 10 * 1024 * 1024;
 
-
 /// An un-authenticated [`EthStream`]. This is consumed and returns a [`EthStream`] after the
 /// `Status` handshake is completed.
 #[pin_project]

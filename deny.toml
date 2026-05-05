@@ -4,23 +4,18 @@
 [advisories]
 yanked = "warn"
 ignore = [
-    # https://rustsec.org/advisories/RUSTSEC-2024-0384 used by sse example
-    "RUSTSEC-2024-0384",
     # https://rustsec.org/advisories/RUSTSEC-2024-0436 paste! is unmaintained
     "RUSTSEC-2024-0436",
     # https://rustsec.org/advisories/RUSTSEC-2025-0141 bincode is unmaintained, need to transition all deps to wincode first
     "RUSTSEC-2025-0141",
     # https://rustsec.org/advisories/RUSTSEC-2023-0089 atomic-polyfill is unmaintained, transitive dep via test-fuzz
     "RUSTSEC-2023-0089",
-    # https://rustsec.org/advisories/RUSTSEC-2026-0002 lru upgrade requires a discv5 bump first
-    "RUSTSEC-2026-0002",
-    # https://rustsec.org/advisories/RUSTSEC-2026-0009 time DoS via stack exhaustion, fixed in 0.3.47
-    # TODO: upgrade when upstream deps adopt time >=0.3.47
-    "RUSTSEC-2026-0009",
-    # https://rustsec.org/advisories/RUSTSEC-2026-0097 rand unsoundness with custom logger, no fix available yet
-    "RUSTSEC-2026-0097",
-    # https://rustsec.org/advisories/RUSTSEC-2026-0105 core2 is unmaintained
-    "RUSTSEC-2026-0105",
+    # https://rustsec.org/advisories/RUSTSEC-2026-0104 rustls-webpki CRL panic, fixed in 0.103.13
+    "RUSTSEC-2026-0104",
+    # https://rustsec.org/advisories/RUSTSEC-2026-0118 hickory-proto NSEC3 unbounded loop
+    "RUSTSEC-2026-0118",
+    # https://rustsec.org/advisories/RUSTSEC-2026-0119 hickory-proto O(n²) name compression
+    "RUSTSEC-2026-0119",
 ]
 
 # This section is considered when running `cargo deny check bans`.
