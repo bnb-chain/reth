@@ -856,7 +856,7 @@ impl RocksDBProvider {
     pub fn get_raw<T: Table>(&self, key: T::Key) -> ProviderResult<Option<Vec<u8>>> {
         let encoded = key.encode();
         self.execute_with_operation_metric(RocksDBOperation::Get, T::NAME, |this| {
-            this.0.get_cf(this.get_cf_handle::<T>()?, encoded.as_ref()).map_err(|e| {
+            this.0.get_cf(&this.get_cf_handle::<T>()?, encoded.as_ref()).map_err(|e| {
                 ProviderError::Database(DatabaseError::Read(DatabaseErrorInfo {
                     message: e.to_string().into(),
                     code: -1,
@@ -991,7 +991,7 @@ impl RocksDBProvider {
         let encoded_key = key.encode();
         let iter = self
             .0
-            .iterator_cf(cf, IteratorMode::From(encoded_key.as_ref(), rocksdb::Direction::Forward));
+            .iterator_cf(&cf, IteratorMode::From(encoded_key.as_ref(), rocksdb::Direction::Forward));
         Ok(RocksDBIter { inner: iter, _marker: std::marker::PhantomData })
     }
 
