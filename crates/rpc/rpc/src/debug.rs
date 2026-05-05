@@ -431,7 +431,9 @@ where
                                             evm_env.block_env.number().saturating_to(),
                                         ),
                                         base_fee: Some(evm_env.block_env.basefee()),
-                                        block_timestamp: Some(evm_env.block_env.timestamp().saturating_to()),
+                                        block_timestamp: Some(
+                                            evm_env.block_env.timestamp().saturating_to(),
+                                        ),
                                         hash: None,
                                         block_hash: None,
                                         index: None,
