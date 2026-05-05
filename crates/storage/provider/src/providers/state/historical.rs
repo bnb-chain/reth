@@ -293,11 +293,13 @@ impl<
                 if let Some((exec_tip, hist_tip)) =
                     self.pipeline_consistency.account_inconsistency()
                 {
-                    return Err(ProviderError::HistoryStateInconsistent {
-                        block: self.block_number,
-                        execution_tip: exec_tip,
-                        history_tip: hist_tip,
-                    })
+                    if self.block_number > hist_tip {
+                        return Err(ProviderError::HistoryStateInconsistent {
+                            block: self.block_number,
+                            execution_tip: exec_tip,
+                            history_tip: hist_tip,
+                        })
+                    }
                 }
                 Ok(self.tx().get_by_encoded_key::<tables::PlainAccountState>(address)?)
             }
@@ -471,11 +473,13 @@ impl<
                 if let Some((exec_tip, hist_tip)) =
                     self.pipeline_consistency.storage_inconsistency()
                 {
-                    return Err(ProviderError::HistoryStateInconsistent {
-                        block: self.block_number,
-                        execution_tip: exec_tip,
-                        history_tip: hist_tip,
-                    })
+                    if self.block_number > hist_tip {
+                        return Err(ProviderError::HistoryStateInconsistent {
+                            block: self.block_number,
+                            execution_tip: exec_tip,
+                            history_tip: hist_tip,
+                        })
+                    }
                 }
                 Ok(self
                     .tx()
@@ -1175,7 +1179,24 @@ mod tests {
         let result = provider.basic_account(&no_history_addr);
         assert!(matches!(result, Ok(None)), "Never-written account should return None: {result:?}");
 
-        // Test 4: Same queries with consistent pipeline → all succeed
+        // Test 4: ADDRESS at block 16, hist_tip=200 → block_number <= hist_tip → InPlainState is
+        // safe even though exec_tip=300 > hist_tip (mirrors issue #338 where historical RPC calls
+        // were incorrectly rejected during pipeline sync)
+        let safe_inconsistent = PipelineConsistency {
+            execution_tip: Some(300),
+            account_history_tip: Some(200),
+            storage_history_tip: Some(200),
+        };
+        let provider =
+            HistoricalStateProviderRef::new(&db, 16).with_pipeline_consistency(safe_inconsistent);
+        let result = provider.basic_account(&ADDRESS);
+        assert!(
+            result.is_ok(),
+            "InPlainState below hist_tip should succeed during inconsistency: {result:?}"
+        );
+        assert_eq!(result.unwrap().unwrap().nonce, acc_plain.nonce);
+
+        // Test 5: Same queries with consistent pipeline → all succeed
         let consistent = PipelineConsistency {
             execution_tip: Some(200),
             account_history_tip: Some(200),
