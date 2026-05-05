@@ -155,6 +155,14 @@ where
         self.inner.requests_hash()
     }
 
+    fn block_access_list_hash(&self) -> Option<alloy_primitives::FixedBytes<32>> {
+        self.inner.block_access_list_hash()
+    }
+
+    fn slot_number(&self) -> Option<u64> {
+        self.inner.slot_number()
+    }
+
     fn extra_data(&self) -> &alloy_primitives::Bytes {
         self.inner.extra_data()
     }

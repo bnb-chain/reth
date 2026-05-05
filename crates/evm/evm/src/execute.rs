@@ -21,10 +21,7 @@ use reth_primitives_traits::{
 use reth_storage_api::StateProvider;
 pub use reth_storage_errors::provider::ProviderError;
 use reth_trie_common::{updates::TrieUpdates, HashedPostState};
-use revm::{
-    context::result::ExecutionResult,
-    database::{states::bundle_state::BundleRetention, BundleState, State},
-};
+use revm::database::{states::bundle_state::BundleRetention, BundleState, State};
 #[cfg(feature = "std")]
 use rust_eth_triedb_common::DiffLayer;
 
