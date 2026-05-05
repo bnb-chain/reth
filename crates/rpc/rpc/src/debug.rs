@@ -367,7 +367,7 @@ where
                                     let frame = inspector
                                         .with_transaction_gas_limit(gas_limit)
                                         .into_geth_builder()
-                                        .geth_call_traces(call_config, res.result.gas_used());
+                                        .geth_call_traces(call_config, res.result.tx_gas_used());
                                     Ok(frame.into())
                                 },
                             )
@@ -547,7 +547,7 @@ where
                 Ok((res, gas_limit, inspector))
             })
             .await?;
-        let gas_used = res.result.gas_used();
+        let gas_used = res.result.tx_gas_used();
         let return_value = res.result.into_output().unwrap_or_default();
         let frame = inspector
             .with_transaction_gas_limit(tx_gas_limit)
@@ -898,7 +898,7 @@ where
 
                         let frame = inspector
                             .geth_builder()
-                            .geth_call_traces(call_config, res.result.gas_used());
+                            .geth_call_traces(call_config, res.result.tx_gas_used());
 
                         return Ok((frame.into(), res.state))
                     }
@@ -1018,7 +1018,7 @@ where
         });
         let gas_limit = tx_env.gas_limit();
         let res = self.eth_api().inspect(db, evm_env, tx_env, &mut inspector)?;
-        let gas_used = res.result.gas_used();
+        let gas_used = res.result.tx_gas_used();
         let return_value = res.result.into_output().unwrap_or_default();
         inspector.set_transaction_gas_limit(gas_limit);
         let frame = inspector.geth_builder().geth_traces(gas_used, return_value, *config);
