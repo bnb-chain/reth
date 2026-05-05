@@ -989,9 +989,10 @@ impl RocksDBProvider {
     pub fn iter_from<T: Table>(&self, key: T::Key) -> ProviderResult<RocksDBIter<'_, T>> {
         let cf = self.get_cf_handle::<T>()?;
         let encoded_key = key.encode();
-        let iter = self
-            .0
-            .iterator_cf(&cf, IteratorMode::From(encoded_key.as_ref(), rocksdb::Direction::Forward));
+        let iter = self.0.iterator_cf(
+            &cf,
+            IteratorMode::From(encoded_key.as_ref(), rocksdb::Direction::Forward),
+        );
         Ok(RocksDBIter { inner: iter, _marker: std::marker::PhantomData })
     }
 

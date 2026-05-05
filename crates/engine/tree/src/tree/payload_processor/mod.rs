@@ -366,6 +366,7 @@ where
 
         PayloadHandle {
             state_root_handle: None,
+            install_state_hook: false,
             prewarm_handle,
             transactions: execution_rx,
             trie_db_prefetch_result_rx: Some(prefetch_result_rx),
