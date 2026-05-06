@@ -16,7 +16,7 @@ use reth_ethereum_forks::Head;
 use reth_network_api::{
     events::{NetworkPeersEvents, PeerEvent, PeerEventStream},
     test_utils::{PeersHandle, PeersHandleProvider},
-    BlockDownloaderProvider, DiscoveryEvent, NetworkError, NetworkEvent,
+    BanSnapshot, BlockDownloaderProvider, DiscoveryEvent, NetworkError, NetworkEvent,
     NetworkEventListenerProvider, NetworkInfo, NetworkStatus, PeerInfo, PeerRequest, Peers,
     PeersInfo,
 };
@@ -386,6 +386,12 @@ impl<N: NetworkPrimitives> Peers for NetworkHandle<N> {
         let _ = self.manager().send(NetworkHandleMessage::GetReputationById(peer_id, tx));
         Ok(rx.await?)
     }
+
+    async fn get_ban_snapshot(&self) -> Result<BanSnapshot, NetworkError> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.manager().send(NetworkHandleMessage::GetBanSnapshot(tx));
+        Ok(rx.await?)
+    }
 }
 
 impl<N: NetworkPrimitives> PeersHandleProvider for NetworkHandle<N> {
@@ -564,6 +570,8 @@ pub(crate) enum NetworkHandleMessage<N: NetworkPrimitives = EthNetworkPrimitives
     GetPeerInfosByPeerKind(PeerKind, oneshot::Sender<Vec<PeerInfo>>),
     /// Gets the reputation for a specific peer via a oneshot sender.
     GetReputationById(PeerId, oneshot::Sender<Option<Reputation>>),
+    /// Gets a snapshot of the ban + backoff state via a oneshot sender.
+    GetBanSnapshot(oneshot::Sender<BanSnapshot>),
     /// Retrieves the `TransactionsHandle` via a oneshot sender.
     GetTransactionsHandle(oneshot::Sender<Option<TransactionsHandle<N>>>),
     /// Initiates a graceful shutdown of the network via a oneshot sender.

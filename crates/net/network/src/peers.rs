@@ -251,6 +251,30 @@ impl PeersManager {
         self.backed_off_peers.len()
     }
 
+    /// Returns a snapshot of the current ban list and backoff list.
+    pub(crate) fn ban_snapshot(&self) -> reth_network_api::BanSnapshot {
+        use reth_network_api::{BackedOffPeer, BanSnapshot, BannedIp, BannedPeer};
+        BanSnapshot {
+            banned_peers: self
+                .ban_list
+                .banned_peers()
+                .into_iter()
+                .map(|(peer_id, until)| BannedPeer { peer_id, until })
+                .collect(),
+            banned_ips: self
+                .ban_list
+                .banned_ips()
+                .into_iter()
+                .map(|(ip, until)| BannedIp { ip, until })
+                .collect(),
+            backed_off: self
+                .backed_off_peers
+                .iter()
+                .map(|(peer_id, until)| BackedOffPeer { peer_id: *peer_id, until: *until })
+                .collect(),
+        }
+    }
+
     /// Returns the number of idle trusted peers.
     fn num_idle_trusted_peers(&self) -> usize {
         self.peers.iter().filter(|(_, peer)| peer.kind.is_trusted() && peer.state.is_idle()).count()
@@ -566,6 +590,16 @@ impl PeersManager {
                 self.ban_peer(*peer_id);
             }
         }
+
+        // Surface every reputation change as a subscribable event so external
+        // observers can attribute peer-loss to a specific kind without grepping
+        // DEBUG-level logs.
+        self.queued_actions.push_back(PeerAction::ReputationChanged {
+            peer_id: *peer_id,
+            kind: rep,
+            new_reputation,
+            outcome,
+        });
     }
 
     /// Gracefully disconnected a pending _outgoing_ session
@@ -1304,6 +1338,17 @@ pub enum PeerAction {
     PeerAdded(PeerId),
     /// Emit peerRemoved event
     PeerRemoved(PeerId),
+    /// Notify subscribers of a reputation change.
+    ReputationChanged {
+        /// The peer ID.
+        peer_id: PeerId,
+        /// What kind of change was applied.
+        kind: ReputationChangeKind,
+        /// New reputation score after the change.
+        new_reputation: i32,
+        /// Outcome of the change (`Ban` / `DisconnectAndBan` / `Unban` / `None`).
+        outcome: ReputationChangeOutcome,
+    },
 }
 
 /// Error thrown when an incoming connection is rejected right away

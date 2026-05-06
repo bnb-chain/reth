@@ -294,6 +294,11 @@ async fn test_sending_invalid_transactions() {
             NetworkEvent::Peer(PeerEvent::PeerRemoved(_)) => {
                 panic!("unexpected PeerRemoved event")
             }
+            NetworkEvent::Peer(
+                PeerEvent::ReputationChanged { .. } | PeerEvent::DialFailed { .. },
+            ) => {
+                // diagnostic events; ignore
+            }
         }
     }
 

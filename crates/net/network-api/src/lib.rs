@@ -26,7 +26,7 @@ use test_utils::PeersHandleProvider;
 use alloy_primitives::{B256, U256};
 pub use alloy_rpc_types_admin::EthProtocolInfo;
 pub use reth_network_p2p::{BlockClient, HeadersClient};
-pub use reth_network_types::{PeerKind, Reputation, ReputationChangeKind};
+pub use reth_network_types::{PeerKind, Reputation, ReputationChangeKind, ReputationChangeOutcome};
 
 pub use downloaders::BlockDownloaderProvider;
 pub use error::NetworkError;
@@ -41,7 +41,7 @@ use reth_eth_wire_types::{
 };
 use reth_network_p2p::sync::NetworkSyncUpdater;
 use reth_network_peers::NodeRecord;
-use std::{future::Future, net::SocketAddr, sync::Arc, time::Instant};
+use std::{future::Future, net::IpAddr, net::SocketAddr, sync::Arc, time::Instant};
 
 /// The `PeerId` type.
 pub type PeerId = alloy_primitives::B512;
@@ -222,6 +222,56 @@ pub trait Peers: PeersInfo {
         &self,
         peer_id: PeerId,
     ) -> impl Future<Output = Result<Option<Reputation>, NetworkError>> + Send;
+
+    /// Returns a snapshot of the network's current ban + backoff state.
+    ///
+    /// The default implementation returns an empty snapshot so impls that don't track
+    /// ban state (e.g. test/noop networks) keep compiling.
+    fn get_ban_snapshot(
+        &self,
+    ) -> impl Future<Output = Result<BanSnapshot, NetworkError>> + Send {
+        async { Ok(BanSnapshot::default()) }
+    }
+}
+
+/// A peer in the ban list.
+#[derive(Debug, Clone)]
+pub struct BannedPeer {
+    /// The banned peer id.
+    pub peer_id: PeerId,
+    /// When the ban expires. `None` means banned indefinitely.
+    pub until: Option<Instant>,
+}
+
+/// An IP in the ban list.
+#[derive(Debug, Clone)]
+pub struct BannedIp {
+    /// The banned IP address.
+    pub ip: IpAddr,
+    /// When the ban expires. `None` means banned indefinitely.
+    pub until: Option<Instant>,
+}
+
+/// A peer currently in backoff (temporarily not connectable, but not banned).
+#[derive(Debug, Clone)]
+pub struct BackedOffPeer {
+    /// The peer id in backoff.
+    pub peer_id: PeerId,
+    /// When the backoff expires.
+    pub until: Instant,
+}
+
+/// Snapshot of the network's ban + backoff state at a single point in time.
+///
+/// Returned by [`Peers::get_ban_snapshot`].
+#[derive(Debug, Clone, Default)]
+pub struct BanSnapshot {
+    /// Currently banned peers.
+    pub banned_peers: Vec<BannedPeer>,
+    /// Currently banned IPs.
+    pub banned_ips: Vec<BannedIp>,
+    /// Peers in backoff (temporarily skipped on dial attempts).
+    pub backed_off: Vec<BackedOffPeer>,
 }
 
 /// Info about an active peer session.

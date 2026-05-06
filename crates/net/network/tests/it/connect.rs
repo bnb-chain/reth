@@ -71,6 +71,11 @@ async fn test_establish_connections() {
                 NetworkEvent::Peer(PeerEvent::PeerAdded(peer_id)) => {
                     assert!(expected_peers.remove(&peer_id))
                 }
+                NetworkEvent::Peer(
+                    PeerEvent::ReputationChanged { .. } | PeerEvent::DialFailed { .. },
+                ) => {
+                    // diagnostic events; ignore in this test
+                }
             }
         }
         assert!(expected_connections.is_empty());

@@ -112,6 +112,20 @@ impl BanList {
         self.banned_peers.contains_key(peer_id)
     }
 
+    /// Returns a snapshot of all currently banned peers with their optional unban deadline.
+    ///
+    /// `None` in the second tuple element means the peer is banned indefinitely.
+    pub fn banned_peers(&self) -> Vec<(PeerId, Option<Instant>)> {
+        self.banned_peers.iter().map(|(peer, until)| (*peer, *until)).collect()
+    }
+
+    /// Returns a snapshot of all currently banned IPs with their optional unban deadline.
+    ///
+    /// `None` in the second tuple element means the IP is banned indefinitely.
+    pub fn banned_ips(&self) -> Vec<(IpAddr, Option<Instant>)> {
+        self.banned_ips.iter().map(|(ip, until)| (*ip, *until)).collect()
+    }
+
     /// Unbans the ip address
     pub fn unban_ip(&mut self, ip: &IpAddr) {
         self.banned_ips.remove(ip);

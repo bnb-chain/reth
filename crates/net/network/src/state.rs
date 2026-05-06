@@ -401,6 +401,14 @@ impl<N: NetworkPrimitives> NetworkState<N> {
             PeerAction::PeerRemoved(peer_id) => {
                 self.queued_messages.push_back(StateAction::PeerRemoved(peer_id))
             }
+            PeerAction::ReputationChanged { peer_id, kind, new_reputation, outcome } => self
+                .queued_messages
+                .push_back(StateAction::ReputationChanged {
+                    peer_id,
+                    kind,
+                    new_reputation,
+                    outcome,
+                }),
             PeerAction::BanPeer { .. } | PeerAction::UnBanPeer { .. } => {}
         }
     }
@@ -600,6 +608,17 @@ pub(crate) enum StateAction<N: NetworkPrimitives> {
     PeerAdded(PeerId),
     /// A peer was dropped
     PeerRemoved(PeerId),
+    /// Reputation change applied to a peer.
+    ReputationChanged {
+        /// The peer ID.
+        peer_id: PeerId,
+        /// What kind of change was applied.
+        kind: reth_network_types::ReputationChangeKind,
+        /// New reputation after the change.
+        new_reputation: i32,
+        /// Outcome of the change.
+        outcome: reth_network_types::ReputationChangeOutcome,
+    },
 }
 
 #[cfg(test)]

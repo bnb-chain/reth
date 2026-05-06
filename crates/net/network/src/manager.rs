@@ -42,6 +42,7 @@ use reth_chainspec::EnrForkIdEntry;
 use reth_eth_wire::{DisconnectReason, EthNetworkPrimitives, NetworkPrimitives};
 use reth_fs_util::{self as fs, FsPathError};
 use reth_metrics::common::mpsc::UnboundedMeteredSender;
+use crate::error::SessionError;
 use reth_network_api::{
     events::{PeerEvent, SessionInfo},
     test_utils::PeersHandle,
@@ -723,6 +724,9 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
             NetworkHandleMessage::GetReputationById(peer_id, tx) => {
                 let _ = tx.send(self.swarm.state_mut().peers().get_reputation(&peer_id));
             }
+            NetworkHandleMessage::GetBanSnapshot(tx) => {
+                let _ = tx.send(self.swarm.state().peers().ban_snapshot());
+            }
             NetworkHandleMessage::FetchClient(tx) => {
                 let _ = tx.send(self.fetch_client());
             }
@@ -950,6 +954,13 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
                     if let Some(reason) = err.as_disconnected() {
                         self.disconnect_metrics.increment(reason);
                     }
+                    let fatal = err.is_fatal_protocol_error();
+                    self.event_sender.notify(NetworkEvent::Peer(PeerEvent::DialFailed {
+                        peer_id,
+                        remote_addr,
+                        error_class: classify_pending_handshake_error(err),
+                        fatal,
+                    }));
                 } else {
                     self.swarm
                         .state_mut()
@@ -983,6 +994,13 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
                     &error,
                 );
 
+                self.event_sender.notify(NetworkEvent::Peer(PeerEvent::DialFailed {
+                    peer_id,
+                    remote_addr,
+                    error_class: classify_io_error(&error),
+                    fatal: false,
+                }));
+
                 self.metrics.backed_off_peers.set(
                         self.swarm
                             .state()
@@ -999,6 +1017,14 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
                     .peers_mut()
                     .apply_reputation_change(&peer_id, ReputationChangeKind::BadMessage);
                 self.metrics.invalid_messages_received.increment(1);
+            }
+            SwarmEvent::ReputationChanged { peer_id, kind, new_reputation, outcome } => {
+                self.event_sender.notify(NetworkEvent::Peer(PeerEvent::ReputationChanged {
+                    peer_id,
+                    kind,
+                    new_reputation,
+                    outcome,
+                }));
             }
             SwarmEvent::ProtocolBreach { peer_id } => {
                 self.swarm
@@ -1199,4 +1225,30 @@ impl<N: NetworkPrimitives> Future for NetworkManager<N> {
 struct NetworkManagerPollDurations {
     acc_network_handle: Duration,
     acc_swarm: Duration,
+}
+
+/// Short, grep-friendly classification of a [`PendingSessionHandshakeError`].
+///
+/// Format: `<prefix>:<detail>` where the prefix is a small, fixed set
+/// (`eth`, `ecies`, `auth_timeout`, `missing_cap`, `io`). Subscribers that
+/// bucket failures should split on the first `:` so the cardinality of the
+/// bucket key stays bounded under flood.
+fn classify_pending_handshake_error(
+    err: &crate::session::PendingSessionHandshakeError,
+) -> Arc<str> {
+    use crate::session::PendingSessionHandshakeError as E;
+    match err {
+        // chars().take(80) avoids panicking inside a UTF-8 codepoint.
+        E::Eth(e) => {
+            let detail: String = e.to_string().chars().take(80).collect();
+            Arc::<str>::from(format!("eth:{detail}"))
+        }
+        E::Ecies(_) => Arc::<str>::from("ecies"),
+        E::Timeout => Arc::<str>::from("auth_timeout"),
+        E::UnsupportedExtraCapability => Arc::<str>::from("missing_cap"),
+    }
+}
+
+fn classify_io_error(err: &std::io::Error) -> Arc<str> {
+    Arc::<str>::from(format!("io:{:?}", err.kind()))
 }

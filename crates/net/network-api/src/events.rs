@@ -9,7 +9,7 @@ use reth_eth_wire_types::{
 use reth_ethereum_forks::ForkId;
 use reth_network_p2p::error::{RequestError, RequestResult};
 use reth_network_peers::PeerId;
-use reth_network_types::{PeerAddr, PeerKind};
+use reth_network_types::{PeerAddr, PeerKind, ReputationChangeKind, ReputationChangeOutcome};
 use reth_tokio_util::EventStream;
 use std::{
     fmt,
@@ -90,6 +90,37 @@ pub enum PeerEvent {
     PeerAdded(PeerId),
     /// Event emitted when a new peer is removed
     PeerRemoved(PeerId),
+    /// Reputation change applied to a peer.
+    ///
+    /// Emitted on every successful `apply_reputation_change`, regardless of whether the
+    /// change crossed a ban threshold. Subscribers can use this to attribute peer-loss
+    /// to a specific [`ReputationChangeKind`] and observe cumulative drift over time.
+    ReputationChanged {
+        /// Identifier of the peer.
+        peer_id: PeerId,
+        /// What kind of change was applied (e.g. `BadAnnouncement`, `Timeout`, `BadBlock`).
+        kind: ReputationChangeKind,
+        /// Peer's reputation after the change.
+        new_reputation: i32,
+        /// What action the network manager took as a result.
+        outcome: ReputationChangeOutcome,
+    },
+    /// Outbound dial / pre-handshake / handshake failed.
+    ///
+    /// Emitted when an outbound connection attempt or its pre-session handshake fails
+    /// before any session is established. Such failures otherwise produce no
+    /// `SessionClosed` event, making them invisible to event-stream subscribers.
+    DialFailed {
+        /// Identifier of the peer we tried to dial.
+        peer_id: PeerId,
+        /// The remote address we tried to reach.
+        remote_addr: SocketAddr,
+        /// Short class / message of the failure (e.g. `"ecies_handshake"`, `"fork_id_mismatch"`).
+        error_class: Arc<str>,
+        /// `true` if the failure was classified as a fatal protocol error and the peer
+        /// has been removed + banned.
+        fatal: bool,
+    },
 }
 
 /// (Non-exhaustive) Network events representing peer lifecycle events and session requests.

@@ -245,6 +245,14 @@ impl<N: NetworkPrimitives> Swarm<N> {
             }
             StateAction::PeerAdded(peer_id) => return Some(SwarmEvent::PeerAdded(peer_id)),
             StateAction::PeerRemoved(peer_id) => return Some(SwarmEvent::PeerRemoved(peer_id)),
+            StateAction::ReputationChanged { peer_id, kind, new_reputation, outcome } => {
+                return Some(SwarmEvent::ReputationChanged {
+                    peer_id,
+                    kind,
+                    new_reputation,
+                    outcome,
+                });
+            }
             StateAction::DiscoveredNode { peer_id, addr, fork_id } => {
                 // Don't try to connect to peer if node is shutting down
                 if self.is_shutting_down() {
@@ -411,6 +419,17 @@ pub(crate) enum SwarmEvent<N: NetworkPrimitives = EthNetworkPrimitives> {
     },
     /// Failed to establish a tcp stream to the given address/node
     OutgoingConnectionError { remote_addr: SocketAddr, peer_id: PeerId, error: io::Error },
+    /// Reputation change applied to a peer.
+    ReputationChanged {
+        /// The peer ID.
+        peer_id: PeerId,
+        /// What kind of change was applied.
+        kind: reth_network_types::ReputationChangeKind,
+        /// New reputation after the change.
+        new_reputation: i32,
+        /// Outcome of the change.
+        outcome: reth_network_types::ReputationChangeOutcome,
+    },
 }
 
 /// Represents the state of the connection of the node. If shutting down,
