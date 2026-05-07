@@ -887,6 +887,20 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
 
                 if let Some(reason) = reason {
                     self.disconnect_metrics.increment(reason);
+                    // Surface the *fatal* subset of disconnect reasons at WARN so
+                    // operators can correlate metric spikes (especially
+                    // reth_network_protocol_breach) with a specific peer / address /
+                    // wire error WITHOUT having to enable trace-level logging.
+                    if is_fatal_disconnect_reason(reason) {
+                        warn!(
+                            target: "net",
+                            ?peer_id,
+                            ?remote_addr,
+                            ?reason,
+                            error = ?error,
+                            "active session closed with fatal disconnect reason"
+                        );
+                    }
                 }
                 self.metrics.backed_off_peers.set(
                         self.swarm
@@ -915,6 +929,15 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
                     self.metrics.pending_session_failures.increment(1);
                     if let Some(reason) = err.as_disconnected() {
                         self.disconnect_metrics.increment(reason);
+                        if is_fatal_disconnect_reason(reason) {
+                            warn!(
+                                target: "net",
+                                ?remote_addr,
+                                ?reason,
+                                error = ?err,
+                                "incoming pending session closed with fatal disconnect reason"
+                            );
+                        }
                     }
                 } else {
                     self.swarm
@@ -953,6 +976,16 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
                     self.metrics.pending_session_failures.increment(1);
                     if let Some(reason) = err.as_disconnected() {
                         self.disconnect_metrics.increment(reason);
+                        if is_fatal_disconnect_reason(reason) {
+                            warn!(
+                                target: "net",
+                                ?peer_id,
+                                ?remote_addr,
+                                ?reason,
+                                error = ?err,
+                                "outgoing pending session closed with fatal disconnect reason"
+                            );
+                        }
                     }
                     let fatal = err.is_fatal_protocol_error();
                     self.event_sender.notify(NetworkEvent::Peer(PeerEvent::DialFailed {
@@ -1027,6 +1060,16 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
                 }));
             }
             SwarmEvent::ProtocolBreach { peer_id } => {
+                // ProtocolBreach origin (locally-decided): the active session task
+                // (see `ActiveSession::check_timed_out_requests`) has already logged
+                // the request id / elapsed time at WARN. This handler only updates
+                // the peer's reputation; emit a follow-up at WARN so a single grep on
+                // `peer_id` shows both the cause and the reputation drop.
+                warn!(
+                    target: "net",
+                    ?peer_id,
+                    "session reported ProtocolBreach -> applying ReputationChangeKind::BadProtocol (peer will be heavily penalized and likely banned for an extended period)"
+                );
                 self.swarm
                     .state_mut()
                     .peers_mut()
@@ -1251,4 +1294,24 @@ fn classify_pending_handshake_error(
 
 fn classify_io_error(err: &std::io::Error) -> Arc<str> {
     Arc::<str>::from(format!("io:{:?}", err.kind()))
+}
+
+/// Whether a [`DisconnectReason`] indicates real misbehavior worth surfacing at
+/// WARN, as opposed to routine churn (`TooManyPeers`, `AlreadyConnected`,
+/// `PingTimeout`, `DisconnectRequested`, `TcpSubsystemError`, `ClientQuitting`).
+///
+/// Mirrors the "fatal" classification in `crate::error::SessionError::should_backoff` /
+/// `is_fatal_protocol_error` — peers disconnected with these reasons go into the
+/// long-backoff bucket and receive heavy reputation penalties.
+const fn is_fatal_disconnect_reason(reason: DisconnectReason) -> bool {
+    matches!(
+        reason,
+        DisconnectReason::ProtocolBreach
+            | DisconnectReason::UselessPeer
+            | DisconnectReason::IncompatibleP2PProtocolVersion
+            | DisconnectReason::NullNodeIdentity
+            | DisconnectReason::UnexpectedHandshakeIdentity
+            | DisconnectReason::ConnectedToSelf
+            | DisconnectReason::SubprotocolSpecific
+    )
 }

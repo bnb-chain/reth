@@ -14,7 +14,7 @@ use reth_primitives_traits::GotExpected;
 use std::{fmt::Debug, future::Future, pin::Pin, time::Duration};
 use tokio::time::timeout;
 use tokio_stream::StreamExt;
-use tracing::{debug, trace};
+use tracing::{trace, warn};
 
 /// A trait that knows how to perform the P2P handshake.
 pub trait EthRlpxHandshake: Debug + Send + Sync + 'static {
@@ -111,6 +111,13 @@ where
         };
 
         if their_msg.len() > MAX_MESSAGE_SIZE {
+            // ProtocolBreach origin: peer's first message larger than MAX_MESSAGE_SIZE.
+            warn!(
+                target: "net::eth-wire::handshake",
+                msg_len = their_msg.len(),
+                max = MAX_MESSAGE_SIZE,
+                "eth handshake: peer's first message exceeds MAX_MESSAGE_SIZE -> sending DisconnectReason::ProtocolBreach"
+            );
             unauth
                 .disconnect(DisconnectReason::ProtocolBreach)
                 .await
@@ -125,7 +132,16 @@ where
         ) {
             Ok(m) => m,
             Err(err) => {
-                debug!("decode error in eth handshake: msg={their_msg:x}");
+                // NOTE: this path emits DisconnectRequested (NOT ProtocolBreach), but
+                // is the most common "peer sent garbage" cause for peer drops, so log
+                // visibly when it happens.
+                warn!(
+                    target: "net::eth-wire::handshake",
+                    eth_version = ?version,
+                    msg_len = their_msg.len(),
+                    decode_error = %err,
+                    "eth handshake: failed to decode peer's first message; sending DisconnectRequested (NOT ProtocolBreach). msg={their_msg:x}"
+                );
                 unauth
                     .disconnect(DisconnectReason::DisconnectRequested)
                     .await
@@ -140,6 +156,13 @@ where
                 trace!("Validating incoming ETH status from peer");
 
                 if status.genesis() != their_status_message.genesis() {
+                    // ProtocolBreach origin: peer is on a different chain genesis.
+                    warn!(
+                        target: "net::eth-wire::handshake",
+                        ours = ?status.genesis(),
+                        theirs = ?their_status_message.genesis(),
+                        "eth handshake: mismatched genesis -> sending DisconnectReason::ProtocolBreach"
+                    );
                     unauth
                         .disconnect(DisconnectReason::ProtocolBreach)
                         .await
@@ -155,6 +178,13 @@ where
                 }
 
                 if status.version() != their_status_message.version() {
+                    // ProtocolBreach origin: negotiated eth version mismatch.
+                    warn!(
+                        target: "net::eth-wire::handshake",
+                        ours = ?status.version(),
+                        theirs = ?their_status_message.version(),
+                        "eth handshake: mismatched eth protocol version -> sending DisconnectReason::ProtocolBreach"
+                    );
                     unauth
                         .disconnect(DisconnectReason::ProtocolBreach)
                         .await
@@ -167,6 +197,13 @@ where
                 }
 
                 if *status.chain() != *their_status_message.chain() {
+                    // ProtocolBreach origin: peer reports a different chain id.
+                    warn!(
+                        target: "net::eth-wire::handshake",
+                        ours = ?status.chain(),
+                        theirs = ?their_status_message.chain(),
+                        "eth handshake: mismatched chain id -> sending DisconnectReason::ProtocolBreach"
+                    );
                     unauth
                         .disconnect(DisconnectReason::ProtocolBreach)
                         .await
@@ -182,6 +219,13 @@ where
                 if let StatusMessage::Legacy(s) = their_status_message &&
                     s.total_difficulty.bit_len() > 160
                 {
+                    // ProtocolBreach origin: total_difficulty bit length too large.
+                    warn!(
+                        target: "net::eth-wire::handshake",
+                        td_bit_len = s.total_difficulty.bit_len(),
+                        maximum = 160,
+                        "eth handshake: peer total_difficulty bit_len > 160 -> sending DisconnectReason::ProtocolBreach"
+                    );
                     unauth
                         .disconnect(DisconnectReason::ProtocolBreach)
                         .await
@@ -198,6 +242,13 @@ where
                     .validate(their_status_message.forkid())
                     .map_err(EthHandshakeError::InvalidFork)
                 {
+                    // ProtocolBreach origin: fork filter rejected the peer's forkid.
+                    warn!(
+                        target: "net::eth-wire::handshake",
+                        peer_forkid = ?their_status_message.forkid(),
+                        error = %err,
+                        "eth handshake: fork filter rejected peer's forkid -> sending DisconnectReason::ProtocolBreach"
+                    );
                     unauth
                         .disconnect(DisconnectReason::ProtocolBreach)
                         .await
@@ -222,6 +273,12 @@ where
                 Ok(UnifiedStatus::from_message(their_status_message))
             }
             _ => {
+                // ProtocolBreach origin: peer's first eth-protocol message was not a Status.
+                warn!(
+                    target: "net::eth-wire::handshake",
+                    eth_version = ?version,
+                    "eth handshake: peer's first eth message was not Status -> sending DisconnectReason::ProtocolBreach"
+                );
                 unauth
                     .disconnect(DisconnectReason::ProtocolBreach)
                     .await

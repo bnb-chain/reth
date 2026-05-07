@@ -42,7 +42,7 @@ use tokio::{
 };
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::PollSender;
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 /// The recommended interval at which to check if a new range update should be sent to the remote
 /// peer.
@@ -514,6 +514,22 @@ impl<N: NetworkPrimitives> ActiveSession<N> {
                     debug!(target: "net::session", ?id, remote_peer_id=?self.remote_peer_id, "timed out outgoing request");
                     req.timeout();
                 } else if now - req.timestamp > self.protocol_breach_request_timeout {
+                    // ProtocolBreach origin (request-timeout path): a request was
+                    // already internally timed out (state == TimedOut, response slot
+                    // closed) but the peer still hasn't replied within the *outer*
+                    // `protocol_breach_request_timeout`. The caller (active session
+                    // poll loop) will translate `true` into an
+                    // `ActiveSessionMessage::ProtocolBreach`, which becomes the
+                    // network-level `protocol_breach` metric increment.
+                    let elapsed = now.saturating_duration_since(req.timestamp);
+                    warn!(
+                        target: "net::session",
+                        request_id = ?id,
+                        remote_peer_id = ?self.remote_peer_id,
+                        elapsed_secs = elapsed.as_secs_f64(),
+                        breach_threshold_secs = self.protocol_breach_request_timeout.as_secs_f64(),
+                        "request still unanswered after protocol_breach_request_timeout -> closing session with ProtocolBreach (origin of ProtocolBreach metric increment is HERE; common cause: peer accepted a request but never replied, e.g. unresponsive eth-getBlockHeaders / getPooledTransactions)"
+                    );
                     return true
                 }
             }
