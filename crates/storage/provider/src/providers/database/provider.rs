@@ -375,7 +375,6 @@ impl<TX: DbTx + 'static, N: NodeTypes> DatabaseProvider<TX, N> {
         let mut state_provider = HistoricalStateProviderRef::new(self, block_number)
             .with_pipeline_consistency(pipeline_consistency);
 
-
         // If we pruned account or storage history, we can't return state on every historical block.
         // Instead, we should cap it at the latest prune checkpoint for corresponding prune segment.
         if let Some(prune_checkpoint_block_number) =
