@@ -36,9 +36,7 @@ use crate::{
     },
     cache::LruCache,
     duration_metered_exec, metered_poll_nested_stream_with_budget,
-    metrics::{
-        AnnouncedTxTypesMetrics, TransactionsManagerMetrics, NETWORK_POOL_TRANSACTIONS_SCOPE,
-    },
+    metrics::{AnnouncedTxTypesMetrics, TransactionsManagerMetrics},
     transactions::config::{StrictEthAnnouncementFilter, TransactionPropagationKind},
     NetworkHandle, TxTypesCounter,
 };
@@ -52,7 +50,7 @@ use reth_eth_wire::{
     RequestTxHashes, Transactions, ValidAnnouncementData,
 };
 use reth_ethereum_primitives::{TransactionSigned, TxType};
-use reth_metrics::common::mpsc::UnboundedMeteredReceiver;
+use reth_metrics::common::mpsc::MemoryBoundedReceiver;
 use reth_network_api::{
     events::{PeerEvent, SessionInfo},
     NetworkEvent, NetworkEventListenerProvider, PeerKind, PeerRequest, PeerRequestSender, Peers,
@@ -63,7 +61,7 @@ use reth_network_p2p::{
 };
 use reth_network_peers::PeerId;
 use reth_network_types::ReputationChangeKind;
-use reth_primitives_traits::SignedTransaction;
+use reth_primitives_traits::{InMemorySize, SignedTransaction};
 use reth_tokio_util::EventStream;
 use reth_transaction_pool::{
     error::{PoolError, PoolResult},
@@ -359,7 +357,7 @@ impl<Pool: TransactionPool, N: NetworkPrimitives> TransactionsManager<Pool, N> {
     pub fn new(
         network: NetworkHandle<N>,
         pool: Pool,
-        from_network: mpsc::UnboundedReceiver<NetworkTransactionEvent<N>>,
+        from_network: MemoryBoundedReceiver<NetworkTransactionEvent<N>>,
         transactions_manager_config: TransactionsManagerConfig,
     ) -> Self {
         Self::with_policy(
@@ -382,7 +380,7 @@ impl<Pool: TransactionPool, N: NetworkPrimitives> TransactionsManager<Pool, N> {
     pub fn with_policy(
         network: NetworkHandle<N>,
         pool: Pool,
-        from_network: mpsc::UnboundedReceiver<NetworkTransactionEvent<N>>,
+        from_network: MemoryBoundedReceiver<NetworkTransactionEvent<N>>,
         transactions_manager_config: TransactionsManagerConfig,
         policies: NetworkPolicies<N>,
     ) -> Self {
@@ -715,11 +713,11 @@ impl<Pool: TransactionPool, N: NetworkPrimitives> TransactionsManager<Pool, N> {
                 }
             };
 
-            if is_eth68_message &&
-                let Some((actual_ty_byte, _)) = *metadata_ref_mut &&
-                let Ok(parsed_tx_type) = TxType::try_from(actual_ty_byte)
-            {
-                tx_types_counter.increase_by_tx_type(parsed_tx_type);
+            if is_eth68_message && let Some((actual_ty_byte, _)) = *metadata_ref_mut {
+                match TxType::try_from(actual_ty_byte) {
+                    Ok(parsed_tx_type) => tx_types_counter.increase_by_tx_type(parsed_tx_type),
+                    Err(_) => tx_types_counter.increase_other(),
+                }
             }
 
             let decision = self
@@ -1723,7 +1721,7 @@ where
             "Network transaction events stream",
             DEFAULT_BUDGET_TRY_DRAIN_NETWORK_TRANSACTION_EVENTS,
             this.transaction_events.poll_next_unpin(cx),
-            |event| this.on_network_tx_event(event),
+            |event: NetworkTransactionEvent<N>| this.on_network_tx_event(event),
         );
 
         // Advance inflight fetch requests (flush transaction fetcher and queue for
@@ -2295,6 +2293,28 @@ struct TxManagerPollDurations {
     acc_fetch_events: Duration,
     acc_pending_fetch: Duration,
     acc_cmds: Duration,
+}
+
+impl<N: NetworkPrimitives> InMemorySize for NetworkTransactionEvent<N> {
+    // `N::BroadcastedTransaction` and `N::PooledTransaction` already implement
+    // `InMemorySize` via `SignedTransaction: InMemorySize`, so no extra bound is needed.
+    fn size(&self) -> usize {
+        match self {
+            Self::IncomingTransactions { peer_id, msg } => {
+                core::mem::size_of_val(peer_id) +
+                    msg.0.iter().map(InMemorySize::size).sum::<usize>()
+            }
+            Self::IncomingPooledTransactionHashes { peer_id, msg } => {
+                core::mem::size_of_val(peer_id) + msg.size()
+            }
+            Self::GetPooledTransactions { peer_id, request, response } => {
+                core::mem::size_of_val(peer_id) +
+                    request.0.len() * core::mem::size_of::<TxHash>() +
+                    core::mem::size_of_val(response)
+            }
+            Self::GetTransactionsHandle(_) => 0,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3400,7 +3420,12 @@ mod tests {
 
         let mut network_manager = NetworkManager::new(network_config).await.unwrap();
         let (to_tx_manager_tx, from_network_rx) =
-            mpsc::unbounded_channel::<NetworkTransactionEvent<EthNetworkPrimitives>>();
+            reth_metrics::common::mpsc::memory_bounded_channel::<
+                NetworkTransactionEvent<EthNetworkPrimitives>,
+            >(
+                crate::transactions::constants::tx_manager::DEFAULT_TX_MANAGER_CHANNEL_MEMORY_LIMIT_BYTES,
+                "test_tx_channel",
+            );
         network_manager.set_transactions(to_tx_manager_tx);
         let network_handle = network_manager.handle().clone();
         let network_service_handle = tokio::spawn(network_manager);

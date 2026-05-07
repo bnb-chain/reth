@@ -284,6 +284,7 @@ pub trait Trace: LoadState<Error: FromEvmError<Self::Evm>> + Call {
                 let block_hash = block.hash();
 
                 let block_number = evm_env.block_env.number().saturating_to();
+                let block_timestamp = evm_env.block_env.timestamp().saturating_to();
                 let base_fee = evm_env.block_env.basefee();
 
                 this.apply_pre_execution_changes(&block, &mut db, evm_env.clone())?;
@@ -310,8 +311,8 @@ pub trait Trace: LoadState<Error: FromEvmError<Self::Evm>> + Call {
                             index: Some(idx),
                             block_hash: Some(block_hash),
                             block_number: Some(block_number),
+                            block_timestamp: Some(block_timestamp),
                             base_fee: Some(base_fee),
-                            ..Default::default()
                         };
                         idx += 1;
 

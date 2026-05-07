@@ -325,15 +325,16 @@ pub trait EthTransactions: LoadTransaction<Provider: BlockReaderIdExt> {
             if let Some(block) = self.recovered_block(block_id).await? {
                 let block_hash = block.hash();
                 let block_number = block.number();
+                let block_timestamp = block.timestamp();
                 let base_fee_per_gas = block.base_fee_per_gas();
                 if let Some((signer, tx)) = block.transactions_with_sender().nth(index) {
                     let tx_info = TransactionInfo {
                         hash: Some(*tx.tx_hash()),
                         block_hash: Some(block_hash),
                         block_number: Some(block_number),
+                        block_timestamp: Some(block_timestamp),
                         base_fee: base_fee_per_gas,
                         index: Some(index as u64),
-                        ..Default::default()
                     };
 
                     return Ok(Some(
@@ -524,6 +525,7 @@ pub trait EthTransactions: LoadTransaction<Provider: BlockReaderIdExt> {
                 .and_then(|block| {
                     let block_hash = block.hash();
                     let block_number = block.number();
+                    let block_timestamp = block.timestamp();
                     let base_fee_per_gas = block.base_fee_per_gas();
 
                     block
@@ -535,9 +537,9 @@ pub trait EthTransactions: LoadTransaction<Provider: BlockReaderIdExt> {
                                 hash: Some(*tx.tx_hash()),
                                 block_hash: Some(block_hash),
                                 block_number: Some(block_number),
+                                block_timestamp: Some(block_timestamp),
                                 base_fee: base_fee_per_gas,
                                 index: Some(index as u64),
-                                ..Default::default()
                             };
                             Ok(self.converter().fill(tx.clone().with_signer(*signer), tx_info)?)
                         })
@@ -810,6 +812,7 @@ pub trait LoadTransaction: SpawnBlocking + FullEthApiTypes + RpcNodeCoreExt {
                     index: meta.index,
                     block_hash: meta.block_hash,
                     block_number: meta.block_number,
+                    block_timestamp: meta.timestamp,
                     base_fee: meta.base_fee,
                 }));
             }

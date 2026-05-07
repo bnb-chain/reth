@@ -32,7 +32,9 @@ use reth_network::{
             },
             tx_manager::{
                 DEFAULT_MAX_COUNT_PENDING_POOL_IMPORTS,
-                DEFAULT_MAX_COUNT_TRANSACTIONS_SEEN_BY_PEER, DEFAULT_REANNOUNCE_TIME,
+                DEFAULT_MAX_COUNT_TRANSACTIONS_SEEN_BY_PEER,
+                DEFAULT_REANNOUNCE_TIME,
+                DEFAULT_TX_MANAGER_CHANNEL_MEMORY_LIMIT_BYTES,
             },
         },
         TransactionFetcherConfig, TransactionPropagationMode, TransactionsManagerConfig,
@@ -77,6 +79,8 @@ pub struct DefaultNetworkArgs {
     pub soft_limit_byte_size_pooled_transactions_response_on_pack_request: usize,
     /// Default max capacity of cache of hashes for transactions pending fetch.
     pub max_capacity_cache_txns_pending_fetch: u32,
+    /// Default memory limit (in bytes) for the network manager → transactions manager channel.
+    pub tx_channel_memory_limit_bytes: usize,
     /// Default transaction propagation policy.
     pub tx_propagation_policy: TransactionPropagationKind,
     /// Default transaction ingress policy.
@@ -170,6 +174,13 @@ impl DefaultNetworkArgs {
         self
     }
 
+    /// Set the default memory limit (in bytes) for the network manager → transactions
+    /// manager channel.
+    pub const fn with_tx_channel_memory_limit_bytes(mut self, v: usize) -> Self {
+        self.tx_channel_memory_limit_bytes = v;
+        self
+    }
+
     /// Set the default transaction propagation policy.
     pub const fn with_tx_propagation_policy(mut self, v: TransactionPropagationKind) -> Self {
         self.tx_propagation_policy = v;
@@ -211,6 +222,7 @@ impl Default for DefaultNetworkArgs {
             soft_limit_byte_size_pooled_transactions_response_on_pack_request:
                 DEFAULT_SOFT_LIMIT_BYTE_SIZE_POOLED_TRANSACTIONS_RESP_ON_PACK_GET_POOLED_TRANSACTIONS_REQ,
             max_capacity_cache_txns_pending_fetch: DEFAULT_MAX_CAPACITY_CACHE_PENDING_FETCH,
+            tx_channel_memory_limit_bytes: DEFAULT_TX_MANAGER_CHANNEL_MEMORY_LIMIT_BYTES,
             tx_propagation_policy: TransactionPropagationKind::default(),
             tx_ingress_policy: TransactionIngressPolicy::default(),
             propagation_mode: TransactionPropagationMode::Sqrt,
@@ -348,6 +360,15 @@ pub struct NetworkArgs {
     /// Max capacity of cache of hashes for transactions pending fetch.
     #[arg(long = "max-tx-pending-fetch", value_name = "COUNT", default_value_t = DefaultNetworkArgs::get_global().max_capacity_cache_txns_pending_fetch, verbatim_doc_comment)]
     pub max_capacity_cache_txns_pending_fetch: u32,
+
+    /// Memory limit (in bytes) for the channel that buffers transaction events flowing
+    /// from the network manager to the transactions manager.
+    ///
+    /// When the budget is exhausted, new events are dropped (see metric
+    /// `total_dropped_tx_events_at_full_capacity`). Acts as a backstop against unbounded
+    /// memory growth under sustained P2P transaction flooding.
+    #[arg(long = "tx-channel-memory-limit", value_name = "BYTES", default_value_t = DefaultNetworkArgs::get_global().tx_channel_memory_limit_bytes, verbatim_doc_comment)]
+    pub tx_channel_memory_limit_bytes: usize,
 
     /// Name of network interface used to communicate with peers.
     ///
@@ -487,6 +508,7 @@ impl NetworkArgs {
             propagation_mode: self.propagation_mode,
             ingress_policy: self.tx_ingress_policy,
             reannounce_time: DEFAULT_REANNOUNCE_TIME,
+            tx_channel_memory_limit_bytes: self.tx_channel_memory_limit_bytes,
         }
     }
 
@@ -662,6 +684,7 @@ impl Default for NetworkArgs {
             soft_limit_byte_size_pooled_transactions_response,
             soft_limit_byte_size_pooled_transactions_response_on_pack_request,
             max_capacity_cache_txns_pending_fetch,
+            tx_channel_memory_limit_bytes,
             tx_propagation_policy,
             tx_ingress_policy,
             propagation_mode,
@@ -691,6 +714,7 @@ impl Default for NetworkArgs {
             max_pending_pool_imports,
             max_seen_tx_history,
             max_capacity_cache_txns_pending_fetch,
+            tx_channel_memory_limit_bytes,
             net_if: None,
             tx_propagation_policy,
             tx_ingress_policy,
@@ -721,8 +745,15 @@ pub struct DiscoveryArgs {
     pub disable_discv4_discovery: bool,
 
     /// Enable Discv5 discovery.
-    #[arg(long, conflicts_with = "disable_discovery")]
+    ///
+    /// Discv5 is now enabled by default, so this flag is a no-op and will be removed in a future
+    /// release.
+    #[arg(long, conflicts_with = "disable_discovery", hide = true)]
     pub enable_discv5_discovery: bool,
+
+    /// Disable Discv5 discovery.
+    #[arg(long, conflicts_with = "disable_discovery")]
+    pub disable_discv5_discovery: bool,
 
     /// Disable Nat discovery.
     #[arg(long, conflicts_with = "disable_discovery")]
@@ -854,21 +885,23 @@ impl DiscoveryArgs {
             .bootstrap_lookup_countdown(*discv5_bootstrap_lookup_countdown)
     }
 
-    /// Returns true if discv5 discovery should be configured
+    /// Returns true if discv5 discovery should be configured.
+    ///
+    /// Discv5 is enabled by default and can be disabled with `--disable-discv5-discovery`.
     const fn should_enable_discv5(&self) -> bool {
-        if self.disable_discovery {
+        if self.disable_discovery || self.disable_discv5_discovery {
             return false;
         }
 
-        self.enable_discv5_discovery ||
-            self.discv5_addr.is_some() ||
-            self.discv5_addr_ipv6.is_some()
+        true
     }
 
-    /// Set the discovery port to zero, to allow the OS to assign a random unused port when
-    /// discovery binds to the socket.
+    /// Set the discovery ports to zero, to allow the OS to assign random unused ports when
+    /// discovery binds to the sockets.
     pub const fn with_unused_discovery_port(mut self) -> Self {
         self.port = 0;
+        self.discv5_port = 0;
+        self.discv5_port_ipv6 = 0;
         self
     }
 
@@ -898,6 +931,7 @@ impl Default for DiscoveryArgs {
             disable_dns_discovery: false,
             disable_discv4_discovery: false,
             enable_discv5_discovery: false,
+            disable_discv5_discovery: false,
             disable_nat: false,
             addr: DEFAULT_DISCOVERY_ADDR,
             port: DEFAULT_DISCOVERY_PORT,

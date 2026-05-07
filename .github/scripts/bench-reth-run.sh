@@ -88,10 +88,16 @@ trap cleanup EXIT
 # Stop any leftover reth process in the scope, then recover schelk state.
 sudo systemctl stop "$RETH_SCOPE" 2>/dev/null || true
 sudo systemctl reset-failed "$RETH_SCOPE" 2>/dev/null || true
-sudo schelk recover -y --kill || true
+sudo schelk recover -y --kill || sudo schelk full-recover -y || true
 
 # Mount
-sudo schelk mount -y
+sudo schelk mount -y || true
+if [ ! -d "$DATADIR/db" ] || [ ! -d "$DATADIR/static_files" ]; then
+  echo "::error::Failed to mount benchmark datadir at ${DATADIR}"
+  ls -la "$SCHELK_MOUNT" || true
+  ls -la "$DATADIR" || true
+  exit 1
+fi
 sync
 sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'
 echo "=== Cache state after drop ==="
@@ -317,13 +323,18 @@ if [ "$BIG_BLOCKS" = "true" ]; then
     --output "$OUTPUT_DIR" 2>&1 | sed -u "s/^/[bench] /"
 else
   # Standard mode: warmup + new-payload-fcu
-  # Warmup
-  $BENCH_NICE "$RETH_BENCH" new-payload-fcu \
-    --rpc-url "$BENCH_RPC_URL" \
-    --engine-rpc-url http://127.0.0.1:8551 \
-    --jwt-secret "$DATADIR/jwt.hex" \
-    --advance "${BENCH_WARMUP_BLOCKS:-50}" \
-    "${EXTRA_BENCH_ARGS[@]}" 2>&1 | sed -u "s/^/[bench] /"
+  WARMUP="${BENCH_WARMUP_BLOCKS:-50}"
+  if [ "$WARMUP" -gt 0 ] 2>/dev/null; then
+    # Warm up the node before measuring the benchmark window.
+    $BENCH_NICE "$RETH_BENCH" new-payload-fcu \
+      --rpc-url "$BENCH_RPC_URL" \
+      --engine-rpc-url http://127.0.0.1:8551 \
+      --jwt-secret "$DATADIR/jwt.hex" \
+      --advance "$WARMUP" \
+      "${EXTRA_BENCH_ARGS[@]}" 2>&1 | sed -u "s/^/[bench] /"
+  else
+    echo "Skipping warmup (0 blocks)..."
+  fi
 
   # Start tracy-capture after warmup so profile only covers the benchmark
   if [ "${BENCH_TRACY:-off}" != "off" ]; then
