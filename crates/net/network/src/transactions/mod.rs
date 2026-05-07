@@ -337,7 +337,7 @@ pub struct TransactionsManager<Pool, N: NetworkPrimitives = EthNetworkPrimitives
     ///   - account has enough balance to cover the transaction's gas
     pending_transactions: mpsc::Receiver<TxHash>,
     /// Incoming events from the [`NetworkManager`](crate::NetworkManager).
-    transaction_events: UnboundedMeteredReceiver<NetworkTransactionEvent<N>>,
+    transaction_events: MemoryBoundedReceiver<NetworkTransactionEvent<N>>,
     /// Periodic timer that retries hash-only announcements for older local pending transactions.
     reannounce_local_transactions: Interval,
     /// How the `TransactionsManager` is configured.
@@ -421,10 +421,7 @@ impl<Pool: TransactionPool, N: NetworkPrimitives> TransactionsManager<Pool, N> {
             command_tx,
             command_rx: UnboundedReceiverStream::new(command_rx),
             pending_transactions: pending,
-            transaction_events: UnboundedMeteredReceiver::new(
-                from_network,
-                NETWORK_POOL_TRANSACTIONS_SCOPE,
-            ),
+            transaction_events: from_network,
             reannounce_local_transactions,
             config: transactions_manager_config,
             policies,

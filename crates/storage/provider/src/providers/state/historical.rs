@@ -154,9 +154,14 @@ where
     N: NodePrimitives,
 {
     /// Create new `StateProvider` for historical block number
-    pub fn new(provider: &'b Provider, block_number: BlockNumber) -> Self {
+    pub fn new(
+        provider: &'b Provider,
+        block_number: BlockNumber,
+        changeset_cache: ChangesetCache,
+    ) -> Self {
         Self {
             provider,
+            changeset_cache,
             block_number,
             lowest_available_blocks: Default::default(),
             pipeline_consistency: Default::default(),
@@ -761,6 +766,16 @@ impl<Provider: DBProvider + ChangeSetReader + StorageChangeSetReader + BlockNumR
         block_number: BlockNumber,
     ) -> Self {
         self.lowest_available_blocks.storage_history_block_number = Some(block_number);
+        self
+    }
+
+    /// Set the pipeline consistency info for detecting stale `InPlainState` reads during
+    /// pipeline sync.
+    pub const fn with_pipeline_consistency(
+        mut self,
+        pipeline_consistency: PipelineConsistency,
+    ) -> Self {
+        self.pipeline_consistency = pipeline_consistency;
         self
     }
 }
@@ -1628,15 +1643,15 @@ mod tests {
         };
 
         // Test 1: ADDRESS at block 5 → history index finds block 7 → InChangeset → correct
-        let provider =
-            HistoricalStateProviderRef::new(&db, 5).with_pipeline_consistency(inconsistent);
+        let provider = HistoricalStateProviderRef::new(&db, 5, ChangesetCache::new())
+            .with_pipeline_consistency(inconsistent);
         let result = provider.basic_account(&ADDRESS);
         assert!(result.is_ok(), "Changeset path should work during inconsistency: {result:?}");
         assert_eq!(result.unwrap().unwrap().nonce, 7);
 
         // Test 2: ADDRESS at block 16 → no entry after 16 → InPlainState → BLOCKED
-        let provider =
-            HistoricalStateProviderRef::new(&db, 16).with_pipeline_consistency(inconsistent);
+        let provider = HistoricalStateProviderRef::new(&db, 16, ChangesetCache::new())
+            .with_pipeline_consistency(inconsistent);
         let result = provider.basic_account(&ADDRESS);
         assert!(
             matches!(result, Err(ProviderError::HistoryStateInconsistent { .. })),
@@ -1646,8 +1661,8 @@ mod tests {
         // Test 3: no_history_addr at block 5 → never written to history → NotYetWritten → Ok(None)
         // This is correct: accounts that never existed in history return None regardless of
         // pipeline consistency, because they were never modified by any block.
-        let provider =
-            HistoricalStateProviderRef::new(&db, 5).with_pipeline_consistency(inconsistent);
+        let provider = HistoricalStateProviderRef::new(&db, 5, ChangesetCache::new())
+            .with_pipeline_consistency(inconsistent);
         let result = provider.basic_account(&no_history_addr);
         assert!(matches!(result, Ok(None)), "Never-written account should return None: {result:?}");
 
@@ -1658,14 +1673,14 @@ mod tests {
             storage_history_tip: Some(200),
         };
 
-        let provider =
-            HistoricalStateProviderRef::new(&db, 16).with_pipeline_consistency(consistent);
+        let provider = HistoricalStateProviderRef::new(&db, 16, ChangesetCache::new())
+            .with_pipeline_consistency(consistent);
         let result = provider.basic_account(&ADDRESS);
         assert!(result.is_ok(), "Should succeed when consistent: {result:?}");
         assert_eq!(result.unwrap().unwrap().nonce, acc_plain.nonce);
 
-        let provider =
-            HistoricalStateProviderRef::new(&db, 5).with_pipeline_consistency(consistent);
+        let provider = HistoricalStateProviderRef::new(&db, 5, ChangesetCache::new())
+            .with_pipeline_consistency(consistent);
         let result = provider.basic_account(&no_history_addr);
         assert!(result.is_ok(), "Should succeed when consistent: {result:?}");
     }

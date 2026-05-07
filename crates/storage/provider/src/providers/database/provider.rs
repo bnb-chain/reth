@@ -353,7 +353,7 @@ impl<TX: DbTx + 'static, N: NodeTypes> DatabaseProvider<TX, N> {
         &'a self,
         block_hash: BlockHash,
     ) -> ProviderResult<Box<dyn StateProvider + 'a>> {
-        let block_number =
+        let mut block_number =
             self.block_number(block_hash)?.ok_or(ProviderError::BlockHashNotFound(block_hash))?;
         let pipeline_consistency = self.build_pipeline_consistency()?;
         if block_number == self.best_block_number().unwrap_or_default() &&
@@ -372,8 +372,9 @@ impl<TX: DbTx + 'static, N: NodeTypes> DatabaseProvider<TX, N> {
         let storage_history_prune_checkpoint =
             self.get_prune_checkpoint(PruneSegment::StorageHistory)?;
 
-        let mut state_provider = HistoricalStateProviderRef::new(self, block_number)
-            .with_pipeline_consistency(pipeline_consistency);
+        let mut state_provider =
+            HistoricalStateProviderRef::new(self, block_number, self.changeset_cache.clone())
+                .with_pipeline_consistency(pipeline_consistency);
 
         // If we pruned account or storage history, we can't return state on every historical block.
         // Instead, we should cap it at the latest prune checkpoint for corresponding prune segment.
@@ -1112,8 +1113,6 @@ impl<TX: DbTx + 'static, N: NodeTypes> TryIntoHistoricalStateProvider for Databa
             self.get_prune_checkpoint(PruneSegment::AccountHistory)?;
         let storage_history_prune_checkpoint =
             self.get_prune_checkpoint(PruneSegment::StorageHistory)?;
-        let changeset_cache = self.changeset_cache.clone();
-
         let mut state_provider = HistoricalStateProvider::new(self, block_number)
             .with_pipeline_consistency(pipeline_consistency);
 
