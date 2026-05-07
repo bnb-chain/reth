@@ -360,10 +360,9 @@ pub trait EthTransactions: LoadTransaction<Provider: BlockReaderIdExt> {
         Self::Provider: BlockIdReader,
     {
         async move {
-            let block_info = self
-                .recovered_block(block_id)
-                .await?
-                .map(|block| (block.hash(), block.number(), block.base_fee_per_gas()));
+            let block_info = self.recovered_block(block_id).await?.map(|block| {
+                (block.hash(), block.number(), block.timestamp(), block.base_fee_per_gas())
+            });
 
             let block_hash = match block_id {
                 BlockId::Hash(hash) => hash.block_hash,
@@ -391,12 +390,13 @@ pub trait EthTransactions: LoadTransaction<Provider: BlockReaderIdExt> {
                             .map_err(|_| EthApiError::InvalidTransactionSignature)?;
 
                         let source = match block_info {
-                            Some((block_hash, block_number, base_fee)) => {
+                            Some((block_hash, block_number, block_timestamp, base_fee)) => {
                                 TransactionSource::Block {
                                     transaction: recovered,
                                     index: index as u64,
                                     block_hash,
                                     block_number,
+                                    block_timestamp,
                                     base_fee,
                                 }
                             }

@@ -355,7 +355,7 @@ where
         });
 
         let prewarm_handle =
-            self.spawn_caching_with(env, prewarm_rx, provider_builder, Some(to_multi_proof), None);
+            self.spawn_caching_with(env, prewarm_rx, provider_builder, Some(to_multi_proof));
 
         let (prefetch_handle, prefetch_result_rx) = TrieDBPrefetchHandle::new(
             root_hash,

@@ -11,7 +11,7 @@ use alloy_primitives::{BlockHash, BlockNumber, B256};
 use alloy_rpc_types_engine::{
     ForkchoiceState, PayloadStatus, PayloadStatusEnum, PayloadValidationError,
 };
-use error::{InsertBlockError, InsertBlockFatalError, InsertBlockValidationError};
+use error::{InsertBlockError, InsertBlockFatalError};
 use reth_chain_state::{
     CanonicalInMemoryState, ComputedTrieData, ExecutedBlock, ExecutionTimingStats,
     MemoryOverlayStateProvider, NewCanonicalChain,

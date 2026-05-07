@@ -467,6 +467,7 @@ where
             transaction_count: input.transaction_count(),
             gas_used: input.gas_used(),
             withdrawals: input.withdrawals().map(|w| w.to_vec()),
+            decoded_bal: None,
         };
 
         let txs = self.tx_iterator_for(&input)?;
@@ -974,7 +975,7 @@ where
                     let task_result = ensure_ok_post_block!(
                         self.await_state_root_with_timeout(
                             &mut handle,
-                            overlay_factory.clone(),
+                            provider_builder.clone(),
                             &hashed_state,
                         ),
                         block
@@ -998,7 +999,9 @@ where
                             // Compare trie updates with serial computation if configured
                             if self.config.always_compare_trie_updates() {
                                 let _has_diff = self.compare_trie_updates_with_serial(
-                                    overlay_factory.clone(),
+                                    provider_builder.clone(),
+                                    provider_factory,
+                                    overlay_builder,
                                     &hashed_state,
                                     trie_updates.as_ref().clone(),
                                 );
@@ -1037,7 +1040,11 @@ where
                 }
                 StateRootStrategy::Parallel => {
                     debug!(target: "engine::tree::payload_validator", "Using parallel state root algorithm");
-                    match self.compute_state_root_parallel(overlay_factory.clone(), &hashed_state) {
+                    match self.compute_state_root_parallel(
+                        provider_factory,
+                        overlay_builder,
+                        &hashed_state,
+                    ) {
                         Ok(result) => {
                             let elapsed = root_time.elapsed();
                             info!(
@@ -1071,7 +1078,9 @@ where
                 }
 
                 let (root, updates) = ensure_ok_post_block!(
-                    Self::compute_state_root_serial(overlay_factory.clone(), &hashed_state),
+                    provider_builder.clone().build().and_then(|provider| {
+                        Self::compute_state_root_serial(provider, &hashed_state)
+                    }),
                     block
                 );
 
