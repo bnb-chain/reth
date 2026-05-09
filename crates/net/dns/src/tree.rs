@@ -210,8 +210,16 @@ impl BranchEntry {
             Ok(hash.to_string())
         }
 
-        let children =
-            input.trim().split(',').map(ensure_valid_hash).collect::<ParseEntryResult<Vec<_>>>()?;
+        // Empty tokens are silently dropped — observed in production records (e.g.
+        // `enrtree-branch:HASH1,,HASH2` or trailing `,`) and accepted by go-ethereum's
+        // parser. Failing the whole branch over them aborts subtree resolution and
+        // amputates the candidate pool the consumer would otherwise have received.
+        let children = input
+            .trim()
+            .split(',')
+            .filter(|s| !s.is_empty())
+            .map(ensure_valid_hash)
+            .collect::<ParseEntryResult<Vec<_>>>()?;
         Ok(Self { children })
     }
 }
@@ -415,13 +423,44 @@ mod tests {
         let res = s.parse::<BranchEntry>();
         assert!(res.is_err());
 
-        let s = "enrtree-branch:,BBBBBBBBBBBBBBBBBBBB";
-        let res = s.parse::<BranchEntry>();
-        assert!(res.is_err());
-
         let s = "enrtree-branch:CCCCCCCCCCCCCCCCCCCC\n,BBBBBBBBBBBBBBBBBBBB";
         let res = s.parse::<BranchEntry>();
         assert!(res.is_err());
+    }
+
+    /// Empty tokens (leading/trailing/consecutive commas) are silently dropped instead of
+    /// failing the whole branch — matches go-ethereum's parser behavior. Real-world
+    /// production records (e.g. `all.mainnet.ethdisco.net`'s link tree) contain such
+    /// tokens; failing on them aborts subtree resolution and starves the consumer's
+    /// peer-discovery pool.
+    #[test]
+    fn parse_branch_entry_with_empty_tokens() {
+        // Leading empty token — used to error out, now treated as `[BBBBB...]`.
+        let s = "enrtree-branch:,BBBBBBBBBBBBBBBBBBBB";
+        let entry: BranchEntry = s.parse().unwrap();
+        assert_eq!(entry.children, vec!["BBBBBBBBBBBBBBBBBBBB".to_string()]);
+
+        // Trailing empty token.
+        let s = "enrtree-branch:BBBBBBBBBBBBBBBBBBBB,";
+        let entry: BranchEntry = s.parse().unwrap();
+        assert_eq!(entry.children, vec!["BBBBBBBBBBBBBBBBBBBB".to_string()]);
+
+        // Consecutive empty tokens between valid hashes.
+        let s = "enrtree-branch:AAAAAAAAAAAAAAAAAAAA,,BBBBBBBBBBBBBBBBBBBB";
+        let entry: BranchEntry = s.parse().unwrap();
+        assert_eq!(
+            entry.children,
+            vec!["AAAAAAAAAAAAAAAAAAAA".to_string(), "BBBBBBBBBBBBBBBBBBBB".to_string()]
+        );
+
+        // Branch with only empty tokens parses to an empty child list rather than erroring.
+        let s = "enrtree-branch:";
+        let entry: BranchEntry = s.parse().unwrap();
+        assert!(entry.children.is_empty());
+
+        let s = "enrtree-branch:,,";
+        let entry: BranchEntry = s.parse().unwrap();
+        assert!(entry.children.is_empty());
     }
 
     #[test]
