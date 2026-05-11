@@ -1,5 +1,4 @@
 use crate::metrics::PersistenceMetrics;
-use alloy_consensus::{BlockHeader as _, EMPTY_ROOT_HASH};
 use alloy_eips::BlockNumHash;
 use crossbeam_channel::Sender as CrossbeamSender;
 use reth_chain_state::ExecutedBlock;
@@ -8,13 +7,11 @@ use reth_ethereum_primitives::EthPrimitives;
 use reth_primitives_traits::{FastInstant as Instant, NodePrimitives};
 use reth_provider::{
     providers::ProviderNodeTypes, BlockExecutionWriter, BlockHashReader, ChainStateBlockWriter,
-    DBProvider, DatabaseProviderFactory, HeaderProvider, ProviderFactory, SaveBlocksMode,
+    DBProvider, DatabaseProviderFactory, ProviderFactory, SaveBlocksMode,
 };
 use reth_prune::{PrunerError, PrunerWithFactory};
 use reth_stages_api::{MetricEvent, MetricEventsSender};
 use reth_tasks::spawn_os_thread;
-use reth_trie::{HashedPostState, KeccakKeyHasher};
-use rust_eth_triedb::{get_global_triedb, triedb_manager::is_triedb_active};
 use std::{
     sync::{
         mpsc::{Receiver, SendError, Sender},
@@ -24,7 +21,7 @@ use std::{
     time::Duration,
 };
 use thiserror::Error;
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{debug, error, instrument};
 
 /// Unified result of any persistence operation.
 #[derive(Debug)]
@@ -139,82 +136,6 @@ where
         let provider_rw = self.provider.database_provider_rw()?;
 
         let new_tip_hash = provider_rw.block_hash(new_tip_num)?;
-
-        // Rewind direction (pathdb ahead of new tip, e.g. after a reorg where the
-        // miner's blocks were flushed to pathdb but the canonical chain rolled
-        // back). pathdb must flush the reverse diff BEFORE the MDBX commit so
-        // that any crash window leaves pathdb no higher than MDBX. Reading the
-        // changeset must also happen before `remove_block_and_execution_above`
-        // erases it — hence `take_block_and_execution_above` here instead.
-        if is_triedb_active() {
-            let mut triedb = get_global_triedb();
-            match triedb.latest_persist_state() {
-                Ok((pathdb_block, pathdb_root)) if pathdb_block > new_tip_num => {
-                    let chain = provider_rw.take_block_and_execution_above(new_tip_num)?;
-                    let execution_state = chain.execution_outcome();
-
-                    let hashed_post_state = HashedPostState::from_bundle_state_to_unwind::<
-                        KeccakKeyHasher,
-                    >(execution_state.bundle.state());
-                    let triedb_hashed_post_state = hashed_post_state.to_triedb_hashed_post_state();
-
-                    let validate_root = if new_tip_num == 0 {
-                        EMPTY_ROOT_HASH
-                    } else {
-                        provider_rw
-                            .sealed_header(new_tip_num)?
-                            .map(|h| h.state_root())
-                            .ok_or_else(|| ProviderError::HeaderNotFound(new_tip_num.into()))?
-                    };
-
-                    info!(
-                        target: "engine::persistence",
-                        pathdb_block,
-                        ?pathdb_root,
-                        new_tip_num,
-                        ?validate_root,
-                        "Rewinding pathdb to match new canonical tip after reorg",
-                    );
-
-                    let (new_root, difflayer) = triedb
-                        .intermediate_and_commit_hashed_post_state(
-                            pathdb_root,
-                            None,
-                            &triedb_hashed_post_state,
-                            None,
-                        )
-                        .map_err(ProviderError::other)?;
-
-                    if new_root != validate_root {
-                        return Err(ProviderError::other(std::io::Error::other(format!(
-                            "pathdb rewind root mismatch: new_root={new_root:?}, expected={validate_root:?}, new_tip={new_tip_num}"
-                        )))
-                        .into());
-                    }
-
-                    triedb
-                        .flush(new_tip_num, new_root, &Some(difflayer))
-                        .map_err(ProviderError::other)?;
-
-                    provider_rw.commit()?;
-
-                    debug!(
-                        target: "engine::persistence",
-                        ?new_tip_num, ?new_tip_hash,
-                        "Removed blocks from disk (with pathdb rewind)",
-                    );
-                    self.metrics.remove_blocks_above_duration_seconds.record(start_time.elapsed());
-                    return Ok(new_tip_hash.map(|hash| BlockNumHash { hash, number: new_tip_num }));
-                }
-                Ok(_) => {}
-                Err(err) => warn!(
-                    target: "engine::persistence",
-                    ?err,
-                    "Failed to query pathdb latest_persist_state during reorg",
-                ),
-            }
-        }
-
         provider_rw.remove_block_and_execution_above(new_tip_num)?;
         provider_rw.commit()?;
 
@@ -241,13 +162,7 @@ where
 
         if let Some(last) = last_block {
             let provider_rw = self.provider.database_provider_rw()?;
-
-            // Forward direction. save_blocks validates the state transition and
-            // defers the rocksdb flush; we commit MDBX first so MDBX is the
-            // source of truth for the canonical tip, then apply the pathdb
-            // flush. A crash between the two leaves pathdb lagging MDBX, which
-            // is recoverable; the reverse would be the "pathdb gap" deadlock.
-            let pending_triedb_flushes = provider_rw.save_blocks(blocks, SaveBlocksMode::Full)?;
+            provider_rw.save_blocks(blocks, SaveBlocksMode::Full)?;
 
             if let Some(finalized) = pending_finalized {
                 provider_rw.save_finalized_block_number(finalized.min(last.number))?;
@@ -264,18 +179,6 @@ where
 
             provider_rw.commit()?;
             debug!(target: "engine::persistence", first=?first_block, last=?last_block, "Saved range of blocks");
-
-            for pending in pending_triedb_flushes {
-                let block_number = pending.block_number();
-                if let Err(err) = pending.apply() {
-                    error!(
-                        target: "engine::persistence",
-                        ?err, block_number,
-                        "Failed to apply deferred triedb flush after MDBX commit",
-                    );
-                    return Err(err.into());
-                }
-            }
 
             // Run the pruner in a separate provider so it reads committed RocksDB state
             // that includes the history entries written by save_blocks above.

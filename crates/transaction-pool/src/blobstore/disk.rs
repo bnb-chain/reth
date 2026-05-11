@@ -43,10 +43,8 @@ impl DiskFileBlobStore {
         let DiskFileBlobStoreConfig { max_cached_entries, .. } = opts;
         let inner = DiskFileBlobStoreInner::new(blob_dir, max_cached_entries);
 
-        // Do NOT wipe existing sidecars on startup. Peers may request bodies for
-        // recently-finalized blocks (EIP-4844 keeps sidecars around for the blob
-        // retention window); the pool maintenance task handles delayed deletion
-        // via FINALIZED_BLOCK_OFFSET once blocks age out.
+        // initialize the blob store
+        inner.delete_all()?;
         inner.create_blob_dir()?;
 
         Ok(Self { inner: Arc::new(inner) })
@@ -423,6 +421,18 @@ impl DiskFileBlobStoreInner {
         debug!(target:"txpool::blob", blob_dir = ?self.blob_dir, "Creating blob store");
         fs::create_dir_all(&self.blob_dir)
             .map_err(|e| DiskFileBlobStoreError::Open(self.blob_dir.clone(), e))
+    }
+
+    /// Deletes the entire blob store.
+    fn delete_all(&self) -> Result<(), DiskFileBlobStoreError> {
+        match fs::remove_dir_all(&self.blob_dir) {
+            Ok(_) => {
+                debug!(target:"txpool::blob", blob_dir = ?self.blob_dir, "Removed blob store directory");
+            }
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => return Err(DiskFileBlobStoreError::Open(self.blob_dir.clone(), err)),
+        }
+        Ok(())
     }
 
     /// Ensures blob is in the blob cache and written to the disk.
