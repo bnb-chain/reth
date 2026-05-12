@@ -18,6 +18,10 @@ ignore = [
     "RUSTSEC-2026-0097",
     # https://rustsec.org/advisories/RUSTSEC-2026-0105 core2 unmaintained, all versions yanked (no replacement)
     "RUSTSEC-2026-0105",
+    # https://rustsec.org/advisories/RUSTSEC-2026-0118 hickory-proto NSEC3 unbounded loop; transitive via discv5, not reachable from reth's DNS usage
+    "RUSTSEC-2026-0118",
+    # https://rustsec.org/advisories/RUSTSEC-2026-0119 hickory-proto O(n²) name compression; transitive via discv5, not reachable from reth's DNS usage
+    "RUSTSEC-2026-0119",
 ]
 
 # This section is considered when running `cargo deny check bans`.
