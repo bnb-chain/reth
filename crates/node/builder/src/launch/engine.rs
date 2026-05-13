@@ -190,7 +190,7 @@ impl EngineNodeLauncher {
         let event_sender = EventSender::default();
 
         let beacon_engine_handle = ConsensusEngineHandle::new(consensus_engine_tx.clone());
-        let (engine_api_tx, _engine_api_rx) = unbounded_channel::<
+        let (engine_api_tx, mut engine_api_rx) = unbounded_channel::<
             EngineApiRequest<
                 <<T as FullNodeTypes>::Types as NodeTypes>::Payload,
                 <<T as FullNodeTypes>::Types as NodeTypes>::Primitives,
@@ -387,6 +387,11 @@ impl EngineNodeLauncher {
                         if let Some(executed_block) = payload.executed_block() {
                             debug!(target: "reth::cli", block=?executed_block.recovered_block.num_hash(),  "inserting built payload");
                             orchestrator.handler_mut().handler_mut().on_event(EngineApiRequest::InsertExecutedBlock(executed_block.into_executed_payload()).into());
+                        }
+                    }
+                    req = engine_api_rx.recv() => {
+                        if let Some(req) = req {
+                            orchestrator.handler_mut().handler_mut().on_event(req.into());
                         }
                     }
                     shutdown_req = &mut shutdown_rx => {
