@@ -187,6 +187,11 @@ where
                 }
             });
 
+            // Mirror the BAL path: signal no more state updates so TrieDB prefetch can finalize.
+            if let Some(sender) = to_sparse_trie_task {
+                let _ = sender.send(StateRootMessage::FinishedStateUpdates);
+            }
+
             // All tasks are done — clear per-thread EVM state for the next block.
             pool.clear();
 
