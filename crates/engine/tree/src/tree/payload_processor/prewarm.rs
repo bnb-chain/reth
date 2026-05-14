@@ -470,6 +470,11 @@ where
                 self.run_bal_prewarm(bal, actions_tx);
             }
             PrewarmMode::Skipped => {
+                // No transactions to prewarm — immediately signal completion to the TrieDB
+                // prefetch pipeline so it can finalize rather than waiting for channel close.
+                if let Some(sender) = &self.to_sparse_trie_task {
+                    let _ = sender.send(StateRootMessage::FinishedStateUpdates);
+                }
                 let _ = actions_tx
                     .send(PrewarmTaskEvent::FinishedTxExecution { executed_transactions: 0 });
             }
