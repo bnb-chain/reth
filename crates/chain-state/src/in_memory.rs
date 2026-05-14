@@ -766,6 +766,12 @@ pub struct ExecutedBlock<N: NodePrimitives = EthPrimitives> {
     /// If present, this precomputed difflayer can be used directly when persisting
     /// to triedb, avoiding re-computation from hashed state.
     pub difflayer: Option<Arc<DiffLayer>>,
+    /// True if this block was produced by the local miner, false for network blocks.
+    ///
+    /// Used by the TrieDB persistence layer to defer flushing miner blocks until
+    /// a competing canonical network block is either confirmed or a fork is resolved,
+    /// preventing miner-produced blocks from corrupting the path_db state prematurely.
+    pub is_miner_block: bool,
 }
 
 impl<N: NodePrimitives> Default for ExecutedBlock<N> {
@@ -783,6 +789,7 @@ impl<N: NodePrimitives> Default for ExecutedBlock<N> {
             }),
             trie_data: DeferredTrieData::ready(ComputedTrieData::default()),
             difflayer: None,
+            is_miner_block: false,
         }
     }
 }
@@ -810,6 +817,7 @@ impl<N: NodePrimitives> ExecutedBlock<N> {
             execution_output,
             trie_data: DeferredTrieData::ready(trie_data),
             difflayer: None,
+            is_miner_block: false,
         }
     }
 
@@ -832,7 +840,7 @@ impl<N: NodePrimitives> ExecutedBlock<N> {
         execution_output: Arc<BlockExecutionOutput<N::Receipt>>,
         trie_data: DeferredTrieData,
     ) -> Self {
-        Self { recovered_block, execution_output, trie_data, difflayer: None }
+        Self { recovered_block, execution_output, trie_data, difflayer: None, is_miner_block: false }
     }
 
     /// Returns a reference to an inner [`SealedBlock`]

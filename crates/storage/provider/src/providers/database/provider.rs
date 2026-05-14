@@ -74,14 +74,26 @@ use revm_database::states::{
     PlainStateReverts, PlainStorageChangeset, PlainStorageRevert, StateChangeset,
 };
 use rust_eth_triedb::{get_global_triedb, triedb_manager::is_triedb_active};
+use rust_eth_triedb_common::DiffLayer;
 use std::{
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet},
     fmt::Debug,
     ops::{Deref, DerefMut, Range, RangeBounds, RangeInclusive},
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, LazyLock, Mutex},
 };
+
+/// Pending miner-produced difflayers deferred from TrieDB flush.
+///
+/// Maps block_number → (state_root, difflayer). Entries are inserted when a miner
+/// block is persisted (is_miner_block = true) and are either flushed sequentially
+/// when a subsequent canonical non-miner block is persisted (if block_number <
+/// canonical), or discarded (if block_number >= canonical), preventing the miner
+/// block from advancing path_db prematurely and corrupting validation of competing
+/// network blocks at the same height.
+static PENDING_MINER_DIFFLAYERS: LazyLock<Mutex<BTreeMap<u64, (B256, Arc<DiffLayer>)>>> =
+    LazyLock::new(|| Mutex::new(BTreeMap::new()));
 use tracing::{debug, instrument, trace};
 
 /// Determines the commit order for database operations.
@@ -742,65 +754,142 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
                         // TrieDB mode: update TrieDB instead of writing hashed state to MDBX
                         let start = Instant::now();
 
-                        if let Some(ref difflayer) = block.difflayer {
-                            // The difflayer was precomputed during validation (newPayload).
-                            // Root was already verified there, so just flush to disk.
+                        if block.is_miner_block {
+                            // Miner block: defer flush to avoid advancing path_db prematurely.
+                            //
+                            // If path_db reaches block N (miner), then a competing network block
+                            // N arrives: `state_at(block_{N-1}_root, None)` reads path_db which
+                            // is already at N, returning wrong trie nodes for paths modified only
+                            // in block N-miner → wrong state root → invalid block cached forever.
+                            //
+                            // Solution: store in pending map. Flush happens when a non-miner
+                            // canonical block at height > N is persisted, or when a non-miner
+                            // block at the same height replaces it (fork switch).
+                            let difflayer = block.difflayer.clone().ok_or_else(|| {
+                                ProviderError::Database(reth_db_api::DatabaseError::Other(format!(
+                                    "miner block {} missing difflayer in save_blocks",
+                                    block_number
+                                )))
+                            })?;
                             debug!(
                                 target: "providers::db",
                                 block_number,
                                 state_root = ?state_root,
-                                "Flushing precomputed triedb difflayer in save_blocks",
+                                "Deferring miner triedb difflayer (is_miner_block=true)",
                             );
-                            triedb
-                                .flush(block_number, state_root, &Some(difflayer.clone()))
-                                .map_err(ProviderError::other)?;
+                            PENDING_MINER_DIFFLAYERS
+                                .lock()
+                                .unwrap()
+                                .insert(block_number, (state_root, difflayer));
                         } else {
-                            // No precomputed difflayer; compute and commit from hashed state.
-                            let (latest_block_number, latest_state_root) =
-                                triedb.latest_persist_state().map_err(ProviderError::other)?;
+                            // Network (canonical non-miner) block. Flush any pending miner
+                            // difflayers that are strictly BEFORE this block height, then
+                            // discard any at or above this height (fork losers), then flush
+                            // this block normally.
+                            let mut pending = PENDING_MINER_DIFFLAYERS.lock().unwrap();
 
-                            if block_number > 0 && latest_block_number != block_number - 1 {
-                                return Err(ProviderError::Database(reth_db_api::DatabaseError::Other(format!(
-                                    "triedb state gap in save_blocks: latest_block_number={}, expected={}, block_number={}",
-                                    latest_block_number,
-                                    block_number - 1,
-                                    block_number
-                                ))));
+                            // Flush predecessors from pending (miner-produced ancestors that
+                            // became canonical because no network block arrived at that height).
+                            let predecessor_keys: Vec<u64> =
+                                pending.range(..block_number).map(|(k, _)| *k).collect();
+                            for pred_num in predecessor_keys {
+                                let (pred_root, pred_layer) = pending.remove(&pred_num).unwrap();
+                                let (latest_num, _) =
+                                    triedb.latest_persist_state().map_err(ProviderError::other)?;
+                                if latest_num + 1 != pred_num {
+                                    return Err(ProviderError::Database(
+                                        reth_db_api::DatabaseError::Other(format!(
+                                            "triedb gap flushing pending miner block {}: latest={}, expected {}",
+                                            pred_num, latest_num, pred_num - 1
+                                        )),
+                                    ));
+                                }
+                                debug!(
+                                    target: "providers::db",
+                                    pred_num,
+                                    state_root = ?pred_root,
+                                    "Flushing pending miner difflayer (predecessor of network block {})",
+                                    block_number,
+                                );
+                                triedb
+                                    .flush(pred_num, pred_root, &Some(pred_layer))
+                                    .map_err(ProviderError::other)?;
                             }
 
-                            let triedb_hashed_post_state =
-                                trie_data.hashed_state.to_triedb_hashed_post_state();
-
-                            debug!(
-                                target: "providers::db",
-                                block_number,
-                                latest_triedb_block = latest_block_number,
-                                parent_root = ?latest_state_root,
-                                expected_root = ?state_root,
-                                "Computing triedb state root in save_blocks",
-                            );
-
-                            let (new_root, difflayer) = triedb
-                                .intermediate_and_commit_hashed_post_state(
-                                    latest_state_root,
-                                    None,
-                                    &triedb_hashed_post_state,
-                                    None,
-                                )
-                                .map_err(ProviderError::other)?;
-
-                            if new_root != state_root {
-                                return Err(ProviderError::Database(reth_db_api::DatabaseError::Other(format!(
-                                    "triedb update failed in save_blocks: new_root({:?}) != expected_root({:?}), block_number={}",
-                                    new_root,
-                                    state_root,
-                                    block_number
-                                ))));
+                            // Discard any pending miner entries at this height or above.
+                            let discard_keys: Vec<u64> =
+                                pending.range(block_number..).map(|(k, _)| *k).collect();
+                            for k in discard_keys {
+                                debug!(
+                                    target: "providers::db",
+                                    block_number = k,
+                                    "Discarding pending miner difflayer superseded by network block {}",
+                                    block_number,
+                                );
+                                pending.remove(&k);
                             }
+                            drop(pending);
 
-                            triedb
-                                .flush(block_number, new_root, &Some(difflayer))
-                                .map_err(ProviderError::other)?;
+                            // Now flush this network block.
+                            if let Some(ref difflayer) = block.difflayer {
+                                // Precomputed difflayer from validation (newPayload).
+                                debug!(
+                                    target: "providers::db",
+                                    block_number,
+                                    state_root = ?state_root,
+                                    "Flushing precomputed triedb difflayer for network block",
+                                );
+                                triedb
+                                    .flush(block_number, state_root, &Some(difflayer.clone()))
+                                    .map_err(ProviderError::other)?;
+                            } else {
+                                // No precomputed difflayer; compute and commit from hashed state.
+                                let (latest_block_number, latest_state_root) =
+                                    triedb.latest_persist_state().map_err(ProviderError::other)?;
+
+                                if block_number > 0 && latest_block_number != block_number - 1 {
+                                    return Err(ProviderError::Database(reth_db_api::DatabaseError::Other(format!(
+                                        "triedb state gap in save_blocks: latest_block_number={}, expected={}, block_number={}",
+                                        latest_block_number,
+                                        block_number - 1,
+                                        block_number
+                                    ))));
+                                }
+
+                                let triedb_hashed_post_state =
+                                    trie_data.hashed_state.to_triedb_hashed_post_state();
+
+                                debug!(
+                                    target: "providers::db",
+                                    block_number,
+                                    latest_triedb_block = latest_block_number,
+                                    parent_root = ?latest_state_root,
+                                    expected_root = ?state_root,
+                                    "Computing triedb state root in save_blocks for network block",
+                                );
+
+                                let (new_root, difflayer) = triedb
+                                    .intermediate_and_commit_hashed_post_state(
+                                        latest_state_root,
+                                        None,
+                                        &triedb_hashed_post_state,
+                                        None,
+                                    )
+                                    .map_err(ProviderError::other)?;
+
+                                if new_root != state_root {
+                                    return Err(ProviderError::Database(reth_db_api::DatabaseError::Other(format!(
+                                        "triedb update failed in save_blocks: new_root({:?}) != expected_root({:?}), block_number={}",
+                                        new_root,
+                                        state_root,
+                                        block_number
+                                    ))));
+                                }
+
+                                triedb
+                                    .flush(block_number, new_root, &Some(difflayer))
+                                    .map_err(ProviderError::other)?;
+                            }
                         }
 
                         timings.write_hashed_state += start.elapsed();

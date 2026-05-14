@@ -643,6 +643,7 @@ where
                 // overlays and changeset computation are skipped when triedb is active.
                 trie_data: DeferredTrieData::ready(ComputedTrieData::default()),
                 difflayer: Some(difflayer),
+                is_miner_block: false,
             },
             None,
         ))
