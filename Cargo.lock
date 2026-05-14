@@ -9575,6 +9575,7 @@ dependencies = [
  "revm-state",
  "rocksdb",
  "rust-eth-triedb",
+ "rust-eth-triedb-common",
  "strum",
  "tempfile",
  "tokio",
