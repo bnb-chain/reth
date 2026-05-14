@@ -754,6 +754,24 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
                         // TrieDB mode: update TrieDB instead of writing hashed state to MDBX
                         let start = Instant::now();
 
+                        let (triedb_latest_num, triedb_latest_root) =
+                            triedb.latest_persist_state().map_err(ProviderError::other)?;
+                        let pending_snapshot: Vec<u64> = {
+                            let p = PENDING_MINER_DIFFLAYERS.lock().unwrap();
+                            p.keys().copied().collect()
+                        };
+                        tracing::info!(
+                            target: "providers::db::triedb",
+                            block_number,
+                            state_root = ?state_root,
+                            is_miner_block = block.is_miner_block,
+                            has_difflayer = block.difflayer.is_some(),
+                            triedb_latest_block = triedb_latest_num,
+                            triedb_latest_root = ?triedb_latest_root,
+                            pending_miner_blocks = ?pending_snapshot,
+                            "TRIEDB_DIAG save_blocks entry",
+                        );
+
                         if block.is_miner_block {
                             // Miner block: defer flush to avoid advancing path_db prematurely.
                             //
@@ -771,11 +789,11 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
                                     block_number
                                 )))
                             })?;
-                            debug!(
-                                target: "providers::db",
+                            tracing::info!(
+                                target: "providers::db::triedb",
                                 block_number,
                                 state_root = ?state_root,
-                                "Deferring miner triedb difflayer (is_miner_block=true)",
+                                "TRIEDB_DIAG save_blocks: deferred miner difflayer",
                             );
                             PENDING_MINER_DIFFLAYERS
                                 .lock()
@@ -804,12 +822,12 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
                                         )),
                                     ));
                                 }
-                                debug!(
-                                    target: "providers::db",
+                                tracing::info!(
+                                    target: "providers::db::triedb",
                                     pred_num,
                                     state_root = ?pred_root,
-                                    "Flushing pending miner difflayer (predecessor of network block {})",
-                                    block_number,
+                                    network_block = block_number,
+                                    "TRIEDB_DIAG save_blocks: flushing pending miner predecessor",
                                 );
                                 triedb
                                     .flush(pred_num, pred_root, &Some(pred_layer))
@@ -820,11 +838,11 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
                             let discard_keys: Vec<u64> =
                                 pending.range(block_number..).map(|(k, _)| *k).collect();
                             for k in discard_keys {
-                                debug!(
-                                    target: "providers::db",
-                                    block_number = k,
-                                    "Discarding pending miner difflayer superseded by network block {}",
-                                    block_number,
+                                tracing::info!(
+                                    target: "providers::db::triedb",
+                                    miner_block = k,
+                                    network_block = block_number,
+                                    "TRIEDB_DIAG save_blocks: discarding pending miner difflayer (superseded)",
                                 );
                                 pending.remove(&k);
                             }
@@ -833,11 +851,11 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
                             // Now flush this network block.
                             if let Some(ref difflayer) = block.difflayer {
                                 // Precomputed difflayer from validation (newPayload).
-                                debug!(
-                                    target: "providers::db",
+                                tracing::info!(
+                                    target: "providers::db::triedb",
                                     block_number,
                                     state_root = ?state_root,
-                                    "Flushing precomputed triedb difflayer for network block",
+                                    "TRIEDB_DIAG save_blocks: flushing network block (precomputed difflayer)",
                                 );
                                 triedb
                                     .flush(block_number, state_root, &Some(difflayer.clone()))
@@ -859,13 +877,13 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
                                 let triedb_hashed_post_state =
                                     trie_data.hashed_state.to_triedb_hashed_post_state();
 
-                                debug!(
-                                    target: "providers::db",
+                                tracing::info!(
+                                    target: "providers::db::triedb",
                                     block_number,
                                     latest_triedb_block = latest_block_number,
                                     parent_root = ?latest_state_root,
                                     expected_root = ?state_root,
-                                    "Computing triedb state root in save_blocks for network block",
+                                    "TRIEDB_DIAG save_blocks: computing root for network block (no precomputed difflayer)",
                                 );
 
                                 let (new_root, difflayer) = triedb

@@ -164,17 +164,67 @@ impl<N: NodePrimitives> TreeState<N> {
     pub(crate) fn merged_difflayer_by_hash(&self, parent_block_hash: B256) -> Option<DiffLayers> {
         let mut difflayers = DiffLayers::default();
         let mut parent_hash = parent_block_hash;
+        let mut walked = 0usize;
+        let mut missing_difflayer_blocks = Vec::new();
         while let Some(executed) = self.blocks_by_hash.get(&parent_hash) {
+            let block_num = executed.recovered_block().number();
+            let block_hash = executed.recovered_block().hash();
             parent_hash = executed.recovered_block().parent_hash();
             if let Some(executed_difflayer) = &executed.difflayer {
                 difflayers.insert_difflayer(executed_difflayer.clone());
+                tracing::debug!(
+                    target: "engine::tree::difflayer",
+                    block_number = block_num,
+                    block_hash = ?block_hash,
+                    is_miner_block = executed.is_miner_block,
+                    walked,
+                    "TRIEDB_DIAG merged_difflayer_by_hash: found difflayer"
+                );
+            } else {
+                missing_difflayer_blocks.push((block_num, block_hash));
             }
+            walked += 1;
+        }
+
+        // Log if parent_hash was not found in blocks_by_hash (already persisted/evicted).
+        if walked == 0 || !self.blocks_by_hash.contains_key(&parent_block_hash) {
+            let in_memory = self.blocks_by_hash.len();
+            tracing::debug!(
+                target: "engine::tree::difflayer",
+                parent_block_hash = ?parent_block_hash,
+                blocks_in_memory = in_memory,
+                walked,
+                difflayers_collected = difflayers.diff_layers.len(),
+                "TRIEDB_DIAG merged_difflayer_by_hash: walk complete (parent may be evicted)",
+            );
+        }
+
+        if !missing_difflayer_blocks.is_empty() {
+            tracing::warn!(
+                target: "engine::tree::difflayer",
+                parent_block_hash = ?parent_block_hash,
+                blocks_without_difflayer = ?missing_difflayer_blocks,
+                "TRIEDB_DIAG merged_difflayer_by_hash: in-memory blocks with no difflayer",
+            );
         }
 
         if difflayers.is_empty() {
+            tracing::info!(
+                target: "engine::tree::difflayer",
+                parent_block_hash = ?parent_block_hash,
+                walked,
+                "TRIEDB_DIAG merged_difflayer_by_hash: returning None",
+            );
             return None;
         }
 
+        tracing::info!(
+            target: "engine::tree::difflayer",
+            parent_block_hash = ?parent_block_hash,
+            walked,
+            difflayers_count = difflayers.diff_layers.len(),
+            "TRIEDB_DIAG merged_difflayer_by_hash: returning Some",
+        );
         Some(difflayers)
     }
 

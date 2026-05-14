@@ -409,7 +409,34 @@ where
 
         // Acquire the global triedb and extract the path_db handle for the prefetcher.
         let mut triedb = get_global_triedb();
-        let path_db = triedb.get_mut_path_db_ref();
+
+        // Log the path_db state vs what we expect, to detect miner-block contamination.
+        // Must be called before get_mut_path_db_ref() to avoid borrow conflict.
+        let triedb_persist_state = triedb.latest_persist_state().ok();
+        tracing::info!(
+            target: "engine::tree::triedb_validate",
+            block = ?block_num_hash,
+            parent_hash = ?parent_hash,
+            has_difflayers = difflayers.is_some(),
+            difflayers_count = difflayers.as_ref().map(|d| d.diff_layers.len()),
+            triedb_latest_block = triedb_persist_state.map(|(n, _)| n),
+            triedb_latest_root = ?triedb_persist_state.map(|(_, r)| r),
+            "TRIEDB_DIAG validate_block: starting",
+        );
+
+        // Check if any in-memory block at this height is a miner block.
+        let miner_block_at_height = ctx.state().tree_state().blocks_by_number
+            .get(&block_num_hash.number)
+            .and_then(|blocks| blocks.iter().find(|b: &&ExecutedBlock<N>| b.is_miner_block))
+            .map(|b: &ExecutedBlock<N>| b.recovered_block().hash());
+        if let Some(miner_hash) = miner_block_at_height {
+            tracing::warn!(
+                target: "engine::tree::triedb_validate",
+                block = ?block_num_hash,
+                miner_block_hash = ?miner_hash,
+                "TRIEDB_DIAG validate_block: miner block at same height (contamination risk)",
+            );
+        }
 
         trace!(target: "engine::tree", block=?block_num_hash, parent=?parent_hash, "Fetching block state provider (triedb path)");
 
@@ -475,6 +502,7 @@ where
         // Spawn the payload processor with the triedb prefetcher. The prefetcher starts
         // fetching trie proofs in the background while the block executes, so that the
         // state-root commit below can proceed without blocking on trie I/O.
+        let path_db = triedb.get_mut_path_db_ref();
         let mut handle = self.payload_processor.spawn_cache_with_triedb_prefetcher(
             parent_block.state_root(),
             path_db.clone(),
@@ -560,6 +588,26 @@ where
         let trie_hashed_state = hashed_state.get().to_triedb_hashed_post_state();
         let block_state_root = block.state_root();
         let root_start = Instant::now();
+
+        // Critical diagnostic: log the exact pathdb state before state_at is called inside
+        // intermediate_and_commit_hashed_post_state. If pathdb is ahead of parent
+        // (e.g. contaminated by a miner block), the root will be wrong.
+        let pre_commit_persist = triedb.latest_persist_state().ok();
+        tracing::info!(
+            target: "engine::tree::triedb_validate",
+            block = ?block_num_hash,
+            parent_hash = ?parent_block.hash(),
+            parent_number = parent_block.number(),
+            parent_state_root = ?parent_block.state_root(),
+            expected_block_state_root = ?block_state_root,
+            has_difflayers = difflayers.is_some(),
+            difflayers_count = difflayers.as_ref().map(|d| d.diff_layers.len()),
+            triedb_latest_block = pre_commit_persist.map(|(n, _)| n),
+            triedb_latest_root = ?pre_commit_persist.map(|(_, r)| r),
+            pathdb_matches_parent = pre_commit_persist.map(|(_, r)| r == parent_block.state_root()),
+            "TRIEDB_DIAG validate_block: pre-commit state",
+        );
+
         let (new_root, difflayer) = triedb
             .intermediate_and_commit_hashed_post_state(
                 parent_block.state_root(),
@@ -618,7 +666,9 @@ where
                 hashed_accounts = hashed_state.get().accounts.len(),
                 hashed_storages = hashed_state.get().storages.len(),
                 has_difflayers = difflayers.is_some(),
-                "mismatched block state root (triedb validate)"
+                triedb_pre_commit_block = pre_commit_persist.map(|(n, _)| n),
+                triedb_pre_commit_root = ?pre_commit_persist.map(|(_, r)| r),
+                "TRIEDB_DIAG mismatched block state root (triedb validate)"
             );
             self.on_invalid_block(&parent_block, &block, &*output, None, ctx.state_mut());
             return Err(InsertBlockError::new(
