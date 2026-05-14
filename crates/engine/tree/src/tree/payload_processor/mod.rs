@@ -357,25 +357,40 @@ where
         let prewarm_handle =
             self.spawn_caching_with(env, prewarm_rx, provider_builder, Some(to_multi_proof));
 
-        let (prefetch_handle, prefetch_result_rx) = TrieDBPrefetchHandle::new(
-            root_hash,
-            path_db,
-            difflayers,
-            self.executor.clone(),
-            rev_multi_proof,
-        )
-        .expect("Failed to create TrieDBPrefetchHandle");
-
-        self.executor.spawn_blocking(move || {
-            prefetch_handle.run();
-        });
+        let trie_db_prefetch_result_rx =
+            match TrieDBPrefetchHandle::new(
+                root_hash,
+                path_db,
+                difflayers,
+                self.executor.clone(),
+                rev_multi_proof,
+            ) {
+                Ok((prefetch_handle, prefetch_result_rx)) => {
+                    self.executor.spawn_blocking(move || {
+                        prefetch_handle.run();
+                    });
+                    Some(prefetch_result_rx)
+                }
+                Err(e) => {
+                    // TrieDB may not yet contain the state for this root (e.g. genesis on a
+                    // fresh node). Fall back to the no-prefetch path: the triedb state-root
+                    // computation still runs, just without the prefetch acceleration.
+                    warn!(
+                        target: "engine::tree::payload_processor",
+                        %root_hash,
+                        error = ?e,
+                        "Failed to create TrieDBPrefetchHandle, continuing without prefetch"
+                    );
+                    None
+                }
+            };
 
         PayloadHandle {
             state_root_handle: None,
             install_state_hook: false,
             prewarm_handle,
             transactions: execution_rx,
-            trie_db_prefetch_result_rx: Some(prefetch_result_rx),
+            trie_db_prefetch_result_rx,
             _span: Span::current(),
         }
     }
@@ -837,24 +852,21 @@ pub struct PayloadHandle<Tx, Err, R> {
 }
 
 impl<Tx, Err, R: Send + Sync + 'static> PayloadHandle<Tx, Err, R> {
-    /// Receives the trie db prefetch result
+    /// Receives the trie db prefetch result.
     ///
-    /// # Panics
-    ///
-    /// If payload processing was started without background prefetch task.
+    /// Returns `Ok(None)` if no prefetch task was started (e.g. `TrieDBPrefetchHandle` creation
+    /// failed on a fresh node before genesis state is in TrieDB).
     pub fn triedb_preftch_result(
         &mut self,
     ) -> Result<Option<Arc<TrieDBPrefetchState<PathDB>>>, ParallelStateRootError> {
-        let result = self
-            .trie_db_prefetch_result_rx
-            .take()
-            .expect("trie_db_prefetch_result_rx is None")
-            .recv()
-            .map_err(|_| {
-                ParallelStateRootError::Other(
-                    "trie db prefetch result receiver dropped".to_string(),
-                )
-            })?;
+        let Some(rx) = self.trie_db_prefetch_result_rx.take() else {
+            return Ok(None);
+        };
+        let result = rx.recv().map_err(|_| {
+            ParallelStateRootError::Other(
+                "trie db prefetch result receiver dropped".to_string(),
+            )
+        })?;
 
         match result {
             triedb_prefetcher::TrieDBPrefetchResult::PrefetchAccountResult(state) => {
