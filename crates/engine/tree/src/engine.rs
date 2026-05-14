@@ -252,7 +252,9 @@ where
     /// A custom request received from the engine.
     Custom(CustomRequestMessage<P, Evm, N>),
     /// Request to insert an already executed block, e.g. via payload building.
-    InsertExecutedBlock(ExecutedBlock<N>),
+    /// The optional sender is notified once the block has been indexed, allowing callers that need
+    /// ordering guarantees (e.g. insert-then-FCU) to wait before issuing the follow-up request.
+    InsertExecutedBlock(ExecutedBlock<N>, Option<tokio::sync::oneshot::Sender<()>>),
 }
 
 impl<T: PayloadTypes, N: NodePrimitives, P, Evm> Display for EngineApiRequest<T, N, P, Evm>
@@ -263,7 +265,7 @@ where
         match self {
             Self::Beacon(msg) => msg.fmt(f),
             Self::Custom(msg) => msg.fmt(f),
-            Self::InsertExecutedBlock(block) => {
+            Self::InsertExecutedBlock(block, _) => {
                 write!(f, "InsertExecutedBlock({:?})", block.recovered_block().num_hash())
             }
         }

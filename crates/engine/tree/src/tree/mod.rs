@@ -1679,7 +1679,7 @@ where
             },
             FromEngine::Request(request) => {
                 match request {
-                    EngineApiRequest::InsertExecutedBlock(block) => {
+                    EngineApiRequest::InsertExecutedBlock(block, ack_tx) => {
                         let start = Instant::now();
                         let block_num_hash = block.recovered_block().num_hash();
                         if block_num_hash.number <= self.state.tree_state.canonical_block_number() {
@@ -1709,6 +1709,12 @@ where
                         self.emit_event(EngineApiEvent::BeaconConsensus(
                             ConsensusEngineEvent::CanonicalBlockAdded(block, now.elapsed()),
                         ));
+                        // Notify the caller that the block is now indexed. This allows callers
+                        // that need strict insert-before-FCU ordering to wait on this signal
+                        // rather than relying on yield_now() heuristics.
+                        if let Some(tx) = ack_tx {
+                            let _ = tx.send(());
+                        }
                         log_handler_duration("request.insert_executed_block", start.elapsed());
                     }
                     EngineApiRequest::Beacon(request) => {
