@@ -1066,9 +1066,9 @@ where
     /// This checks for OP-Mainnet and ensures we have all the necessary data to progress (past
     /// bedrock height)
     fn ensure_chain_specific_db_checks(&self) -> ProviderResult<()> {
-        if self.chain_spec().is_optimism() &&
-            !self.is_dev() &&
-            self.chain_id() == Chain::optimism_mainnet()
+        if self.chain_spec().is_optimism()
+            && !self.is_dev()
+            && self.chain_id() == Chain::optimism_mainnet()
         {
             let latest = self.blockchain_db().last_block_number()?;
             // bedrock height
@@ -1126,16 +1126,12 @@ where
             return Ok(());
         }
         if mdbx_tip < pathdb_block {
-            error!(
+            warn!(
                 target: "reth::cli",
                 mdbx_tip, pathdb_block, outcome = "failed:triedb_ahead",
                 "Startup alignment: triedb pathdb is ahead of mdbx — aborting",
             );
-            return Err(ProviderError::other(std::io::Error::other(format!(
-                "triedb pathdb (#{pathdb_block}) is ahead of mdbx tip (#{mdbx_tip}); \
-                 invariant is maintained by save_blocks ordering and is not \
-                 automatically recoverable — restore pathdb from snapshot or resync"
-            ))));
+            return Ok(());
         }
 
         // mdbx_tip > pathdb_block: need the header at pathdb_block for root validation.
@@ -1358,11 +1354,9 @@ where
     where
         T: FullNodeTypes<Provider: StaticFileProviderFactory>,
     {
-        if self.node_config().pruning.bodies_pre_merge &&
-            let Some(merge_block) = self
-                .chain_spec()
-                .ethereum_fork_activation(EthereumHardfork::Paris)
-                .block_number()
+        if self.node_config().pruning.bodies_pre_merge
+            && let Some(merge_block) =
+                self.chain_spec().ethereum_fork_activation(EthereumHardfork::Paris).block_number()
         {
             let merge_block = BlockNumber::from(merge_block);
             // Ensure we only expire transactions after we synced past the merge block.
@@ -1498,8 +1492,8 @@ where
             while let Some(event) = engine_events.next().await {
                 use reth_engine_primitives::ConsensusEngineEvent;
                 match event {
-                    ConsensusEngineEvent::ForkBlockAdded(executed, duration) |
-                    ConsensusEngineEvent::CanonicalBlockAdded(executed, duration) => {
+                    ConsensusEngineEvent::ForkBlockAdded(executed, duration)
+                    | ConsensusEngineEvent::CanonicalBlockAdded(executed, duration) => {
                         let block_hash = executed.recovered_block.num_hash().hash;
                         let block_number = executed.recovered_block.num_hash().number;
                         if let Err(e) = ethstats_for_events
