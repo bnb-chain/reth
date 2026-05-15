@@ -16,6 +16,10 @@ ignore = [
     "RUSTSEC-2026-0118",
     # https://rustsec.org/advisories/RUSTSEC-2026-0119 hickory-proto O(n²) name compression
     "RUSTSEC-2026-0119",
+    # https://rustsec.org/advisories/RUSTSEC-2026-0105 core2 unmaintained, all versions yanked (no replacement)
+    "RUSTSEC-2026-0105",
+    # https://rustsec.org/advisories/RUSTSEC-2026-0097 rand unsound only with custom trace-level logger; not reachable in reth
+    "RUSTSEC-2026-0097",
 ]
 
 # This section is considered when running `cargo deny check bans`.

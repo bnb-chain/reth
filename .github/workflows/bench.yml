@@ -7,6 +7,7 @@
 # same block range (snapshot recovered between runs) to compare performance.
 
 on:
+<<<<<<< HEAD
   issue_comment:
     types: [created]
   workflow_dispatch:
@@ -91,6 +92,14 @@ on:
         required: false
         default: "true"
         type: boolean
+=======
+  workflow_dispatch: # disabled temporarily
+  # pull_request:
+  # TODO: Disabled temporarily for https://github.com/CodSpeedHQ/runner/issues/55
+  # merge_group:
+  # push:
+  #   branches: [main]
+>>>>>>> origin/develop
 
 env:
   CARGO_TERM_COLOR: always
@@ -102,6 +111,7 @@ name: bench
 permissions: {}
 
 jobs:
+<<<<<<< HEAD
   reth-bench-ack:
     if: |
       (github.event_name == 'issue_comment' && github.event.issue.pull_request && (startsWith(github.event.comment.body, '@decofe bench') || startsWith(github.event.comment.body, 'derek bench'))) ||
@@ -131,6 +141,10 @@ jobs:
       abba: ${{ steps.args.outputs.abba }}
       otlp: ${{ steps.args.outputs.otlp }}
       comment-id: ${{ steps.ack.outputs.comment-id }}
+=======
+  codspeed:
+    runs-on: ubuntu-latest
+>>>>>>> origin/develop
     steps:
       - name: Check org membership
         if: github.event_name == 'issue_comment'

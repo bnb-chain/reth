@@ -21,9 +21,13 @@ jobs:
   sync:
     if: github.repository == 'paradigmxyz/reth'
     name: sync (${{ matrix.chain.bin }})
+<<<<<<< HEAD
     runs-on: ${{ github.repository == 'paradigmxyz/reth' && 'depot-ubuntu-latest' || 'ubuntu-latest' }}
     permissions:
       contents: read
+=======
+    runs-on: ubuntu-latest
+>>>>>>> origin/develop
     env:
       RUST_LOG: info,sync=error
       RUST_BACKTRACE: 1

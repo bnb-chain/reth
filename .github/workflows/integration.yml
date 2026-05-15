@@ -26,9 +26,13 @@ jobs:
   test:
     name: test / ${{ matrix.network }}
     if: github.event_name != 'schedule'
+<<<<<<< HEAD
     runs-on: ${{ github.repository == 'paradigmxyz/reth' && 'depot-ubuntu-latest-4' || 'ubuntu-latest' }}
     permissions:
       contents: read
+=======
+    runs-on: ubuntu-latest
+>>>>>>> origin/develop
     env:
       RUST_BACKTRACE: 1
     strategy:
@@ -36,10 +40,27 @@ jobs:
         network: ["ethereum"]
     timeout-minutes: 60
     steps:
+<<<<<<< HEAD
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
       - uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
+=======
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y liburing-dev pkg-config libclang-dev
+      - uses: actions/checkout@v6
+      - uses: rui314/setup-mold@v1
+>>>>>>> origin/develop
       - uses: dtolnay/rust-toolchain@stable
       - name: Install Geth
         run: .github/scripts/install_geth.sh
@@ -72,7 +93,11 @@ jobs:
 
   era-files:
     name: era1 file integration tests once a day
+<<<<<<< HEAD
     if: github.event_name == 'schedule' && github.repository == 'paradigmxyz/reth'
+=======
+    # if: github.event_name == 'schedule'
+>>>>>>> origin/develop
     runs-on: ubuntu-latest
     permissions:
       contents: read

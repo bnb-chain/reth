@@ -20,9 +20,13 @@ permissions: {}
 
 jobs:
   compact-codec:
+<<<<<<< HEAD
     runs-on: ${{ github.repository == 'paradigmxyz/reth' && 'depot-ubuntu-latest' || 'ubuntu-latest' }}
     permissions:
       contents: read
+=======
+    runs-on: ubuntu-latest
+>>>>>>> origin/develop
     strategy:
       matrix:
         bin:

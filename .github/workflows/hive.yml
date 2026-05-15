@@ -30,6 +30,7 @@ jobs:
   prepare-hive:
     if: github.repository == 'paradigmxyz/reth'
     timeout-minutes: 45
+<<<<<<< HEAD
     runs-on: ${{ github.repository == 'paradigmxyz/reth' && 'depot-ubuntu-latest-16' || 'ubuntu-latest' }}
     permissions:
       contents: read
@@ -40,6 +41,9 @@ jobs:
           - amsterdam
           - osaka
     name: Prepare Hive - ${{ matrix.variant == 'amsterdam' && 'Amsterdam' || 'Osaka' }}
+=======
+    runs-on: ubuntu-latest
+>>>>>>> origin/develop
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -379,9 +383,14 @@ jobs:
     needs:
       - build-reth
       - prepare-hive
+<<<<<<< HEAD
     name: Hive-Osaka / ${{ matrix.scenario.sim }}${{ matrix.scenario.limit && format(' - {0}', matrix.scenario.limit) }}
     # Use larger runners for eels tests to avoid OOM runner crashes
     runs-on: ${{ github.repository == 'paradigmxyz/reth' && (contains(matrix.scenario.sim, 'eels') && 'depot-ubuntu-latest-8' || 'depot-ubuntu-latest-4') || 'ubuntu-latest' }}
+=======
+    name: ${{ matrix.storage }} / ${{ matrix.scenario.sim }}${{ matrix.scenario.limit && format(' - {0}', matrix.scenario.limit) }}
+    runs-on: ubuntu-latest
+>>>>>>> origin/develop
     permissions:
       contents: read
       issues: write

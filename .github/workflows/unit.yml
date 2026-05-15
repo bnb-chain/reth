@@ -21,10 +21,15 @@ permissions: {}
 
 jobs:
   test:
+<<<<<<< HEAD
     name: test / ${{ matrix.type }}
     runs-on: ${{ github.repository == 'paradigmxyz/reth' && 'depot-ubuntu-latest-4' || 'ubuntu-latest' }}
     permissions:
       contents: read
+=======
+    name: test / ${{ matrix.type }} / ${{ matrix.storage }}
+    runs-on: ubuntu-latest
+>>>>>>> origin/develop
     env:
       RUST_BACKTRACE: 1
     strategy:
@@ -45,9 +50,25 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           cache-on-failure: true
+<<<<<<< HEAD
       - uses: taiki-e/install-action@1f2425cdb59f8fffb99ee16a5968edf6f57a2b93 # v2.75.24
         with:
           tool: nextest
+=======
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y liburing-dev pkg-config libclang-dev
+      - uses: taiki-e/install-action@nextest
+>>>>>>> origin/develop
       - if: "${{ matrix.type == 'book' }}"
         uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
@@ -63,9 +84,13 @@ jobs:
 
   state:
     name: Ethereum state tests
+<<<<<<< HEAD
     runs-on: ${{ github.repository == 'paradigmxyz/reth' && 'depot-ubuntu-latest-8' || 'ubuntu-latest' }}
     permissions:
       contents: read
+=======
+    runs-on: ubuntu-latest
+>>>>>>> origin/develop
     env:
       RUST_LOG: info,sync=error
       RUST_BACKTRACE: 1
@@ -101,6 +126,7 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           cache-on-failure: true
+<<<<<<< HEAD
       - run: cargo nextest run --no-fail-fast --cargo-profile hivetests -p ef-tests --features "asm-keccak ef-tests"
 
   doc:
@@ -108,6 +134,15 @@ jobs:
     runs-on: ${{ github.repository == 'paradigmxyz/reth' && 'depot-ubuntu-latest' || 'ubuntu-latest' }}
     permissions:
       contents: read
+=======
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev llvm liburing-dev pkg-config
+      - run: cargo nextest run --release -p ef-tests --features "asm-keccak ef-tests"
+
+  doc:
+    name: doc tests
+    runs-on: ubuntu-latest
+>>>>>>> origin/develop
     env:
       RUST_BACKTRACE: 1
     timeout-minutes: 30
@@ -121,8 +156,13 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           cache-on-failure: true
+<<<<<<< HEAD
       - name: Install liburing-dev
         run: sudo apt-get update && sudo apt-get install -y liburing-dev
+=======
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev llvm liburing-dev pkg-config
+>>>>>>> origin/develop
       - name: Run doctests
         run: cargo test --doc --workspace --all-features
 
