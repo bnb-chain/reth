@@ -113,8 +113,6 @@ impl<N: NodePrimitives> OverlayBuilder<N> {
             self.assert_lazy_overlay_anchor(lazy_overlay);
         }
         self.overlay_source = source;
-        // Clear the overlay cache since we've updated the source.
-        self.overlay_cache = Default::default();
         self
     }
 
@@ -136,8 +134,6 @@ impl<N: NodePrimitives> OverlayBuilder<N> {
             self.assert_lazy_overlay_anchor(lazy_overlay);
         }
         self.overlay_source = lazy_overlay.map(OverlaySource::Lazy);
-        // Clear the overlay cache since we've updated the source.
-        self.overlay_cache = Default::default();
         self
     }
 
@@ -151,8 +147,6 @@ impl<N: NodePrimitives> OverlayBuilder<N> {
                 trie: Arc::new(TrieUpdatesSorted::default()),
                 state,
             });
-            // Clear the overlay cache since we've updated the source.
-            self.overlay_cache = Default::default();
         }
         self
     }
@@ -179,8 +173,6 @@ impl<N: NodePrimitives> OverlayBuilder<N> {
                 });
             }
         }
-        // Clear the overlay cache since we've updated the source.
-        self.overlay_cache = Default::default();
         self
     }
 
