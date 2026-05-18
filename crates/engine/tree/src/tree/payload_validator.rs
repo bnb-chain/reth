@@ -560,6 +560,12 @@ where
         let trie_hashed_state = hashed_state.get().to_triedb_hashed_post_state();
         let block_state_root = block.state_root();
         let root_start = Instant::now();
+        warn!(
+            target: "engine::tree",
+            block = ?block_num_hash,
+            had_prefetch = had_prefetch_state,
+            "DBG: triedb intermediate_and_commit_hashed_post_state start (BLOCKING)"
+        );
         let (new_root, difflayer) = triedb
             .intermediate_and_commit_hashed_post_state(
                 parent_block.state_root(),
@@ -573,6 +579,15 @@ where
                     ProviderError::other(e).into(),
                 ))
             })?;
+        warn!(
+            target: "engine::tree",
+            block = ?block_num_hash,
+            elapsed_ms = root_start.elapsed().as_millis(),
+            got_root = ?new_root,
+            expected_root = ?block_state_root,
+            roots_match = (new_root == block_state_root),
+            "DBG: triedb intermediate_and_commit_hashed_post_state done"
+        );
         self.metrics
             .block_validation
             .triedb_validate_root_duration
