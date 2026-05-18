@@ -539,9 +539,12 @@ where
         );
 
         let output = Arc::new(output);
+        warn!(target: "engine::tree", block = ?block_num_hash, "DBG: triedb path - calling terminate_caching");
         let valid_block_tx = handle.terminate_caching(Some(output.clone()));
 
         // Wait for the prefetcher result (may be None if prefetch failed/wasn't available).
+        warn!(target: "engine::tree", block = ?block_num_hash, "DBG: triedb path - waiting for triedb_preftch_result (BLOCKING)");
+        let t_prefetch = Instant::now();
         let prefetch_state = match handle.triedb_preftch_result() {
             Ok(state) => state,
             Err(e) => {
@@ -555,9 +558,13 @@ where
             }
         };
         let had_prefetch_state = prefetch_state.is_some();
+        warn!(target: "engine::tree", block = ?block_num_hash, prefetch_waited_ms = t_prefetch.elapsed().as_millis(), had_prefetch = had_prefetch_state, "DBG: triedb path - triedb_preftch_result done");
 
         // Commit the state root via triedb, accelerated by the prefetch state.
+        warn!(target: "engine::tree", block = ?block_num_hash, "DBG: triedb path - calling hashed_state.get().to_triedb_hashed_post_state (BLOCKING)");
+        let t_hash = Instant::now();
         let trie_hashed_state = hashed_state.get().to_triedb_hashed_post_state();
+        warn!(target: "engine::tree", block = ?block_num_hash, hash_waited_ms = t_hash.elapsed().as_millis(), "DBG: triedb path - hashed_state converted");
         let block_state_root = block.state_root();
         let root_start = Instant::now();
         warn!(
