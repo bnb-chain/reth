@@ -1284,14 +1284,13 @@ where
         let execution_start = Instant::now();
 
         // Execute all transactions and finalize
-        let (executor, senders) = self.execute_transactions(
+        let (executor, senders, last_sent_len) = self.execute_transactions(
             executor,
             transaction_count,
             handle.iter_transactions(),
             &receipt_tx,
             &executed_tx_index,
         )?;
-        drop(receipt_tx);
 
         // Finish execution and get the result
         let post_exec_start = Instant::now();
@@ -1299,6 +1298,16 @@ where
             .in_scope(|| executor.finish())
             .map(|(evm, result)| (evm.into_db(), result))?;
         self.metrics.record_post_execution(post_exec_start.elapsed());
+
+        // Some receipts may be appended during post-execution finalization rather than during the
+        // main transaction loop (e.g., system transactions). Ensure the background receipt-root
+        // task sees the full receipt set before the channel closes.
+        if result.receipts.len() > last_sent_len {
+            for (tx_index, receipt) in result.receipts.iter().enumerate().skip(last_sent_len) {
+                let _ = receipt_tx.send(IndexedReceipt::new(tx_index, receipt.clone()));
+            }
+        }
+        drop(receipt_tx);
 
         // Merge transitions into bundle state
         debug_span!(target: "engine::tree", "merge_transitions")
@@ -1330,7 +1339,7 @@ where
         transactions: impl Iterator<Item = Result<Tx, Err>>,
         receipt_tx: &crossbeam_channel::Sender<IndexedReceipt<N::Receipt>>,
         executed_tx_index: &AtomicUsize,
-    ) -> Result<(E, Vec<Address>), BlockExecutionError>
+    ) -> Result<(E, Vec<Address>, usize), BlockExecutionError>
     where
         E: BlockExecutor<Receipt = N::Receipt>,
         Tx: alloy_evm::block::ExecutableTx<E> + alloy_evm::RecoveredTx<InnerTx>,
@@ -1392,7 +1401,7 @@ where
         }
         drop(exec_span);
 
-        Ok((executor, senders))
+        Ok((executor, senders, last_sent_len))
     }
 
     /// Compute state root for the given hashed post state in parallel.
