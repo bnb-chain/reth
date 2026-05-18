@@ -845,16 +845,31 @@ impl<Tx, Err, R: Send + Sync + 'static> PayloadHandle<Tx, Err, R> {
     pub fn triedb_preftch_result(
         &mut self,
     ) -> Result<Option<Arc<TrieDBPrefetchState<PathDB>>>, ParallelStateRootError> {
-        let result = self
+        // Use a timeout so that a slow prefetcher (e.g. genesis block with large state) does not
+        // block the engine tree thread indefinitely. On timeout we proceed without prefetch state;
+        // the state root will still be computed correctly, just without the acceleration.
+        let timeout = std::time::Duration::from_secs(5);
+        let result = match self
             .trie_db_prefetch_result_rx
             .take()
             .expect("trie_db_prefetch_result_rx is None")
-            .recv()
-            .map_err(|_| {
-                ParallelStateRootError::Other(
+            .recv_timeout(timeout)
+        {
+            Ok(result) => result,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                warn!(
+                    target: "engine::tree",
+                    timeout_secs = timeout.as_secs(),
+                    "triedb prefetch task did not finish in time, proceeding without prefetch state"
+                );
+                return Ok(None);
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(ParallelStateRootError::Other(
                     "trie db prefetch result receiver dropped".to_string(),
-                )
-            })?;
+                ))
+            }
+        };
 
         match result {
             triedb_prefetcher::TrieDBPrefetchResult::PrefetchAccountResult(state) => {
