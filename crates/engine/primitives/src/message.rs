@@ -18,6 +18,7 @@ use reth_errors::RethResult;
 use reth_payload_builder_primitives::PayloadBuilderError;
 use reth_payload_primitives::PayloadTypes;
 use std::time::{Duration, Instant};
+use tracing::trace;
 use tokio::sync::{mpsc::UnboundedSender, oneshot};
 
 /// Type alias for backwards compat
@@ -302,6 +303,14 @@ where
         &self,
         payload: Payload::ExecutionData,
     ) -> Result<PayloadStatus, BeaconOnNewPayloadError> {
+        let block_hash = payload.block_hash();
+        let block_number = payload.block_number();
+        trace!(
+            target: "engine::api",
+            %block_hash,
+            block_number,
+            "Sending NewPayload to engine"
+        );
         let (tx, rx) = oneshot::channel();
         let _ = self.to_engine.send(BeaconEngineMessage::NewPayload { payload, tx });
         rx.await.map_err(|_| BeaconOnNewPayloadError::EngineUnavailable)?

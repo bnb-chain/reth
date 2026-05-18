@@ -1762,6 +1762,12 @@ where
                             }
                             BeaconEngineMessage::NewPayload { payload, tx } => {
                                 let block_num_hash = payload.num_hash();
+                                trace!(
+                                    target: "engine::tree",
+                                    block_hash = %block_num_hash.hash,
+                                    block_number = block_num_hash.number,
+                                    "Engine tree received NewPayload"
+                                );
                                 let start = Instant::now();
                                 let gas_used = payload.gas_used();
                                 let num_hash = payload.num_hash();

@@ -83,6 +83,9 @@ where
     V: EngineValidator<N::Payload> + WaitForCaches,
     C: ConfigureEvm<Primitives = N::Primitives> + 'static,
 {
+
+    tracing::debug!(target: "engine", ?engine_kind, "Building engine orchestrator");
+
     let downloader = BasicBlockDownloader::new(client, consensus.clone());
 
     let persistence_handle =

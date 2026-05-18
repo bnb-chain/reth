@@ -79,6 +79,8 @@ impl EngineNodeLauncher {
         AO: RethRpcAddOns<NodeAdapter<T, CB::Components>>
             + EngineValidatorAddOn<NodeAdapter<T, CB::Components>>,
     {
+        info!(target: "reth::node", "Launching engine node");
+
         let Self { ctx, engine_tree_config } = self;
         let NodeBuilderWithComponents {
             adapter: NodeTypesAdapter { database },
