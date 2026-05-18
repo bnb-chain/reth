@@ -963,6 +963,7 @@ where
 
         warn!(
             target: "engine::tree::payload_validator",
+            block=?block.num_hash(),
             skip_state_root = self.config.skip_state_root_validation(),
             strategy = ?strategy,
             "DBG: validate_post_execution done, starting state root computation"
@@ -982,7 +983,7 @@ where
 
             match strategy {
                 StateRootStrategy::StateRootTask => {
-                    debug!(target: "engine::tree::payload_validator", "Using sparse trie state root algorithm");
+                    warn!(target: "engine::tree::payload_validator", block=?block.num_hash(), "DBG: state root strategy=StateRootTask, calling await_state_root_with_timeout");
 
                     let task_result = ensure_ok_post_block!(
                         self.await_state_root_with_timeout(
@@ -1051,7 +1052,7 @@ where
                     }
                 }
                 StateRootStrategy::Parallel => {
-                    debug!(target: "engine::tree::payload_validator", "Using parallel state root algorithm");
+                    warn!(target: "engine::tree::payload_validator", block=?block.num_hash(), "DBG: state root strategy=Parallel, calling compute_state_root_parallel");
                     match self.compute_state_root_parallel(
                         provider_factory,
                         overlay_builder,
@@ -1068,12 +1069,16 @@ where
                             maybe_state_root = Some((result.0, Arc::new(result.1), elapsed));
                         }
                         Err(error) => {
-                            debug!(target: "engine::tree::payload_validator", %error, "Parallel state root computation failed");
+                            warn!(target: "engine::tree::payload_validator", block=?block.num_hash(), %error, "DBG: Parallel state root computation failed");
                         }
                     }
                 }
-                StateRootStrategy::Synchronous => {}
+                StateRootStrategy::Synchronous => {
+                    warn!(target: "engine::tree::payload_validator", block=?block.num_hash(), "DBG: state root strategy=Synchronous (will fall through to serial)");
+                }
             }
+
+            warn!(target: "engine::tree::payload_validator", block=?block.num_hash(), have_parallel_result=maybe_state_root.is_some(), "DBG: state root strategy branch done");
 
             // Determine the state root.
             // If the state root was computed in parallel, we use it.
@@ -1083,18 +1088,20 @@ where
             } else {
                 // fallback is to compute the state root regularly in sync
                 if self.config.state_root_fallback() {
-                    debug!(target: "engine::tree::payload_validator", "Using state root fallback for testing");
+                    warn!(target: "engine::tree::payload_validator", block=?block.num_hash(), "DBG: Using state root fallback for testing");
                 } else {
-                    warn!(target: "engine::tree::payload_validator", "Failed to compute state root in parallel");
+                    warn!(target: "engine::tree::payload_validator", block=?block.num_hash(), "DBG: falling back to serial state root computation (blocking)");
                     self.metrics.block_validation.state_root_parallel_fallback_total.increment(1);
                 }
 
+                warn!(target: "engine::tree::payload_validator", block=?block.num_hash(), "DBG: calling compute_state_root_serial (blocking)");
                 let (root, updates) = ensure_ok_post_block!(
                     provider_builder.clone().build().and_then(|provider| {
                         Self::compute_state_root_serial(provider, &hashed_state)
                     }),
                     block
                 );
+                warn!(target: "engine::tree::payload_validator", block=?block.num_hash(), "DBG: compute_state_root_serial returned");
 
                 if state_root_task_failed {
                     self.metrics
@@ -1738,19 +1745,24 @@ where
 
         // Wait for the background keccak256 hashing task to complete. This blocks until
         // all changed addresses and storage slots have been hashed.
+        warn!(target: "engine::tree::payload_validator", block=?block.num_hash(), "DBG: waiting for hashed_state (blocking)");
+        let t0 = std::time::Instant::now();
         let hashed_state_ref =
             debug_span!(target: "engine::tree::payload_validator", "wait_hashed_post_state")
                 .in_scope(|| hashed_state.get());
-        warn!(target: "engine::tree::payload_validator", "DBG: hashed_state ready, calling validate_block_post_execution_with_hashed_state");
+        warn!(target: "engine::tree::payload_validator", block=?block.num_hash(), waited_ms=t0.elapsed().as_millis(), "DBG: hashed_state ready, calling validate_block_post_execution_with_hashed_state");
 
         let _enter = debug_span!(target: "engine::tree::payload_validator", "validate_block_post_execution_with_hashed_state").entered();
-        if let Err(err) =
-            self.validator.validate_block_post_execution_with_hashed_state(hashed_state_ref, block)
-        {
+        let hashed_state_result =
+            self.validator.validate_block_post_execution_with_hashed_state(hashed_state_ref, block);
+        warn!(target: "engine::tree::payload_validator", block=?block.num_hash(), ok=hashed_state_result.is_ok(), "DBG: validate_block_post_execution_with_hashed_state returned");
+        if let Err(err) = hashed_state_result {
+            warn!(target: "engine::tree::payload_validator", block=?block.num_hash(), %err, "DBG: validate_block_post_execution_with_hashed_state FAILED");
             // call post-block hook
             self.on_invalid_block(parent_block, block, output, None, ctx.state_mut());
             return Err(err.into())
         }
+        warn!(target: "engine::tree::payload_validator", block=?block.num_hash(), elapsed=?start.elapsed(), "DBG: validate_post_execution SUCCEEDED");
 
         // record post-execution validation duration
         self.metrics

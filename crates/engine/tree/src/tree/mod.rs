@@ -809,7 +809,7 @@ where
         &mut self,
         payload: T::ExecutionData,
     ) -> Result<TreeOutcome<PayloadStatus>, InsertBlockFatalError> {
-        trace!(target: "engine::tree", "invoked new payload");
+        warn!(target: "engine::tree", block_hash=%payload.block_hash(), block_number=%payload.block_number(), "DBG: on_new_payload entered");
 
         // start timing for the new payload process
         let start = Instant::now();
