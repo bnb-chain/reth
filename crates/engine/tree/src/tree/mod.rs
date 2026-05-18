@@ -474,6 +474,8 @@ where
         Sender<FromEngine<EngineApiRequest<T, N, P, C>, N::Block>>,
         UnboundedReceiver<EngineApiEvent<N>>,
     ) {
+        
+        warn!(target: "engine::tree", "EngineApiTreeHandler::spawn_new called");
         let best_block_number = provider.best_block_number().unwrap_or(0);
         let header = provider.sealed_header(best_block_number).ok().flatten().unwrap_or_default();
 
