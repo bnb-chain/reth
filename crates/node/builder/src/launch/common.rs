@@ -1584,27 +1584,36 @@ where
 }
 
 /// Returns the metrics hooks for the node.
+///
+/// The DB and static-file metric-reporting hooks walk all tables/segments and
+/// can be expensive on large databases. Set `RETH_DISABLE_HEAVY_METRICS` to
+/// any value to skip registering them; the metrics server still serves the
+/// rest of the registry.
 pub fn metrics_hooks<N: NodeTypesWithDB>(provider_factory: &ProviderFactory<N>) -> Hooks {
-    Hooks::builder()
-        .with_hook({
-            let db = provider_factory.db_ref().clone();
-            move || throttle!(Duration::from_secs(5 * 60), || db.report_metrics())
-        })
-        .with_hook({
-            let sfp = provider_factory.static_file_provider();
-            move || {
-                throttle!(Duration::from_secs(5 * 60), || {
-                    if let Err(error) = sfp.report_metrics() {
-                        error!(%error, "Failed to report metrics from static file provider");
-                    }
-                })
-            }
-        })
-        .with_hook({
-            let rocksdb = provider_factory.rocksdb_provider();
-            move || throttle!(Duration::from_secs(5 * 60), || rocksdb.report_metrics())
-        })
-        .build()
+    let mut builder = Hooks::builder();
+    // Heavy hooks: opt out via env var when their cost is unacceptable.
+    if std::env::var_os("RETH_DISABLE_HEAVY_METRICS").is_none() {
+        builder = builder
+            .with_hook({
+                let db = provider_factory.db_ref().clone();
+                move || throttle!(Duration::from_secs(5 * 60), || db.report_metrics())
+            })
+            .with_hook({
+                let sfp = provider_factory.static_file_provider();
+                move || {
+                    throttle!(Duration::from_secs(5 * 60), || {
+                        if let Err(error) = sfp.report_metrics() {
+                            error!(%error, "Failed to report metrics from static file provider");
+                        }
+                    })
+                }
+            })
+            .with_hook({
+                let rocksdb = provider_factory.rocksdb_provider();
+                move || throttle!(Duration::from_secs(5 * 60), || rocksdb.report_metrics())
+            });
+    }
+    builder.build()
 }
 
 #[cfg(test)]
