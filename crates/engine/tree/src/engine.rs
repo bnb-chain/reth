@@ -108,6 +108,7 @@ where
 
             // pop the next incoming request
             if let Poll::Ready(Some(req)) = self.incoming_requests.poll_next_unpin(cx) {
+                tracing::debug!(target: "engine::handler", "forwarding incoming request to tree");
                 // and delegate the request to the handler
                 self.handler.on_event(FromEngine::Request(req.into()));
                 // skip downloading in this iteration to allow the handler to process the request

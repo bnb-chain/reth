@@ -737,10 +737,13 @@ where
             }
         } else {
             // No persistence in progress - just wait on incoming
-            match self.incoming.recv() {
+            debug!(target: "engine::tree", "tree blocking on incoming.recv() — no persistence in progress");
+            let result = match self.incoming.recv() {
                 Ok(m) => LoopEvent::EngineMessage(m),
                 Err(_) => LoopEvent::Disconnected,
-            }
+            };
+            debug!(target: "engine::tree", "tree unblocked from incoming.recv()");
+            result
         }
     }
 
@@ -1776,7 +1779,7 @@ where
                             }
                             BeaconEngineMessage::NewPayload { payload, tx } => {
                                 let block_num_hash = payload.num_hash();
-                                trace!(
+                                debug!(
                                     target: "engine::tree",
                                     block_hash = %block_num_hash.hash,
                                     block_number = block_num_hash.number,
@@ -1786,6 +1789,13 @@ where
                                 let gas_used = payload.gas_used();
                                 let num_hash = payload.num_hash();
                                 let mut output = self.on_new_payload(payload);
+                                debug!(
+                                    target: "engine::tree",
+                                    block_hash = %block_num_hash.hash,
+                                    block_number = block_num_hash.number,
+                                    elapsed_ms = start.elapsed().as_millis(),
+                                    "Engine tree finished on_new_payload"
+                                );
                                 self.metrics.engine.new_payload.update_response_metrics(
                                     start,
                                     &mut self.metrics.engine.forkchoice_updated.latest_finish_at,
