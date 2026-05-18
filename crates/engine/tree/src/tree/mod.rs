@@ -627,9 +627,23 @@ where
 
             let event = if self.should_backpressure() {
                 self.metrics.engine.backpressure_active.set(1.0);
+                warn!(
+                    target: "engine::tree",
+                    persistence_gap = self.persistence_gap(),
+                    threshold = self.config.persistence_backpressure_threshold(),
+                    last_persisted = self.persistence_state.last_persisted_block.number,
+                    canonical_tip = self.state.tree_state.canonical_block_number(),
+                    "Engine backpressure active — blocking on persistence, new payloads will not be processed"
+                );
                 let stall_start = Instant::now();
                 let event = self.wait_for_persistence_event();
-                self.metrics.engine.backpressure_stall_duration.record(stall_start.elapsed());
+                let stall = stall_start.elapsed();
+                warn!(
+                    target: "engine::tree",
+                    stall_ms = stall.as_millis(),
+                    "Engine backpressure released"
+                );
+                self.metrics.engine.backpressure_stall_duration.record(stall);
                 event
             } else {
                 self.metrics.engine.backpressure_active.set(0.0);
