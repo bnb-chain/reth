@@ -586,6 +586,7 @@ where
     ///
     /// This will block the current thread and process incoming messages.
     pub fn run(mut self) {
+        warn!(target: "engine::tree", "Engine tree run() started");
         loop {
             // Each iteration has three phases:
             //
