@@ -933,6 +933,11 @@ where
                 })
                 .ok()
         };
+        warn!(
+            target: "engine::tree::payload_validator",
+            receipt_root_some = receipt_root_bloom.is_some(),
+            "DBG: receipt_root done, entering validate_post_execution"
+        );
         let transaction_root = transaction_root.map(|handle| {
             let _span =
                 debug_span!(target: "engine::tree::payload_validator", "wait_payload_tx_root")
@@ -955,6 +960,13 @@ where
 
         #[cfg(feature = "trie-debug")]
         let mut trie_debug_recorders = Vec::new();
+
+        warn!(
+            target: "engine::tree::payload_validator",
+            skip_state_root = self.config.skip_state_root_validation(),
+            strategy = ?strategy,
+            "DBG: validate_post_execution done, starting state root computation"
+        );
 
         let (state_root, trie_output, root_elapsed) = if self.config.skip_state_root_validation() {
             debug!(target: "engine::tree::payload_validator", "Skipping state root calculation in fastnode mode");
@@ -1346,7 +1358,7 @@ where
         self.metrics.record_pre_execution(pre_exec_start.elapsed());
 
         // Execute transactions
-        let exec_span = debug_span!(target: "engine::tree", "execution").entered();
+        let exec_span: tracing::span::EnteredSpan = debug_span!(target: "engine::tree", "execution").entered();
         let mut transactions = transactions.into_iter();
         // Some executors may execute transactions that do not append receipts during the
         // main loop (e.g., system transactions whose receipts are added during finalization).
@@ -1463,9 +1475,11 @@ where
         hashed_state: &LazyHashedPostState,
     ) -> ProviderResult<Result<StateRootComputeOutcome, ParallelStateRootError>> {
         let Some(timeout) = self.config.state_root_task_timeout() else {
+            warn!(target: "engine::tree::payload_validator", "DBG: await_state_root no timeout, blocking on handle.state_root()");
             return Ok(handle.state_root());
         };
 
+        warn!(target: "engine::tree::payload_validator", ?timeout, "DBG: await_state_root waiting for sparse-trie task");
         let task_rx = handle.take_state_root_rx();
 
         match task_rx.recv_timeout(timeout) {
@@ -1486,8 +1500,12 @@ where
 
                 let seq_hashed_state = hashed_state.clone();
                 self.payload_processor.executor().spawn_blocking_named("serial-root", move || {
+                    tracing::warn!(target: "engine::tree::payload_validator", "DBG: serial-root task started, building state_provider");
                     let result = state_provider_builder.build().and_then(|provider| {
-                        Self::compute_state_root_serial(provider, &seq_hashed_state)
+                        tracing::warn!(target: "engine::tree::payload_validator", "DBG: serial-root computing state_root_with_updates");
+                        let r = Self::compute_state_root_serial(provider, &seq_hashed_state);
+                        tracing::warn!(target: "engine::tree::payload_validator", ok = r.is_ok(), "DBG: serial-root compute_state_root_serial done");
+                        r
                     });
                     let _ = seq_tx.send(result);
                 });
@@ -1678,6 +1696,7 @@ where
     {
         let start = Instant::now();
 
+        warn!(target: "engine::tree::payload_validator", block=?block.num_hash(), "DBG: validate_post_execution start");
         trace!(target: "engine::tree::payload_validator", block=?block.num_hash(), "Validating block consensus");
         // validate block consensus rules
         if let Err(e) = self.validate_block_inner(block, transaction_root) {
@@ -1706,12 +1725,14 @@ where
             return Err(err.into())
         }
         drop(_enter);
+        warn!(target: "engine::tree::payload_validator", "DBG: validate_block_post_execution done, waiting for hashed_state");
 
         // Wait for the background keccak256 hashing task to complete. This blocks until
         // all changed addresses and storage slots have been hashed.
         let hashed_state_ref =
             debug_span!(target: "engine::tree::payload_validator", "wait_hashed_post_state")
                 .in_scope(|| hashed_state.get());
+        warn!(target: "engine::tree::payload_validator", "DBG: hashed_state ready, calling validate_block_post_execution_with_hashed_state");
 
         let _enter = debug_span!(target: "engine::tree::payload_validator", "validate_block_post_execution_with_hashed_state").entered();
         if let Err(err) =
