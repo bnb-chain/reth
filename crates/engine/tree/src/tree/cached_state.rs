@@ -476,9 +476,23 @@ impl ExecutionCache {
                 continue
             }
 
-            // If we have an account that was modified, but it has a `None` account info, some wild
-            // error has occurred because this state should be unrepresentable. An account with
-            // `None` current info, should be destroyed.
+            // If we have an account that was modified but has `None` current info, this is
+            // produced by BSC Parlia system transactions (and ETH post-Cancun system EIPs such
+            // as 4788 / 2935 / 7002 / 7251) for the SYSTEM_ADDRESS
+            // (0xfffffffffffffffffffffffffffffffffffffffe), which is touched as the synthetic
+            // caller but never has any real state attached.
+            //
+            // Returning `Err` here would force the caller to wipe the entire execution cache,
+            // which on BSC happens for every block and effectively keeps the cache permanently
+            // cold. Instead we treat the entry exactly like a destroyed account (the upstream
+            // comment above the original `return Err` already said it "should be destroyed"):
+            // invalidate both the account cache and its storage cache, then continue. This keeps
+            // the rest of the cache warm while ensuring any later read for this address falls
+            // through to the underlying state provider (triedb), so there is no risk of returning
+            // stale cached data even for unexpected None-info addresses.
+            //
+            // The `warn!` is retained so that if any address other than SYSTEM_ADDRESS ever
+            // triggers this branch we can spot it in production and investigate.
             let Some(ref account_info) = account.info else {
                 warn!(
                     target: "engine::caching",
@@ -489,10 +503,17 @@ impl ExecutionCache {
                     original_info_some = account.original_info.is_some(),
                     storage_len = account.storage.len(),
                     total_accounts = state_updates.state.len(),
-                    "insert_state: account modified but has None info -- will return Err and clear cache"
+                    "insert_state: modified account with None info -- treating as destroyed (was: clear entire cache)"
                 );
                 trace!(target: "engine::caching", ?account, "Account with None account info found in state updates");
-                return Err(())
+
+                // Treat exactly like the `was_destroyed` branch above: drop both the account
+                // entry and its storage entries from the cache. Subsequent reads will fall
+                // through to the underlying state provider.
+                self.account_cache.invalidate(addr);
+                self.invalidate_account_storage(addr);
+
+                continue;
             };
 
             // Now we iterate over all storage and make updates to the cached storage values
