@@ -654,7 +654,15 @@ where
             let new_cache = SavedCache::new(block_with_parent.block.hash, caches, cache_metrics);
             if new_cache.cache().insert_state(bundle_state).is_err() {
                 *cached = None;
-                debug!(target: "engine::caching", "cleared execution cache on update error");
+                warn!(
+                    target: "engine::caching",
+                    block_hash = ?block_with_parent.block.hash,
+                    parent_hash = ?block_with_parent.parent,
+                    bundle_accounts = bundle_state.state.len(),
+                    bundle_contracts = bundle_state.contracts.len(),
+                    callsite = "on_inserted_executed_block",
+                    "cleared execution cache on update error"
+                );
                 return;
             }
             new_cache.update_metrics();

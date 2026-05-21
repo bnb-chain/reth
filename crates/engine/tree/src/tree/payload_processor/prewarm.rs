@@ -286,7 +286,14 @@ where
                 if new_cache.cache().insert_state(&execution_outcome.state).is_err() {
                     // Clear the cache on error to prevent having a polluted cache
                     *cached = None;
-                    debug!(target: "engine::caching", "cleared execution cache on update error");
+                    warn!(
+                        target: "engine::caching",
+                        parent_hash = ?hash,
+                        bundle_accounts = execution_outcome.state.state.len(),
+                        bundle_contracts = execution_outcome.state.contracts.len(),
+                        callsite = "save_cache",
+                        "cleared execution cache on update error"
+                    );
                     return;
                 }
 

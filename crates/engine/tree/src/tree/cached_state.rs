@@ -16,7 +16,7 @@ use reth_trie::{
 };
 use revm_primitives::map::DefaultHashBuilder;
 use std::{sync::Arc, time::Duration};
-use tracing::{debug_span, instrument, trace};
+use tracing::{debug_span, instrument, trace, warn};
 
 pub(crate) type Cache<K, V> =
     mini_moka::sync::Cache<K, V, alloy_primitives::map::DefaultHashBuilder>;
@@ -480,6 +480,17 @@ impl ExecutionCache {
             // error has occurred because this state should be unrepresentable. An account with
             // `None` current info, should be destroyed.
             let Some(ref account_info) = account.info else {
+                warn!(
+                    target: "engine::caching",
+                    ?addr,
+                    status = ?account.status,
+                    was_destroyed = account.was_destroyed(),
+                    is_not_modified = account.status.is_not_modified(),
+                    original_info_some = account.original_info.is_some(),
+                    storage_len = account.storage.len(),
+                    total_accounts = state_updates.state.len(),
+                    "insert_state: account modified but has None info -- will return Err and clear cache"
+                );
                 trace!(target: "engine::caching", ?account, "Account with None account info found in state updates");
                 return Err(())
             };
