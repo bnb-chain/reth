@@ -149,9 +149,24 @@ impl MetricServer {
                     let hook = hook.clone();
                     let pprof_dump_dir = pprof_dump_dir.clone();
                     let service = tower::service_fn(move |req: Request<_>| {
-                        let response =
-                            handle_request(req.uri().path(), &*hook, handle, &pprof_dump_dir);
-                        async move { Ok::<_, Infallible>(response) }
+                        let path = req.uri().path().to_owned();
+                        let hook = hook.clone();
+                        let pprof_dump_dir = pprof_dump_dir.clone();
+                        async move {
+                            let response = tokio::task::spawn_blocking(move || {
+                                handle_request(&path, &*hook, handle, &pprof_dump_dir)
+                            })
+                            .await
+                            .unwrap_or_else(|err| {
+                                tracing::error!(%err, "metrics handler task failed");
+                                let mut response = Response::new(Full::new(Bytes::from_static(
+                                    b"metrics handler error",
+                                )));
+                                *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                                response
+                            });
+                            Ok::<_, Infallible>(response)
+                        }
                     });
 
                     let mut shutdown = signal.clone().ignore_guard();
@@ -193,8 +208,19 @@ impl MetricServer {
                             break;
                         }
                         _ = tokio::time::sleep(interval) => {
-                            hooks.iter().for_each(|hook| hook());
-                            let metrics = handle.handle().render();
+                            let hooks_clone = hooks.clone();
+                            let metrics = match tokio::task::spawn_blocking(move || {
+                                hooks_clone.iter().for_each(|hook| hook());
+                                handle.handle().render()
+                            })
+                            .await
+                            {
+                                Ok(m) => m,
+                                Err(err) => {
+                                    tracing::warn!(%err, "metrics gather failed; skipping push");
+                                    continue;
+                                }
+                            };
                             match client.put(&url).header("Content-Type", "text/plain").body(metrics).send().await {
                                 Ok(response) => {
                                     if !response.status().is_success() {
