@@ -476,12 +476,16 @@ impl ExecutionCache {
                 continue
             }
 
-            // If we have an account that was modified, but it has a `None` account info, some wild
-            // error has occurred because this state should be unrepresentable. An account with
-            // `None` current info, should be destroyed.
+            // If the account was modified but has no `info`, treat it as a cache invalidation
+            // for just this address. Chains like BSC legitimately emit this shape from system
+            // contract post-execution (e.g. draining the fee distributor at `0xff..fe`), so
+            // poisoning the entire cross-block cache would defeat the cache for every block.
+            // The next reader for this address falls back to the underlying state provider.
             let Some(ref account_info) = account.info else {
-                trace!(target: "engine::caching", ?account, "Account with None account info found in state updates");
-                return Err(())
+                trace!(target: "engine::caching", ?account, "Account with None account info; invalidating this address only");
+                self.account_cache.invalidate(addr);
+                self.invalidate_account_storage(addr);
+                continue
             };
 
             // Now we iterate over all storage and make updates to the cached storage values
