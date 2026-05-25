@@ -88,7 +88,7 @@ use reth_provider::{
     StorageChangeSetReader, StorageSettingsCache,
 };
 use reth_revm::db::{states::bundle_state::BundleRetention, BundleAccount, State};
-use reth_trie::{trie_cursor::TrieCursorFactory, updates::TrieUpdates, HashedPostState};
+use reth_trie::{updates::TrieUpdates, HashedPostState};
 use reth_trie_db::ChangesetCache;
 use reth_trie_parallel::root::{ParallelStateRoot, ParallelStateRootError};
 use revm_primitives::{Address, KECCAK_EMPTY};
@@ -1180,12 +1180,12 @@ where
             let _ = valid_block_tx.send(());
         }
 
-        // Create the overlay provider NOW, while we're on the engine loop thread and trie changeset
-        // eviction cannot race with us. If we deferred this to the background task, persistence
-        // could advance and evict changeset cache entries between factory creation and the task
-        // actually running, causing expensive DB fallback computations when building the overlay.
-        let changeset_provider =
-            ensure_ok_post_block!(overlay_factory.database_provider_ro(), block);
+        // Pre-warm the overlay cache on the engine loop thread so changeset cache entries are
+        // captured before the persistence pipeline can evict them. The provider is immediately
+        // dropped here, releasing its MDBX read transaction. The background task opens a fresh
+        // short-lived read transaction just before the cursor-walk phase (compute_trie_changesets),
+        // avoiding a long-lived reader that blocks MDBX GC during write commits.
+        ensure_ok_post_block!(overlay_factory.database_provider_ro(), block);
 
         let executed_block = self.spawn_deferred_trie_task(
             block,
@@ -1193,7 +1193,7 @@ where
             &ctx,
             hashed_state,
             trie_output,
-            changeset_provider,
+            overlay_factory,
         );
         Ok((executed_block, timing_stats))
     }
@@ -1995,7 +1995,7 @@ where
         ctx: &TreeCtx<'_, N>,
         hashed_state: LazyHashedPostState,
         trie_output: Arc<TrieUpdates>,
-        changeset_provider: impl TrieCursorFactory + Send + 'static,
+        changeset_factory: OverlayStateProviderFactory<P, N>,
     ) -> ExecutedBlock<N> {
         // Capture parent hash and ancestor overlays for deferred trie input construction.
         let (anchor_hash, overlay_blocks) = ctx
@@ -2065,10 +2065,26 @@ where
 
                 // Compute and cache changesets using the computed trie_updates.
                 // Skip in TrieDB mode — TrieDB manages its own trie data.
-                // Use the pre-created provider to avoid races with changeset cache
-                // eviction that can happen between task spawn and execution.
+                // Open a fresh MDBX read transaction just for the cursor-walk phase.
+                // The overlay cache was pre-warmed on the engine loop thread, so this
+                // call hits the cache and does not re-read the changeset cache.
+                // The provider is dropped at the end of this block, releasing the read
+                // transaction promptly and avoiding long-lived readers that block MDBX GC.
                 if !rust_eth_triedb::triedb_manager::is_triedb_active() {
                     let changeset_start = Instant::now();
+
+                    let changeset_provider = match changeset_factory.database_provider_ro() {
+                        Ok(p) => p,
+                        Err(e) => {
+                            warn!(
+                                target: "engine::tree::changeset",
+                                ?block_number,
+                                ?e,
+                                "Failed to open read provider for changeset computation"
+                            );
+                            return;
+                        }
+                    };
 
                     match reth_trie::changesets::compute_trie_changesets(
                         &changeset_provider,
@@ -2093,6 +2109,7 @@ where
                             );
                         }
                     }
+                    // changeset_provider drops here, releasing the MDBX read transaction
                 }
             }));
 
