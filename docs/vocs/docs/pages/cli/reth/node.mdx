@@ -1040,7 +1040,6 @@ Engine:
       --engine.skip-state-root-validation
           Skip state root validation for fastnode mode. This disables validation of state root hashes during live sync and also automatically disables hashing stages for maximum sync speed at the cost of reduced validation
 
-<<<<<<< HEAD
       --engine.prewarming-threads <PREWARMING_THREADS>
           Configure the number of prewarming threads. If not specified, defaults to available parallelism
 
@@ -1108,8 +1107,6 @@ Engine:
       --engine.disable-bal-batch-io
           Disable BAL (Block Access List) storage prefetch IO during prewarming. When set, BAL storage slots are not read into the execution cache
 
-=======
->>>>>>> origin/develop
       --engine.min-blocks-for-pipeline-run <MIN_BLOCKS_FOR_PIPELINE_RUN>
           Configure the minimum number of blocks required to trigger a pipeline run for backfilling. When the local head is behind the forkchoice head by more than this threshold, the pipeline will be used to backfill blocks instead of downloading them individually
 
@@ -1162,49 +1159,8 @@ Storage:
 
           When set, new databases will be initialized with the V2 storage layout that separates hot and cold data. Existing databases always use the settings persisted in their metadata regardless of this flag.
 
-<<<<<<< HEAD
           [default: true]
           [possible values: true, false]
-=======
-          When enabled, transaction senders will be written to static files on disk instead of the database.
-
-          Note: This setting can only be configured at genesis initialization. Once the node has been initialized, changing this flag requires re-syncing from scratch.
-
-      --static-files.account-change-sets
-          Store account changesets in static files.
-
-          When enabled, account changesets will be written to static files on disk instead of the database.
-
-          Note: This setting can only be configured at genesis initialization. Once the node has been initialized, changing this flag requires re-syncing from scratch.
-
-State Database:
-      --statedb.triedb
-          Use `TrieDB` instead of MDBX for state database
-
-Ress:
-      --ress.enable
-          Enable support for `ress` subprotocol
-
-      --ress.max-active-connections <MAX_ACTIVE_CONNECTIONS>
-          The maximum number of active connections for `ress` subprotocol
-
-          [default: 5]
-
-      --ress.max-witness-window <MAX_WITNESS_WINDOW>
-          The maximum witness lookback window
-
-          [default: 1024]
-
-      --ress.witness-max-parallel <WITNESS_MAX_PARALLEL>
-          The maximum number of witnesses to generate in parallel
-
-          [default: 5]
-
-      --ress.witness-cache-size <WITNESS_CACHE_SIZE>
-          Witness cache size
-
-          [default: 10]
->>>>>>> origin/develop
 
 Logging:
       --log.stdout.format <FORMAT>
