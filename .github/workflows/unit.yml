@@ -19,22 +19,14 @@ concurrency:
 
 jobs:
   test:
-    name: test / ${{ matrix.type }} / ${{ matrix.storage }}
+    name: test / ${{ matrix.storage }}
     runs-on: ubuntu-latest
     env:
       RUST_BACKTRACE: 1
       EDGE_FEATURES: ${{ matrix.storage == 'edge' && 'edge' || '' }}
     strategy:
       matrix:
-        type: [ethereum, optimism]
         storage: [stable, edge]
-        include:
-          - type: ethereum
-            features: asm-keccak ethereum
-            exclude_args: ""
-          - type: optimism
-            features: asm-keccak
-            exclude_args: --exclude reth --exclude reth-bench --exclude "example-*" --exclude "reth-ethereum-*" --exclude "*-ethereum"
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
@@ -57,15 +49,11 @@ jobs:
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y liburing-dev pkg-config libclang-dev
       - uses: taiki-e/install-action@nextest
-      - if: "${{ matrix.type == 'book' }}"
-        uses: arduino/setup-protoc@v3
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Run tests
         run: |
           cargo nextest run \
-            --features "${{ matrix.features }} $EDGE_FEATURES" --locked \
-            ${{ matrix.exclude_args }} --workspace \
+            --features "asm-keccak ethereum $EDGE_FEATURES" --locked \
+            --workspace \
             --exclude ef-tests --no-tests=warn \
             -E "!kind(test) and not binary(e2e_testsuite)"
 
