@@ -474,8 +474,6 @@ where
         Sender<FromEngine<EngineApiRequest<T, N, P, C>, N::Block>>,
         UnboundedReceiver<EngineApiEvent<N>>,
     ) {
-        
-        warn!(target: "engine::tree", "EngineApiTreeHandler::spawn_new called");
         let best_block_number = provider.best_block_number().unwrap_or(0);
         let header = provider.sealed_header(best_block_number).ok().flatten().unwrap_or_default();
 
@@ -588,7 +586,6 @@ where
     ///
     /// This will block the current thread and process incoming messages.
     pub fn run(mut self) {
-        warn!(target: "engine::tree", "Engine tree run() started");
         loop {
             // Each iteration has three phases:
             //
@@ -630,23 +627,9 @@ where
 
             let event = if self.should_backpressure() {
                 self.metrics.engine.backpressure_active.set(1.0);
-                warn!(
-                    target: "engine::tree",
-                    persistence_gap = self.persistence_gap(),
-                    threshold = self.config.persistence_backpressure_threshold(),
-                    last_persisted = self.persistence_state.last_persisted_block.number,
-                    canonical_tip = self.state.tree_state.canonical_block_number(),
-                    "Engine backpressure active — blocking on persistence, new payloads will not be processed"
-                );
                 let stall_start = Instant::now();
                 let event = self.wait_for_persistence_event();
-                let stall = stall_start.elapsed();
-                warn!(
-                    target: "engine::tree",
-                    stall_ms = stall.as_millis(),
-                    "Engine backpressure released"
-                );
-                self.metrics.engine.backpressure_stall_duration.record(stall);
+                self.metrics.engine.backpressure_stall_duration.record(stall_start.elapsed());
                 event
             } else {
                 self.metrics.engine.backpressure_active.set(0.0);
@@ -740,13 +723,10 @@ where
             }
         } else {
             // No persistence in progress - just wait on incoming
-            debug!(target: "engine::tree", "tree blocking on incoming.recv() — no persistence in progress");
-            let result = match self.incoming.recv() {
+            match self.incoming.recv() {
                 Ok(m) => LoopEvent::EngineMessage(m),
                 Err(_) => LoopEvent::Disconnected,
-            };
-            debug!(target: "engine::tree", "tree unblocked from incoming.recv()");
-            result
+            }
         }
     }
 
@@ -809,7 +789,7 @@ where
         &mut self,
         payload: T::ExecutionData,
     ) -> Result<TreeOutcome<PayloadStatus>, InsertBlockFatalError> {
-        warn!(target: "engine::tree", block_hash=%payload.block_hash(), block_number=%payload.block_number(), "DBG: on_new_payload entered");
+        trace!(target: "engine::tree", "invoked new payload");
 
         // start timing for the new payload process
         let start = Instant::now();
@@ -1782,23 +1762,10 @@ where
                             }
                             BeaconEngineMessage::NewPayload { payload, tx } => {
                                 let block_num_hash = payload.num_hash();
-                                debug!(
-                                    target: "engine::tree",
-                                    block_hash = %block_num_hash.hash,
-                                    block_number = block_num_hash.number,
-                                    "Engine tree received NewPayload"
-                                );
                                 let start = Instant::now();
                                 let gas_used = payload.gas_used();
                                 let num_hash = payload.num_hash();
                                 let mut output = self.on_new_payload(payload);
-                                debug!(
-                                    target: "engine::tree",
-                                    block_hash = %block_num_hash.hash,
-                                    block_number = block_num_hash.number,
-                                    elapsed_ms = start.elapsed().as_millis(),
-                                    "Engine tree finished on_new_payload"
-                                );
                                 self.metrics.engine.new_payload.update_response_metrics(
                                     start,
                                     &mut self.metrics.engine.forkchoice_updated.latest_finish_at,
