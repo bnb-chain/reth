@@ -1,12 +1,9 @@
 self-hosted-runner:
   labels:
-<<<<<<< HEAD
     - depot-ubuntu-latest
     - depot-ubuntu-latest-2
     - depot-ubuntu-latest-4
     - depot-ubuntu-latest-8
     - depot-ubuntu-latest-16
     - available
-=======
     - ubuntu-24.04-16core
->>>>>>> origin/develop

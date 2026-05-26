@@ -10,15 +10,6 @@ on:
     types: [opened, reopened, synchronize, closed]
   merge_group:
 
-<<<<<<< HEAD
-permissions: {}
-
-jobs:
-  build:
-    runs-on: ${{ github.repository == 'paradigmxyz/reth' && 'depot-ubuntu-latest-8' || 'ubuntu-latest' }}
-    permissions:
-      contents: read
-=======
 env:
   RUSTC_WRAPPER: "sccache"
   PINNED_NIGHTLY: nightly-2026-01-22
@@ -26,16 +17,13 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
->>>>>>> origin/develop
     timeout-minutes: 90
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
+        uses: actions/checkout@v6
 
       - name: Install bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        uses: oven-sh/setup-bun@v2
         with:
           bun-version: v1.2.23
 
@@ -51,14 +39,11 @@ jobs:
         with:
           toolchain: ${{ env.PINNED_NIGHTLY }}
 
-<<<<<<< HEAD
-=======
       - uses: mozilla-actions/sccache-action@v0.0.9
 
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y liburing-dev pkg-config libclang-dev
 
->>>>>>> origin/develop
       - name: Build docs
         run: cd docs/vocs && bash scripts/build-cargo-docs.sh
 
@@ -67,15 +52,6 @@ jobs:
           cd docs/vocs/ && bun run build
           echo "Vocs Build Complete"
 
-<<<<<<< HEAD
-      - name: Setup Pages
-        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
-
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
-        with:
-          path: "./docs/vocs/docs/dist"
-=======
       # - name: Setup Pages
       #   uses: actions/configure-pages@v5
 
@@ -83,7 +59,6 @@ jobs:
       #   uses: actions/upload-pages-artifact@v4
       #   with:
       #     path: "./docs/vocs/docs/dist"
->>>>>>> origin/develop
 
   # deploy:
   #   # Only deploy if a push to main
@@ -102,14 +77,7 @@ jobs:
 
   #   timeout-minutes: 60
 
-<<<<<<< HEAD
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
-=======
   #   steps:
   #     - name: Deploy to GitHub Pages
   #       id: deployment
   #       uses: actions/deploy-pages@v4
->>>>>>> origin/develop
