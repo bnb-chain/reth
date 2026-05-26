@@ -443,7 +443,6 @@ fn handle_pprof_heap(_pprof_dump_dir: &PathBuf) -> Response<Full<Bytes>> {
     response
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
