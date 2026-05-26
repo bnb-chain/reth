@@ -59,11 +59,13 @@ jobs:
       - uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
       - uses: dtolnay/rust-toolchain@nightly
         with:
-          components: clippy
+          components: clippy, rustfmt
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           cache-on-failure: true
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y liburing-dev pkg-config libclang-dev
       - run: cargo clippy --workspace --lib --examples --tests --benches --all-features --locked
         env:
           RUSTFLAGS: -D warnings
@@ -141,6 +143,8 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           cache-on-failure: true
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y liburing-dev pkg-config libclang-dev
       - run: cargo hack check --workspace --partition ${{ matrix.partition }}/${{ matrix.total_partitions }}
 
   msrv:
@@ -177,10 +181,14 @@ jobs:
           persist-credentials: false
       - uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
       - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           cache-on-failure: true
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y liburing-dev pkg-config libclang-dev
       - run: cargo docs --document-private-items
         env:
           # Keep in sync with ./book.yml:jobs.build
@@ -217,10 +225,14 @@ jobs:
           persist-credentials: false
       - uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
       - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           cache-on-failure: true
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y liburing-dev pkg-config libclang-dev
       - uses: taiki-e/install-action@1f2425cdb59f8fffb99ee16a5968edf6f57a2b93 # v2.75.24
         with:
           tool: cargo-udeps
@@ -238,6 +250,8 @@ jobs:
           persist-credentials: false
       - uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
       - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
