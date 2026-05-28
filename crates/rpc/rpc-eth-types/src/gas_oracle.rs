@@ -175,8 +175,7 @@ where
                 };
 
             if block_values.is_empty() {
-                // For empty blocks, use zero gas price to signal no demand
-                results.push(U256::ZERO);
+                results.push(U256::from(inner.last_price.price));
             } else {
                 results.extend(block_values);
                 populated_blocks += 1;
