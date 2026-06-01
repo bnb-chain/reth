@@ -1,6 +1,7 @@
 use crate::{
     chain::ChainSpecInfo,
     hooks::{Hook, Hooks},
+    process::register_process_metrics,
     recorder::install_prometheus_recorder,
     version::VersionInfo,
 };
@@ -106,12 +107,14 @@ impl MetricServer {
         // Describe metrics after recorder installation
         describe_db_metrics();
         describe_static_file_metrics();
+        describe_rocksdb_metrics();
         Collector::default().describe();
         describe_memory_stats();
         describe_io_stats();
 
         version_info.register_version_metrics();
         chain_spec_info.register_chain_spec_metrics();
+        register_process_metrics();
 
         Ok(())
     }
@@ -261,6 +264,31 @@ fn describe_static_file_metrics() {
     describe_gauge!(
         "static_files.segment_entries",
         "The number of entries for a static file segment"
+    );
+}
+
+fn describe_rocksdb_metrics() {
+    describe_gauge!(
+        "rocksdb.table_size",
+        Unit::Bytes,
+        "The estimated size of a RocksDB table (SST + memtable)"
+    );
+    describe_gauge!("rocksdb.table_entries", "The estimated number of keys in a RocksDB table");
+    describe_gauge!(
+        "rocksdb.pending_compaction_bytes",
+        Unit::Bytes,
+        "Bytes pending compaction for a RocksDB table"
+    );
+    describe_gauge!("rocksdb.sst_size", Unit::Bytes, "The size of SST files for a RocksDB table");
+    describe_gauge!(
+        "rocksdb.memtable_size",
+        Unit::Bytes,
+        "The size of memtables for a RocksDB table"
+    );
+    describe_gauge!(
+        "rocksdb.wal_size",
+        Unit::Bytes,
+        "The total size of WAL (Write-Ahead Log) files. Important: this is not included in table_size or sst_size metrics"
     );
 }
 
@@ -419,7 +447,7 @@ fn handle_pprof_heap(_pprof_dump_dir: &PathBuf) -> Response<Full<Bytes>> {
 mod tests {
     use super::*;
     use reqwest::Client;
-    use reth_tasks::TaskManager;
+    use reth_tasks::Runtime;
     use socket2::{Domain, Socket, Type};
     use std::net::{SocketAddr, TcpListener};
 
@@ -433,8 +461,12 @@ mod tests {
         listener.local_addr().unwrap()
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_metrics_endpoint() {
+        // Install the recorder before serve() so gauge registrations are captured,
+        // mirroring how start_prometheus_endpoint() works in the real node launch.
+        install_prometheus_recorder();
+
         let chain_spec_info = ChainSpecInfo { name: "test".to_string() };
         let version_info = VersionInfo {
             version: "test",
@@ -445,8 +477,7 @@ mod tests {
             build_profile: "test",
         };
 
-        let tasks = TaskManager::current();
-        let executor = tasks.executor();
+        let runtime = Runtime::test();
 
         let hooks = Hooks::builder().build();
 
@@ -455,7 +486,7 @@ mod tests {
             listen_addr,
             version_info,
             chain_spec_info,
-            executor,
+            runtime.clone(),
             hooks,
             std::env::temp_dir(),
         );
@@ -471,5 +502,9 @@ mod tests {
         let body = response.text().await.unwrap();
         assert!(body.contains("reth_process_cpu_seconds_total"));
         assert!(body.contains("reth_process_start_time_seconds"));
+        assert!(body.contains("process_cli_args"), "expected process_cli_args metric in output");
+
+        // Make sure the runtime is dropped after the test runs.
+        drop(runtime);
     }
 }

@@ -19,7 +19,7 @@ reth-primitives-traits.workspace = true
 reth-storage-api.workspace = true
 reth-storage-errors.workspace = true
 reth-trie-common.workspace = true
-rust-eth-triedb-common.workspace = true
+rust-eth-triedb-common = { workspace = true, optional = true }
 
 revm.workspace = true
 
@@ -37,18 +37,17 @@ rayon = { workspace = true, optional = true }
 
 [dev-dependencies]
 reth-ethereum-primitives.workspace = true
-reth-ethereum-forks.workspace = true
 
 [features]
 default = ["std"]
 std = [
     "dep:rayon",
+    "dep:rust-eth-triedb-common",
     "reth-primitives-traits/std",
     "alloy-eips/std",
     "alloy-primitives/std",
     "alloy-consensus/std",
     "revm/std",
-    "reth-ethereum-forks/std",
     "alloy-evm/std",
     "reth-execution-errors/std",
     "reth-execution-types/std",
@@ -65,4 +64,3 @@ test-utils = [
     "reth-trie-common/test-utils",
     "reth-ethereum-primitives/test-utils",
 ]
-op = ["alloy-evm/op", "reth-primitives-traits/op"]

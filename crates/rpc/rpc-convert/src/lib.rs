@@ -10,24 +10,20 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-pub mod block;
 pub mod custom_header;
-pub mod receipt;
 mod rpc;
 pub mod transaction;
 
-pub use block::TryFromBlockResponse;
 pub use custom_header::{
     calculate_millisecond_timestamp, CustomHeaderConverter, CustomRpcHeader, EthereumCustomHeader,
 };
-pub use receipt::TryFromReceiptResponse;
 pub use rpc::*;
-pub use transaction::{
-    RpcConvert, RpcConverter, TransactionConversionError, TryFromTransactionResponse, TryIntoSimTx,
-    TxInfoMapper,
-};
+pub use transaction::{RpcConvert, RpcConverter, TransactionConversionError};
 
 pub use alloy_evm::rpc::{CallFees, CallFeesError, EthTxEnvError, TryIntoTxEnv};
 
-#[cfg(feature = "op")]
-pub use transaction::op::*;
+// Re-export traits from reth-rpc-traits
+pub use reth_rpc_traits::{
+    FromConsensusHeader, FromConsensusTx, SignTxRequestError, SignableTxRequest, TryIntoSimTx,
+    TxInfoMapper,
+};

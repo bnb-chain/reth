@@ -38,6 +38,7 @@ alloy-evm = { workspace = true, features = ["overrides", "call-util"] }
 alloy-rlp.workspace = true
 alloy-serde.workspace = true
 alloy-eips.workspace = true
+alloy-eip7928 = { workspace = true, features = ["rlp"] }
 alloy-dyn-abi = { workspace = true, features = ["eip712"] }
 alloy-json-rpc.workspace = true
 alloy-network.workspace = true
@@ -59,17 +60,21 @@ tokio.workspace = true
 # misc
 auto_impl.workspace = true
 dyn-clone.workspace = true
+serde_json.workspace = true
 tracing.workspace = true
 
 [features]
 io-uring = ["rust-eth-triedb/io-uring"]
-jemalloc = ["rust-eth-triedb/jemalloc"]
-asm-keccak = ["rust-eth-triedb/asm-keccak"]
+jemalloc = [
+    "rust-eth-triedb/jemalloc",
+    "reth-trie-common/jemalloc",
+]
+asm-keccak = [
+    "rust-eth-triedb/asm-keccak",
+    "alloy-evm/asm-keccak",
+    "alloy-primitives/asm-keccak",
+    "reth-trie-common/asm-keccak",
+    "revm/asm-keccak",
+]
 js-tracer = ["revm-inspectors/js-tracer", "reth-rpc-eth-types/js-tracer"]
 client = ["jsonrpsee/client", "jsonrpsee/async-client"]
-op = [
-    "reth-evm/op",
-    "reth-primitives-traits/op",
-    "reth-rpc-convert/op",
-    "alloy-evm/op",
-]

@@ -169,7 +169,7 @@ impl TrieUpdates {
             .collect::<Vec<_>>();
 
         account_nodes.extend(self.removed_nodes.drain().map(|path| (path, None)));
-        account_nodes.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        account_nodes.sort_unstable_by_key(|a| a.0);
 
         let storage_tries = self
             .storage_tries
@@ -195,7 +195,7 @@ impl TrieUpdates {
                 .filter(|path| !self.account_nodes.contains_key(*path))
                 .map(|path| (*path, None)),
         );
-        account_nodes.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        account_nodes.sort_unstable_by_key(|a| a.0);
 
         let storage_tries = self
             .storage_tries
@@ -206,7 +206,7 @@ impl TrieUpdates {
     }
 
     /// Converts trie updates into [`TrieUpdatesSortedRef`].
-    pub fn into_sorted_ref<'a>(&'a self) -> TrieUpdatesSortedRef<'a> {
+    pub fn into_sorted_ref(&self) -> TrieUpdatesSortedRef<'_> {
         let mut account_nodes = self.account_nodes.iter().collect::<Vec<_>>();
         account_nodes.sort_unstable_by(|a, b| a.0.cmp(b.0));
 
@@ -216,7 +216,7 @@ impl TrieUpdates {
             storage_tries: self
                 .storage_tries
                 .iter()
-                .map(|m| (*m.0, m.1.into_sorted_ref().clone()))
+                .map(|m| (*m.0, m.1.into_sorted_ref()))
                 .collect(),
         }
     }
@@ -373,7 +373,7 @@ impl StorageTrieUpdates {
             .collect::<Vec<_>>();
 
         storage_nodes.extend(self.removed_nodes.into_iter().map(|path| (path, None)));
-        storage_nodes.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        storage_nodes.sort_unstable_by_key(|a| a.0);
 
         StorageTrieUpdatesSorted { is_deleted: self.is_deleted, storage_nodes }
     }
@@ -394,7 +394,7 @@ impl StorageTrieUpdates {
                 .filter(|path| !self.storage_nodes.contains_key(*path))
                 .map(|path| (*path, None)),
         );
-        storage_nodes.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        storage_nodes.sort_unstable_by_key(|a| a.0);
 
         StorageTrieUpdatesSorted { is_deleted: self.is_deleted, storage_nodes }
     }
@@ -629,48 +629,70 @@ impl TrieUpdatesSorted {
 
     /// Batch-merge sorted trie updates. Iterator yields **newest to oldest**.
     ///
-    /// This is more efficient than repeated `extend_ref` calls for large batches,
-    /// using k-way merge for O(n log k) complexity instead of O(n * k).
-    pub fn merge_batch<'a>(updates: impl IntoIterator<Item = &'a Self>) -> Self {
-        let updates: Vec<_> = updates.into_iter().collect();
-        if updates.is_empty() {
+    /// For small batches, uses `extend_ref_and_sort` loop.
+    /// For large batches, uses k-way merge for O(n log k) complexity.
+    pub fn merge_batch<T: AsRef<Self> + From<Self>>(iter: impl IntoIterator<Item = T>) -> T {
+        let items: alloc::vec::Vec<_> = iter.into_iter().collect();
+        match items.len() {
+            0 => Self::default().into(),
+            1 => items.into_iter().next().expect("len == 1"),
+            _ => Self::merge_slice(&items).into(),
+        }
+    }
+
+    /// Batch-merge sorted trie updates from a slice. Slice is **newest to oldest**.
+    ///
+    /// This variant takes a slice reference directly, avoiding iterator collection overhead.
+    /// For small batches, uses `extend_ref_and_sort` loop.
+    /// For large batches, uses k-way merge for O(n log k) complexity.
+    pub fn merge_slice<T: AsRef<Self>>(items: &[T]) -> Self {
+        const THRESHOLD: usize = 30;
+
+        let k = items.len();
+
+        if k == 0 {
             return Self::default();
         }
+        if k == 1 {
+            return items[0].as_ref().clone();
+        }
 
-        // Merge account nodes using k-way merge. Newest (index 0) takes precedence.
-        let account_nodes = kway_merge_sorted(updates.iter().map(|u| u.account_nodes.as_slice()));
+        if k < THRESHOLD {
+            // Small k: extend loop, oldest-to-newest so newer overrides older.
+            let mut iter = items.iter().rev();
+            let mut acc = iter.next().expect("k > 0").as_ref().clone();
+            for next in iter {
+                acc.extend_ref_and_sort(next.as_ref());
+            }
+            return acc;
+        }
 
-        // Accumulator for collecting storage trie slices per address.
-        // We process updates newest-to-oldest and stop collecting for an address
-        // once we hit a "deleted" storage (sealed=true), since older data is irrelevant.
+        // Large k: k-way merge.
+        let account_nodes =
+            kway_merge_sorted(items.iter().map(|i| i.as_ref().account_nodes.as_slice()));
+
         struct StorageAcc<'a> {
-            /// Storage trie was deleted (account removed or cleared).
             is_deleted: bool,
-            /// Stop collecting older slices after seeing a deletion.
             sealed: bool,
-            /// Storage trie node slices to merge, ordered newest to oldest.
             slices: Vec<&'a [(Nibbles, Option<BranchNodeCompact>)]>,
         }
 
         let mut acc: B256Map<StorageAcc<'_>> = B256Map::default();
 
-        // Collect storage slices per address, respecting deletion boundaries
-        for update in &updates {
-            for (addr, storage) in &update.storage_tries {
+        for item in items {
+            for (addr, storage) in &item.as_ref().storage_tries {
                 let entry = acc.entry(*addr).or_insert_with(|| StorageAcc {
                     is_deleted: false,
                     sealed: false,
                     slices: Vec::new(),
                 });
 
-                // Skip if we already hit a deletion for this address (older data is irrelevant)
                 if entry.sealed {
                     continue;
                 }
 
                 entry.slices.push(storage.storage_nodes.as_slice());
 
-                // If this storage was deleted, mark as deleted and seal to ignore older updates
                 if storage.is_deleted {
                     entry.is_deleted = true;
                     entry.sealed = true;
@@ -678,7 +700,6 @@ impl TrieUpdatesSorted {
             }
         }
 
-        // Merge each address's storage slices using k-way merge
         let storage_tries = acc
             .into_iter()
             .map(|(addr, entry)| {

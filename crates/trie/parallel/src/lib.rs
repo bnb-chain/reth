@@ -18,9 +18,13 @@ pub mod stats;
 pub mod root;
 
 /// Implementation of parallel proof computation.
-pub mod proof;
-
 pub mod proof_task;
+
+/// State root task interface types shared between the engine tree and the payload builder.
+pub mod state_root_task;
+
+/// Async value encoder for V2 proofs.
+pub(crate) mod value_encoder;
 
 /// Parallel state root metrics.
 #[cfg(feature = "metrics")]

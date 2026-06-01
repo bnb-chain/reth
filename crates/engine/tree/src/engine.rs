@@ -6,7 +6,7 @@ use crate::{
     download::{BlockDownloader, DownloadAction, DownloadOutcome},
     tree::CustomRequestMessage,
 };
-use alloy_primitives::B256;
+use alloy_primitives::{map::B256Set, B256};
 use crossbeam_channel::Sender;
 use futures::{Stream, StreamExt};
 use reth_chain_state::ExecutedBlock;
@@ -16,7 +16,6 @@ use reth_evm::ConfigureEvm;
 use reth_payload_primitives::PayloadTypes;
 use reth_primitives_traits::{Block, NodePrimitives, SealedBlock};
 use std::{
-    collections::HashSet,
     fmt::Display,
     task::{ready, Context, Poll},
 };
@@ -358,7 +357,7 @@ pub enum RequestHandlerEvent<T> {
 #[derive(Debug)]
 pub enum DownloadRequest {
     /// Download the given set of blocks.
-    BlockSet(HashSet<B256>),
+    BlockSet(B256Set),
     /// Download the given range of blocks.
     BlockRange(B256, u64),
 }
@@ -366,6 +365,6 @@ pub enum DownloadRequest {
 impl DownloadRequest {
     /// Returns a [`DownloadRequest`] for a single block.
     pub fn single_block(hash: B256) -> Self {
-        Self::BlockSet(HashSet::from([hash]))
+        Self::BlockSet(B256Set::from_iter([hash]))
     }
 }

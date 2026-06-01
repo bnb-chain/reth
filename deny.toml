@@ -4,24 +4,22 @@
 [advisories]
 yanked = "warn"
 ignore = [
-    # https://rustsec.org/advisories/RUSTSEC-2024-0384 used by sse example
-    "RUSTSEC-2024-0384",
     # https://rustsec.org/advisories/RUSTSEC-2024-0436 paste! is unmaintained
     "RUSTSEC-2024-0436",
     # https://rustsec.org/advisories/RUSTSEC-2025-0141 bincode is unmaintained, need to transition all deps to wincode first
     "RUSTSEC-2025-0141",
-    # https://rustsec.org/advisories/RUSTSEC-2026-0009 time DoS via stack exhaustion, fixed in 0.3.47
-    # TODO: upgrade when upstream deps adopt time >=0.3.47
-    "RUSTSEC-2026-0009",
-    # https://rustsec.org/advisories/RUSTSEC-2026-0097 rand unsound only when combined with a custom
-    # log-level trace logger calling rand::rng() during reseed; not reachable in reth's logging path.
-    "RUSTSEC-2026-0097",
+    # https://rustsec.org/advisories/RUSTSEC-2023-0089 atomic-polyfill is unmaintained, transitive dep via test-fuzz
+    "RUSTSEC-2023-0089",
+    # https://rustsec.org/advisories/RUSTSEC-2026-0104 rustls-webpki CRL panic, fixed in 0.103.13
+    "RUSTSEC-2026-0104",
+    # https://rustsec.org/advisories/RUSTSEC-2026-0118 hickory-proto NSEC3 unbounded loop
+    "RUSTSEC-2026-0118",
+    # https://rustsec.org/advisories/RUSTSEC-2026-0119 hickory-proto O(n²) name compression
+    "RUSTSEC-2026-0119",
     # https://rustsec.org/advisories/RUSTSEC-2026-0105 core2 unmaintained, all versions yanked (no replacement)
     "RUSTSEC-2026-0105",
-    # https://rustsec.org/advisories/RUSTSEC-2026-0118 hickory-proto NSEC3 unbounded loop; transitive via discv5, not reachable from reth's DNS usage
-    "RUSTSEC-2026-0118",
-    # https://rustsec.org/advisories/RUSTSEC-2026-0119 hickory-proto O(n²) name compression; transitive via discv5, not reachable from reth's DNS usage
-    "RUSTSEC-2026-0119",
+    # https://rustsec.org/advisories/RUSTSEC-2026-0097 rand unsound only with custom trace-level logger; not reachable in reth
+    "RUSTSEC-2026-0097",
 ]
 
 # This section is considered when running `cargo deny check bans`.
@@ -72,12 +70,7 @@ allow = [
 
 # Allow 1 or more licenses on a per-crate basis, so that particular licenses
 # aren't accepted for every possible crate as with the normal allow list
-exceptions = [
-    # TODO: decide on MPL-2.0 handling
-    # These dependencies are grandfathered in https://github.com/paradigmxyz/reth/pull/6980
-    { allow = ["MPL-2.0"], name = "option-ext" },
-    { allow = ["MPL-2.0"], name = "webpki-root-certs" },
-]
+exceptions = []
 
 [[licenses.clarify]]
 name = "rustls-webpki"
@@ -94,8 +87,9 @@ unknown-registry = "warn"
 # Lint level for what to happen when a crate from a git repository that is not
 # in the allow list is encountered
 unknown-git = "deny"
+unused-allowed-source = "allow"
+# Frequently patched dependencies
 allow-git = [
-    # TODO: Please avoid adding new entries to this list.
     "https://github.com/alloy-rs/alloy",
     "https://github.com/foundry-rs/block-explorers",
     "https://github.com/bluealloy/revm",
@@ -103,5 +97,8 @@ allow-git = [
     "https://github.com/alloy-rs/evm",
     "https://github.com/alloy-rs/hardforks",
     "https://github.com/paradigmxyz/jsonrpsee",
+    "https://github.com/DaniPopes/slotmap.git",
     "https://github.com/bnb-chain/reth-bsc-triedb.git",
+    "https://github.com/bnb-chain/reth-core.git",
+    "https://github.com/sigp/discv5",
 ]

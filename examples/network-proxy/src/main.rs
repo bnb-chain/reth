@@ -19,12 +19,17 @@ use reth_ethereum::{
         config::rng_secret_key,
         eth_requests::IncomingEthRequest,
         p2p::HeadersClient,
-        transactions::NetworkTransactionEvent,
+        transactions::{
+            constants::tx_manager::DEFAULT_TX_MANAGER_CHANNEL_MEMORY_LIMIT_BYTES,
+            NetworkTransactionEvent,
+        },
         types::{BlockHashOrNumber, NewPooledTransactionHashes68},
         BlockDownloaderProvider, FetchClient, NetworkConfig, NetworkEventListenerProvider,
         NetworkHandle, NetworkInfo, NetworkManager, Peers,
     },
+    tasks::Runtime,
 };
+use reth_metrics::common::mpsc::memory_bounded_channel;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
@@ -34,10 +39,14 @@ async fn main() -> eyre::Result<()> {
     let local_key = rng_secret_key();
 
     // Configure the network
-    let config = NetworkConfig::builder(local_key).build_with_noop_provider(DEV.clone());
+    let config =
+        NetworkConfig::builder(local_key, Runtime::test()).build_with_noop_provider(DEV.clone());
 
     let (requests_tx, mut requests_rx) = tokio::sync::mpsc::channel(1000);
-    let (transactions_tx, mut transactions_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (transactions_tx, mut transactions_rx) = memory_bounded_channel::<NetworkTransactionEvent>(
+        DEFAULT_TX_MANAGER_CHANNEL_MEMORY_LIMIT_BYTES,
+        "tx_events",
+    );
 
     // create the network instance
     let network = NetworkManager::eth(config)
@@ -83,6 +92,7 @@ async fn main() -> eyre::Result<()> {
                         IncomingEthRequest::GetReceipts { .. } => {}
                         IncomingEthRequest::GetReceipts69 { .. } => {}
                         IncomingEthRequest::GetReceipts70 { .. } => {}
+                        IncomingEthRequest::GetBlockAccessLists { .. } => {}
                     }
              }
              transaction_message = transactions_rx.recv() => {
@@ -106,7 +116,7 @@ async fn main() -> eyre::Result<()> {
 /// first peer.
 async fn run_peer(handle: NetworkHandle) -> eyre::Result<()> {
     // create another peer
-    let config = NetworkConfig::builder(rng_secret_key())
+    let config = NetworkConfig::builder(rng_secret_key(), Runtime::test())
         // use random ports
         .with_unused_ports()
         .build_with_noop_provider(DEV.clone());

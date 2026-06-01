@@ -1,11 +1,11 @@
 use crate::blobstore::{BlobStore, BlobStoreCleanupStat, BlobStoreError, BlobStoreSize};
 use alloy_eips::{
-    eip4844::{BlobAndProofV1, BlobAndProofV2},
-    eip7594::BlobTransactionSidecarVariant,
+    eip4844::{BlobAndProofV1, BlobAndProofV2, BlobCellsAndProofsV1},
+    eip7594::{BlobCellMask, BlobTransactionSidecarVariant},
 };
-use alloy_primitives::B256;
+use alloy_primitives::{map::B256Map, B128, B256};
 use parking_lot::RwLock;
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 /// An in-memory blob store.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -25,13 +25,16 @@ impl InMemoryBlobStore {
     ) -> Vec<Option<BlobAndProofV2>> {
         let mut result = vec![None; versioned_hashes.len()];
         let mut missing_count = result.len();
-        for (_tx_hash, blob_sidecar) in self.inner.store.read().iter() {
+        for blob_sidecar in self.inner.store.read().values() {
             if let Some(blob_sidecar) = blob_sidecar.as_eip7594() {
                 for (hash_idx, match_result) in
                     blob_sidecar.match_versioned_hashes(versioned_hashes)
                 {
-                    result[hash_idx] = Some(match_result);
-                    missing_count -= 1;
+                    let slot = &mut result[hash_idx];
+                    if slot.is_none() {
+                        missing_count -= 1;
+                    }
+                    *slot = Some(match_result);
                 }
             }
 
@@ -45,18 +48,49 @@ impl InMemoryBlobStore {
         }
         result
     }
+
+    /// Look up EIP-7594 blob cells by their versioned hashes.
+    fn get_by_versioned_hashes_cells_eip7594(
+        &self,
+        versioned_hashes: &[B256],
+        indices_bitarray: B128,
+    ) -> Result<Vec<Option<BlobCellsAndProofsV1>>, BlobStoreError> {
+        let cell_mask = BlobCellMask::new(indices_bitarray);
+        let mut result = vec![None; versioned_hashes.len()];
+        let mut missing_count = result.len();
+        let blob_sidecars = self.inner.store.read().values().cloned().collect::<Vec<_>>();
+        for blob_sidecar in blob_sidecars {
+            if let Some(blob_sidecar) = blob_sidecar.as_eip7594() {
+                for (hash_idx, match_result) in blob_sidecar
+                    .match_versioned_hashes_cells(versioned_hashes, cell_mask)
+                    .map_err(|err| BlobStoreError::Other(Box::new(err)))?
+                {
+                    let slot = &mut result[hash_idx];
+                    if slot.is_none() {
+                        missing_count -= 1;
+                    }
+                    *slot = Some(match_result);
+                }
+            }
+
+            if missing_count == 0 && result.iter().all(Option::is_some) {
+                break;
+            }
+        }
+        Ok(result)
+    }
 }
 
 #[derive(Debug, Default)]
 struct InMemoryBlobStoreInner {
     /// Storage for all blob data.
-    store: RwLock<HashMap<B256, Arc<BlobTransactionSidecarVariant>>>,
+    store: RwLock<B256Map<Arc<BlobTransactionSidecarVariant>>>,
     size_tracker: BlobStoreSize,
 }
 
 impl PartialEq for InMemoryBlobStoreInner {
     fn eq(&self, other: &Self) -> bool {
-        self.store.read().eq(&other.store.read())
+        self.store.read().eq(&*other.store.read())
     }
 }
 
@@ -147,7 +181,7 @@ impl BlobStore for InMemoryBlobStore {
         versioned_hashes: &[B256],
     ) -> Result<Vec<Option<BlobAndProofV1>>, BlobStoreError> {
         let mut result = vec![None; versioned_hashes.len()];
-        for (_tx_hash, blob_sidecar) in self.inner.store.read().iter() {
+        for blob_sidecar in self.inner.store.read().values() {
             if let Some(blob_sidecar) = blob_sidecar.as_eip4844() {
                 for (hash_idx, match_result) in
                     blob_sidecar.match_versioned_hashes(versioned_hashes)
@@ -183,6 +217,14 @@ impl BlobStore for InMemoryBlobStore {
         Ok(self.get_by_versioned_hashes_eip7594(versioned_hashes))
     }
 
+    fn get_by_versioned_hashes_v4(
+        &self,
+        versioned_hashes: &[B256],
+        indices_bitarray: B128,
+    ) -> Result<Vec<Option<BlobCellsAndProofsV1>>, BlobStoreError> {
+        self.get_by_versioned_hashes_cells_eip7594(versioned_hashes, indices_bitarray)
+    }
+
     fn data_size_hint(&self) -> Option<usize> {
         Some(self.inner.size_tracker.data_size())
     }
@@ -194,7 +236,7 @@ impl BlobStore for InMemoryBlobStore {
 
 /// Removes the given blob from the store and returns the size of the blob that was removed.
 #[inline]
-fn remove_size(store: &mut HashMap<B256, Arc<BlobTransactionSidecarVariant>>, tx: &B256) -> usize {
+fn remove_size(store: &mut B256Map<Arc<BlobTransactionSidecarVariant>>, tx: &B256) -> usize {
     store.remove(tx).map(|rem| rem.size()).unwrap_or_default()
 }
 
@@ -203,7 +245,7 @@ fn remove_size(store: &mut HashMap<B256, Arc<BlobTransactionSidecarVariant>>, tx
 /// We don't need to handle the size updates for replacements because transactions are unique.
 #[inline]
 fn insert_size(
-    store: &mut HashMap<B256, Arc<BlobTransactionSidecarVariant>>,
+    store: &mut B256Map<Arc<BlobTransactionSidecarVariant>>,
     tx: B256,
     blob: BlobTransactionSidecarVariant,
 ) -> usize {
@@ -251,5 +293,26 @@ mod tests {
 
         let v3 = store.get_by_versioned_hashes_v3(&request).unwrap();
         assert_eq!(v3, vec![Some(expected), None]);
+    }
+
+    #[test]
+    fn mem_get_blobs_v4_returns_requested_cells() {
+        let store = InMemoryBlobStore::default();
+
+        let (sidecar, versioned_hash, _) = eip7594_single_blob_sidecar();
+        store.insert(B256::random(), sidecar).unwrap();
+
+        let indices_bitarray = B128::from((1u128 << 0) | (1u128 << 7));
+        let request = vec![versioned_hash, B256::ZERO];
+
+        let v4 = store.get_by_versioned_hashes_v4(&request, indices_bitarray).unwrap();
+        assert_eq!(v4.len(), request.len());
+        assert!(v4[1].is_none());
+
+        let cells_and_proofs = v4[0].as_ref().unwrap();
+        assert_eq!(cells_and_proofs.blob_cells.len(), 2);
+        assert_eq!(cells_and_proofs.proofs.len(), 2);
+        assert!(cells_and_proofs.blob_cells.iter().all(Option::is_some));
+        assert_eq!(cells_and_proofs.proofs, vec![Some(Bytes48::default()); 2]);
     }
 }

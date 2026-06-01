@@ -9,12 +9,12 @@ use crate::{
     NodeBuilderWithComponents, NodeComponents, NodeComponentsBuilder, NodeHandle, NodeTypesAdapter,
 };
 use alloy_consensus::BlockHeader;
-use futures::{stream_select, FutureExt, StreamExt};
+use futures::{stream::FusedStream, stream_select, FutureExt, StreamExt};
 use reth_chainspec::{EthChainSpec, EthereumHardforks};
-use reth_engine_service::service::{ChainEvent, EngineService};
 use reth_engine_tree::{
-    chain::FromOrchestrator,
-    engine::{EngineApiRequest, EngineRequestHandler},
+    chain::{ChainEvent, FromOrchestrator},
+    engine::{EngineApiKind, EngineApiRequest, EngineRequestHandler},
+    launch::build_engine_orchestrator,
     tree::TreeConfig,
 };
 use reth_engine_util::EngineMessageStreamExt;
@@ -32,7 +32,7 @@ use reth_node_core::{
 use reth_node_events::node;
 use reth_provider::{
     providers::{BlockchainProvider, NodeTypesForProvider},
-    BlockNumReader, HeaderProvider, MetadataProvider,
+    BlockNumReader, HeaderProvider, StorageSettingsCache,
 };
 use reth_tasks::TaskExecutor;
 use reth_tokio_util::EventSender;
@@ -82,6 +82,7 @@ impl EngineNodeLauncher {
         let Self { ctx, engine_tree_config } = self;
         let NodeBuilderWithComponents {
             adapter: NodeTypesAdapter { database },
+            rocksdb_provider,
             components_builder,
             add_ons: AddOns { hooks, exexs: installed_exex, add_ons },
             config,
@@ -103,25 +104,9 @@ impl EngineNodeLauncher {
             // ensure certain settings take effect
             .with_adjusted_configs()
             // Create the provider factory with changeset cache
-            .with_provider_factory::<_, <CB::Components as NodeComponents<T>>::Evm>(changeset_cache.clone()).await?
-            .inspect(|ctx| {
+            .with_provider_factory::<_, <CB::Components as NodeComponents<T>>::Evm>(changeset_cache.clone(), rocksdb_provider).await?
+            .inspect(|_| {
                 info!(target: "reth::cli", "Database opened");
-                match ctx.provider_factory().storage_settings() {
-                    Ok(settings) => {
-                        info!(
-                            target: "reth::cli",
-                            ?settings,
-                            "Storage settings"
-                        );
-                    },
-                    Err(err) => {
-                        warn!(
-                            target: "reth::cli",
-                            ?err,
-                            "Failed to get storage settings"
-                        );
-                    },
-                }
             })
             .with_prometheus_server().await?
             .inspect(|this| {
@@ -130,6 +115,8 @@ impl EngineNodeLauncher {
             .with_genesis()?
             .inspect(|this: &LaunchContextWith<Attached<WithConfigs<<T::Types as NodeTypes>::ChainSpec>, _>>| {
                 info!(target: "reth::cli", "\n{}", this.chain_spec().display_hardforks());
+                let settings = this.provider_factory().cached_storage_settings();
+                info!(target: "reth::cli", ?settings, "Loaded storage settings");
             })
             .with_metrics_task()
             // passing FullNodeTypes as type parameter here so that we can build
@@ -240,10 +227,12 @@ impl EngineNodeLauncher {
                 ctx.blockchain_db().clone(),
                 ctx.components().evm_config().clone(),
                 || async {
-                    // Create a separate cache for reorg validator (not shared with main engine)
-                    let reorg_cache = ChangesetCache::new();
                     validator_builder
-                        .build_tree_validator(&add_ons_ctx, engine_tree_config.clone(), reorg_cache)
+                        .build_tree_validator(
+                            &add_ons_ctx,
+                            engine_tree_config.clone(),
+                            changeset_cache.clone(),
+                        )
                         .await
                 },
                 node_config.debug.reorg_frequency,
@@ -255,13 +244,19 @@ impl EngineNodeLauncher {
             // during this run.
             .maybe_store_messages(node_config.debug.engine_api_store.clone());
 
-        let mut engine_service = EngineService::new(
+        let engine_kind = if ctx.chain_spec().is_optimism() {
+            EngineApiKind::OpStack
+        } else {
+            EngineApiKind::Ethereum
+        };
+
+        let mut orchestrator = build_engine_orchestrator(
+            engine_kind,
             consensus.clone(),
-            ctx.chain_spec(),
             network_client.clone(),
             Box::pin(consensus_engine_stream),
             pipeline,
-            Box::new(ctx.task_executor().clone()),
+            ctx.task_executor().clone(),
             ctx.provider_factory().clone(),
             ctx.blockchain_db().clone(),
             pruner,
@@ -271,11 +266,12 @@ impl EngineNodeLauncher {
             ctx.sync_metrics_tx(),
             ctx.components().evm_config().clone(),
             changeset_cache,
+            ctx.task_executor().clone(),
         );
 
         info!(target: "reth::cli", "Consensus engine initialized");
 
-        #[allow(clippy::needless_continue)]
+        #[expect(clippy::needless_continue)]
         let events = stream_select!(
             event_sender.new_listener().map(Into::into),
             pipeline_events.map(Into::into),
@@ -284,13 +280,13 @@ impl EngineNodeLauncher {
             static_file_producer_events.map(Into::into),
         );
 
-        ctx.task_executor().spawn_critical(
+        ctx.task_executor().spawn_critical_task(
             "events task",
-            Box::pin(node::handle_events(
+            node::handle_events(
                 Some(Box::new(ctx.components().network().clone())),
                 Some(ctx.head().number),
                 events,
-            )),
+            ),
         );
 
         let RpcHandle {
@@ -299,7 +295,7 @@ impl EngineNodeLauncher {
             engine_events,
             beacon_engine_handle,
             engine_shutdown: _,
-            engine_api_tx: _,
+            engine_api_tx: _rpc_engine_api_tx,
         } = add_ons.launch_add_ons(add_ons_ctx).await?;
 
         // Create engine shutdown handle
@@ -323,146 +319,144 @@ impl EngineNodeLauncher {
         let startup_sync_state_idle = ctx.node_config().debug.startup_sync_state_idle;
 
         info!(target: "reth::cli", "Starting consensus engine");
-        ctx.task_executor().spawn_critical_with_graceful_shutdown_signal(
-            "consensus engine",
-            move |graceful| async move {
-                if let Some(initial_target) = initial_target {
-                    debug!(target: "reth::cli", %initial_target,  "start backfill sync");
-                    // network_handle's sync state is already initialized at Syncing
-                    engine_service.orchestrator_mut().start_backfill_sync(initial_target);
-                } else if startup_sync_state_idle {
-                    network_handle.update_sync_state(SyncState::Idle);
-                }
+        let consensus_engine = move |mut on_graceful_shutdown| async move {
+            if let Some(initial_target) = initial_target {
+                debug!(target: "reth::cli", %initial_target,  "start backfill sync");
+                // network_handle's sync state is already initialized at Syncing
+                orchestrator.start_backfill_sync(initial_target);
+            } else if startup_sync_state_idle {
+                network_handle.update_sync_state(SyncState::Idle);
+            }
 
-                let mut res = Ok(());
-                let mut shutdown_rx = shutdown_rx.fuse();
-                let mut graceful = std::pin::pin!(graceful);
-                // First shutdown wins: once either the TaskManager graceful signal
-                // or EngineShutdown has sent `FromOrchestrator::Terminate`, gate
-                // the other arm so the engine-tree doesn't receive a second
-                // Terminate (which would panic on done_tx send).
-                let mut terminating = false;
+            let mut res = Ok(());
+            let mut shutdown_rx = shutdown_rx.fuse();
+            // First shutdown wins: once either the TaskManager graceful signal
+            // or EngineShutdown has sent `FromOrchestrator::Terminate`, gate
+            // the other arm so the engine-tree doesn't receive a second
+            // Terminate (which would panic on done_tx send).
+            let mut terminating = false;
 
-                // advance the chain and await payloads built locally to add into the engine api
-                // tree handler to prevent re-execution if that block is received as payload from
-                // the CL
-                loop {
-                    tokio::select! {
-                        // TaskManager graceful-shutdown signal (SIGTERM/Ctrl-C path).
-                        // Holds the GracefulShutdownGuard across the flush so
-                        // graceful_shutdown_with_timeout blocks until the
-                        // persist_until_complete round-trip finishes.
-                        _guard = &mut graceful, if !terminating => {
-                            let canonical_tip = provider.best_block_number().ok();
-                            let persisted_before = provider.last_block_number().ok();
-                            info!(
+            // advance the chain and await payloads built locally to add into the engine api
+            // tree handler to prevent re-execution if that block is received as payload from
+            // the CL
+            loop {
+                tokio::select! {
+                    // TaskManager graceful-shutdown signal (SIGTERM/Ctrl-C path).
+                    // Holds the GracefulShutdownGuard across the flush so
+                    // graceful_shutdown_with_timeout blocks until the
+                    // persist_until_complete round-trip finishes.
+                    _guard = &mut on_graceful_shutdown, if !terminating => {
+                        let canonical_tip = provider.best_block_number().ok();
+                        let persisted_before = provider.last_block_number().ok();
+                        info!(
+                            target: "reth::cli",
+                            ?canonical_tip, ?persisted_before,
+                            "Graceful shutdown: starting engine flush",
+                        );
+                        let flush_start = std::time::Instant::now();
+                        let (done_tx, done_rx) = oneshot::channel();
+                        orchestrator.handler_mut().handler_mut().on_event(
+                            FromOrchestrator::Terminate { tx: done_tx }.into()
+                        );
+                        match done_rx.await {
+                            Ok(()) => info!(
                                 target: "reth::cli",
-                                ?canonical_tip, ?persisted_before,
-                                "Graceful shutdown: starting engine flush",
+                                duration_ms = flush_start.elapsed().as_millis() as u64,
+                                ?persisted_before,
+                                persisted_after = ?provider.last_block_number().ok(),
+                                "Graceful shutdown: engine flush complete",
+                            ),
+                            Err(err) => warn!(
+                                target: "reth::cli",
+                                %err,
+                                duration_ms = flush_start.elapsed().as_millis() as u64,
+                                "Graceful shutdown: done-channel closed before completion",
+                            ),
+                        }
+                        // `break` enforces the invariant; no need to set
+                        // `terminating = true` here.
+                        break;
+                    }
+                    shutdown_req = &mut shutdown_rx, if !terminating => {
+                        if let Ok(req) = shutdown_req {
+                            debug!(target: "reth::cli", "received engine shutdown request");
+                            terminating = true;
+                            orchestrator.handler_mut().handler_mut().on_event(
+                                FromOrchestrator::Terminate { tx: req.done_tx }.into()
                             );
-                            let flush_start = std::time::Instant::now();
-                            let (done_tx, done_rx) = oneshot::channel();
-                            engine_service.orchestrator_mut().handler_mut().handler_mut().on_event(
-                                FromOrchestrator::Terminate { tx: done_tx }.into()
-                            );
-                            match done_rx.await {
-                                Ok(()) => info!(
-                                    target: "reth::cli",
-                                    duration_ms = flush_start.elapsed().as_millis() as u64,
-                                    ?persisted_before,
-                                    persisted_after = ?provider.last_block_number().ok(),
-                                    "Graceful shutdown: engine flush complete",
-                                ),
-                                Err(err) => warn!(
-                                    target: "reth::cli",
-                                    %err,
-                                    duration_ms = flush_start.elapsed().as_millis() as u64,
-                                    "Graceful shutdown: done-channel closed before completion",
-                                ),
-                            }
-                            // `break` enforces the invariant; no need to set
-                            // `terminating = true` here.
-                            break;
                         }
-                        shutdown_req = &mut shutdown_rx, if !terminating => {
-                            if let Ok(req) = shutdown_req {
-                                debug!(target: "reth::cli", "received engine shutdown request");
-                                terminating = true;
-                                engine_service.orchestrator_mut().handler_mut().handler_mut().on_event(
-                                    FromOrchestrator::Terminate { tx: req.done_tx }.into()
-                                );
-                            }
+                    }
+                    payload = built_payloads.select_next_some(), if !built_payloads.is_terminated() => {
+                        if let Some(executed_block) = payload.executed_block() {
+                            debug!(target: "reth::cli", block=?executed_block.recovered_block.num_hash(),  "inserting built payload");
+                            orchestrator.handler_mut().handler_mut().on_event(EngineApiRequest::InsertExecutedBlock(executed_block.into_executed_payload()).into());
                         }
-                        payload = built_payloads.select_next_some() => {
-                            if let Some(executed_block) = payload.executed_block() {
-                                debug!(target: "reth::cli", block=?executed_block.recovered_block.num_hash(),  "inserting built payload");
-                                engine_service.orchestrator_mut().handler_mut().handler_mut().on_event(EngineApiRequest::InsertExecutedBlock(executed_block.into_executed_payload()).into());
-                            }
+                    }
+                    req = engine_api_rx.recv() => {
+                        if let Some(req) = req {
+                            orchestrator.handler_mut().handler_mut().on_event(req.into());
                         }
-                        req = engine_api_rx.recv() => {
-                            if let Some(req) = req {
-                                engine_service.orchestrator_mut().handler_mut().handler_mut().on_event(req.into());
-                            }
-                        }
-                        event = engine_service.next() => {
-                            let Some(event) = event else { break };
-                            debug!(target: "reth::cli", "Event: {event}");
-                            match event {
-                                ChainEvent::BackfillSyncFinished => {
-                                    if terminate_after_backfill {
-                                        debug!(target: "reth::cli", "Terminating after initial backfill");
-                                        break
-                                    }
-                                    if startup_sync_state_idle {
-                                        network_handle.update_sync_state(SyncState::Idle);
-                                    }
-                                }
-                                ChainEvent::BackfillSyncStarted => {
-                                    network_handle.update_sync_state(SyncState::Syncing);
-                                }
-                                ChainEvent::FatalError => {
-                                    error!(target: "reth::cli", "Fatal error in consensus engine");
-                                    res = Err(eyre::eyre!("Fatal error in consensus engine"));
+                    }
+                    event = orchestrator.next() => {
+                        let Some(event) = event else { break };
+                        debug!(target: "reth::cli", "Event: {event}");
+                        match event {
+                            ChainEvent::BackfillSyncFinished => {
+                                if terminate_after_backfill {
+                                    debug!(target: "reth::cli", "Terminating after initial backfill");
                                     break
                                 }
-                                ChainEvent::Handler(ev) => {
-                                    if let Some(head) = ev.canonical_header() {
-                                        // Once we're progressing via live sync, we can consider the node is not syncing anymore
-                                        network_handle.update_sync_state(SyncState::Idle);
-                                        let head_block = Head {
-                                            number: head.number(),
-                                            hash: head.hash(),
-                                            difficulty: head.difficulty(),
-                                            timestamp: head.timestamp(),
-                                            // For Ethereum, total_difficulty becomes a constant at Paris
-                                            // so the first branch is the fast path. For chains where
-                                            // Paris never activates (BSC), fall back to the real TD from
-                                            // the provider so the status message doesn't advertise 0 and
-                                            // get filtered out by remote peers as a useless sync source.
-                                            total_difficulty: chainspec.final_paris_total_difficulty()
-                                                .filter(|_| chainspec.is_paris_active_at_block(head.number()))
-                                                .or_else(|| provider.header_td_by_number(head.number()).ok().flatten())
-                                                .unwrap_or_default(),
-                                        };
-                                        network_handle.update_status(head_block);
-
-                                        let updated = BlockRangeUpdate {
-                                            earliest: provider.earliest_block_number().unwrap_or_default(),
-                                            latest: head.number(),
-                                            latest_hash: head.hash(),
-                                        };
-                                        network_handle.update_block_range(updated);
-                                    }
-                                    event_sender.notify(ev);
+                                if startup_sync_state_idle {
+                                    network_handle.update_sync_state(SyncState::Idle);
                                 }
+                            }
+                            ChainEvent::BackfillSyncStarted => {
+                                network_handle.update_sync_state(SyncState::Syncing);
+                            }
+                            ChainEvent::FatalError => {
+                                error!(target: "reth::cli", "Fatal error in consensus engine");
+                                res = Err(eyre::eyre!("Fatal error in consensus engine"));
+                                break
+                            }
+                            ChainEvent::Handler(ev) => {
+                                if let Some(head) = ev.canonical_header() {
+                                    // Once we're progressing via live sync, we can consider the node is not syncing anymore
+                                    network_handle.update_sync_state(SyncState::Idle);
+                                    let head_block = Head {
+                                        number: head.number(),
+                                        hash: head.hash(),
+                                        difficulty: head.difficulty(),
+                                        timestamp: head.timestamp(),
+                                        // For Ethereum, total_difficulty becomes a constant at Paris
+                                        // so the first branch is the fast path. For chains where
+                                        // Paris never activates (BSC), fall back to the real TD from
+                                        // the provider so the status message doesn't advertise 0 and
+                                        // get filtered out by remote peers as a useless sync source.
+                                        total_difficulty: chainspec.final_paris_total_difficulty()
+                                            .filter(|_| chainspec.is_paris_active_at_block(head.number()))
+                                            .or_else(|| provider.header_td_by_number(head.number()).ok().flatten())
+                                            .unwrap_or_default(),
+                                    };
+                                    network_handle.update_status(head_block);
+
+                                    let updated = BlockRangeUpdate {
+                                        earliest: provider.earliest_block_number().unwrap_or_default(),
+                                        latest: head.number(),
+                                        latest_hash: head.hash(),
+                                    };
+                                    network_handle.update_block_range(updated);
+                                }
+                                event_sender.notify(ev);
                             }
                         }
                     }
                 }
+            }
 
-                let _ = exit.send(res);
-            },
-        );
+            let _ = exit.send(res);
+        };
+        ctx.task_executor()
+            .spawn_critical_with_graceful_shutdown_signal("consensus engine", consensus_engine);
 
         let engine_events_for_ethstats = engine_events.new_listener();
 
@@ -490,10 +484,7 @@ impl EngineNodeLauncher {
         ctx.spawn_ethstats(engine_events_for_ethstats).await?;
 
         let handle = NodeHandle {
-            node_exit_future: NodeExitFuture::new(
-                async { rx.await? },
-                full_node.config.debug.terminate,
-            ),
+            node_exit_future: NodeExitFuture::new(async { rx.await? }),
             node: full_node,
         };
 

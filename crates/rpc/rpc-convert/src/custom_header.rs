@@ -1,28 +1,27 @@
 //! Custom RPC header types with additional fields
 
 use alloy_network::primitives::HeaderResponse;
-use alloy_primitives::{BlockHash, B256, U256};
+use alloy_primitives::{BlockHash, U256};
 
 /// Custom RPC header that extends the standard header with additional fields
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CustomRpcHeader<H = alloy_consensus::Header> {
     /// Hash of the block
     pub hash: BlockHash,
     /// Inner consensus header.
-    #[cfg_attr(feature = "serde", serde(flatten))]
+    #[serde(flatten)]
     pub inner: H,
     /// Total difficulty
     ///
     /// Note: This field is now effectively deprecated: <https://github.com/ethereum/execution-apis/pull/570>
-    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub total_difficulty: Option<U256>,
     /// Integer the size of this block in bytes.
-    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<U256>,
     /// Millisecond timestamp - custom field for BNB Chain
-    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub milli_timestamp: Option<U256>,
 }
 
@@ -156,6 +155,14 @@ where
         self.inner.requests_hash()
     }
 
+    fn block_access_list_hash(&self) -> Option<alloy_primitives::FixedBytes<32>> {
+        self.inner.block_access_list_hash()
+    }
+
+    fn slot_number(&self) -> Option<u64> {
+        self.inner.slot_number()
+    }
+
     fn extra_data(&self) -> &alloy_primitives::Bytes {
         self.inner.extra_data()
     }
@@ -201,7 +208,7 @@ pub fn calculate_millisecond_timestamp<T: reth_primitives_traits::BlockHeader>(h
     let mix_hash = header.mix_hash();
 
     let ms_part = if let Some(mix_hash) = mix_hash {
-        if mix_hash == B256::ZERO {
+        if mix_hash.is_zero() {
             0
         } else {
             let bytes = mix_hash.as_slice();

@@ -47,12 +47,14 @@ impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> Command<C>
     pub async fn execute<N: CliNodeTypes<ChainSpec = C::ChainSpec>, F, Comp>(
         self,
         components: F,
+        runtime: reth_tasks::Runtime,
     ) -> eyre::Result<()>
     where
         Comp: CliNodeComponents<N>,
         F: FnOnce(Arc<C::ChainSpec>) -> Comp,
     {
-        let Environment { provider_factory, config, .. } = self.env.init::<N>(AccessRights::RW)?;
+        let Environment { provider_factory, config, data_dir: _ } =
+            self.env.init::<N>(AccessRights::RW, runtime)?;
 
         let target = self.command.unwind_target(provider_factory.clone())?;
 
@@ -94,7 +96,7 @@ impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> Command<C>
         // Initialize or disable TrieDB based on config
         if let Some(ref statedb_config) = config.statedb {
             if statedb_config.r#type == "triedb" {
-                init_global_triedb_manager(statedb_config.path.to_string_lossy().as_ref());
+                init_global_triedb_manager(&statedb_config.path.to_string_lossy());
                 is_triedb = true;
             } else {
                 disable_triedb();
@@ -217,7 +219,7 @@ enum Subcommands {
 
 impl Subcommands {
     /// Returns the block to unwind to. The returned block will stay in database.
-    fn unwind_target<N: ProviderNodeTypes<DB = Arc<DatabaseEnv>>>(
+    fn unwind_target<N: ProviderNodeTypes<DB = DatabaseEnv>>(
         &self,
         factory: ProviderFactory<N>,
     ) -> eyre::Result<u64> {

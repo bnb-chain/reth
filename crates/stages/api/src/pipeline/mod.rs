@@ -13,7 +13,7 @@ use reth_primitives_traits::{
 use reth_provider::{
     providers::ProviderNodeTypes, BlockHashReader, BlockNumReader, ChainStateBlockReader,
     ChainStateBlockWriter, DBProvider, DatabaseProviderFactory, HeaderProvider, ProviderFactory,
-    PruneCheckpointReader, StageCheckpointReader, StageCheckpointWriter,
+    PruneCheckpointReader, StageCheckpointReader, StageCheckpointWriter, StorageSettingsCache,
 };
 use reth_prune::PrunerBuilder;
 use reth_static_file::StaticFileProducer;
@@ -273,9 +273,16 @@ impl<N: ProviderNodeTypes> Pipeline<N> {
     /// - [`StaticFileSegment::Transactions`](reth_static_file_types::StaticFileSegment::Transactions)
     ///   -> [`StageId::Bodies`]
     ///
+    /// This is a legacy storage.v1 backfill step. Storage.v2 writes directly to static files and
+    /// `RocksDB`, so there is no MDBX -> static-file migration to perform.
+    ///
     /// CAUTION: This method locks the static file producer Mutex, hence can block the thread if the
     /// lock is occupied.
     pub fn move_to_static_files(&self) -> RethResult<()> {
+        if self.provider_factory.cached_storage_settings().is_v2() {
+            return Ok(())
+        }
+
         // Copies data from database to static files
         let lowest_static_file_height =
             self.static_file_producer.lock().copy_to_static_files()?.min_block_num();
@@ -303,13 +310,14 @@ impl<N: ProviderNodeTypes> Pipeline<N> {
         bad_block: Option<BlockNumber>,
     ) -> Result<(), PipelineError> {
         // Add validation before starting unwind
-        let provider = self.provider_factory.provider()?;
-        let latest_block = provider.last_block_number()?;
-
-        // Get the actual pruning configuration
-        let prune_modes = provider.prune_modes_ref();
-
-        let checkpoints = provider.get_prune_checkpoints()?;
+        let (latest_block, prune_modes, checkpoints) = {
+            let provider = self.provider_factory.provider()?;
+            (
+                provider.last_block_number()?,
+                provider.prune_modes_ref().clone(),
+                provider.get_prune_checkpoints()?,
+            )
+        };
         prune_modes.ensure_unwind_target_unpruned(latest_block, to, &checkpoints)?;
 
         // Unwind stages in reverse order of execution
@@ -320,7 +328,7 @@ impl<N: ProviderNodeTypes> Pipeline<N> {
         let _locked_sf_producer = self.static_file_producer.lock();
 
         let mut provider_rw =
-            self.provider_factory.database_provider_rw()?.disable_long_read_transaction_safety();
+            self.provider_factory.unwind_provider_rw()?.disable_long_read_transaction_safety();
 
         for stage in unwind_pipeline {
             let stage_id = stage.id();
@@ -382,7 +390,7 @@ impl<N: ProviderNodeTypes> Pipeline<N> {
                             });
                         }
 
-                        // update finalized block if needed
+                        // update finalized and safe block if needed
                         let last_saved_finalized_block_number =
                             provider_rw.last_finalized_block_number()?;
 
@@ -396,11 +404,21 @@ impl<N: ProviderNodeTypes> Pipeline<N> {
                             ))?;
                         }
 
+                        let last_saved_safe_block_number = provider_rw.last_safe_block_number()?;
+
+                        if last_saved_safe_block_number.is_none() ||
+                            Some(checkpoint.block_number) < last_saved_safe_block_number
+                        {
+                            provider_rw.save_safe_block_number(BlockNumber::from(
+                                checkpoint.block_number,
+                            ))?;
+                        }
+
                         provider_rw.commit()?;
 
                         stage.post_unwind_commit()?;
 
-                        provider_rw = self.provider_factory.database_provider_rw()?;
+                        provider_rw = self.provider_factory.unwind_provider_rw()?;
                     }
                     Err(err) => {
                         self.event_sender.notify(PipelineEvent::Error { stage_id });
