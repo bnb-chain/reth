@@ -237,6 +237,9 @@ where
         changeset_cache: ChangesetCache,
         runtime: reth_tasks::Runtime,
     ) -> Self {
+        // R1: publish the engine's shared Runtime so an embedder's miner can submit proof
+        // work to the same rayon pools instead of building a second competing set.
+        reth_tasks::set_shared_engine_runtime(runtime.clone());
         let precompile_cache_map = PrecompileCacheMap::default();
         let payload_processor = PayloadProcessor::new(
             runtime.clone(),
