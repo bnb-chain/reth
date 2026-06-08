@@ -885,6 +885,24 @@ impl RuntimeBuilder {
     }
 }
 
+/// Process-global handle to the engine's shared [`Runtime`].
+///
+/// Published by the engine tree at validator construction so that embedders running
+/// their own payload pipeline (e.g. a custom miner) can submit proof work to the SAME
+/// rayon pools instead of constructing a second `Runtime` — which would create a
+/// competing set of pools contending for CPU. First write wins.
+static SHARED_ENGINE_RUNTIME: std::sync::OnceLock<Runtime> = std::sync::OnceLock::new();
+
+/// Publish the engine's [`Runtime`] for sharing. First write wins; later calls are no-ops.
+pub fn set_shared_engine_runtime(runtime: Runtime) {
+    let _ = SHARED_ENGINE_RUNTIME.set(runtime);
+}
+
+/// Returns a clone of the engine's shared [`Runtime`], if one has been published.
+pub fn shared_engine_runtime() -> Option<Runtime> {
+    SHARED_ENGINE_RUNTIME.get().cloned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -937,22 +955,4 @@ mod tests {
         assert_eq!(runtime.proof_account_worker_pool().current_num_threads(), 2);
         assert_eq!(runtime.prewarming_pool().current_num_threads(), 2);
     }
-}
-
-/// Process-global handle to the engine's shared [`Runtime`].
-///
-/// Published by the engine tree at validator construction so that embedders running
-/// their own payload pipeline (e.g. a custom miner) can submit proof work to the SAME
-/// rayon pools instead of constructing a second `Runtime` — which would create a
-/// competing set of pools contending for CPU. First write wins.
-static SHARED_ENGINE_RUNTIME: std::sync::OnceLock<Runtime> = std::sync::OnceLock::new();
-
-/// Publish the engine's [`Runtime`] for sharing. First write wins; later calls are no-ops.
-pub fn set_shared_engine_runtime(runtime: Runtime) {
-    let _ = SHARED_ENGINE_RUNTIME.set(runtime);
-}
-
-/// Returns a clone of the engine's shared [`Runtime`], if one has been published.
-pub fn shared_engine_runtime() -> Option<Runtime> {
-    SHARED_ENGINE_RUNTIME.get().cloned()
 }
