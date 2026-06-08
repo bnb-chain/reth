@@ -20,6 +20,8 @@ ignore = [
     "RUSTSEC-2026-0105",
     # https://rustsec.org/advisories/RUSTSEC-2026-0097 rand unsound only with custom trace-level logger; not reachable in reth
     "RUSTSEC-2026-0097",
+    # https://rustsec.org/advisories/RUSTSEC-2026-0173 proc-macro-error2 unmaintained, transitive dep via aquamarine (build-time only)
+    "RUSTSEC-2026-0173",
 ]
 
 # This section is considered when running `cargo deny check bans`.
