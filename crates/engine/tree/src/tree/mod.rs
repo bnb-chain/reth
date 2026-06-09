@@ -2226,7 +2226,18 @@ where
         let target_number = match target {
             PersistTarget::Head => canonical_head_number,
             PersistTarget::Threshold => {
-                canonical_head_number.saturating_sub(self.config.memory_block_buffer_target())
+                let threshold_target =
+                    canonical_head_number.saturating_sub(self.config.memory_block_buffer_target());
+                // Never persist beyond the finalized block. Persisting non-finalized
+                // (still reorg-able) blocks means a later fork switch has to revert them
+                // from disk - an expensive trie-revert that, under load, blocks the engine
+                // and cascades into a stall. Clamping the target to the finalized number
+                // keeps losing forks in memory so reorgs use in-memory changesets instead.
+                // Falls back to the unclamped target before the first finalization (sync).
+                match self.canonical_in_memory_state.get_finalized_num_hash() {
+                    Some(finalized) => threshold_target.min(finalized.number),
+                    None => threshold_target,
+                }
             }
         };
 
