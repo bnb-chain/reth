@@ -39,7 +39,7 @@ use alloy_eips::eip2124::Head;
 use alloy_primitives::{BlockNumber, B256};
 use eyre::Context;
 use rayon::ThreadPoolBuilder;
-use reth_chainspec::{Chain, EthChainSpec, EthereumHardfork, EthereumHardforks};
+use reth_chainspec::{Chain, EthChainSpec, EthereumHardforks};
 use reth_config::{config::EtlConfig, PruneConfig, StateDbConfig};
 use reth_consensus::noop::NoopConsensus;
 use reth_db_api::{database::Database, database_metrics::DatabaseMetrics};
@@ -67,9 +67,9 @@ use reth_node_metrics::{
 };
 use reth_provider::{
     providers::{NodeTypesForProvider, ProviderNodeTypes, RocksDBProvider, StaticFileProvider},
-    BlockHashReader, BlockNumReader, BlockReaderIdExt, DatabaseProviderFactory, HeaderProvider,
-    ProviderError, ProviderFactory, ProviderResult, RocksDBProviderFactory, StageCheckpointReader,
-    StaticFileProviderBuilder, StaticFileProviderFactory,
+    BlockExecutionWriter, BlockHashReader, BlockNumReader, DBProvider, DatabaseProviderFactory,
+    HeaderProvider, ProviderError, ProviderFactory, ProviderResult, RocksDBProviderFactory,
+    StageCheckpointReader, StaticFileProviderBuilder, StaticFileProviderFactory, StorageSettings,
 };
 use reth_prune::{PruneModes, PrunerBuilder};
 use reth_rpc_builder::config::RethRpcServerConfig;
@@ -78,7 +78,7 @@ use reth_stages::{
     sets::DefaultStages, stages::EraImportSource, MetricEvent, PipelineBuilder, PipelineTarget,
     StageId,
 };
-use reth_static_file::{StaticFileProducer, StaticFileSegment};
+use reth_static_file::StaticFileProducer;
 use reth_tasks::TaskExecutor;
 use reth_tracing::{
     throttle,
@@ -86,7 +86,9 @@ use reth_tracing::{
 };
 use reth_transaction_pool::TransactionPool;
 use reth_trie_db::ChangesetCache;
-use std::{path::PathBuf, sync::Arc, thread::available_parallelism, time::Duration};
+use std::{
+    num::NonZeroUsize, path::PathBuf, sync::Arc, thread::available_parallelism, time::Duration,
+};
 use tokio::sync::{
     mpsc::{unbounded_channel, UnboundedSender},
     oneshot, watch,
@@ -177,8 +179,9 @@ impl LaunchContext {
 
         info!(target: "reth::cli", path = ?config_path, "Configuration loaded");
 
-        // Update the config with the command line arguments
-        toml_config.peers.trusted_nodes_only = config.network.trusted_only;
+        // Update the config with the command line arguments. Only override when the CLI flag is
+        // set, so the TOML value is preserved when the flag is not passed.
+        toml_config.peers.trusted_nodes_only |= config.network.trusted_only;
 
         // Merge static file CLI arguments with config file, giving priority to CLI
         toml_config.static_files =
@@ -212,7 +215,7 @@ impl LaunchContext {
                 should_save = true;
             }
         } else if !reth_config.prune.is_default() {
-            warn!(target: "reth::cli", "Pruning configuration is present in the config file, but no CLI arguments are provided. Using config from file.");
+            info!(target: "reth::cli", "Pruning configuration is present in the config file, but no CLI arguments are provided. Using config from file.");
         }
 
         if should_save {
@@ -263,8 +266,7 @@ impl LaunchContext {
                 // Initialize or disable TrieDB based on config type
                 if existing_config.r#type == "triedb" {
                     // Initialize TrieDB with the configured path
-                    let path_str = expected_path.to_string_lossy().to_string();
-                    init_global_triedb_manager(&path_str);
+                    init_global_triedb_manager(&expected_path.to_string_lossy());
                 } else {
                     // Disable TrieDB if using MDBX
                     disable_triedb();
@@ -282,14 +284,13 @@ impl LaunchContext {
                 if config.statedb.triedb {
                     // Use TrieDB
                     let triedb_path = data_dir.data_dir().join("rust_eth_triedb");
-                    let path_str = triedb_path.to_string_lossy().to_string();
                     let statedb_config =
-                        StateDbConfig { r#type: "triedb".to_string(), path: triedb_path };
+                        StateDbConfig { r#type: "triedb".to_string(), path: triedb_path.clone() };
                     reth_config.update_statedb_config(statedb_config);
                     info!(target: "reth::cli", "Saving state database config (triedb) to toml file");
                     reth_config.save(config_path.as_ref())?;
                     // Initialize TrieDB
-                    init_global_triedb_manager(&path_str);
+                    init_global_triedb_manager(&triedb_path.to_string_lossy());
                 } else {
                     // Use default MDBX and save to file
                     let db_path = data_dir.data_dir().join("db");
@@ -328,9 +329,7 @@ impl LaunchContext {
     /// Configure global settings this includes:
     ///
     /// - Raising the file descriptor limit
-    /// - Configuring the global rayon thread pool with available parallelism. Honoring
-    ///   engine.reserved-cpu-cores to reserve given number of cores for O while using at least 1
-    ///   core for the rayon thread pool
+    /// - Configuring the global rayon thread pool for implicit `par_iter` usage
     pub fn configure_globals(&self, reserved_cpu_cores: usize) {
         // Raise the fd limit of the process.
         // Does not do anything on windows.
@@ -342,14 +341,14 @@ impl LaunchContext {
             Err(err) => warn!(%err, "Failed to raise file descriptor limit"),
         }
 
-        // Reserving the given number of CPU cores for the rest of OS.
-        // Users can reserve more cores by setting engine.reserved-cpu-cores
-        // Note: The global rayon thread pool will use at least one core.
-        let num_threads = available_parallelism()
-            .map_or(0, |num| num.get().saturating_sub(reserved_cpu_cores).max(1));
+        // Configure the implicit global rayon pool for `par_iter` usage.
+        // TODO: reserved_cpu_cores is currently ignored because subtracting from thread pool
+        // sizes doesn't actually reserve CPU cores for other processes.
+        let _ = reserved_cpu_cores;
+        let num_threads = available_parallelism().map_or(1, NonZeroUsize::get);
         if let Err(err) = ThreadPoolBuilder::new()
             .num_threads(num_threads)
-            .thread_name(|i| format!("reth-rayon-{i}"))
+            .thread_name(|i| format!("rayon-{i:02}"))
             .build_global()
         {
             warn!(%err, "Failed to build global thread pool")
@@ -589,6 +588,7 @@ where
     pub async fn create_provider_factory<N, Evm>(
         &self,
         changeset_cache: ChangesetCache,
+        rocksdb_provider: Option<RocksDBProvider>,
     ) -> eyre::Result<ProviderFactory<N>>
     where
         N: ProviderNodeTypes<DB = DB, ChainSpec = ChainSpec>,
@@ -606,48 +606,33 @@ where
                 .with_genesis_block_number(self.chain_spec().genesis().number.unwrap_or_default())
                 .build()?;
 
-        // Initialize RocksDB provider with metrics, statistics, and default tables
-        let rocksdb_provider = RocksDBProvider::builder(self.data_dir().rocksdb())
-            .with_default_tables()
-            .with_metrics()
-            .with_statistics()
-            .build()?;
+        // Use the provided RocksDB provider or create a new one
+        let rocksdb_provider = if let Some(provider) = rocksdb_provider {
+            provider
+        } else {
+            RocksDBProvider::builder(self.data_dir().rocksdb())
+                .with_default_tables()
+                .with_metrics()
+                .with_statistics()
+                .build()?
+        };
 
+        let prune_config = self.prune_config();
         let factory = ProviderFactory::new(
             self.right().clone(),
             self.chain_spec(),
             static_file_provider,
             rocksdb_provider,
+            self.task_executor().clone(),
         )?
-        .with_prune_modes(self.prune_modes())
+        .with_prune_modes(prune_config.segments)
+        .with_minimum_pruning_distance(prune_config.minimum_pruning_distance)
         .with_changeset_cache(changeset_cache);
 
-        // Keep MDBX, static files, and RocksDB aligned. If any check fails, unwind to the
-        // earliest consistent block.
-        //
-        // Order matters:
-        // 1) heal static files (no pruning)
-        // 2) check RocksDB (needs static-file tx data)
-        // 3) check static-file checkpoints vs MDBX (may prune)
-        //
-        // Compute one unwind target and run a single unwind.
-
-        let provider_ro = factory.database_provider_ro()?;
-
-        // Step 1: heal file-level inconsistencies (no pruning)
-        factory.static_file_provider().check_file_consistency(&provider_ro)?;
-
-        // Step 2: RocksDB consistency check (needs static files tx data)
-        let rocksdb_unwind = factory.rocksdb_provider().check_consistency(&provider_ro)?;
-
-        // Step 3: Static file checkpoint consistency (may prune)
-        let static_file_unwind = factory
-            .static_file_provider()
-            .check_consistency(&provider_ro)?
-            .map(|target| match target {
-                PipelineTarget::Unwind(block) => block,
-                PipelineTarget::Sync(_) => unreachable!("check_consistency returns Unwind"),
-            });
+        // Check consistency between the database and static files, returning
+        // the unwind targets for each storage layer if inconsistencies are
+        // found.
+        let (rocksdb_unwind, static_file_unwind) = factory.check_consistency()?;
 
         // Take the minimum block number to ensure all storage layers are consistent.
         let unwind_target = [rocksdb_unwind, static_file_unwind].into_iter().flatten().min();
@@ -695,13 +680,10 @@ where
             let (tx, rx) = oneshot::channel();
 
             // Pipeline should be run as blocking and panic if it fails.
-            self.task_executor().spawn_critical_blocking(
-                "pipeline task",
-                Box::pin(async move {
-                    let (_, result) = pipeline.run_as_fut(Some(unwind_target)).await;
-                    let _ = tx.send(result);
-                }),
-            );
+            self.task_executor().spawn_critical_blocking_task("pipeline task", async move {
+                let (_, result) = pipeline.run_as_fut(Some(unwind_target)).await;
+                let _ = tx.send(result);
+            });
             rx.await?.inspect_err(|err| {
                 error!(target: "reth::cli", %unwind_target, %inconsistency_source, %err, "failed to run unwind")
             })?;
@@ -714,12 +696,14 @@ where
     pub async fn with_provider_factory<N, Evm>(
         self,
         changeset_cache: ChangesetCache,
+        rocksdb_provider: Option<RocksDBProvider>,
     ) -> eyre::Result<LaunchContextWith<Attached<WithConfigs<ChainSpec>, ProviderFactory<N>>>>
     where
         N: ProviderNodeTypes<DB = DB, ChainSpec = ChainSpec>,
         Evm: ConfigureEvm<Primitives = N::Primitives> + 'static,
     {
-        let factory = self.create_provider_factory::<N, Evm>(changeset_cache).await?;
+        let factory =
+            self.create_provider_factory::<N, Evm>(changeset_cache, rocksdb_provider).await?;
         let ctx = LaunchContextWith {
             inner: self.inner,
             attachment: self.attachment.map_right(|_| factory),
@@ -791,19 +775,13 @@ where
 
     /// Convenience function to [`Self::init_genesis`]
     pub fn with_genesis(self) -> Result<Self, InitStorageError> {
-        init_genesis_with_settings(
-            self.provider_factory(),
-            self.node_config().static_files.to_settings(),
-        )?;
+        init_genesis_with_settings(self.provider_factory(), StorageSettings::base())?;
         Ok(self)
     }
 
     /// Write the genesis block and state if it has not already been written
     pub fn init_genesis(&self) -> Result<B256, InitStorageError> {
-        init_genesis_with_settings(
-            self.provider_factory(),
-            self.node_config().static_files.to_settings(),
-        )
+        init_genesis_with_settings(self.provider_factory(), StorageSettings::base())
     }
 
     /// Creates a new `WithMeteredProvider` container and attaches it to the
@@ -821,7 +799,8 @@ where
 
         debug!(target: "reth::cli", "Spawning stages metrics listener task");
         let sync_metrics_listener = reth_stages::MetricsListener::new(metrics_receiver);
-        self.task_executor().spawn_critical("stages metrics listener task", sync_metrics_listener);
+        self.task_executor()
+            .spawn_critical_task("stages metrics listener task", sync_metrics_listener);
 
         LaunchContextWith {
             inner: self.inner,
@@ -1033,7 +1012,15 @@ where
     /// This returns the configured `debug.tip` if set, otherwise it will check if backfill was
     /// previously interrupted and returns the block hash of the last checkpoint, see also
     /// [`Self::check_pipeline_consistency`]
-    pub fn initial_backfill_target(&self) -> ProviderResult<Option<B256>> {
+    pub fn initial_backfill_target(&self) -> ProviderResult<Option<B256>>
+    where
+        <T::Provider as DatabaseProviderFactory>::ProviderRW: BlockExecutionWriter,
+    {
+        // Make MDBX and TrieDB agree on the canonical tip before anything else
+        // consults on-disk state. After this returns Ok the two backends are
+        // in sync (or TrieDB is inactive).
+        self.align_mdbx_to_triedb_at_startup()?;
+
         let mut initial_target = self.node_config().debug.tip;
 
         if initial_target.is_none() {
@@ -1072,6 +1059,147 @@ where
         }
 
         Ok(())
+    }
+
+    /// Align MDBX to `TrieDB` pathdb at startup.
+    ///
+    /// When `TrieDB` is active, reads pathdb's persisted tip and MDBX's tip. If MDBX is
+    /// ahead, unwinds MDBX (state + blocks + static files + stage checkpoints) down to
+    /// the pathdb tip. Equal tips are a no-op. Hard-fails on:
+    ///   - pathdb ahead of MDBX (system invariant violation),
+    ///   - gap > `MAX_STARTUP_UNWIND_BLOCKS` (operator must investigate),
+    ///   - pathdb root disagrees with the MDBX header state root at `pathdb_block`.
+    ///
+    /// Called from [`Self::initial_backfill_target`] before the consensus engine and
+    /// pipeline are built, so no other subsystem observes a transient mismatch. The
+    /// MDBX unwind commits atomically; concurrent RO readers (RPC already up) see
+    /// either the pre- or post-unwind state under MDBX MVCC.
+    pub fn align_mdbx_to_triedb_at_startup(&self) -> ProviderResult<()>
+    where
+        <T::Provider as DatabaseProviderFactory>::ProviderRW: BlockExecutionWriter,
+    {
+        use crate::launch::alignment::{
+            decide_startup_alignment, AlignmentOutcome, MAX_STARTUP_UNWIND_BLOCKS,
+        };
+
+        if !is_triedb_active() {
+            return Ok(());
+        }
+
+        let triedb = rust_eth_triedb::get_global_triedb();
+        let (pathdb_block, pathdb_root) =
+            triedb.latest_persist_state().map_err(ProviderError::other)?;
+
+        let mdbx_tip = self.blockchain_db().last_block_number()?;
+        let gap = mdbx_tip.saturating_sub(pathdb_block);
+        metrics::gauge!("reth_startup_alignment_last_gap").set(gap as f64);
+
+        // Fast-path the no-unwind cases without fetching a header.
+        if mdbx_tip == pathdb_block {
+            info!(
+                target: "reth::cli",
+                mdbx_tip, pathdb_block, gap = 0u64, outcome = "noop",
+                "Startup alignment: backends already in sync",
+            );
+            return Ok(());
+        }
+        if mdbx_tip < pathdb_block {
+            error!(
+                target: "reth::cli",
+                mdbx_tip, pathdb_block, outcome = "failed:triedb_ahead",
+                "Startup alignment: triedb pathdb is ahead of mdbx — aborting",
+            );
+            return Err(ProviderError::other(std::io::Error::other(format!(
+                "triedb pathdb (#{pathdb_block}) is ahead of mdbx tip (#{mdbx_tip}); \
+                 invariant is maintained by save_blocks ordering and is not \
+                 automatically recoverable — restore pathdb from snapshot or resync"
+            ))));
+        }
+
+        // mdbx_tip > pathdb_block: need the header at pathdb_block for root validation.
+        let mdbx_root_at_pathdb_block = self
+            .blockchain_db()
+            .header_by_number(pathdb_block)?
+            .ok_or_else(|| ProviderError::HeaderNotFound(pathdb_block.into()))?
+            .state_root();
+
+        let outcome = decide_startup_alignment(
+            pathdb_block,
+            pathdb_root,
+            mdbx_tip,
+            mdbx_root_at_pathdb_block,
+            MAX_STARTUP_UNWIND_BLOCKS,
+        );
+
+        match outcome {
+            AlignmentOutcome::Aligned => Ok(()), // unreachable; fast-path handled above
+            AlignmentOutcome::TriedbAhead { .. } => {
+                // unreachable; fast-path handled above
+                Ok(())
+            }
+            AlignmentOutcome::ExceedsLimit { mdbx_tip, pathdb_block, gap, limit } => {
+                error!(
+                    target: "reth::cli",
+                    mdbx_tip, pathdb_block, gap, limit,
+                    outcome = "failed:exceeds_limit",
+                    "Startup alignment: gap exceeds safety limit — aborting",
+                );
+                Err(ProviderError::other(std::io::Error::other(format!(
+                    "startup alignment refused: mdbx tip #{mdbx_tip} is {gap} blocks \
+                     ahead of triedb pathdb #{pathdb_block} (limit {limit}); verify \
+                     pathdb path / chain config or run `reth stage unwind` explicitly"
+                ))))
+            }
+            AlignmentOutcome::RootMismatch { block, triedb_root, mdbx_root } => {
+                error!(
+                    target: "reth::cli",
+                    block, ?triedb_root, ?mdbx_root,
+                    outcome = "failed:root_mismatch",
+                    "Startup alignment: pathdb root disagrees with mdbx header — aborting",
+                );
+                Err(ProviderError::other(std::io::Error::other(format!(
+                    "triedb/mdbx state root mismatch at block #{block}: \
+                     triedb={triedb_root:?}, mdbx header={mdbx_root:?}"
+                ))))
+            }
+            AlignmentOutcome::NeedsUnwind { to } => {
+                // Unwinding to block 0 wipes the chain and leaves MDBX with a huge
+                // free list. If pathdb reports block 0 while MDBX has progressed,
+                // the likely cause is a misconfigured pathdb directory — fail loudly
+                // instead of blindly wiping state.
+                if to == 0 {
+                    error!(
+                        target: "reth::cli",
+                        mdbx_tip, pathdb_block = to,
+                        outcome = "failed:unwind_to_genesis",
+                        "Startup alignment: refusing to unwind MDBX to genesis — verify pathdb path",
+                    );
+                    return Err(ProviderError::other(std::io::Error::other(format!(
+                        "startup alignment would unwind MDBX to genesis \
+                         (pathdb_block=0, mdbx_tip={mdbx_tip}); verify pathdb path \
+                         or resync from scratch"
+                    ))));
+                }
+                let gap = mdbx_tip - to;
+                info!(
+                    target: "reth::cli",
+                    mdbx_tip, pathdb_block = to, gap, outcome = "unwinding",
+                    "Startup alignment: unwinding MDBX to match TrieDB pathdb tip",
+                );
+
+                let provider_rw = self.blockchain_db().database_provider_rw()?;
+                provider_rw.remove_block_and_execution_above(to)?;
+                provider_rw.commit()?;
+                metrics::counter!("reth_startup_alignment_unwinds_total").increment(1);
+
+                info!(
+                    target: "reth::cli",
+                    new_tip = to, gap, outcome = "unwound",
+                    "Startup alignment: MDBX unwound; proceeding",
+                );
+                Ok(())
+            }
+        }
     }
 
     /// Check if the pipeline is consistent (all stages have the checkpoint block numbers no less
@@ -1143,21 +1271,23 @@ where
     }
 
     /// Check if the pipeline is consistent under `TrieDB`.
+    ///
+    /// Precondition: [`Self::align_mdbx_to_triedb_at_startup`] has already run, so
+    /// `mdbx_tip == pathdb_tip`. This function only detects pipeline-interrupt
+    /// inconsistencies — stages whose checkpoints trail the first stage because a
+    /// prior pipeline run died mid-flight. Cross-backend alignment is the
+    /// exclusive job of the alignment step.
     pub fn check_pipeline_consistency_under_triedb(&self) -> ProviderResult<Option<B256>> {
-        // If no target was provided, check if the stages are congruent - check if the
-        // checkpoint of the last stage matches the checkpoint of the first.
-        let mut first_stage_checkpoint = self
+        let first_stage_checkpoint = self
             .blockchain_db()
             .get_stage_checkpoint(*StageId::ALL.first().unwrap())?
             .unwrap_or_default()
             .block_number;
 
         let triedb = rust_eth_triedb::get_global_triedb();
-        let (triedb_checkpoint_block_number, triedb_checkpoint_state_root) =
-            triedb.latest_persist_state().unwrap();
+        let (triedb_checkpoint_block_number, _triedb_checkpoint_state_root) =
+            triedb.latest_persist_state().map_err(ProviderError::other)?;
 
-        // Skip the first stage as we've already retrieved it and comparing all other checkpoints
-        // against it.
         for stage_id in &StageId::ALL {
             let stage_checkpoint = self
                 .blockchain_db()
@@ -1165,67 +1295,36 @@ where
                 .unwrap_or_default()
                 .block_number;
 
-            // If the checkpoint of any stage is less than the checkpoint of the first stage,
-            // retrieve and return the block hash of the latest header and use it as the target.
             if stage_checkpoint < first_stage_checkpoint {
-                if triedb_checkpoint_block_number > first_stage_checkpoint {
+                // If pathdb progressed past the first stage (prior pipeline run wrote
+                // triedb then died before advancing stage checkpoints), target the
+                // pathdb tip so the backfill resumes from there.
+                let target = if triedb_checkpoint_block_number > first_stage_checkpoint {
                     info!(
                         target: "consensus::engine",
                         triedb_checkpoint_block_number,
                         first_stage_checkpoint,
-                        "TrieDB checkpoint is ahead of the first stage checkpoint, using TrieDB checkpoint as the target"
+                        "TrieDB checkpoint ahead of first stage checkpoint; targeting TrieDB",
                     );
-                    first_stage_checkpoint = triedb_checkpoint_block_number;
-                }
+                    triedb_checkpoint_block_number
+                } else {
+                    first_stage_checkpoint
+                };
                 info!(
                     target: "consensus::engine",
-                    first_stage_checkpoint,
+                    first_stage_checkpoint = target,
                     inconsistent_stage_id = %stage_id,
                     inconsistent_stage_checkpoint = stage_checkpoint,
-                    "Pipeline sync progress is inconsistent"
+                    "Pipeline sync progress is inconsistent",
                 );
-                return self.blockchain_db().block_hash(first_stage_checkpoint);
+                return self.blockchain_db().block_hash(target);
             }
         }
 
-        info!(target: "consensus::engine", "Pipeline sync progress is consistent, will check live sync progress");
-
-        let last_persisted_block_number = self.blockchain_db().last_block_number()?;
-        let last_persisted_header = self
-            .blockchain_db()
-            .header_by_number(last_persisted_block_number)?
-            .ok_or_else(|| {
-                reth_provider::ProviderError::HeaderNotFound(alloy_eips::BlockHashOrNumber::Number(
-                    last_persisted_block_number,
-                ))
-            })?;
-        let last_persisted_state_root = last_persisted_header.state_root();
-
-        if last_persisted_block_number > triedb_checkpoint_block_number {
-            info!(target: "consensus::engine",
-            last_persisted_block_number,
-            last_persisted_state_root = ?last_persisted_state_root,
-            triedb_checkpoint_block_number,
-            triedb_checkpoint_state_root = ?triedb_checkpoint_state_root,
-            "Last persisted state is ahead of the TrieDB state, start pipeline sync to align");
-            return self.blockchain_db().block_hash(last_persisted_block_number);
-        } else if last_persisted_block_number < triedb_checkpoint_block_number {
-            info!(target: "consensus::engine",
-            last_persisted_block_number,
-            last_persisted_state_root = ?last_persisted_state_root,
-            triedb_checkpoint_block_number,
-            triedb_checkpoint_state_root = ?triedb_checkpoint_state_root,
-            "Last persisted state is behind of the TrieDB state, start pipeline sync to align");
-            return self.blockchain_db().block_hash(last_persisted_block_number);
-        }
-
-        info!(target: "consensus::engine",
-            last_persisted_block_number,
-            last_persisted_state_root = ?last_persisted_state_root,
-            triedb_checkpoint_block_number,
-            triedb_checkpoint_state_root = ?triedb_checkpoint_state_root,
-            "Last persisted state equal TrieDB state, start live sync");
-
+        info!(
+            target: "consensus::engine",
+            "Pipeline sync progress is consistent and backends are aligned; starting live sync",
+        );
         Ok(None)
     }
     /// Expire the pre-merge transactions if the node is configured to do so and the chain has a
@@ -1233,34 +1332,12 @@ where
     ///
     /// If the node is configured to prune pre-merge transactions and it has synced past the merge
     /// block, it will delete the pre-merge transaction static files if they still exist.
-    pub fn expire_pre_merge_transactions(&self) -> eyre::Result<()>
+    pub const fn expire_pre_merge_transactions(&self) -> eyre::Result<()>
     where
         T: FullNodeTypes<Provider: StaticFileProviderFactory>,
     {
-        if self.node_config().pruning.bodies_pre_merge &&
-            let Some(merge_block) = self
-                .chain_spec()
-                .ethereum_fork_activation(EthereumHardfork::Paris)
-                .block_number()
-        {
-            let merge_block = BlockNumber::from(merge_block);
-            // Ensure we only expire transactions after we synced past the merge block.
-            let Some(latest) = self.blockchain_db().latest_header()? else { return Ok(()) };
-            if latest.number() > merge_block {
-                let provider = self.blockchain_db().static_file_provider();
-                if provider
-                    .get_lowest_range_end(StaticFileSegment::Transactions)
-                    .is_some_and(|lowest| lowest < merge_block)
-                {
-                    info!(target: "reth::cli", merge_block, "Expiring pre-merge transactions");
-                    provider
-                        .delete_segment_below_block(StaticFileSegment::Transactions, merge_block)?;
-                } else {
-                    debug!(target: "reth::cli", merge_block, "No pre-merge transactions to expire");
-                }
-            }
-        }
-
+        // Pre-merge transaction expiry requires `get_lowest_transaction_static_file_block`
+        // and `delete_transactions_below` which are not yet implemented in this fork.
         Ok(())
     }
     /// Returns the metrics sender.
@@ -1274,7 +1351,7 @@ where
     }
 
     /// Launches ExEx (Execution Extensions) and returns the ExEx manager handle.
-    #[allow(clippy::type_complexity)]
+    #[expect(clippy::type_complexity)]
     pub async fn launch_exex(
         &self,
         installed_exex: Vec<(
@@ -1296,7 +1373,7 @@ where
     ///     .launch()
     ///     .await
     /// ```
-    #[allow(clippy::type_complexity)]
+    #[expect(clippy::type_complexity)]
     pub fn exex_launcher(
         &self,
         installed_exex: Vec<(
@@ -1373,7 +1450,7 @@ where
         // If engine events are provided, spawn listener for new payload reporting
         let ethstats_for_events = ethstats.clone();
         let task_executor = self.task_executor().clone();
-        task_executor.spawn(Box::pin(async move {
+        task_executor.spawn_task(async move {
             while let Some(event) = engine_events.next().await {
                 use reth_engine_primitives::ConsensusEngineEvent;
                 match event {
@@ -1396,10 +1473,10 @@ where
                     }
                 }
             }
-        }));
+        });
 
         // Spawn main ethstats service
-        task_executor.spawn(Box::pin(async move { ethstats.run().await }));
+        task_executor.spawn_task(async move { ethstats.run().await });
 
         Ok(())
     }
@@ -1507,23 +1584,36 @@ where
 }
 
 /// Returns the metrics hooks for the node.
+///
+/// The DB and static-file metric-reporting hooks walk all tables/segments and
+/// can be expensive on large databases. Set `RETH_DISABLE_HEAVY_METRICS` to
+/// any value to skip registering them; the metrics server still serves the
+/// rest of the registry.
 pub fn metrics_hooks<N: NodeTypesWithDB>(provider_factory: &ProviderFactory<N>) -> Hooks {
-    Hooks::builder()
-        .with_hook({
-            let db = provider_factory.db_ref().clone();
-            move || throttle!(Duration::from_secs(5 * 60), || db.report_metrics())
-        })
-        .with_hook({
-            let sfp = provider_factory.static_file_provider();
-            move || {
-                throttle!(Duration::from_secs(5 * 60), || {
-                    if let Err(error) = sfp.report_metrics() {
-                        error!(%error, "Failed to report metrics from static file provider");
-                    }
-                })
-            }
-        })
-        .build()
+    let mut builder = Hooks::builder();
+    // Heavy hooks: opt out via env var when their cost is unacceptable.
+    if std::env::var_os("RETH_DISABLE_HEAVY_METRICS").is_none() {
+        builder = builder
+            .with_hook({
+                let db = provider_factory.db_ref().clone();
+                move || throttle!(Duration::from_secs(5 * 60), || db.report_metrics())
+            })
+            .with_hook({
+                let sfp = provider_factory.static_file_provider();
+                move || {
+                    throttle!(Duration::from_secs(5 * 60), || {
+                        if let Err(error) = sfp.report_metrics() {
+                            error!(%error, "Failed to report metrics from static file provider");
+                        }
+                    })
+                }
+            })
+            .with_hook({
+                let rocksdb = provider_factory.rocksdb_provider();
+                move || throttle!(Duration::from_secs(5 * 60), || rocksdb.report_metrics())
+            });
+    }
+    builder.build()
 }
 
 #[cfg(test)]
@@ -1570,6 +1660,7 @@ mod tests {
                     bodies_distance: None,
                     receipts_log_filter: None,
                     bodies_before: None,
+                    minimum_distance: None,
                 },
                 ..NodeConfig::test()
             };

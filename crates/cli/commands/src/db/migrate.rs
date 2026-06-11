@@ -91,13 +91,13 @@ impl Command {
 
                 if dst_size < src_size {
                     let reduction = ((src_size - dst_size) as f64 / src_size as f64) * 100.0;
-                    info!(target: "reth::cli", 
+                    info!(target: "reth::cli",
                           "Size reduction: {} ({:.2}% smaller due to defragmentation)",
                           format_byte_size(src_size - dst_size),
                           reduction);
-                    info!(target: "reth::cli", 
+                    info!(target: "reth::cli",
                           "  Note: This is normal. The copy process eliminates fragmentation,");
-                    info!(target: "reth::cli", 
+                    info!(target: "reth::cli",
                           "  empty pages, and compacts the data structure.");
                 }
             }
@@ -146,7 +146,7 @@ impl Command {
             if let Some(page_size) = self.page_size {
                 info!(target: "reth::cli", "  Page size: {} (custom)", format_byte_size(page_size));
             } else {
-                info!(target: "reth::cli", "  Page size: {} (using system default)", 
+                info!(target: "reth::cli", "  Page size: {} (using system default)",
                       format_byte_size(src_page_size as usize));
             }
             info!(target: "reth::cli", "  Map size: {}", format_byte_size(max_size_bytes));
@@ -190,7 +190,7 @@ impl Command {
         let total_tables = tables_to_copy.len();
         for (idx, table_name) in tables_to_copy.iter().enumerate() {
             if !self.quiet {
-                info!(target: "reth::cli", "[{}/{}] Copying table: {}", 
+                info!(target: "reth::cli", "[{}/{}] Copying table: {}",
                       idx + 1, total_tables, table_name);
             }
 
@@ -218,18 +218,18 @@ impl Command {
 
         // Open the databases (tables) by name
         // Source: read-only, use open_db() - table must exist
-        let src_db = src_tx.inner.open_db(Some(table_name))?;
+        let src_db = src_tx.inner().open_db(Some(table_name))?;
         // Destination: tables are already created by init_db(), just open them
-        let dst_db = dst_tx.inner.open_db(Some(table_name))?;
+        let dst_db = dst_tx.inner().open_db(Some(table_name))?;
 
         // Clear destination table before copying
         // This is necessary because:
         // 1. init_db() may have pre-populated some tables (e.g., VersionHistory)
         // 2. APPEND flag requires an empty table or strictly ordered keys
-        dst_tx.inner.clear_db(dst_db.dbi())?;
+        dst_tx.inner().clear_db(dst_db.dbi())?;
 
         // Get total number of entries for progress calculation
-        let total_entries = src_tx.inner.db_stat(src_db.dbi())?.entries();
+        let total_entries = src_tx.inner().db_stat(src_db.dbi())?.entries();
 
         if !self.quiet {
             info!(
@@ -241,8 +241,8 @@ impl Command {
         }
 
         // Get cursor for source and destination
-        let src_cursor = src_tx.inner.cursor(src_db.dbi())?;
-        let mut dst_cursor = dst_tx.inner.cursor(dst_db.dbi())?;
+        let src_cursor = src_tx.inner().cursor(src_db.dbi())?;
+        let mut dst_cursor = dst_tx.inner().cursor(dst_db.dbi())?;
 
         let mut copied = 0usize;
         let mut batch_count = 0usize;
@@ -255,7 +255,7 @@ impl Command {
 
             // Insert into destination (convert Cow to slice)
             // Use APPEND flag for better performance (assumes ordered insert)
-            dst_tx.inner.put(dst_db.dbi(), &key, &value, WriteFlags::APPEND)?;
+            dst_tx.inner().put(dst_db.dbi(), &key, &value, WriteFlags::APPEND)?;
             copied += 1;
             batch_count += 1;
 
@@ -267,8 +267,8 @@ impl Command {
                 // Start new transaction
                 dst_tx = dst_env.tx_mut()?;
                 // Re-open destination table (already created, but need handle in new transaction)
-                let dst_db = dst_tx.inner.open_db(Some(table_name))?;
-                dst_cursor = dst_tx.inner.cursor(dst_db.dbi())?;
+                let dst_db = dst_tx.inner().open_db(Some(table_name))?;
+                dst_cursor = dst_tx.inner().cursor(dst_db.dbi())?;
                 batch_count = 0;
 
                 // Progress logging

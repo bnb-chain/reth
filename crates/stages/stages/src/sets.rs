@@ -52,7 +52,7 @@ use reth_evm::ConfigureEvm;
 use reth_network_p2p::{bodies::downloader::BodyDownloader, headers::downloader::HeaderDownloader};
 use reth_primitives_traits::{Block, NodePrimitives};
 use reth_provider::HeaderSyncGapProvider;
-use reth_prune_types::PruneModes;
+use reth_prune_types::{PruneMode, PruneModes};
 use reth_stages_api::Stage;
 use std::sync::Arc;
 use tokio::sync::watch;
@@ -332,16 +332,17 @@ where
     PruneStage: Stage<Provider>,
 {
     fn builder(self) -> StageSetBuilder<Provider> {
-        let mut builder =
-            ExecutionStages::new(self.evm_config, self.consensus, self.stages_config.clone())
-                .builder()
-                // If sender recovery prune mode is set, add the prune sender recovery stage.
-                .add_stage_opt(self.prune_modes.sender_recovery.map(|prune_mode| {
-                    PruneSenderRecoveryStage::new(
-                        prune_mode,
-                        self.stages_config.prune.commit_threshold,
-                    )
-                }));
+        let mut builder = ExecutionStages::new(
+            self.evm_config,
+            self.consensus,
+            self.stages_config.clone(),
+            self.prune_modes.sender_recovery,
+        )
+        .builder()
+        // If sender recovery prune mode is set, add the prune sender recovery stage.
+        .add_stage_opt(self.prune_modes.sender_recovery.map(|prune_mode| {
+            PruneSenderRecoveryStage::new(prune_mode, self.stages_config.prune.commit_threshold)
+        }));
 
         // Only add hashing stages if not disabled for fastnode mode
         if !self.stages_config.disable_hashing_stages {
@@ -372,6 +373,8 @@ pub struct ExecutionStages<E: ConfigureEvm> {
     consensus: Arc<dyn FullConsensus<E::Primitives>>,
     /// Configuration for each stage in the pipeline
     stages_config: StageConfig,
+    /// Prune mode for sender recovery
+    sender_recovery_prune_mode: Option<PruneMode>,
 }
 
 impl<E: ConfigureEvm> ExecutionStages<E> {
@@ -380,8 +383,9 @@ impl<E: ConfigureEvm> ExecutionStages<E> {
         executor_provider: E,
         consensus: Arc<dyn FullConsensus<E::Primitives>>,
         stages_config: StageConfig,
+        sender_recovery_prune_mode: Option<PruneMode>,
     ) -> Self {
-        Self { evm_config: executor_provider, consensus, stages_config }
+        Self { evm_config: executor_provider, consensus, stages_config, sender_recovery_prune_mode }
     }
 }
 
@@ -393,7 +397,10 @@ where
 {
     fn builder(self) -> StageSetBuilder<Provider> {
         StageSetBuilder::default()
-            .add_stage(SenderRecoveryStage::new(self.stages_config.sender_recovery))
+            .add_stage(SenderRecoveryStage::new(
+                self.stages_config.sender_recovery,
+                self.sender_recovery_prune_mode,
+            ))
             .add_stage(ExecutionStage::from_config(
                 self.evm_config,
                 self.consensus,

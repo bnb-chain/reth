@@ -14,7 +14,7 @@ use alloy_consensus::EMPTY_ROOT_HASH;
 use alloy_primitives::{hex, keccak256, map::B256Set, B256};
 use rayon::prelude::*;
 use reth_revm::state::EvmState;
-use reth_trie::MultiProofTargets;
+use reth_trie::{MultiProofTargets, MultiProofTargetsV2};
 use rust_eth_triedb::triedb_reth::TrieDBPrefetchState;
 use rust_eth_triedb_common::{DiffLayers, TrieDatabase};
 use rust_eth_triedb_pathdb::PathDB;
@@ -23,7 +23,8 @@ use rust_eth_triedb_state_trie::{
 };
 use tracing::{error, info, trace, warn};
 
-use crate::tree::payload_processor::{executor::WorkloadExecutor, multiproof::MultiProofMessage};
+use crate::tree::payload_processor::multiproof::MultiProofMessage;
+use reth_tasks::Runtime as WorkloadExecutor;
 
 /// Error type for `TrieDB` prefetch operations.
 #[derive(Debug, thiserror::Error)]
@@ -49,6 +50,23 @@ pub(super) enum TrieDBPrefetchMessage {
 pub(crate) enum TrieDBPrefetchResult {
     PrefetchAccountResult(Arc<TrieDBPrefetchState<PathDB>>),
     PrefetchStorageResult((B256, StateTrie<PathDB>, usize)),
+}
+
+/// Convert `MultiProofTargetsV2` to the legacy `MultiProofTargets` format expected by triedb.
+///
+/// Extracts the hashed account keys and storage slot keys from the V2 format.
+fn multiproof_targets_v2_to_v1(targets: MultiProofTargetsV2) -> MultiProofTargets {
+    let mut result = MultiProofTargets::default();
+    for account_target in targets.account_targets {
+        result.entry(account_target.key()).or_default();
+    }
+    for (account_hash, storage_targets) in targets.storage_targets {
+        let slots = result.entry(account_hash).or_default();
+        for slot_target in storage_targets {
+            slots.insert(slot_target.key());
+        }
+    }
+    result
 }
 
 /// Convert EVM state to `TrieDB` prefetch state.
@@ -89,8 +107,8 @@ impl TrieDBStatePrefetcher {
         root_hash: B256,
         path_db: PathDB,
         difflayers: Option<DiffLayers>,
+        executor: WorkloadExecutor,
     ) -> Result<Self, TrieDBPrefetchError> {
-        let executor = WorkloadExecutor::default();
         let spawn_exec = executor.clone();
 
         let (state_tx, state_rx) = mpsc::channel();
@@ -206,6 +224,7 @@ impl TrieDBPrefetchHandle {
                 Ok(message) => {
                     match message {
                         MultiProofMessage::PrefetchProofs(targets) => {
+                            let targets = multiproof_targets_v2_to_v1(targets);
                             if let Err(e) = self
                                 .state_message_tx
                                 .send(TrieDBPrefetchMessage::PrefetchState(targets))

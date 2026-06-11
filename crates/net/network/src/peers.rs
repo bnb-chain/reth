@@ -10,7 +10,7 @@ use futures::StreamExt;
 
 use reth_eth_wire::{errors::EthStreamError, DisconnectReason};
 use reth_ethereum_forks::ForkId;
-use reth_net_banlist::{BanList, IpFilter};
+use reth_net_banlist::BanList;
 use reth_network_api::test_utils::{PeerCommand, PeersHandle};
 use reth_network_peers::{NodeRecord, PeerId};
 use reth_network_types::{
@@ -20,7 +20,7 @@ use reth_network_types::{
         reputation::{DEFAULT_REPUTATION, MAX_TRUSTED_PEER_REPUTATION_CHANGE},
     },
     ConnectionsConfig, Peer, PeerAddr, PeerConnectionState, PeerKind, PeersConfig,
-    ReputationChangeKind, ReputationChangeOutcome, ReputationChangeWeights,
+    PersistedPeerInfo, ReputationChangeKind, ReputationChangeOutcome, ReputationChangeWeights,
 };
 use std::{
     collections::{hash_map::Entry, HashMap, HashSet, VecDeque},
@@ -92,7 +92,10 @@ pub struct PeersManager {
     /// How long to temporarily ban ip on an incoming connection attempt.
     incoming_ip_throttle_duration: Duration,
     /// IP address filter for restricting network connections to specific IP ranges.
-    ip_filter: IpFilter,
+    ip_filter: reth_net_banlist::IpFilter,
+    /// If true, discovered peers without a confirmed ENR fork ID will not be added until their
+    /// fork ID is verified via EIP-868.
+    enforce_enr_fork_id: bool,
     /// The map of proxied node ids.
     proxied_node_ids_map: Arc<RwLock<HashSet<PeerId>>>,
 }
@@ -111,9 +114,11 @@ impl PeersManager {
             trusted_nodes_only,
             trusted_nodes_resolution_interval,
             basic_nodes,
+            persisted_peers,
             max_backoff_count,
             incoming_ip_throttle_duration,
             ip_filter,
+            enforce_enr_fork_id,
             proxied_node_ids,
         } = config;
         let (manager_tx, handle_rx) = mpsc::unbounded_channel();
@@ -122,7 +127,8 @@ impl PeersManager {
         // We use half of the interval to decrease the max duration to `150%` in worst case
         let unban_interval = ban_duration.min(backoff_durations.low) / 2;
 
-        let mut peers = HashMap::with_capacity(trusted_nodes.len() + basic_nodes.len());
+        let mut peers =
+            HashMap::with_capacity(trusted_nodes.len() + basic_nodes.len() + persisted_peers.len());
         let mut trusted_peer_ids = HashSet::with_capacity(trusted_nodes.len());
 
         for trusted_peer in &trusted_nodes {
@@ -137,6 +143,25 @@ impl PeersManager {
                     warn!(target: "net::peers", ?err, "Failed to resolve trusted peer");
                 }
             }
+        }
+
+        for PersistedPeerInfo { record, kind, fork_id, reputation } in persisted_peers {
+            // When enforce_enr_fork_id is enabled, skip persisted peers that don't have a
+            // confirmed fork ID. These were likely accumulated from a different network during
+            // a prior run without the flag.
+            if enforce_enr_fork_id && fork_id.is_none() {
+                continue
+            }
+            let NodeRecord { address, tcp_port, udp_port, id } = record;
+            peers.entry(id).or_insert_with(|| {
+                let mut peer = Peer::with_kind(
+                    PeerAddr::new_with_ports(address, tcp_port, Some(udp_port)),
+                    kind,
+                );
+                peer.fork_id = fork_id.map(Box::new);
+                peer.reputation = reputation;
+                peer
+            });
         }
 
         for NodeRecord { address, tcp_port, udp_port, id } in basic_nodes {
@@ -180,6 +205,7 @@ impl PeersManager {
             net_connection_state: NetworkConnectionState::default(),
             incoming_ip_throttle_duration,
             ip_filter,
+            enforce_enr_fork_id,
             proxied_node_ids_map,
         }
     }
@@ -189,13 +215,18 @@ impl PeersManager {
         PeersHandle::new(self.manager_tx.clone())
     }
 
+    /// Returns `true` if discovered peers must have a confirmed ENR fork ID before being added.
+    pub(crate) const fn enforce_enr_fork_id(&self) -> bool {
+        self.enforce_enr_fork_id
+    }
+
     /// Returns the number of peers in the peer set
     #[inline]
     pub(crate) fn num_known_peers(&self) -> usize {
         self.peers.len()
     }
 
-    /// Returns an iterator over all peers
+    /// Returns an iterator over all peers as [`NodeRecord`]s.
     pub(crate) fn iter_peers(&self) -> impl Iterator<Item = NodeRecord> + '_ {
         self.peers.iter().map(|(peer_id, v)| {
             NodeRecord::new_with_ports(
@@ -205,6 +236,26 @@ impl PeersManager {
                 *peer_id,
             )
         })
+    }
+
+    /// Returns an iterator over peers suitable for persisting to disk.
+    ///
+    /// Filters out backed-off and banned peers, and includes metadata like kind, fork ID, and
+    /// reputation.
+    pub(crate) fn persistable_peers(&self) -> impl Iterator<Item = PersistedPeerInfo> + '_ {
+        self.peers.iter().filter(|(_, peer)| !peer.is_backed_off() && !peer.is_banned()).map(
+            |(peer_id, peer)| PersistedPeerInfo {
+                record: NodeRecord::new_with_ports(
+                    peer.addr.tcp().ip(),
+                    peer.addr.tcp().port(),
+                    peer.addr.udp().map(|addr| addr.port()),
+                    *peer_id,
+                ),
+                kind: peer.kind,
+                fork_id: peer.fork_id.as_deref().copied(),
+                reputation: peer.reputation,
+            },
+        )
     }
 
     /// Returns the `NodeRecord` and `PeerKind` for the given peer id
@@ -219,6 +270,13 @@ impl PeersManager {
                 ),
                 v.kind,
             )
+        })
+    }
+
+    /// Returns `true` if the given peer is connected via an inbound session.
+    pub(crate) fn is_inbound_peer(&self, peer_id: &PeerId) -> bool {
+        self.peers.get(peer_id).is_some_and(|p| {
+            matches!(p.state, PeerConnectionState::In | PeerConnectionState::DisconnectingIn)
         })
     }
 
@@ -352,6 +410,11 @@ impl PeersManager {
         // we only need to check the peer id here as the ip address will have been checked at
         // on_incoming_pending_session. We also check if the peer is in the backoff list here.
         if self.ban_list.is_banned_peer(&peer_id) {
+            tracing::warn!(
+                target: "net::peers",
+                ?peer_id, ?addr, reason = "banned_by_list",
+                "rejecting established inbound session",
+            );
             self.queued_actions.push_back(PeerAction::DisconnectBannedIncoming { peer_id });
             return;
         }
@@ -359,6 +422,11 @@ impl PeersManager {
         // check if the peer is trustable or not
         let mut is_trusted = self.trusted_peer_ids.contains(&peer_id);
         if self.trusted_nodes_only && !is_trusted {
+            tracing::warn!(
+                target: "net::peers",
+                ?peer_id, ?addr, reason = "trusted_nodes_only",
+                "rejecting established inbound session",
+            );
             self.queued_actions.push_back(PeerAction::DisconnectUntrustedIncoming { peer_id });
             return;
         }
@@ -370,6 +438,11 @@ impl PeersManager {
             Entry::Occupied(mut entry) => {
                 let peer = entry.get_mut();
                 if peer.is_banned() {
+                    tracing::warn!(
+                        target: "net::peers",
+                        ?peer_id, ?addr, reason = "reputation_below_threshold",
+                        "rejecting established inbound session",
+                    );
                     self.queued_actions.push_back(PeerAction::DisconnectBannedIncoming { peer_id });
                     return;
                 }
@@ -408,15 +481,22 @@ impl PeersManager {
 
     /// Bans the peer temporarily with the configured ban timeout
     fn ban_peer(&mut self, peer_id: PeerId) {
-        let ban_duration = if let Some(peer) = self.peers.get(&peer_id) &&
-            (peer.is_trusted() || peer.is_static())
-        {
+        let trusted_or_static =
+            self.peers.get(&peer_id).is_some_and(|p| p.is_trusted() || p.is_static());
+
+        let ban_duration = if trusted_or_static {
             // For misbehaving trusted or static peers, we provide a bit more leeway when
             // penalizing them.
             self.backoff_durations.low / 2
         } else {
             self.ban_duration
         };
+
+        tracing::warn!(
+            target: "net::peers",
+            ?peer_id, duration = ?ban_duration, trusted = trusted_or_static,
+            "banning peer",
+        );
 
         self.ban_list.ban_peer_until(peer_id, std::time::Instant::now() + ban_duration);
         self.queued_actions.push_back(PeerAction::BanPeer { peer_id });
@@ -483,11 +563,9 @@ impl PeersManager {
     /// reputation changes that can be attributed to network conditions. If the peer is a
     /// trusted peer, it will also be less strict with the reputation slashing.
     pub(crate) fn apply_reputation_change(&mut self, peer_id: &PeerId, rep: ReputationChangeKind) {
-        trace!(target: "net::peers", ?peer_id, reputation=?rep, "applying reputation change");
-
-        let outcome = if let Some(peer) = self.peers.get_mut(peer_id) {
+        let (outcome, new_reputation) = if let Some(peer) = self.peers.get_mut(peer_id) {
             // First check if we should reset the reputation
-            if rep.is_reset() {
+            let outcome = if rep.is_reset() {
                 peer.reset_reputation()
             } else {
                 let mut reputation_change = self.reputation_weights.change(rep).as_i32();
@@ -510,10 +588,27 @@ impl PeersManager {
                     }
                 }
                 peer.apply_reputation(reputation_change, rep)
-            }
+            };
+            (outcome, peer.reputation)
         } else {
             return;
         };
+
+        // DEBUG when the change leaves ban-state unchanged; INFO when it transitions it.
+        match outcome {
+            ReputationChangeOutcome::None => tracing::debug!(
+                target: "net::peers",
+                ?peer_id, kind = ?rep, new_reputation, ?outcome,
+                "reputation change applied",
+            ),
+            ReputationChangeOutcome::Ban |
+            ReputationChangeOutcome::DisconnectAndBan |
+            ReputationChangeOutcome::Unban => tracing::info!(
+                target: "net::peers",
+                ?peer_id, kind = ?rep, new_reputation, ?outcome,
+                "reputation change applied",
+            ),
+        }
 
         match outcome {
             ReputationChangeOutcome::None => {}
@@ -648,6 +743,11 @@ impl PeersManager {
 
         if err.is_fatal_protocol_error() {
             trace!(target: "net::peers", ?remote_addr, ?peer_id, %err, "fatal connection error");
+            tracing::warn!(
+                target: "net::peers",
+                ?remote_addr, ?peer_id, err = %err,
+                "removing and banning peer on fatal protocol error",
+            );
             // remove the peer to which we can't establish a connection due to protocol related
             // issues.
             if let Entry::Occupied(mut entry) = self.peers.entry(*peer_id) {
@@ -752,17 +852,6 @@ impl PeersManager {
         }
     }
 
-    /// Called as follow-up for a discovered peer.
-    ///
-    /// The [`ForkId`] is retrieved from an ENR record that the peer announces over the discovery
-    /// protocol
-    pub(crate) fn set_discovered_fork_id(&mut self, peer_id: PeerId, fork_id: ForkId) {
-        if let Some(peer) = self.peers.get_mut(&peer_id) {
-            trace!(target: "net::peers", ?peer_id, ?fork_id, "set discovered fork id");
-            peer.fork_id = Some(Box::new(fork_id));
-        }
-    }
-
     /// Called for a newly discovered peer.
     ///
     /// If the peer already exists, then the address, kind and `fork_id` will be updated.
@@ -835,7 +924,7 @@ impl PeersManager {
             }
         }
 
-        if kind.filter(|kind| kind.is_trusted()).is_some() {
+        if kind.is_some_and(|kind| kind.is_trusted()) {
             // also track the peer in the peer id set
             self.trusted_peer_ids.insert(peer_id);
         }
@@ -947,10 +1036,13 @@ impl PeersManager {
         self.trusted_peer_ids.remove(&peer_id);
     }
 
-    /// Returns the idle peer with the highest reputation.
+    /// Returns the best idle peer to connect to.
     ///
     /// Peers that are `trusted` or `static`, see [`PeerKind`], are prioritized as long as they're
     /// not currently marked as banned or backed off.
+    ///
+    /// Among remaining peers, the one with the highest reputation is selected. When reputation is
+    /// equal, a peer with a discovered `fork_id` is preferred since it indicates a compatible fork.
     ///
     /// If `trusted_nodes_only` is enabled, see [`PeersConfig`], then this will only consider
     /// `trusted` peers.
@@ -977,9 +1069,15 @@ impl PeersManager {
                 return Some((*maybe_better.0, maybe_better.1));
             }
 
-            // otherwise we keep track of the best peer using the reputation
-            if maybe_better.1.reputation > best_peer.1.reputation {
-                best_peer = maybe_better;
+            // prefer higher reputation, break ties by fork_id presence
+            match maybe_better.1.reputation.cmp(&best_peer.1.reputation) {
+                std::cmp::Ordering::Greater => best_peer = maybe_better,
+                std::cmp::Ordering::Equal
+                    if maybe_better.1.fork_id.is_some() && best_peer.1.fork_id.is_none() =>
+                {
+                    best_peer = maybe_better
+                }
+                _ => {}
             }
         }
         Some((*best_peer.0, best_peer.1))
@@ -1279,6 +1377,27 @@ impl Display for InboundConnectionError {
     }
 }
 
+/// The reason a peer was backed off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackoffReason {
+    /// The remote peer responded with `TooManyPeers` (0x04).
+    TooManyPeers,
+    /// The session was gracefully closed and we're backing off briefly.
+    GracefulClose,
+    /// A connection or protocol-level error occurred.
+    ConnectionError,
+}
+
+impl BackoffReason {
+    /// Derives the backoff reason from an optional [`DisconnectReason`].
+    pub const fn from_disconnect(reason: Option<DisconnectReason>) -> Self {
+        match reason {
+            Some(DisconnectReason::TooManyPeers) => Self::TooManyPeers,
+            _ => Self::ConnectionError,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloy_primitives::B512;
@@ -1286,6 +1405,7 @@ mod tests {
         errors::{EthHandshakeError, EthStreamError, P2PHandshakeError, P2PStreamError},
         DisconnectReason,
     };
+    use reth_ethereum_forks::{ForkHash, ForkId};
     use reth_net_banlist::BanList;
     use reth_network_api::Direction;
     use reth_network_peers::{PeerId, TrustedPeer};
@@ -1635,7 +1755,7 @@ mod tests {
             &socket_addr,
             &peer,
             &EthStreamError::P2PStreamError(P2PStreamError::Disconnected(
-                DisconnectReason::UselessPeer,
+                DisconnectReason::ProtocolBreach,
             )),
         );
 
@@ -1659,6 +1779,49 @@ mod tests {
         .await;
 
         assert!(!peers.peers.contains_key(&peer));
+    }
+
+    #[tokio::test]
+    async fn test_useless_peer_does_not_ban_on_active_drop() {
+        // Regression: cross-region peers flag each other as useless while still being
+        // valid neighbors. UselessPeer must not remove + ban — otherwise repeated
+        // handshakes drain the peer pool.
+        let peer = PeerId::random();
+        let socket_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 1, 2)), 8008);
+        let mut peers = PeersManager::default();
+        peers.add_peer(peer, PeerAddr::from_tcp(socket_addr), None);
+
+        match event!(peers) {
+            PeerAction::PeerAdded(peer_id) => assert_eq!(peer_id, peer),
+            _ => unreachable!(),
+        }
+        match event!(peers) {
+            PeerAction::Connect { peer_id, .. } => assert_eq!(peer_id, peer),
+            _ => unreachable!(),
+        }
+
+        poll_fn(|cx| {
+            assert!(peers.poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+
+        peers.on_active_session_dropped(
+            &socket_addr,
+            &peer,
+            &EthStreamError::P2PStreamError(P2PStreamError::Disconnected(
+                DisconnectReason::UselessPeer,
+            )),
+        );
+
+        poll_fn(|cx| {
+            assert!(peers.poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+
+        assert!(peers.peers.contains_key(&peer), "peer should remain in the table");
+        assert!(!peers.ban_list.is_banned_peer(&peer), "peer should not be banned");
     }
 
     #[tokio::test]
@@ -1746,7 +1909,7 @@ mod tests {
             &socket_addr,
             &peer,
             &PendingSessionHandshakeError::Eth(EthStreamError::P2PStreamError(
-                P2PStreamError::Disconnected(DisconnectReason::UselessPeer),
+                P2PStreamError::Disconnected(DisconnectReason::ProtocolBreach),
             )),
         );
 
@@ -1857,7 +2020,7 @@ mod tests {
 
         let err = PendingSessionHandshakeError::Eth(EthStreamError::P2PStreamError(
             P2PStreamError::HandshakeError(P2PHandshakeError::Disconnected(
-                DisconnectReason::UselessPeer,
+                DisconnectReason::ProtocolBreach,
             )),
         ));
 
@@ -1900,6 +2063,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_dropped_incoming() {
+        // Uses ProtocolBreach (not UselessPeer) because this test asserts the
+        // fatal-drop path overwrites the pending-connection throttle with the
+        // shorter ban_duration — UselessPeer was declassified from the fatal
+        // list, so using it here would leave the 30s throttle in place and the
+        // post-sleep unban check would never fire.
         let socket_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 0, 1, 2)), 8008);
         let ban_duration = Duration::from_millis(500);
         let config = PeersConfig { ban_duration, ..PeersConfig::test() };
@@ -1909,7 +2077,7 @@ mod tests {
         assert_eq!(peers.connection_info.num_pending_in, 1);
         let err = PendingSessionHandshakeError::Eth(EthStreamError::P2PStreamError(
             P2PStreamError::HandshakeError(P2PHandshakeError::Disconnected(
-                DisconnectReason::UselessPeer,
+                DisconnectReason::ProtocolBreach,
             )),
         ));
 
@@ -3229,5 +3397,24 @@ mod tests {
         assert!(peers.on_incoming_pending_session(ip1).is_ok());
         assert!(peers.on_incoming_pending_session(ip2).is_ok());
         assert!(peers.on_incoming_pending_session(ip3).is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_best_unconnected_prefers_fork_id_as_tiebreaker() {
+        let mut peers = PeersManager::default();
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8008);
+
+        let fork_id = ForkId { hash: ForkHash([0xaa, 0xbb, 0xcc, 0xdd]), next: 0 };
+
+        // add two peers with equal reputation, only one has a fork_id
+        let no_fork = PeerId::random();
+        peers.add_peer(no_fork, PeerAddr::from_tcp(addr), None);
+
+        let with_fork = PeerId::random();
+        peers.add_peer(with_fork, PeerAddr::from_tcp(addr), None);
+        peers.peers.get_mut(&with_fork).unwrap().fork_id = Some(Box::new(fork_id));
+
+        let (best_id, _) = peers.best_unconnected().unwrap();
+        assert_eq!(best_id, with_fork, "fork_id should break tie when reputation is equal");
     }
 }

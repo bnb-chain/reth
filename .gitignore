@@ -75,3 +75,6 @@ __pycache__/
 # direnv
 .envrc
 .direnv/
+
+# Claude Code session files
+.claude/

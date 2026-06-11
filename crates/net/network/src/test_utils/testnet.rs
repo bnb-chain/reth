@@ -10,7 +10,7 @@ use crate::{
         policy::NetworkPolicies,
         TransactionsHandle, TransactionsManager, TransactionsManagerConfig,
     },
-    NetworkConfig, NetworkConfigBuilder, NetworkHandle, NetworkManager,
+    NetworkConfig, NetworkConfigBuilder, NetworkHandle, NetworkManager, PeersConfig,
 };
 use futures::{FutureExt, StreamExt};
 use pin_project::pin_project;
@@ -19,6 +19,8 @@ use reth_eth_wire::{
     protocol::Protocol, DisconnectReason, EthNetworkPrimitives, HelloMessageWithProtocols,
 };
 use reth_ethereum_primitives::{PooledTransactionVariant, TransactionSigned};
+use reth_evm_ethereum::EthEvmConfig;
+use reth_metrics::common::mpsc::memory_bounded_channel;
 use reth_network_api::{
     events::{PeerEvent, SessionInfo},
     test_utils::{PeersHandle, PeersHandleProvider},
@@ -26,9 +28,10 @@ use reth_network_api::{
 };
 use reth_network_peers::PeerId;
 use reth_storage_api::{
-    noop::NoopProvider, BlockReader, BlockReaderIdExt, HeaderProvider, StateProviderFactory,
+    noop::NoopProvider, BalProvider, BlockReader, BlockReaderIdExt, HeaderProvider,
+    StateProviderFactory,
 };
-use reth_tasks::TokioTaskExecutor;
+use reth_tasks::Runtime;
 use reth_tokio_util::EventStream;
 use reth_transaction_pool::{
     blobstore::InMemoryBlobStore,
@@ -44,12 +47,11 @@ use std::{
     task::{Context, Poll},
 };
 use tokio::{
-    sync::{
-        mpsc::{channel, unbounded_channel},
-        oneshot,
-    },
+    sync::{mpsc::channel, oneshot},
     task::JoinHandle,
 };
+
+use crate::transactions::constants::tx_manager::DEFAULT_TX_MANAGER_CHANNEL_MEMORY_LIMIT_BYTES;
 
 /// A test network consisting of multiple peers.
 pub struct Testnet<C, Pool> {
@@ -182,19 +184,22 @@ where
     C: ChainSpecProvider<ChainSpec: EthereumHardforks>
         + StateProviderFactory
         + BlockReaderIdExt
-        + HeaderProvider
+        + HeaderProvider<Header = alloy_consensus::Header>
         + Clone
         + 'static,
     Pool: TransactionPool,
 {
     /// Installs an eth pool on each peer
-    pub fn with_eth_pool(self) -> Testnet<C, EthTransactionPool<C, InMemoryBlobStore>> {
+    pub fn with_eth_pool(
+        self,
+    ) -> Testnet<C, EthTransactionPool<C, InMemoryBlobStore, EthEvmConfig>> {
         self.map_pool(|peer| {
             let blob_store = InMemoryBlobStore::default();
             let pool = TransactionValidationTaskExecutor::eth(
                 peer.client.clone(),
+                EthEvmConfig::mainnet(),
                 blob_store.clone(),
-                TokioTaskExecutor::default(),
+                Runtime::test(),
             );
             peer.map_transactions_manager(EthTransactionPool::eth_pool(
                 pool,
@@ -208,7 +213,7 @@ where
     pub fn with_eth_pool_config(
         self,
         tx_manager_config: TransactionsManagerConfig,
-    ) -> Testnet<C, EthTransactionPool<C, InMemoryBlobStore>> {
+    ) -> Testnet<C, EthTransactionPool<C, InMemoryBlobStore, EthEvmConfig>> {
         self.with_eth_pool_config_and_policy(tx_manager_config, Default::default())
     }
 
@@ -217,13 +222,14 @@ where
         self,
         tx_manager_config: TransactionsManagerConfig,
         policy: TransactionPropagationKind,
-    ) -> Testnet<C, EthTransactionPool<C, InMemoryBlobStore>> {
+    ) -> Testnet<C, EthTransactionPool<C, InMemoryBlobStore, EthEvmConfig>> {
         self.map_pool(|peer| {
             let blob_store = InMemoryBlobStore::default();
             let pool = TransactionValidationTaskExecutor::eth(
                 peer.client.clone(),
+                EthEvmConfig::mainnet(),
                 blob_store.clone(),
-                TokioTaskExecutor::default(),
+                Runtime::test(),
             );
 
             peer.map_transactions_manager_with(
@@ -242,6 +248,7 @@ where
             Receipt = reth_ethereum_primitives::Receipt,
             Header = alloy_consensus::Header,
         > + HeaderProvider
+        + BalProvider
         + Clone
         + Unpin
         + 'static,
@@ -314,6 +321,7 @@ where
             Receipt = reth_ethereum_primitives::Receipt,
             Header = alloy_consensus::Header,
         > + HeaderProvider
+        + BalProvider
         + Unpin
         + 'static,
     Pool: TransactionPool<
@@ -457,7 +465,10 @@ where
     }
 
     /// Set a new request handler that's connected to the peer's network
-    pub fn install_request_handler(&mut self) {
+    pub fn install_request_handler(&mut self)
+    where
+        C: BalProvider,
+    {
         let (tx, rx) = channel(ETH_REQUEST_CHANNEL_CAPACITY);
         self.network.set_eth_request_handler(tx);
         let peers = self.network.peers_handle();
@@ -467,7 +478,10 @@ where
 
     /// Set a new transactions manager that's connected to the peer's network
     pub fn install_transactions_manager(&mut self, pool: Pool) {
-        let (tx, rx) = unbounded_channel();
+        let (tx, rx) = memory_bounded_channel(
+            DEFAULT_TX_MANAGER_CHANNEL_MEMORY_LIMIT_BYTES,
+            "test_tx_channel",
+        );
         self.network.set_transactions(tx);
         let transactions_manager = TransactionsManager::new(
             self.handle(),
@@ -485,7 +499,10 @@ where
         P: TransactionPool,
     {
         let Self { mut network, request_handler, client, secret_key, .. } = self;
-        let (tx, rx) = unbounded_channel();
+        let (tx, rx) = memory_bounded_channel(
+            DEFAULT_TX_MANAGER_CHANNEL_MEMORY_LIMIT_BYTES,
+            "test_tx_channel",
+        );
         network.set_transactions(tx);
         let transactions_manager = TransactionsManager::new(
             network.handle().clone(),
@@ -526,7 +543,10 @@ where
         P: TransactionPool,
     {
         let Self { mut network, request_handler, client, secret_key, .. } = self;
-        let (tx, rx) = unbounded_channel();
+        let (tx, rx) = memory_bounded_channel(
+            DEFAULT_TX_MANAGER_CHANNEL_MEMORY_LIMIT_BYTES,
+            "test_tx_channel",
+        );
         network.set_transactions(tx);
 
         let announcement_policy = StrictEthAnnouncementFilter::default();
@@ -568,6 +588,7 @@ where
             Receipt = reth_ethereum_primitives::Receipt,
             Header = alloy_consensus::Header,
         > + HeaderProvider
+        + BalProvider
         + Unpin
         + 'static,
     Pool: TransactionPool<
@@ -708,11 +729,12 @@ where
     }
 
     fn network_config_builder(secret_key: SecretKey) -> NetworkConfigBuilder {
-        NetworkConfigBuilder::new(secret_key)
+        NetworkConfigBuilder::new(secret_key, Runtime::test())
             .listener_addr(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)))
             .discovery_addr(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)))
             .disable_dns_discovery()
             .disable_discv4_discovery()
+            .peer_config(PeersConfig::test())
     }
 }
 

@@ -205,11 +205,14 @@ pub enum EthApiError {
     CallManyError {
         /// Bundle index where the error occurred
         bundle_index: usize,
-        /// Transaction index within the bundle where the error occurred  
+        /// Transaction index within the bundle where the error occurred
         tx_index: usize,
         /// The underlying error object
         error: jsonrpsee_types::ErrorObject<'static>,
     },
+    /// Error thrown when trying to access block access list for blocks before Amsterdam
+    #[error("Block access list not available for pre-Amsterdam blocks")]
+    BlockAccessListNotAvailablePreAmsterdam,
     /// Any other error
     #[error("{0}")]
     Other(Box<dyn ToRpcError>),
@@ -352,6 +355,9 @@ impl From<EthApiError> for jsonrpsee_types::error::ErrorObject<'static> {
                     error.data(),
                 )
             }
+            EthApiError::BlockAccessListNotAvailablePreAmsterdam => {
+                rpc_error_with_code(4445, error.to_string())
+            }
         }
     }
 }
@@ -460,6 +466,8 @@ where
             DebugInspectorError::Database(err) => Self::Internal(RethError::other(err)),
             #[cfg(feature = "js-tracer")]
             DebugInspectorError::JsInspector(err) => err.into(),
+            #[allow(unreachable_patterns)]
+            _ => Self::Unsupported("unsupported tracer error"),
         }
     }
 }
@@ -514,6 +522,7 @@ impl From<reth_errors::ProviderError> for EthApiError {
             ProviderError::BlockNumberForTransactionIndexNotFound => Self::UnknownBlockOrTxIndex,
             ProviderError::FinalizedBlockNotFound => Self::HeaderNotFound(BlockId::finalized()),
             ProviderError::SafeBlockNotFound => Self::HeaderNotFound(BlockId::safe()),
+            ProviderError::BlockExpired { .. } => Self::PrunedHistoryUnavailable,
             err => Self::Internal(err.into()),
         }
     }
@@ -557,6 +566,7 @@ where
             EVMError::Header(err) => err.into(),
             EVMError::Database(err) => err.into(),
             EVMError::Custom(err) => Self::EvmCustom(err),
+            EVMError::CustomAny(err) => Self::EvmCustom(err.to_string()),
         }
     }
 }
@@ -649,7 +659,7 @@ pub enum RpcInvalidTransactionError {
     /// fee cap.
     #[error("max priority fee per gas higher than max fee per gas")]
     TipAboveFeeCap,
-    /// Thrown if the max priority fee per gas is 0.
+    /// Thrown if the max priority fee per gas is 0 for an EIP-1559 transaction.
     #[error("max priority fee per gas is 0")]
     TipZero,
     /// A sanity error to avoid huge numbers specified in the tip field.
@@ -896,7 +906,6 @@ impl From<InvalidTransactionError> for RpcInvalidTransactionError {
             InvalidTransactionError::GasTooLow => Self::GasTooLow,
             InvalidTransactionError::GasTooHigh => Self::GasTooHigh,
             InvalidTransactionError::TipAboveFeeCap => Self::TipAboveFeeCap,
-            InvalidTransactionError::TipZero => Self::TipZero,
             InvalidTransactionError::FeeCapTooLow => Self::FeeCapTooLow,
             InvalidTransactionError::SignerAccountHasBytecode => Self::SenderNoEOA,
             InvalidTransactionError::GasLimitTooHigh => Self::GasLimitTooHigh,
@@ -1097,6 +1106,9 @@ impl From<InvalidPoolTransactionError> for RpcPoolError {
                 Self::Invalid(RpcInvalidTransactionError::PriorityFeeBelowMinimum {
                     minimum_priority_fee,
                 })
+            }
+            InvalidPoolTransactionError::TipZero => {
+                Self::Invalid(RpcInvalidTransactionError::TipZero)
             }
         }
     }

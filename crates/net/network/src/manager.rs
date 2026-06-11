@@ -24,9 +24,12 @@ use crate::{
     import::{BlockImport, BlockImportEvent, BlockImportOutcome, BlockValidation, NewBlockEvent},
     listener::ConnectionListener,
     message::{NewBlockMessage, PeerMessage},
-    metrics::{DisconnectMetrics, NetworkMetrics, NETWORK_POOL_TRANSACTIONS_SCOPE},
+    metrics::{
+        BackedOffPeersMetrics, ClosedSessionsMetrics, DirectionalDisconnectMetrics, NetworkMetrics,
+        PendingSessionFailureMetrics,
+    },
     network::{NetworkHandle, NetworkHandleMessage},
-    peers::PeersManager,
+    peers::{BackoffReason, PeersManager},
     poll_nested_stream_with_budget,
     protocol::IntoRlpxSubProtocol,
     required_block_filter::RequiredBlockFilter,
@@ -41,7 +44,7 @@ use parking_lot::Mutex;
 use reth_chainspec::EnrForkIdEntry;
 use reth_eth_wire::{DisconnectReason, EthNetworkPrimitives, NetworkPrimitives};
 use reth_fs_util::{self as fs, FsPathError};
-use reth_metrics::common::mpsc::UnboundedMeteredSender;
+use reth_metrics::common::mpsc::MemoryBoundedSender;
 use reth_network_api::{
     events::{PeerEvent, SessionInfo},
     test_utils::PeersHandle,
@@ -115,7 +118,7 @@ pub struct NetworkManager<N: NetworkPrimitives = EthNetworkPrimitives> {
     event_sender: EventSender<NetworkEvent<PeerRequest<N>>>,
     /// Sender half to send events to the
     /// [`TransactionsManager`](crate::transactions::TransactionsManager) task, if configured.
-    to_transactions_manager: Option<UnboundedMeteredSender<NetworkTransactionEvent<N>>>,
+    to_transactions_manager: Option<MemoryBoundedSender<NetworkTransactionEvent<N>>>,
     /// Sender half to send events to the
     /// [`EthRequestHandler`](crate::eth_requests::EthRequestHandler) task, if configured.
     ///
@@ -137,8 +140,14 @@ pub struct NetworkManager<N: NetworkPrimitives = EthNetworkPrimitives> {
     num_active_peers: Arc<AtomicUsize>,
     /// Metrics for the Network
     metrics: NetworkMetrics,
-    /// Disconnect metrics for the Network
-    disconnect_metrics: DisconnectMetrics,
+    /// Disconnect metrics for the Network, split by connection direction.
+    disconnect_metrics: DirectionalDisconnectMetrics,
+    /// Closed sessions metrics, split by direction.
+    closed_sessions_metrics: ClosedSessionsMetrics,
+    /// Pending session failure metrics, split by direction.
+    pending_session_failure_metrics: PendingSessionFailureMetrics,
+    /// Backed off peers metrics, split by reason.
+    backed_off_peers_metrics: BackedOffPeersMetrics,
 }
 
 impl NetworkManager {
@@ -148,8 +157,9 @@ impl NetworkManager {
     /// # async fn f() {
     /// use reth_chainspec::MAINNET;
     /// use reth_network::{NetworkConfig, NetworkManager};
-    /// let config =
-    ///     NetworkConfig::builder_with_rng_secret_key().build_with_noop_provider(MAINNET.clone());
+    /// use reth_tasks::Runtime;
+    /// let config = NetworkConfig::builder_with_rng_secret_key(Runtime::test())
+    ///     .build_with_noop_provider(MAINNET.clone());
     /// let manager = NetworkManager::eth(config).await;
     /// # }
     /// ```
@@ -165,7 +175,7 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
     /// [`TransactionsManager`](crate::transactions::TransactionsManager).
     pub fn with_transactions(
         mut self,
-        tx: mpsc::UnboundedSender<NetworkTransactionEvent<N>>,
+        tx: MemoryBoundedSender<NetworkTransactionEvent<N>>,
     ) -> Self {
         self.set_transactions(tx);
         self
@@ -173,9 +183,8 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
 
     /// Sets the dedicated channel for events intended for the
     /// [`TransactionsManager`](crate::transactions::TransactionsManager).
-    pub fn set_transactions(&mut self, tx: mpsc::UnboundedSender<NetworkTransactionEvent<N>>) {
-        self.to_transactions_manager =
-            Some(UnboundedMeteredSender::new(tx, NETWORK_POOL_TRANSACTIONS_SCOPE));
+    pub fn set_transactions(&mut self, tx: MemoryBoundedSender<NetworkTransactionEvent<N>>) {
+        self.to_transactions_manager = Some(tx);
     }
 
     /// Sets the dedicated channel for events intended for the
@@ -251,6 +260,7 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
             transactions_manager_config: _,
             nat,
             handshake,
+            eth_max_message_size,
             required_block_hashes,
         } = config;
 
@@ -306,6 +316,8 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
             fork_filter,
             extra_protocols,
             handshake,
+            eth_max_message_size,
+            network_mode.is_stake(),
         );
 
         let state = NetworkState::new(
@@ -354,6 +366,9 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
             num_active_peers,
             metrics: Default::default(),
             disconnect_metrics: Default::default(),
+            closed_sessions_metrics: Default::default(),
+            pending_session_failure_metrics: Default::default(),
+            backed_off_peers_metrics: Default::default(),
         })
     }
 
@@ -366,6 +381,7 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
     /// };
     /// use reth_network_peers::mainnet_nodes;
     /// use reth_storage_api::noop::NoopProvider;
+    /// use reth_tasks::Runtime;
     /// use reth_transaction_pool::TransactionPool;
     /// async fn launch<Pool: TransactionPool>(pool: Pool) {
     ///     // This block provider implementation is used for testing purposes.
@@ -374,7 +390,7 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
     ///     // The key that's used for encrypting sessions and to identify our node.
     ///     let local_key = rng_secret_key();
     ///
-    ///     let config = NetworkConfig::<_, EthNetworkPrimitives>::builder(local_key)
+    ///     let config = NetworkConfig::<_, EthNetworkPrimitives>::builder(local_key, Runtime::test())
     ///         .boot_nodes(mainnet_nodes())
     ///         .build(client.clone());
     ///     let transactions_manager_config = config.transactions_manager_config.clone();
@@ -417,27 +433,30 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
 
     /// Returns an iterator over all peers in the peer set.
     pub fn all_peers(&self) -> impl Iterator<Item = NodeRecord> + '_ {
-        self.swarm.state().peers().iter_peers()
+        self.swarm.peers().iter_peers()
     }
 
     /// Returns the number of peers in the peer set.
     pub fn num_known_peers(&self) -> usize {
-        self.swarm.state().peers().num_known_peers()
+        self.swarm.peers().num_known_peers()
     }
 
     /// Returns a new [`PeersHandle`] that can be cloned and shared.
     ///
     /// The [`PeersHandle`] can be used to interact with the network's peer set.
     pub fn peers_handle(&self) -> PeersHandle {
-        self.swarm.state().peers().handle()
+        self.swarm.peers().handle()
     }
 
     /// Collect the peers from the [`NetworkManager`] and write them to the given
     /// `persistent_peers_file`.
+    ///
+    /// Only persists peers that are not currently backed off or banned. Includes metadata like
+    /// peer kind, fork ID, and reputation.
     pub fn write_peers_to_file(&self, persistent_peers_file: &Path) -> Result<(), FsPathError> {
-        let known_peers = self.all_peers().collect::<Vec<_>>();
+        let peers = self.swarm.peers().persistable_peers().collect::<Vec<_>>();
         persistent_peers_file.parent().map(fs::create_dir_all).transpose()?;
-        reth_fs_util::write_json_file(persistent_peers_file, &known_peers)?;
+        reth_fs_util::write_json_file(persistent_peers_file, &peers)?;
         Ok(())
     }
 
@@ -476,8 +495,16 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
     /// Sends an event to the [`TransactionsManager`](crate::transactions::TransactionsManager) if
     /// configured.
     fn notify_tx_manager(&self, event: NetworkTransactionEvent<N>) {
-        if let Some(ref tx) = self.to_transactions_manager {
-            let _ = tx.send(event);
+        if let Some(ref tx) = self.to_transactions_manager &&
+            let Err(e) = tx.try_send(event)
+        {
+            match e {
+                TrySendError::Full(_) => {
+                    trace!(target: "net", "Transaction events channel at capacity, dropping event");
+                    self.metrics.total_dropped_tx_events_at_full_capacity.increment(1);
+                }
+                TrySendError::Closed(_) => {}
+            }
         }
     }
 
@@ -534,6 +561,13 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
             }
             PeerRequest::GetReceipts70 { request, response } => {
                 self.delegate_eth_request(IncomingEthRequest::GetReceipts70 {
+                    peer_id,
+                    request,
+                    response,
+                })
+            }
+            PeerRequest::GetBlockAccessLists { request, response } => {
+                self.delegate_eth_request(IncomingEthRequest::GetBlockAccessLists {
                     peer_id,
                     request,
                     response,
@@ -613,7 +647,7 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
             PeerMessage::NewBlockHashes(hashes) => {
                 self.within_pow_or_disconnect(peer_id, |this| {
                     // update peer's state, to track what blocks this peer has seen
-                    this.swarm.state_mut().on_new_block_hashes(peer_id, hashes.0.clone());
+                    this.swarm.state_mut().on_new_block_hashes(peer_id, hashes.to_vec());
                     // start block import process for the hashes
                     this.block_import.on_new_block(peer_id, NewBlockEvent::Hashes(hashes));
                 })
@@ -718,10 +752,10 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
                 let _ = tx.send(());
             }
             NetworkHandleMessage::ReputationChange(peer_id, kind) => {
-                self.swarm.state_mut().peers_mut().apply_reputation_change(&peer_id, kind);
+                self.swarm.peers_mut().apply_reputation_change(&peer_id, kind);
             }
             NetworkHandleMessage::GetReputationById(peer_id, tx) => {
-                let _ = tx.send(self.swarm.state_mut().peers().get_reputation(&peer_id));
+                let _ = tx.send(self.swarm.peers().get_reputation(&peer_id));
             }
             NetworkHandleMessage::FetchClient(tx) => {
                 let _ = tx.send(self.fetch_client());
@@ -744,13 +778,13 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
                 let _ = tx.send(self.get_peer_infos_by_ids(peer_ids));
             }
             NetworkHandleMessage::GetPeerInfosByPeerKind(kind, tx) => {
-                let peer_ids = self.swarm.state().peers().peers_by_kind(kind);
+                let peer_ids = self.swarm.peers().peers_by_kind(kind);
                 let _ = tx.send(self.get_peer_infos_by_ids(peer_ids));
             }
             NetworkHandleMessage::AddRlpxSubProtocol(proto) => self.add_rlpx_sub_protocol(proto),
             NetworkHandleMessage::GetTransactionsHandle(tx) => {
                 if let Some(ref tx_inner) = self.to_transactions_manager {
-                    let _ = tx_inner.send(NetworkTransactionEvent::GetTransactionsHandle(tx));
+                    let _ = tx_inner.try_send(NetworkTransactionEvent::GetTransactionsHandle(tx));
                 } else {
                     let _ = tx.send(None);
                 }
@@ -779,7 +813,7 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
                 self.metrics.total_incoming_connections.increment(1);
                 self.metrics
                     .incoming_connections
-                    .set(self.swarm.state().peers().num_inbound_connections() as f64);
+                    .set(self.swarm.peers().num_inbound_connections() as f64);
             }
             SwarmEvent::OutgoingTcpConnection { remote_addr, peer_id } => {
                 trace!(target: "net", ?remote_addr, ?peer_id, "Starting outbound connection.");
@@ -817,7 +851,7 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
                 }
 
                 if direction.is_outgoing() {
-                    self.swarm.state_mut().peers_mut().on_active_outgoing_established(peer_id);
+                    self.swarm.peers_mut().on_active_outgoing_established(peer_id);
                 }
 
                 self.update_active_connection_metrics();
@@ -845,12 +879,12 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
             SwarmEvent::PeerAdded(peer_id) => {
                 trace!(target: "net", ?peer_id, "Peer added");
                 self.event_sender.notify(NetworkEvent::Peer(PeerEvent::PeerAdded(peer_id)));
-                self.metrics.tracked_peers.set(self.swarm.state().peers().num_known_peers() as f64);
+                self.metrics.tracked_peers.set(self.swarm.peers().num_known_peers() as f64);
             }
             SwarmEvent::PeerRemoved(peer_id) => {
                 trace!(target: "net", ?peer_id, "Peer dropped");
                 self.event_sender.notify(NetworkEvent::Peer(PeerEvent::PeerRemoved(peer_id)));
-                self.metrics.tracked_peers.set(self.swarm.state().peers().num_known_peers() as f64);
+                self.metrics.tracked_peers.set(self.swarm.peers().num_known_peers() as f64);
             }
             SwarmEvent::SessionClosed { peer_id, remote_addr, error } => {
                 let total_active = self.num_active_peers.fetch_sub(1, Ordering::Relaxed) - 1;
@@ -864,34 +898,35 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
                     "Session disconnected"
                 );
 
+                // Capture direction before state is reset to Idle
+                let is_inbound = self.swarm.peers().is_inbound_peer(&peer_id);
+
                 let reason = if let Some(ref err) = error {
                     // If the connection was closed due to an error, we report
                     // the peer
-                    self.swarm.state_mut().peers_mut().on_active_session_dropped(
-                        &remote_addr,
-                        &peer_id,
-                        err,
+                    self.swarm.peers_mut().on_active_session_dropped(&remote_addr, &peer_id, err);
+                    self.backed_off_peers_metrics.increment_for_reason(
+                        BackoffReason::from_disconnect(err.as_disconnected()),
                     );
                     err.as_disconnected()
                 } else {
                     // Gracefully disconnected
-                    self.swarm.state_mut().peers_mut().on_active_session_gracefully_closed(peer_id);
+                    self.swarm.peers_mut().on_active_session_gracefully_closed(peer_id);
+                    self.backed_off_peers_metrics
+                        .increment_for_reason(BackoffReason::GracefulClose);
                     None
                 };
-                self.metrics.closed_sessions.increment(1);
+                self.closed_sessions_metrics.active.increment(1);
                 self.update_active_connection_metrics();
 
                 if let Some(reason) = reason {
-                    self.disconnect_metrics.increment(reason);
+                    if is_inbound {
+                        self.disconnect_metrics.increment_inbound(reason);
+                    } else {
+                        self.disconnect_metrics.increment_outbound(reason);
+                    }
                 }
-                self.metrics.backed_off_peers.set(
-                        self.swarm
-                            .state()
-                            .peers()
-                            .num_backed_off_peers()
-                            .saturating_sub(1)
-                            as f64,
-                    );
+                self.metrics.backed_off_peers.set(self.swarm.peers().num_backed_off_peers() as f64);
                 self.event_sender
                     .notify(NetworkEvent::Peer(PeerEvent::SessionClosed { peer_id, reason }));
             }
@@ -908,9 +943,9 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
                         .state_mut()
                         .peers_mut()
                         .on_incoming_pending_session_dropped(remote_addr, err);
-                    self.metrics.pending_session_failures.increment(1);
+                    self.pending_session_failure_metrics.inbound.increment(1);
                     if let Some(reason) = err.as_disconnected() {
-                        self.disconnect_metrics.increment(reason);
+                        self.disconnect_metrics.increment_inbound(reason);
                     }
                 } else {
                     self.swarm
@@ -918,18 +953,10 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
                         .peers_mut()
                         .on_incoming_pending_session_gracefully_closed();
                 }
-                self.metrics.closed_sessions.increment(1);
+                self.closed_sessions_metrics.incoming_pending.increment(1);
                 self.metrics
                     .incoming_connections
-                    .set(self.swarm.state().peers().num_inbound_connections() as f64);
-                self.metrics.backed_off_peers.set(
-                        self.swarm
-                            .state()
-                            .peers()
-                            .num_backed_off_peers()
-                            .saturating_sub(1)
-                            as f64,
-                    );
+                    .set(self.swarm.peers().num_inbound_connections() as f64);
             }
             SwarmEvent::OutgoingPendingSessionClosed { remote_addr, peer_id, error } => {
                 trace!(
@@ -941,14 +968,17 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
                 );
 
                 if let Some(ref err) = error {
-                    self.swarm.state_mut().peers_mut().on_outgoing_pending_session_dropped(
+                    self.swarm.peers_mut().on_outgoing_pending_session_dropped(
                         &remote_addr,
                         &peer_id,
                         err,
                     );
-                    self.metrics.pending_session_failures.increment(1);
+                    self.pending_session_failure_metrics.outbound.increment(1);
+                    self.backed_off_peers_metrics.increment_for_reason(
+                        BackoffReason::from_disconnect(err.as_disconnected()),
+                    );
                     if let Some(reason) = err.as_disconnected() {
-                        self.disconnect_metrics.increment(reason);
+                        self.disconnect_metrics.increment_outbound(reason);
                     }
                 } else {
                     self.swarm
@@ -956,17 +986,9 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
                         .peers_mut()
                         .on_outgoing_pending_session_gracefully_closed(&peer_id);
                 }
-                self.metrics.closed_sessions.increment(1);
+                self.closed_sessions_metrics.outgoing_pending.increment(1);
                 self.update_pending_connection_metrics();
-
-                self.metrics.backed_off_peers.set(
-                        self.swarm
-                            .state()
-                            .peers()
-                            .num_backed_off_peers()
-                            .saturating_sub(1)
-                            as f64,
-                    );
+                self.metrics.backed_off_peers.set(self.swarm.peers().num_backed_off_peers() as f64);
             }
             SwarmEvent::OutgoingConnectionError { remote_addr, peer_id, error } => {
                 trace!(
@@ -977,20 +999,14 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
                     "Outgoing connection error"
                 );
 
-                self.swarm.state_mut().peers_mut().on_outgoing_connection_failure(
+                self.swarm.peers_mut().on_outgoing_connection_failure(
                     &remote_addr,
                     &peer_id,
                     &error,
                 );
 
-                self.metrics.backed_off_peers.set(
-                        self.swarm
-                            .state()
-                            .peers()
-                            .num_backed_off_peers()
-                            .saturating_sub(1)
-                            as f64,
-                    );
+                self.backed_off_peers_metrics.increment_for_reason(BackoffReason::ConnectionError);
+                self.metrics.backed_off_peers.set(self.swarm.peers().num_backed_off_peers() as f64);
                 self.update_pending_connection_metrics();
             }
             SwarmEvent::BadMessage { peer_id } => {
@@ -1065,12 +1081,8 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
     /// Updates the metrics for active,established connections
     #[inline]
     fn update_active_connection_metrics(&self) {
-        self.metrics
-            .incoming_connections
-            .set(self.swarm.state().peers().num_inbound_connections() as f64);
-        self.metrics
-            .outgoing_connections
-            .set(self.swarm.state().peers().num_outbound_connections() as f64);
+        self.metrics.incoming_connections.set(self.swarm.peers().num_inbound_connections() as f64);
+        self.metrics.outgoing_connections.set(self.swarm.peers().num_outbound_connections() as f64);
     }
 
     /// Updates the metrics for pending connections
@@ -1078,7 +1090,7 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
     fn update_pending_connection_metrics(&self) {
         self.metrics
             .pending_outgoing_connections
-            .set(self.swarm.state().peers().num_pending_outbound_connections() as f64);
+            .set(self.swarm.peers().num_pending_outbound_connections() as f64);
         self.metrics
             .total_pending_connections
             .set(self.swarm.sessions().num_pending_connections() as f64);

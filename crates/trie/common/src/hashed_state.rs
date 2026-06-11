@@ -22,8 +22,11 @@ use rayon::prelude::{FromParallelIterator, IntoParallelIterator, ParallelIterato
 
 use revm_database::{AccountStatus, BundleAccount};
 
+#[cfg(feature = "std")]
 use alloy_consensus::constants::KECCAK_EMPTY;
+#[cfg(feature = "std")]
 use rust_eth_triedb::TrieDBHashedPostState;
+#[cfg(feature = "std")]
 use rust_eth_triedb_state_trie::account::StateAccount;
 
 /// In-memory hashed state that stores account and storage changes with keccak256-hashed keys in
@@ -110,16 +113,14 @@ impl HashedPostState {
     }
 
     /// Convert [`HashedPostState`] to [`TrieDBHashedPostState`].
+    #[cfg(feature = "std")]
     pub fn to_triedb_hashed_post_state(&self) -> TrieDBHashedPostState {
         let mut triedb_hashed_post_state = TrieDBHashedPostState::default();
 
         for (hashed_address, account) in &self.accounts {
             match account {
                 Some(account) => {
-                    let code_hash = match account.bytecode_hash {
-                        Some(code_hash) => code_hash,
-                        None => KECCAK_EMPTY,
-                    };
+                    let code_hash = account.bytecode_hash.unwrap_or(KECCAK_EMPTY);
                     let acc = StateAccount::default()
                         .with_nonce(account.nonce)
                         .with_balance(account.balance)
@@ -727,31 +728,57 @@ impl HashedPostStateSorted {
 
     /// Batch-merge sorted hashed post states. Iterator yields **newest to oldest**.
     ///
-    /// Uses k-way merge for O(n log k) complexity and one-pass accumulation for storages.
-    pub fn merge_batch<'a>(states: impl IntoIterator<Item = &'a Self>) -> Self {
-        let states: Vec<_> = states.into_iter().collect();
-        if states.is_empty() {
+    /// For small batches, uses `extend_ref_and_sort` loop.
+    /// For large batches, uses k-way merge for O(n log k) complexity.
+    pub fn merge_batch<T: AsRef<Self> + From<Self>>(iter: impl IntoIterator<Item = T>) -> T {
+        let items: alloc::vec::Vec<_> = iter.into_iter().collect();
+        match items.len() {
+            0 => Self::default().into(),
+            1 => items.into_iter().next().expect("len == 1"),
+            _ => Self::merge_slice(&items).into(),
+        }
+    }
+
+    /// Batch-merge sorted hashed post states from a slice. Slice is **newest to oldest**.
+    ///
+    /// This variant takes a slice reference directly, avoiding iterator collection overhead.
+    /// For small batches, uses `extend_ref_and_sort` loop.
+    /// For large batches, uses k-way merge for O(n log k) complexity.
+    pub fn merge_slice<T: AsRef<Self>>(items: &[T]) -> Self {
+        const THRESHOLD: usize = 30;
+
+        let k = items.len();
+
+        if k == 0 {
             return Self::default();
         }
+        if k == 1 {
+            return items[0].as_ref().clone();
+        }
 
-        let accounts = kway_merge_sorted(states.iter().map(|s| s.accounts.as_slice()));
+        if k < THRESHOLD {
+            // Small k: extend loop, oldest-to-newest so newer overrides older.
+            let mut iter = items.iter().rev();
+            let mut acc = iter.next().expect("k > 0").as_ref().clone();
+            for next in iter {
+                acc.extend_ref_and_sort(next.as_ref());
+            }
+            return acc;
+        }
+
+        // Large k: k-way merge.
+        let accounts = kway_merge_sorted(items.iter().map(|i| i.as_ref().accounts.as_slice()));
 
         struct StorageAcc<'a> {
-            /// Account storage was cleared (e.g., SELFDESTRUCT).
             wiped: bool,
-            /// Stop collecting older slices after seeing a wipe.
             sealed: bool,
-            /// Storage slot slices to merge, ordered newest to oldest.
             slices: Vec<&'a [(B256, U256)]>,
         }
 
         let mut acc: B256Map<StorageAcc<'_>> = B256Map::default();
 
-        // Accumulate storage slices per address from newest to oldest state.
-        // Once we see a `wiped` flag, the account was cleared at that point,
-        // so older storage slots are irrelevant - we "seal" and stop collecting.
-        for state in &states {
-            for (addr, storage) in &state.storages {
+        for item in items {
+            for (addr, storage) in &item.as_ref().storages {
                 let entry = acc.entry(*addr).or_insert_with(|| StorageAcc {
                     wiped: false,
                     sealed: false,
@@ -788,16 +815,14 @@ impl HashedPostStateSorted {
     }
 
     /// Convert [`HashedPostStateSorted`] to [`TrieDBHashedPostState`].
+    #[cfg(feature = "std")]
     pub fn to_triedb_hashed_post_state(&self) -> TrieDBHashedPostState {
         let mut triedb_hashed_post_state = TrieDBHashedPostState::default();
 
         for (hashed_address, account) in &self.accounts {
             match account {
                 Some(account) => {
-                    let code_hash = match account.bytecode_hash {
-                        Some(code_hash) => code_hash,
-                        None => KECCAK_EMPTY,
-                    };
+                    let code_hash = account.bytecode_hash.unwrap_or(KECCAK_EMPTY);
                     let acc = StateAccount::default()
                         .with_nonce(account.nonce)
                         .with_balance(account.balance)

@@ -83,7 +83,15 @@ pub trait EthBlocks: LoadBlock<RpcConvert: RpcConvert<Primitives = Self::Primiti
     where
         Self: FullEthApiTypes,
     {
-        async move { Ok(self.rpc_block(block_id, false).await?.map(|block| block.header)) }
+        async move {
+            let Some(block) = self.recovered_block(block_id).await? else { return Ok(None) };
+            let header = self.converter().convert_header(
+                block.clone_sealed_header(),
+                block.rlp_length(),
+                None,
+            )?;
+            Ok(Some(header))
+        }
     }
 
     /// Returns the populated rpc block object for the given block id.
@@ -122,7 +130,7 @@ pub trait EthBlocks: LoadBlock<RpcConvert: RpcConvert<Primitives = Self::Primiti
                                     let calculated_td = parent_td.saturating_add(current_difficulty);
 
                                     trace!(
-                                        target: "rpc::eth", 
+                                        target: "rpc::eth",
                                         ?block_id,
                                         block_number,
                                         parent_number,
@@ -405,6 +413,10 @@ pub trait EthBlocks: LoadBlock<RpcConvert: RpcConvert<Primitives = Self::Primiti
     {
         async move {
             if block_id.is_pending() {
+                if self.pending_block_kind().is_none() {
+                    return Ok(None);
+                }
+
                 // First, try to get the pending block from the provider, in case we already
                 // received the actual pending block from the CL.
                 if let Some((block, receipts)) = self
@@ -464,18 +476,11 @@ pub trait EthBlocks: LoadBlock<RpcConvert: RpcConvert<Primitives = Self::Primiti
     ) -> impl Future<Output = Result<Option<RpcBlock<Self::NetworkTypes>>, Self::Error>> + Send
     {
         async move {
-            let uncles = if block_id.is_pending() {
-                // Pending block can be fetched directly without need for caching
-                self.provider()
-                    .pending_block()
-                    .map_err(Self::Error::from_eth_err)?
-                    .and_then(|block| block.body().ommers().map(|o| o.to_vec()))
-            } else {
-                self.recovered_block(block_id)
-                    .await?
-                    .map(|block| block.body().ommers().map(|o| o.to_vec()).unwrap_or_default())
-            }
-            .unwrap_or_default();
+            let uncles = self
+                .recovered_block(block_id)
+                .await?
+                .map(|block| block.body().ommers().map(|o| o.to_vec()).unwrap_or_default())
+                .unwrap_or_default();
 
             uncles
                 .into_iter()
@@ -518,6 +523,10 @@ pub trait LoadBlock: LoadPendingBlock + SpawnBlocking + RpcNodeCoreExt {
     > + Send {
         async move {
             if block_id.is_pending() {
+                if self.pending_block_kind().is_none() {
+                    return Ok(None);
+                }
+
                 // Pending block can be fetched directly without need for caching
                 if let Some(pending_block) =
                     self.provider().pending_block().map_err(Self::Error::from_eth_err)?
@@ -568,17 +577,21 @@ mod tests {
         }
 
         let mut seen = HashSet::with_capacity(threshold.max(1));
-        let mut probabilistic_finalized = None;
+        let mut probabilistic_finalized = fast_finalized_number;
+        let mut threshold_met = false;
         for (number, beneficiary) in headers {
+            probabilistic_finalized = *number;
             seen.insert(*beneficiary);
             if seen.len() >= threshold {
-                probabilistic_finalized = Some(*number);
+                threshold_met = true;
                 break;
             }
         }
+        if !threshold_met {
+            probabilistic_finalized = fast_finalized_number;
+        }
 
-        Ok(probabilistic_finalized
-            .map_or(fast_finalized_number, |p| std::cmp::max(fast_finalized_number, p)))
+        Ok(std::cmp::max(fast_finalized_number, probabilistic_finalized))
     }
 
     #[test]

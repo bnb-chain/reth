@@ -114,7 +114,7 @@ impl SessionError for EthStreamError {
                 P2PHandshakeError::NonHelloMessageInHandshake,
             )) => true,
             Self::EthHandshakeError(err) => {
-                #[allow(clippy::match_same_arms)]
+                #[expect(clippy::match_same_arms)]
                 match err {
                     EthHandshakeError::NoResponse => {
                         // this happens when the conn simply stalled
@@ -143,8 +143,7 @@ impl SessionError for EthStreamError {
                             P2PHandshakeError::HelloNotInHandshake |
                             P2PHandshakeError::NonHelloMessageInHandshake |
                             P2PHandshakeError::Disconnected(
-                                DisconnectReason::UselessPeer |
-                                    DisconnectReason::IncompatibleP2PProtocolVersion |
+                                DisconnectReason::IncompatibleP2PProtocolVersion |
                                     DisconnectReason::ProtocolBreach
                             )
                     ) | P2PStreamError::UnknownReservedMessageId(_) |
@@ -152,15 +151,14 @@ impl SessionError for EthStreamError {
                         P2PStreamError::ParseSharedCapability(_) |
                         P2PStreamError::CapabilityNotShared |
                         P2PStreamError::Disconnected(
-                            DisconnectReason::UselessPeer |
-                                DisconnectReason::IncompatibleP2PProtocolVersion |
+                            DisconnectReason::IncompatibleP2PProtocolVersion |
                                 DisconnectReason::ProtocolBreach
                         ) |
                         P2PStreamError::MismatchedProtocolVersion { .. }
                 )
             }
             Self::EthHandshakeError(err) => {
-                #[allow(clippy::match_same_arms)]
+                #[expect(clippy::match_same_arms)]
                 match err {
                     EthHandshakeError::NoResponse => {
                         // this happens when the conn simply stalled
@@ -317,11 +315,24 @@ mod tests {
     fn test_is_fatal_disconnect() {
         let err = PendingSessionHandshakeError::Eth(EthStreamError::P2PStreamError(
             P2PStreamError::HandshakeError(P2PHandshakeError::Disconnected(
-                DisconnectReason::UselessPeer,
+                DisconnectReason::ProtocolBreach,
             )),
         ));
 
         assert!(err.is_fatal_protocol_error());
+    }
+
+    #[test]
+    fn test_useless_peer_not_fatal_during_handshake() {
+        // Cross-region peers frequently tag each other as useless due to skew in
+        // received-head tracking. Treating UselessPeer as fatal removes the peer
+        // from the manager and bans it, starving the node of valid neighbors.
+        let err = PendingSessionHandshakeError::Eth(EthStreamError::P2PStreamError(
+            P2PStreamError::HandshakeError(P2PHandshakeError::Disconnected(
+                DisconnectReason::UselessPeer,
+            )),
+        ));
+        assert!(!err.is_fatal_protocol_error());
     }
 
     #[test]

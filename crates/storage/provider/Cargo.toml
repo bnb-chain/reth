@@ -16,7 +16,7 @@ workspace = true
 reth-chainspec.workspace = true
 reth-execution-types.workspace = true
 reth-ethereum-primitives = { workspace = true, features = ["reth-codec"] }
-reth-primitives-traits = { workspace = true, features = ["reth-codec", "secp256k1"] }
+reth-primitives-traits = { workspace = true, features = ["reth-codec", "secp256k1", "dashmap"] }
 reth-errors.workspace = true
 reth-storage-errors.workspace = true
 reth-storage-api = { workspace = true, features = ["std", "db-api"] }
@@ -24,18 +24,23 @@ reth-db = { workspace = true, features = ["mdbx"] }
 reth-db-api.workspace = true
 reth-prune-types.workspace = true
 reth-stages-types.workspace = true
+reth-tasks = { workspace = true, features = ["rayon"] }
 reth-trie = { workspace = true, features = ["metrics"] }
 reth-trie-db = { workspace = true, features = ["metrics"] }
 
 # triedb
 rust-eth-triedb.workspace = true
+rust-eth-triedb-common.workspace = true
 reth-nippy-jar.workspace = true
 reth-codecs.workspace = true
 reth-chain-state.workspace = true
 reth-node-types.workspace = true
-reth-static-file-types.workspace = true
+reth-static-file-types = { workspace = true, features = ["std"] }
+reth-fs-util.workspace = true
+
 # ethereum
 alloy-eips.workspace = true
+alloy-genesis.workspace = true
 alloy-primitives.workspace = true
 alloy-rpc-types-engine.workspace = true
 alloy-consensus.workspace = true
@@ -53,7 +58,6 @@ metrics.workspace = true
 itertools.workspace = true
 notify = { workspace = true, default-features = false, features = ["macos_fsevent"] }
 parking_lot.workspace = true
-dashmap = { workspace = true, features = ["inline"] }
 strum.workspace = true
 eyre.workspace = true
 
@@ -64,9 +68,7 @@ tokio = { workspace = true, features = ["sync"], optional = true }
 # parallel utils
 rayon.workspace = true
 
-[target.'cfg(unix)'.dependencies]
-# rocksdb: jemalloc is recommended production workload
-rocksdb = { workspace = true, features = ["jemalloc"], optional = true }
+rocksdb.workspace = true
 
 [dev-dependencies]
 reth-db = { workspace = true, features = ["test-utils"] }
@@ -88,10 +90,19 @@ rand.workspace = true
 tokio = { workspace = true, features = ["sync", "macros", "rt-multi-thread"] }
 
 [features]
-rocksdb = ["dep:rocksdb"]
 io-uring = ["rust-eth-triedb/io-uring"]
-jemalloc = ["rust-eth-triedb/jemalloc"]
-asm-keccak = ["rust-eth-triedb/asm-keccak"]
+jemalloc = [
+    "rust-eth-triedb/jemalloc",
+    "rocksdb/jemalloc",
+    "reth-trie-db/jemalloc",
+    "rust-eth-triedb-common/jemalloc",
+]
+asm-keccak = [
+    "rust-eth-triedb/asm-keccak",
+    "rust-eth-triedb-common/asm-keccak",
+    "alloy-primitives/asm-keccak",
+    "reth-trie-db/asm-keccak",
+]
 test-utils = [
     "reth-db/test-utils",
     "reth-nippy-jar/test-utils",
@@ -108,4 +119,5 @@ test-utils = [
     "reth-stages-types/test-utils",
     "revm-state",
     "tokio",
+    "reth-tasks/test-utils",
 ]

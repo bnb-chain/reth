@@ -5,26 +5,25 @@
 
 use alloy_eips::eip4895::Withdrawal;
 use alloy_evm::{
-    block::{BlockExecutorFactory, BlockExecutorFor, ExecutableTx},
-    eth::{EthBlockExecutionCtx, EthBlockExecutor},
+    block::{BlockExecutorFactory, ExecutableTx, GasOutput},
+    eth::{EthBlockExecutionCtx, EthBlockExecutor, EthTxResult},
     precompiles::PrecompilesMap,
-    revm::context::{result::ResultAndState, Block as _},
-    EthEvm, EthEvmFactory,
+    revm::context::Block as _,
+    EthEvm, EthEvmFactory, EvmFactory,
 };
-use alloy_sol_macro::sol;
-use alloy_sol_types::SolCall;
+use alloy_sol_types::{sol, SolCall};
 use reth_ethereum::{
     chainspec::ChainSpec,
     cli::interface::Cli,
     evm::{
         primitives::{
+            block::StateDB,
             execute::{BlockExecutionError, BlockExecutor, InternalBlockExecutionError},
-            Database, Evm, EvmEnv, EvmEnvFor, ExecutionCtxFor, InspectorFor,
-            NextBlockEnvAttributes, OnStateHook,
+            Evm, EvmEnv, EvmEnvFor, ExecutionCtxFor, InspectorFor, NextBlockEnvAttributes,
+            OnStateHook,
         },
         revm::{
             context::TxEnv,
-            db::State,
             primitives::{address, hardfork::SpecId, Address},
             DatabaseCommit,
         },
@@ -39,7 +38,7 @@ use reth_ethereum::{
     primitives::{Header, SealedBlock, SealedHeader},
     provider::BlockExecutionResult,
     rpc::types::engine::ExecutionData,
-    Block, EthPrimitives, Receipt, TransactionSigned,
+    Block, EthPrimitives, Receipt, TransactionSigned, TxType,
 };
 use std::{fmt::Display, sync::Arc};
 
@@ -48,7 +47,7 @@ pub const WITHDRAWALS_ADDRESS: Address = address!("0x420000000000000000000000000
 
 fn main() {
     Cli::parse_args()
-        .run(|builder, _| async move {
+        .run(async move |builder, _| {
             let handle = builder
                 // use the default ethereum node types
                 .with_types::<EthereumNode>()
@@ -95,6 +94,9 @@ impl BlockExecutorFactory for CustomEvmConfig {
     type ExecutionCtx<'a> = EthBlockExecutionCtx<'a>;
     type Transaction = TransactionSigned;
     type Receipt = Receipt;
+    type TxExecutionResult = EthTxResult<<EthEvmFactory as EvmFactory>::HaltReason, TxType>;
+    type Executor<'a, DB: StateDB, I: InspectorFor<Self, DB>> =
+        CustomBlockExecutor<'a, EthEvm<DB, I, PrecompilesMap>>;
 
     fn evm_factory(&self) -> &Self::EvmFactory {
         self.inner.evm_factory()
@@ -102,12 +104,12 @@ impl BlockExecutorFactory for CustomEvmConfig {
 
     fn create_executor<'a, DB, I>(
         &'a self,
-        evm: EthEvm<&'a mut State<DB>, I, PrecompilesMap>,
+        evm: EthEvm<DB, I, PrecompilesMap>,
         ctx: EthBlockExecutionCtx<'a>,
-    ) -> impl BlockExecutorFor<'a, Self, DB, I>
+    ) -> Self::Executor<'a, DB, I>
     where
-        DB: Database + 'a,
-        I: InspectorFor<Self, &'a mut State<DB>> + 'a,
+        DB: StateDB,
+        I: InspectorFor<Self, DB>,
     {
         CustomBlockExecutor {
             inner: EthBlockExecutor::new(
@@ -188,14 +190,14 @@ pub struct CustomBlockExecutor<'a, Evm> {
     inner: EthBlockExecutor<'a, Evm, &'a Arc<ChainSpec>, &'a RethReceiptBuilder>,
 }
 
-impl<'db, DB, E> BlockExecutor for CustomBlockExecutor<'_, E>
+impl<E> BlockExecutor for CustomBlockExecutor<'_, E>
 where
-    DB: Database + 'db,
-    E: Evm<DB = &'db mut State<DB>, Tx = TxEnv>,
+    E: Evm<DB: StateDB, Tx = TxEnv>,
 {
     type Transaction = TransactionSigned;
     type Receipt = Receipt;
     type Evm = E;
+    type Result = EthTxResult<E::HaltReason, TxType>;
 
     fn apply_pre_execution_changes(&mut self) -> Result<(), BlockExecutionError> {
         self.inner.apply_pre_execution_changes()
@@ -208,16 +210,12 @@ where
     fn execute_transaction_without_commit(
         &mut self,
         tx: impl ExecutableTx<Self>,
-    ) -> Result<ResultAndState<<Self::Evm as Evm>::HaltReason>, BlockExecutionError> {
+    ) -> Result<Self::Result, BlockExecutionError> {
         self.inner.execute_transaction_without_commit(tx)
     }
 
-    fn commit_transaction(
-        &mut self,
-        output: ResultAndState<<Self::Evm as Evm>::HaltReason>,
-        tx: impl ExecutableTx<Self>,
-    ) -> Result<u64, BlockExecutionError> {
-        self.inner.commit_transaction(output, tx)
+    fn commit_transaction(&mut self, output: Self::Result) -> GasOutput {
+        self.inner.commit_transaction(output)
     }
 
     fn finish(mut self) -> Result<(Self::Evm, BlockExecutionResult<Receipt>), BlockExecutionError> {

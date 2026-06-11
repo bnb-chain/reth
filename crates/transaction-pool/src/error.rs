@@ -145,6 +145,18 @@ impl PoolError {
             }
         }
     }
+
+    /// Returns `true` if this is a blob sidecar error that should NOT be cached as a bad import.
+    ///
+    /// The transaction hash may be valid — the issue is peer-specific (e.g. malformed sidecar
+    /// data), so we penalize the peer but allow re-fetching from other peers.
+    #[inline]
+    pub const fn is_bad_blob_sidecar(&self) -> bool {
+        match &self.kind {
+            PoolErrorKind::InvalidTransaction(err) => err.is_bad_blob_sidecar(),
+            _ => false,
+        }
+    }
 }
 
 /// Represents all errors that can happen when validating transactions for the pool for EIP-4844
@@ -182,6 +194,9 @@ pub enum Eip4844PoolTransactionError {
     /// Thrown if blob transaction has an EIP-4844 style sidecar after Osaka.
     #[error("unexpected eip-4844 sidecar after osaka")]
     UnexpectedEip4844SidecarAfterOsaka,
+    /// Thrown if blob transaction has an EIP-7594 style sidecar but EIP-7594 support is disabled.
+    #[error("eip-7594 sidecar disallowed")]
+    Eip7594SidecarDisallowed,
     /// Thrown if blob transaction has a zero `max_fee_per_blob_gas`
     #[error("blob transaction with zero max_fee_per_blob_gas")]
     ZeroBlobFee,
@@ -281,6 +296,9 @@ pub enum InvalidPoolTransactionError {
         /// Minimum required priority fee.
         minimum_priority_fee: u128,
     },
+    /// Thrown if the max priority fee per gas is 0 for an EIP-1559 transaction.
+    #[error("max priority fee per gas is 0")]
+    TipZero,
 }
 
 // === impl InvalidPoolTransactionError ===
@@ -313,8 +331,7 @@ impl InvalidPoolTransactionError {
                     }
                     InvalidTransactionError::GasTooLow |
                     InvalidTransactionError::GasTooHigh |
-                    InvalidTransactionError::TipAboveFeeCap |
-                    InvalidTransactionError::TipZero => {
+                    InvalidTransactionError::TipAboveFeeCap => {
                         // these are technically not invalid
                         false
                     }
@@ -342,7 +359,10 @@ impl InvalidPoolTransactionError {
                 // local setting
                 false
             }
-            Self::ExceedsFeeCap { max_tx_fee_wei: _, tx_fee_cap_wei: _ } => true,
+            Self::ExceedsFeeCap { max_tx_fee_wei: _, tx_fee_cap_wei: _ } => {
+                // local setting
+                false
+            }
             Self::ExceedsMaxInitCodeSize(_, _) => true,
             Self::OversizedData { .. } => true,
             Self::Underpriced => {
@@ -378,7 +398,8 @@ impl InvalidPoolTransactionError {
                         true
                     }
                     Eip4844PoolTransactionError::UnexpectedEip4844SidecarAfterOsaka |
-                    Eip4844PoolTransactionError::UnexpectedEip7594SidecarBeforeOsaka => {
+                    Eip4844PoolTransactionError::UnexpectedEip7594SidecarBeforeOsaka |
+                    Eip4844PoolTransactionError::Eip7594SidecarDisallowed => {
                         // for now we do not want to penalize peers for broadcasting different
                         // sidecars
                         false
@@ -402,7 +423,26 @@ impl InvalidPoolTransactionError {
                 Eip7702PoolTransactionError::AuthorityReserved => false,
             },
             Self::PriorityFeeBelowMinimum { .. } => false,
+            Self::TipZero => false,
         }
+    }
+
+    /// Returns `true` if this is a blob sidecar error (e.g. invalid proof, missing sidecar).
+    ///
+    /// These errors indicate the sidecar data from a specific peer was bad, but the transaction
+    /// hash itself may be valid when fetched from another peer.
+    #[inline]
+    pub const fn is_bad_blob_sidecar(&self) -> bool {
+        matches!(
+            self,
+            Self::Eip4844(
+                Eip4844PoolTransactionError::MissingEip4844BlobSidecar |
+                    Eip4844PoolTransactionError::InvalidEip4844Blob(_) |
+                    Eip4844PoolTransactionError::UnexpectedEip7594SidecarBeforeOsaka |
+                    Eip4844PoolTransactionError::UnexpectedEip4844SidecarAfterOsaka |
+                    Eip4844PoolTransactionError::Eip7594SidecarDisallowed
+            )
+        )
     }
 
     /// Returns true if this is a [`Self::Consensus`] variant.
@@ -479,5 +519,33 @@ mod tests {
         assert!(err.is_other::<E>());
 
         assert!(err.downcast_other_ref::<E>().is_some());
+    }
+
+    #[test]
+    fn bad_blob_sidecar_detection() {
+        let err = PoolError::new(
+            TxHash::ZERO,
+            InvalidPoolTransactionError::Eip4844(Eip4844PoolTransactionError::InvalidEip4844Blob(
+                BlobTransactionValidationError::InvalidProof,
+            )),
+        );
+
+        assert!(err.is_bad_blob_sidecar());
+
+        let err = PoolError::new(
+            TxHash::ZERO,
+            InvalidPoolTransactionError::Eip4844(
+                Eip4844PoolTransactionError::MissingEip4844BlobSidecar,
+            ),
+        );
+
+        assert!(err.is_bad_blob_sidecar());
+
+        let err = PoolError::new(
+            TxHash::ZERO,
+            InvalidPoolTransactionError::Eip4844(Eip4844PoolTransactionError::NoEip4844Blobs),
+        );
+
+        assert!(!err.is_bad_blob_sidecar());
     }
 }

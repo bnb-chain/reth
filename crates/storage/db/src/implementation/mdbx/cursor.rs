@@ -2,7 +2,7 @@
 
 use super::utils::*;
 use crate::{
-    metrics::{DatabaseEnvMetrics, Operation},
+    metrics::{Operation, TableOperationMetrics},
     DatabaseError,
 };
 use reth_db_api::{
@@ -11,11 +11,11 @@ use reth_db_api::{
         DbCursorRO, DbCursorRW, DbDupCursorRO, DbDupCursorRW, DupWalker, RangeWalker,
         ReverseWalker, Walker,
     },
-    table::{Compress, Decode, Decompress, DupSort, Encode, Table},
+    table::{Compress, Decode, Decompress, DupSort, Encode, IntoVec, Table},
 };
 use reth_libmdbx::{Error as MDBXError, TransactionKind, WriteFlags, RO, RW};
 use reth_storage_errors::db::{DatabaseErrorInfo, DatabaseWriteError, DatabaseWriteOperation};
-use std::{borrow::Cow, collections::Bound, marker::PhantomData, ops::RangeBounds, sync::Arc};
+use std::{borrow::Cow, collections::Bound, marker::PhantomData, ops::RangeBounds};
 
 /// Read only Cursor.
 pub type CursorRO<T> = Cursor<RO, T>;
@@ -29,8 +29,8 @@ pub struct Cursor<K: TransactionKind, T: Table> {
     pub(crate) inner: reth_libmdbx::Cursor<K>,
     /// Cache buffer that receives compressed values.
     buf: Vec<u8>,
-    /// Reference to metric handles in the DB environment. If `None`, metrics are not recorded.
-    metrics: Option<Arc<DatabaseEnvMetrics>>,
+    /// Per-table operation metrics. If `None`, metrics are not recorded.
+    metrics: Option<TableOperationMetrics>,
     /// Phantom data to enforce encoding/decoding.
     _dbi: PhantomData<T>,
 }
@@ -38,7 +38,7 @@ pub struct Cursor<K: TransactionKind, T: Table> {
 impl<K: TransactionKind, T: Table> Cursor<K, T> {
     pub(crate) const fn new_with_metrics(
         inner: reth_libmdbx::Cursor<K>,
-        metrics: Option<Arc<DatabaseEnvMetrics>>,
+        metrics: Option<TableOperationMetrics>,
     ) -> Self {
         Self { inner, buf: Vec::new(), metrics, _dbi: PhantomData }
     }
@@ -54,7 +54,7 @@ impl<K: TransactionKind, T: Table> Cursor<K, T> {
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
         if let Some(metrics) = self.metrics.clone() {
-            metrics.record_operation(T::NAME, operation, value_size, || f(self))
+            metrics[operation.index()].record(value_size, || f(self))
         } else {
             f(self)
         }
@@ -215,27 +215,26 @@ impl<K: TransactionKind, T: DupSort> DbDupCursorRO<T> for Cursor<K, T> {
     ) -> Result<DupWalker<'_, T, Self>, DatabaseError> {
         let start = match (key, subkey) {
             (Some(key), Some(subkey)) => {
-                // encode key and decode it after.
-                let key: Vec<u8> = key.encode().into();
+                let encoded_key = key.encode();
                 self.inner
-                    .get_both_range(key.as_ref(), subkey.encode().as_ref())
+                    .get_both_range(encoded_key.as_ref(), subkey.encode().as_ref())
                     .map_err(|e| DatabaseError::Read(e.into()))?
-                    .map(|val| decoder::<T>((Cow::Owned(key), val)))
+                    .map(|val| decoder::<T>((Cow::Borrowed(encoded_key.as_ref()), val)))
             }
             (Some(key), None) => {
-                let key: Vec<u8> = key.encode().into();
+                let encoded_key = key.encode();
                 self.inner
-                    .set(key.as_ref())
+                    .set(encoded_key.as_ref())
                     .map_err(|e| DatabaseError::Read(e.into()))?
-                    .map(|val| decoder::<T>((Cow::Owned(key), val)))
+                    .map(|val| decoder::<T>((Cow::Borrowed(encoded_key.as_ref()), val)))
             }
             (None, Some(subkey)) => {
                 if let Some((key, _)) = self.first()? {
-                    let key: Vec<u8> = key.encode().into();
+                    let encoded_key = key.encode();
                     self.inner
-                        .get_both_range(key.as_ref(), subkey.encode().as_ref())
+                        .get_both_range(encoded_key.as_ref(), subkey.encode().as_ref())
                         .map_err(|e| DatabaseError::Read(e.into()))?
-                        .map(|val| decoder::<T>((Cow::Owned(key), val)))
+                        .map(|val| decoder::<T>((Cow::Borrowed(encoded_key.as_ref()), val)))
                 } else {
                     Some(Err(DatabaseError::Read(MDBXError::NotFound.into())))
                 }
@@ -269,7 +268,7 @@ impl<T: Table> DbCursorRW<T> for Cursor<RW, T> {
                             info: e.into(),
                             operation: DatabaseWriteOperation::CursorUpsert,
                             table_name: T::NAME,
-                            key: key.into(),
+                            key: key.into_vec(),
                         }
                         .into()
                     })
@@ -291,7 +290,7 @@ impl<T: Table> DbCursorRW<T> for Cursor<RW, T> {
                             info: e.into(),
                             operation: DatabaseWriteOperation::CursorInsert,
                             table_name: T::NAME,
-                            key: key.into(),
+                            key: key.into_vec(),
                         }
                         .into()
                     })
@@ -315,7 +314,7 @@ impl<T: Table> DbCursorRW<T> for Cursor<RW, T> {
                             info: e.into(),
                             operation: DatabaseWriteOperation::CursorAppend,
                             table_name: T::NAME,
-                            key: key.into(),
+                            key: key.into_vec(),
                         }
                         .into()
                     })
@@ -351,7 +350,7 @@ impl<T: DupSort> DbDupCursorRW<T> for Cursor<RW, T> {
                             info: e.into(),
                             operation: DatabaseWriteOperation::CursorAppendDup,
                             table_name: T::NAME,
-                            key: key.into(),
+                            key: key.into_vec(),
                         }
                         .into()
                     })
@@ -375,10 +374,9 @@ mod tests {
         transaction::{DbTx, DbTxMut},
     };
     use reth_primitives_traits::StorageEntry;
-    use std::sync::Arc;
     use tempfile::TempDir;
 
-    fn create_test_db() -> Arc<DatabaseEnv> {
+    fn create_test_db() -> DatabaseEnv {
         let path = TempDir::new().unwrap();
         let mut db = DatabaseEnv::open(
             path.path(),
@@ -387,7 +385,7 @@ mod tests {
         )
         .unwrap();
         db.create_tables().unwrap();
-        Arc::new(db)
+        db
     }
 
     #[test]
