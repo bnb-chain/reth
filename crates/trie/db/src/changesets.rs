@@ -102,6 +102,27 @@ where
         "Computing block trie changesets from database state"
     );
 
+    // Resolve the database tip from this transaction's snapshot and bound every changeset read
+    // to it. Changesets live in static files, which persistence writes *before* committing the
+    // corresponding MDBX state: an unbounded `(N+1)..` read can pick up changesets for blocks
+    // beyond this snapshot's tip, producing reverts that do not match the MDBX state this
+    // computation runs against and ultimately an incorrect trie (observed as a wrongly rejected
+    // block under a concurrent long persist).
+    let db_tip_block = provider
+        .get_stage_checkpoint(reth_stages_types::StageId::Finish)?
+        .as_ref()
+        .map(|chk| chk.block_number)
+        .ok_or_else(|| ProviderError::InsufficientChangesets {
+            requested: block_number,
+            available: 0..=0,
+        })?;
+    if block_number > db_tip_block {
+        return Err(ProviderError::InsufficientChangesets {
+            requested: block_number,
+            available: 0..=db_tip_block,
+        });
+    }
+
     // Step 1: Collect/calculate state reverts
 
     // This is just the changes from this specific block
@@ -109,7 +130,8 @@ where
         crate::state::from_reverts_auto(provider, block_number..=block_number)?;
 
     // This reverts all changes from db tip back to just after block was processed
-    let cumulative_state_revert = crate::state::from_reverts_auto(provider, (block_number + 1)..)?;
+    let cumulative_state_revert =
+        crate::state::from_reverts_auto(provider, (block_number + 1)..=db_tip_block)?;
 
     // This reverts all changes from db tip back to just after block-1 was processed
     let mut cumulative_state_revert_prev = cumulative_state_revert.clone();
@@ -463,6 +485,30 @@ impl ChangesetCache {
             + BlockNumReader
             + StorageSettingsCache,
     {
+        Ok(self.get_or_compute_tracked(block_hash, block_number, provider)?.0)
+    }
+
+    /// Same as [`Self::get_or_compute`], additionally reporting whether the changesets had to be
+    /// recomputed from the database (`true`), as opposed to being served from the cache or a
+    /// pending in-memory computation (`false`).
+    ///
+    /// The DB-based fallback reads data that a concurrent persistence run may be rewriting;
+    /// callers that feed the result into consensus-critical computations (e.g. overlay state
+    /// roots) use this flag to decide whether the result needs revalidation.
+    pub fn get_or_compute_tracked<P>(
+        &self,
+        block_hash: B256,
+        block_number: u64,
+        provider: &P,
+    ) -> ProviderResult<(Arc<TrieUpdatesSorted>, bool)>
+    where
+        P: DBProvider
+            + StageCheckpointReader
+            + ChangeSetReader
+            + StorageChangeSetReader
+            + BlockNumReader
+            + StorageSettingsCache,
+    {
         // Try cache first, and if missing, check for a pending computation.
         let pending = {
             let cache = self.inner.read();
@@ -473,7 +519,7 @@ impl ChangesetCache {
                     block_number,
                     "Changeset cache HIT"
                 );
-                return Ok(changesets);
+                return Ok((changesets, false));
             }
             cache.pending.get(&block_hash).cloned()
         };
@@ -497,7 +543,7 @@ impl ChangesetCache {
                     elapsed = ?start.elapsed(),
                     "Pending changeset resolved"
                 );
-                return Ok(changesets);
+                return Ok((changesets, false));
             }
 
             debug!(
@@ -543,7 +589,7 @@ impl ChangesetCache {
             "Changeset successfully cached"
         );
 
-        Ok(changesets)
+        Ok((changesets, true))
     }
 
     /// Gets or computes accumulated trie reverts for a range of blocks.
@@ -573,6 +619,25 @@ impl ChangesetCache {
         provider: &P,
         range: RangeInclusive<BlockNumber>,
     ) -> ProviderResult<TrieUpdatesSorted>
+    where
+        P: DBProvider
+            + StageCheckpointReader
+            + ChangeSetReader
+            + StorageChangeSetReader
+            + BlockNumReader
+            + StorageSettingsCache,
+    {
+        Ok(self.get_or_compute_range_tracked(provider, range)?.0)
+    }
+
+    /// Same as [`Self::get_or_compute_range`], additionally reporting whether any block in the
+    /// range had to be recomputed from the database (the expensive fallback path) instead of
+    /// being served from the cache. See [`Self::get_or_compute_tracked`].
+    pub fn get_or_compute_range_tracked<P>(
+        &self,
+        provider: &P,
+        range: RangeInclusive<BlockNumber>,
+    ) -> ProviderResult<(TrieUpdatesSorted, bool)>
     where
         P: DBProvider
             + StageCheckpointReader
@@ -616,6 +681,7 @@ impl ChangesetCache {
         // Iterate in reverse order (newest to oldest) so that older changesets
         // take precedence when there are conflicting updates.
         let mut accumulated_reverts = TrieUpdatesSorted::default();
+        let mut used_db_fallback = false;
 
         for block_number in range.rev() {
             // Get the block hash for this block number
@@ -634,7 +700,9 @@ impl ChangesetCache {
             );
 
             // Get changesets from cache (or compute on-the-fly)
-            let changesets = self.get_or_compute(block_hash, block_number, provider)?;
+            let (changesets, from_db) =
+                self.get_or_compute_tracked(block_hash, block_number, provider)?;
+            used_db_fallback |= from_db;
 
             // Overlay this block's changesets on top of accumulated reverts.
             // Since we iterate newest to oldest, older values are added last
@@ -656,10 +724,11 @@ impl ChangesetCache {
             num_blocks = end_block.saturating_sub(start_block).saturating_add(1),
             num_account_nodes,
             num_storage_tries,
+            used_db_fallback,
             "Finished accumulating trie reverts for block range"
         );
 
-        Ok(accumulated_reverts)
+        Ok((accumulated_reverts, used_db_fallback))
     }
 }
 
