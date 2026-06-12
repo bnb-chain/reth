@@ -120,6 +120,14 @@ impl<N: ProviderNodeTypes> BlockchainProvider<N> {
         self.canonical_in_memory_state.clone()
     }
 
+    /// Returns a handle to the node-wide changeset cache shared by all providers.
+    ///
+    /// See [`ProviderFactory::changeset_cache`] for why components must reuse this handle
+    /// instead of creating their own cache instance.
+    pub fn changeset_cache(&self) -> reth_trie_db::ChangesetCache {
+        self.database.changeset_cache()
+    }
+
     /// Returns a provider with a created `DbTx` inside, which allows fetching data from the
     /// database using different types of providers. Example: [`HeaderProvider`]
     /// [`BlockHashReader`]. This may fail if the inner read database transaction fails to open.

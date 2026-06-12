@@ -192,6 +192,16 @@ impl<N: NodeTypesWithDB> ProviderFactory<N> {
         self
     }
 
+    /// Returns a handle to the changeset cache shared by all providers created by this factory.
+    ///
+    /// Components building their own overlay state providers (e.g. payload builders) should use
+    /// this handle instead of creating a fresh cache: entries are populated by the engine's
+    /// deferred trie tasks and evicted on persistence, and a separate instance would start empty
+    /// and fall back to expensive DB-based changeset recomputation on every use.
+    pub fn changeset_cache(&self) -> ChangesetCache {
+        self.changeset_cache.clone()
+    }
+
     /// Sets the minimum pruning distance for an existing [`ProviderFactory`].
     ///
     /// This controls the minimum distance from tip required before pruning can occur.
