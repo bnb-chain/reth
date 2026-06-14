@@ -21,7 +21,7 @@ use reth_engine_primitives::{
     BeaconEngineMessage, BeaconOnNewPayloadError, ConsensusEngineEvent, ExecutionPayload,
     ForkchoiceStateTracker, NewPayloadTimings, OnForkChoiceUpdated, SlowBlockInfo,
 };
-use reth_errors::{ConsensusError, ProviderResult, RethError, RethResult};
+use reth_errors::{ConsensusError, ProviderResult};
 use reth_evm::ConfigureEvm;
 use reth_payload_builder::{BuildNewPayload, PayloadBuilderHandle};
 use reth_payload_primitives::{BuiltPayload, NewPayloadError, PayloadTypes};
@@ -40,7 +40,6 @@ use reth_tasks::{spawn_os_thread, utils::increase_thread_priority};
 use reth_trie_db::ChangesetCache;
 use revm::interpreter::debug_unreachable;
 use revm_primitives::U256;
-use rust_eth_triedb_common::{DiffLayer, DiffLayers};
 use state::TreeState;
 use std::{
     collections::HashMap,
@@ -187,36 +186,6 @@ impl<N: NodePrimitives> EngineApiTreeState<N> {
     /// Returns true if the block has been marked as invalid.
     pub fn has_invalid_header(&mut self, hash: &B256) -> bool {
         self.invalid_headers.get(hash).is_some()
-    }
-
-    /// Returns merged difflayers by parent block hash
-    pub(crate) fn merged_difflayer_by_hash(&self, parent_block_hash: B256) -> Option<DiffLayers> {
-        self.tree_state.merged_difflayer_by_hash(parent_block_hash)
-    }
-
-    /// Returns the difflayer for a specific block by its hash.
-    ///
-    /// This retrieves the single difflayer that was generated when the block was executed.
-    /// Returns `None` if the block is not found or has no difflayer.
-    pub fn difflayer_by_block_hash(&self, block_hash: B256) -> Option<Arc<DiffLayer>> {
-        self.tree_state.blocks_by_hash.get(&block_hash).and_then(|block| block.difflayer.clone())
-    }
-
-    /// Returns merged difflayers accumulated from the parent block hash up to the tip.
-    ///
-    /// This method walks back from the given parent block hash, merging all difflayers
-    /// from ancestor blocks that are in memory (not yet persisted).
-    ///
-    /// # Arguments
-    ///
-    /// * `parent_block_hash` - The hash of the parent block to start accumulating from
-    ///
-    /// # Returns
-    ///
-    /// Returns `Some(DiffLayers)` with all accumulated diff layers, or `None` if no
-    /// difflayers are found or the parent block is not in memory.
-    pub fn get_merged_difflayers(&self, parent_block_hash: B256) -> Option<DiffLayers> {
-        self.merged_difflayer_by_hash(parent_block_hash)
     }
 }
 
@@ -545,41 +514,6 @@ where
     const fn should_backpressure(&self) -> bool {
         self.persistence_state.in_progress() &&
             self.persistence_gap() >= self.config.persistence_backpressure_threshold()
-    }
-
-    /// Returns the difflayer for a specific block by its hash.
-    ///
-    /// This retrieves the single difflayer that was generated when the block was executed
-    /// and is currently held in memory (not yet persisted to disk).
-    ///
-    /// # Arguments
-    ///
-    /// * `block_hash` - The hash of the block to retrieve the difflayer for
-    ///
-    /// # Returns
-    ///
-    /// Returns `Some(Arc<DiffLayer>)` if the block exists in memory and has a difflayer,
-    /// `None` otherwise.
-    pub fn difflayer_by_block_hash(&self, block_hash: B256) -> Option<Arc<DiffLayer>> {
-        self.state.difflayer_by_block_hash(block_hash)
-    }
-
-    /// Returns merged difflayers accumulated from the parent block hash.
-    ///
-    /// This method walks back from the given parent block hash through the chain
-    /// of in-memory blocks, merging all difflayers to provide a consolidated view
-    /// of state changes since the last persisted block.
-    ///
-    /// # Arguments
-    ///
-    /// * `parent_block_hash` - The hash of the parent block to start accumulating from
-    ///
-    /// # Returns
-    ///
-    /// Returns `Some(DiffLayers)` with all accumulated diff layers merged together,
-    /// or `None` if no difflayers are found.
-    pub fn get_merged_difflayers(&self, parent_block_hash: B256) -> Option<DiffLayers> {
-        self.state.get_merged_difflayers(parent_block_hash)
     }
 
     /// Run the engine API handler.
@@ -1895,22 +1829,7 @@ where
                             }
                         }
                     }
-                    EngineApiRequest::Custom(request) => match request {
-                        CustomRequestMessage::RequestDiffLayer { parent_hash, tx, .. } => {
-                            let start = Instant::now();
-                            let output = self
-                                .state
-                                .get_merged_difflayers(parent_hash)
-                                .ok_or_else(|| "DiffLayers not found".to_string());
-                            if tx.send(output.map_err(RethError::msg)).is_err() {
-                                error!(target: "engine::tree", "Failed to send event");
-                            }
-                            log_handler_duration(
-                                "request.custom.request_difflayer",
-                                start.elapsed(),
-                            );
-                        }
-                    },
+                    EngineApiRequest::Custom(_request) => {}
                 }
             }
             FromEngine::DownloadedBlocks(blocks) => {
@@ -2305,27 +2224,17 @@ where
             .ok_or_else(|| ProviderError::StateForNumberNotFound(block.header().number()))?;
         let hashed_state = self.provider.hashed_post_state(execution_output.state());
 
-        // In TrieDB mode, skip computing trie updates from MDBX - TrieDB manages its own trie data
-        let trie_updates = if rust_eth_triedb::triedb_manager::is_triedb_active() {
-            debug!(
-                target: "engine::tree",
-                number = ?block.number(),
-                "skipping block trie updates computation in TrieDB mode",
-            );
-            reth_trie::updates::TrieUpdatesSorted::default()
-        } else {
-            debug!(
-                target: "engine::tree",
-                number = ?block.number(),
-                "computing block trie updates",
-            );
-            let db_provider = self.provider.database_provider_ro()?;
-            reth_trie_db::compute_block_trie_updates(
-                &self.changeset_cache,
-                &db_provider,
-                block.number(),
-            )?
-        };
+        debug!(
+            target: "engine::tree",
+            number = ?block.number(),
+            "computing block trie updates",
+        );
+        let db_provider = self.provider.database_provider_ro()?;
+        let trie_updates = reth_trie_db::compute_block_trie_updates(
+            &self.changeset_cache,
+            &db_provider,
+            block.number(),
+        )?;
 
         let sorted_hashed_state = Arc::new(hashed_state.into_sorted());
         let sorted_trie_updates = Arc::new(trie_updates);
@@ -3127,41 +3036,6 @@ where
             Ok(Some(_)) => {}
         }
 
-        // Pathdb gap: when TrieDB is active, executing this block requires either a
-        // chain of in-memory difflayers to bridge back to the pathdb disk layer, or a
-        // parent whose state root equals that disk layer. After a restart the
-        // difflayer chain is empty, and if we reconnect to a fork whose parent
-        // diverges from pathdb's last flush, re-executing would read stale trie nodes
-        // and compute a wrong state root. Buffer as Disconnected so the P2P layer
-        // walks ancestors sequentially until a block touches the disk layer.
-        if rust_eth_triedb::triedb_manager::is_triedb_active() {
-            let has_difflayers =
-                self.state.tree_state.merged_difflayer_by_hash(block_id.parent).is_some();
-            if !has_difflayers {
-                let triedb = rust_eth_triedb::triedb_manager::get_global_triedb();
-                if let Ok((_, persist_root)) = triedb.latest_persist_state() &&
-                    let Ok(Some(parent_header)) = self.sealed_header_by_hash(block_id.parent) &&
-                    parent_header.state_root() != persist_root
-                {
-                    warn!(
-                        target: "engine::tree",
-                        block = ?block_num_hash,
-                        parent = ?block_id.parent,
-                        parent_state_root = ?parent_header.state_root(),
-                        pathdb_persist_root = ?persist_root,
-                        "Triedb pathdb gap: no difflayers and parent state root diverges from disk layer; buffering as Disconnected",
-                    );
-                    let block = convert_to_block(self, input)?;
-                    let missing_ancestor = block.parent_num_hash();
-                    self.state.buffer.insert_block(block);
-                    return Ok(InsertPayloadOk::Inserted(BlockStatus::Disconnected {
-                        head: self.state.tree_state.current_canonical_head,
-                        missing_ancestor,
-                    }));
-                }
-            }
-        }
-
         // determine whether we are on a fork chain by comparing the block number with the
         // canonical head. This is a simple check that is sufficient for the event emission below.
         // A block is considered a fork if its number is less than or equal to the canonical head,
@@ -3745,29 +3619,15 @@ pub trait WaitForCaches {
     fn wait_for_caches(&self) -> CacheWaitDurations;
 }
 
-/// A custom request message for the engine tree handler.
-///
-/// Used by `reth-bsc` in `TrieDB` mode: during the miner flow, the miner needs the
-/// merged `DiffLayers` from the in-memory tree state so that `TrieDB` can compute
-/// the state root incrementally on top of the parent block's trie.
+/// A custom request message for the engine tree handler (currently unused).
 #[derive(Debug)]
 pub enum CustomRequestMessage<P, Evm, N>
 where
     Evm: ConfigureEvm<Primitives = N>,
     N: NodePrimitives,
 {
-    /// Request the merged diff layers for a given parent hash.
-    ///
-    /// The miner sends this before calling `intermediate_and_commit_hashed_post_state`
-    /// so that `TrieDB` can apply cached trie diffs instead of reading everything from disk.
-    RequestDiffLayer {
-        /// The parent hash to get the diff layers for.
-        parent_hash: BlockHash,
-        /// The sender for returning the diff layers.
-        tx: oneshot::Sender<RethResult<DiffLayers>>,
-        /// Phantom data to hold the generic types.
-        _phantom: PhantomData<(P, Evm, N)>,
-    },
+    /// Phantom variant to satisfy type parameter constraints.
+    _Phantom(PhantomData<(P, Evm, N)>),
 }
 
 impl<P, Evm, N> Display for CustomRequestMessage<P, Evm, N>
@@ -3776,10 +3636,6 @@ where
     N: NodePrimitives,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::RequestDiffLayer { parent_hash, .. } => {
-                write!(f, "RequestDiffLayer(parent_hash: {:?})", parent_hash)
-            }
-        }
+        write!(f, "CustomRequestMessage")
     }
 }

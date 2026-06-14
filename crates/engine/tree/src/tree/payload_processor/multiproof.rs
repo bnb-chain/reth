@@ -8,7 +8,7 @@ pub use reth_trie_parallel::state_root_task::{
     StateRootHandle, StateRootMessage,
 };
 
-/// Type alias for `StateRootMessage` used by the triedb prefetcher.
+/// Message type for multi-proof state root computation tasks.
 pub type MultiProofMessage = StateRootMessage;
 
 /// The default max targets, for limiting the number of account and storage proof targets to be

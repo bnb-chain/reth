@@ -23,7 +23,6 @@ use reth_storage_api::{
     BlockIdReader, BlockReaderIdExt, StateProvider, StateProviderBox, StateProviderFactory,
 };
 use reth_transaction_pool::TransactionPool;
-use rust_eth_triedb::triedb_manager::is_triedb_active;
 use std::collections::HashMap;
 
 /// Helper methods for `eth_` methods relating to state (accounts).
@@ -167,11 +166,6 @@ pub trait EthState: LoadState + SpawnBlocking {
         Self: EthApiSpec,
     {
         Ok(async move {
-            // Check if TrieDB is active, return error if so
-            if is_triedb_active() {
-                return Err(EthApiError::MethodNotAvailable("eth_getProof".to_string()).into())
-            }
-
             // In fastnode mode, trie tables are not maintained so proofs would be invalid
             if is_fastnode_active() {
                 return Err(EthApiError::MethodNotAvailable("eth_getProof".to_string()).into())
@@ -205,11 +199,6 @@ pub trait EthState: LoadState + SpawnBlocking {
         block_id: BlockId,
     ) -> impl Future<Output = Result<Option<Account>, Self::Error>> + Send {
         self.spawn_blocking_io_fut(move |this| async move {
-            // Check if TrieDB is active, return error if so
-            if is_triedb_active() {
-                return Err(EthApiError::MethodNotAvailable("eth_getAccount".to_string()).into())
-            }
-
             // In fastnode mode, trie tables are not maintained so storage root would be invalid
             if is_fastnode_active() {
                 return Err(EthApiError::MethodNotAvailable("eth_getAccount".to_string()).into())

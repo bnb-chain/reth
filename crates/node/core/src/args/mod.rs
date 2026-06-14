@@ -76,10 +76,6 @@ pub use era::{DefaultEraHost, EraArgs, EraSourceArgs};
 mod static_files;
 pub use static_files::{StaticFilesArgs, MINIMAL_BLOCKS_PER_FILE};
 
-/// `StateDbArgs` for configuring state database.
-mod statedb;
-pub use statedb::StateDbArgs;
-
 /// `StorageArgs` for configuring storage layout (v1/v2).
 mod storage;
 pub use storage::{DefaultStorageValues, StorageArgs};
