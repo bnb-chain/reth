@@ -571,6 +571,16 @@ impl ChangesetCache {
         let changesets = Arc::new(changesets);
         let elapsed = start.elapsed();
 
+        // Deep-read instrumentation: a cache miss with no pending computation forces a changeset
+        // recompute from the database (static files), which is the slow "deep read" that holds the
+        // proof-worker read transaction. Count and time them to spot the initial cause.
+        #[cfg(feature = "metrics")]
+        {
+            metrics::counter!("trie_changeset_cache_db_fallback_total").increment(1);
+            metrics::histogram!("trie_changeset_cache_db_fallback_duration_seconds")
+                .record(elapsed.as_secs_f64());
+        }
+
         debug!(
             target: "trie::changeset_cache",
             ?elapsed,
