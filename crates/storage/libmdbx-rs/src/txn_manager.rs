@@ -198,6 +198,20 @@ mod read_transactions {
         timed_out_not_aborted: DashSet<usize>,
     }
 
+    /// Whether to capture a backtrace at read-transaction open time.
+    ///
+    /// Capturing on every open is expensive, so it is normally on only with debug assertions.
+    /// Setting `RETH_TXN_OPEN_BACKTRACE=1` enables it in release builds for diagnostics — the
+    /// `Long-lived read transaction has been timed out` warning then reports the open-site
+    /// backtrace, identifying which subsystem holds a read txn open long enough to hit the cap
+    /// (and pin the MDBX freelist). Read once and cached.
+    fn capture_open_backtrace() -> bool {
+        static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ENABLED.get_or_init(|| {
+            cfg!(debug_assertions) || std::env::var_os("RETH_TXN_OPEN_BACKTRACE").is_some()
+        })
+    }
+
     impl ReadTransactions {
         pub(super) fn new(max_duration: Duration) -> Self {
             Self { max_duration, ..Default::default() }
@@ -210,7 +224,7 @@ mod read_transactions {
                 (
                     tx,
                     Instant::now(),
-                    cfg!(debug_assertions).then(|| Arc::new(Backtrace::force_capture())),
+                    capture_open_backtrace().then(|| Arc::new(Backtrace::force_capture())),
                 ),
             );
         }
