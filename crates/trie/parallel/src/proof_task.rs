@@ -127,6 +127,39 @@ impl AvailabilitySheet {
     }
 }
 
+/// Diagnostic guard for a proof worker's read-only DB transaction lifetime.
+///
+/// Each worker opens one long-lived RO provider for its entire `run()` and only releases it when
+/// the worker exits (work channel closed = the owning state-root computation was completed,
+/// cancelled, or superseded). A RO held ~30s pins the MDBX freelist so the periodic persistence
+/// WRITE commit stalls. The miner build path was already shown to release within <1s, so a long
+/// lifetime recorded here points at the import / fork-recovery path (executions aborted during a
+/// reorg storm leave their proof workers' RO held until the read-transaction cap fires).
+/// `Drop` fires on every `run()` exit (incl. early returns / panic). Pure instrumentation.
+struct WorkerRoLifetimeGuard {
+    start: std::time::Instant,
+    worker_id: usize,
+    kind: &'static str,
+}
+
+impl Drop for WorkerRoLifetimeGuard {
+    fn drop(&mut self) {
+        let elapsed = self.start.elapsed();
+        #[cfg(feature = "metrics")]
+        metrics::histogram!("trie_proof_worker_ro_lifetime_seconds", "kind" => self.kind)
+            .record(elapsed.as_secs_f64());
+        if elapsed.as_secs() >= 2 {
+            tracing::warn!(
+                target: "trie::proof_task",
+                worker_id = self.worker_id,
+                kind = self.kind,
+                lifetime_ms = elapsed.as_millis() as u64,
+                "Proof worker held its read-only DB transaction for a long time (pins MDBX freelist)"
+            );
+        }
+    }
+}
+
 /// A handle that provides type-safe access to proof worker pools.
 ///
 /// The handle stores direct senders to both storage and account worker pools,
@@ -619,6 +652,12 @@ where
         // Create provider from factory
         let provider = self.task_ctx.factory.database_provider_ro()?;
         let proof_tx = ProofTaskTx::new(provider, self.worker_id);
+        // Diagnostic: track how long this worker holds its RO txn (released on run() exit).
+        let _ro_lifetime = WorkerRoLifetimeGuard {
+            start: std::time::Instant::now(),
+            worker_id: self.worker_id,
+            kind: "storage",
+        };
 
         trace!(
             target: "trie::proof_task",
@@ -835,6 +874,12 @@ where
     /// continue operating and the system degrades gracefully.
     fn run(mut self) -> ProviderResult<()> {
         let provider = self.task_ctx.factory.database_provider_ro()?;
+        // Diagnostic: track how long this worker holds its RO txn (released on run() exit).
+        let _ro_lifetime = WorkerRoLifetimeGuard {
+            start: std::time::Instant::now(),
+            worker_id: self.worker_id,
+            kind: "account",
+        };
 
         trace!(
             target: "trie::proof_task",
