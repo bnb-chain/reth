@@ -474,12 +474,20 @@ impl DatabaseEnv {
         }
         inner_env.set_handle_slow_readers(handle_slow_readers);
 
+        // COALESCE makes MDBX coalesce adjacent freelist entries while searching for free pages.
+        // With a large freelist (e.g. retained by long-lived readers), this coalescing scan is
+        // pure CPU and can dominate page-allocating writes (write_trie_updates). Env-gated so it
+        // can be disabled for A/B without a recompile: RETH_MDBX_COALESCE=0 disables. Default on.
+        let coalesce = std::env::var("RETH_MDBX_COALESCE")
+            .ok()
+            .map(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "off"))
+            .unwrap_or(true);
         inner_env.set_flags(EnvironmentFlags {
             mode,
             // We disable readahead because it improves performance for linear scans, but
             // worsens it for random access (which is our access pattern outside of sync)
             no_rdahead: true,
-            coalesce: true,
+            coalesce,
             exclusive: args.exclusive.unwrap_or_default(),
             ..Default::default()
         });
@@ -510,7 +518,20 @@ impl DatabaseEnv {
         // Previously, MDBX set this value as `256 * 1024` constant. Let's fallback to this,
         // because we want to prioritize freelist lookup speed over database growth.
         // https://github.com/paradigmxyz/reth/blob/fa2b9b685ed9787636d962f4366caf34a9186e66/crates/storage/libmdbx-rs/mdbx-sys/libmdbx/mdbx.c#L16017.
-        inner_env.set_rp_augment_limit(256 * 1024);
+        // Env-gated for A/B tuning: a SMALLER limit makes MDBX give up the freelist search and
+        // allocate fresh pages sooner — cheaper CPU per write (cuts the write_trie_updates GC-scan
+        // stall) at the cost of faster DB growth. Default 256K (reth's historical value).
+        let rp_augment_limit = std::env::var("RETH_MDBX_RP_AUGMENT_LIMIT")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .unwrap_or(256 * 1024);
+        inner_env.set_rp_augment_limit(rp_augment_limit);
+        tracing::info!(
+            target: "reth::db",
+            coalesce,
+            rp_augment_limit,
+            "MDBX freelist tuning (RETH_MDBX_COALESCE / RETH_MDBX_RP_AUGMENT_LIMIT)"
+        );
 
         if let Some(log_level) = args.log_level {
             // Levels higher than [LogLevel::Notice] require libmdbx built with `MDBX_DEBUG` option.
