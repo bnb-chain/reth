@@ -169,7 +169,7 @@ mod read_transactions {
         ///
         /// Returns `true` if the transaction was found and removed.
         pub(crate) fn remove_active_read_transaction(&self, ptr: *mut ffi::MDBX_txn) -> bool {
-            self.read_transactions.as_ref().is_some_and(|txs| txs.remove_active(ptr))
+            self.read_transactions.as_ref().is_some_and(|txs| txs.remove_active_reporting(ptr))
         }
 
         /// Returns the number of timed out transactions that were not aborted by the user yet.
@@ -208,7 +208,33 @@ mod read_transactions {
     fn capture_open_backtrace() -> bool {
         static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         *ENABLED.get_or_init(|| {
-            cfg!(debug_assertions) || std::env::var_os("RETH_TXN_OPEN_BACKTRACE").is_some()
+            cfg!(debug_assertions)
+                || std::env::var_os("RETH_TXN_OPEN_BACKTRACE").is_some()
+                // The long-RO close-time diagnostic is useless without the open-site backtrace, so
+                // enabling it implies backtrace capture.
+                || long_ro_threshold().is_some()
+        })
+    }
+
+    /// Threshold above which a read transaction's total open-duration is logged when it *closes*.
+    ///
+    /// Diagnostic for the MDBX-freelist-pinning investigation. The periodic monitor only reports
+    /// transactions that hit the hard `read-transaction-timeout` cap (e.g. 30s). But many harmful
+    /// long-lived reads close on their own somewhere between ~1s and the cap — long enough to stall
+    /// a persistence commit (the writer cannot recycle freelist pages older than the oldest open
+    /// reader) yet invisible to the cap-based WARN. Setting `RETH_TXN_LONG_RO_MS=<ms>` logs every
+    /// read transaction whose open-duration reaches the threshold at close time, with the open-site
+    /// backtrace, so the *first* long reader in a cluster (the ignition) can be identified.
+    ///
+    /// Unset (or `0`) → disabled, zero overhead. Read once and cached.
+    fn long_ro_threshold() -> Option<Duration> {
+        static THRESHOLD: std::sync::OnceLock<Option<Duration>> = std::sync::OnceLock::new();
+        *THRESHOLD.get_or_init(|| {
+            std::env::var("RETH_TXN_LONG_RO_MS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .filter(|ms| *ms > 0)
+                .map(Duration::from_millis)
         })
     }
 
@@ -233,6 +259,34 @@ mod read_transactions {
         pub(super) fn remove_active(&self, ptr: *mut ffi::MDBX_txn) -> bool {
             self.timed_out_not_aborted.remove(&(ptr as usize));
             self.active.remove(&(ptr as usize)).is_some()
+        }
+
+        /// Like [`Self::remove_active`], but additionally emits a WARN if the transaction was open
+        /// for at least [`long_ro_threshold`]. Used on the *normal* close path
+        /// (drop / commit / abort) so that long-lived reads which close before hitting the hard
+        /// timeout cap still get reported with their open-site backtrace. The timeout monitor keeps
+        /// using [`Self::remove_active`] directly — it already emits its own WARN for capped
+        /// transactions, and capped transactions are removed from `active` there, so they are not
+        /// double-logged here.
+        pub(super) fn remove_active_reporting(&self, ptr: *mut ffi::MDBX_txn) -> bool {
+            self.timed_out_not_aborted.remove(&(ptr as usize));
+            match self.active.remove(&(ptr as usize)) {
+                Some((_, (_, start, backtrace))) => {
+                    if let Some(threshold) = long_ro_threshold() {
+                        let open_duration = start.elapsed();
+                        if open_duration >= threshold {
+                            warn!(
+                                target: "libmdbx",
+                                ?open_duration,
+                                ?backtrace,
+                                "Long-lived read transaction closed (open-duration >= RETH_TXN_LONG_RO_MS)"
+                            );
+                        }
+                    }
+                    true
+                }
+                None => false,
+            }
         }
 
         /// Returns the number of timed out transactions that were not aborted by the user yet.
