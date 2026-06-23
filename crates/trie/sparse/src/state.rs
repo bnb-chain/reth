@@ -1464,4 +1464,75 @@ mod tests {
             }
         );
     }
+
+    /// Safety gate for [`SparseStateTrie::clone_for_reuse`] (read-only sparse-trie reuse):
+    /// a clone must compute a byte-identical state root to its source, must not disturb the
+    /// source, and must be a faithful basis for further (candidate-block) updates.
+    #[test]
+    fn clone_for_reuse_is_faithful() {
+        reth_tracing::init_test_tracing();
+        let mut rng = StdRng::seed_from_u64(1);
+        let mut bytes = [0u8; 1024];
+        rng.fill(bytes.as_mut_slice());
+
+        // Build a small revealed account trie (two accounts under the 0x1 branch).
+        let address_1 = b256!("0x1000000000000000000000000000000000000000000000000000000000000000");
+        let address_path_1 = Nibbles::unpack(address_1);
+        let account_1 = Account::arbitrary(&mut arbitrary::Unstructured::new(&bytes)).unwrap();
+        let trie_account_1 = account_1.into_trie_account(EMPTY_ROOT_HASH);
+        let address_2 = b256!("0x1100000000000000000000000000000000000000000000000000000000000000");
+        let address_path_2 = Nibbles::unpack(address_2);
+        let account_2 = Account::arbitrary(&mut arbitrary::Unstructured::new(&bytes)).unwrap();
+        let trie_account_2 = account_2.into_trie_account(EMPTY_ROOT_HASH);
+
+        let mut hash_builder = HashBuilder::default()
+            .with_proof_retainer(ProofRetainer::from_iter([address_path_1, address_path_2]));
+        hash_builder.add_leaf(address_path_1, &alloy_rlp::encode(trie_account_1));
+        hash_builder.add_leaf(address_path_2, &alloy_rlp::encode(trie_account_2));
+        let root = hash_builder.root();
+        let proof_nodes = hash_builder.take_proof_nodes();
+
+        let mut sparse = SparseStateTrie::<ParallelSparseTrie>::default().with_updates(true);
+        sparse
+            .reveal_decoded_multiproof(
+                MultiProof {
+                    account_subtree: proof_nodes,
+                    branch_node_masks: BranchNodeMasksMap::from_iter([(
+                        Nibbles::from_nibbles([0x1]),
+                        BranchNodeMasks {
+                            hash_mask: TrieMask::new(0b00),
+                            tree_mask: TrieMask::default(),
+                        },
+                    )]),
+                    storages: HashMap::default(),
+                }
+                .try_into()
+                .unwrap(),
+            )
+            .unwrap();
+
+        let r0 = sparse.root().unwrap();
+        assert_eq!(r0, root);
+
+        // 1) The clone reproduces the source root, and 2) computing it does NOT disturb the source.
+        let mut cloned = sparse.clone_for_reuse();
+        assert_eq!(cloned.root().unwrap(), r0, "clone must reproduce the source root");
+        assert_eq!(sparse.root().unwrap(), r0, "source must be undisturbed by the clone");
+
+        // 3) The clone is a faithful basis for a further (candidate-block) update: applying the
+        //    same new-account update to source and clone yields the same root.
+        let address_3 = b256!("0x2000000000000000000000000000000000000000000000000000000000000000");
+        let address_path_3 = Nibbles::unpack(address_3);
+        let account_3 = Account { nonce: account_1.nonce + 1, ..account_1 };
+        let trie_account_3 = account_3.into_trie_account(EMPTY_ROOT_HASH);
+        let enc_3 = alloy_rlp::encode(trie_account_3);
+
+        sparse.update_account_leaf(address_path_3, enc_3.clone()).unwrap();
+        cloned.update_account_leaf(address_path_3, enc_3).unwrap();
+        assert_eq!(
+            sparse.root().unwrap(),
+            cloned.root().unwrap(),
+            "clone must be a faithful basis for further updates"
+        );
+    }
 }
