@@ -893,10 +893,27 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
                 let start = Instant::now();
                 let merged_trie =
                     TrieUpdatesSorted::merge_batch(blocks.iter().rev().map(|b| b.trie_updates()));
+                let merge_elapsed = start.elapsed();
+                let write_start = Instant::now();
+                let mut trie_nodes_written = 0usize;
                 if !merged_trie.is_empty() {
-                    self.write_trie_updates_sorted(&merged_trie)?;
+                    trie_nodes_written = self.write_trie_updates_sorted(&merged_trie)?;
                 }
+                let write_elapsed = write_start.elapsed();
                 timings.write_trie_updates += start.elapsed();
+                // Diagnostic: split write_trie_updates into merge (pure-CPU sort/merge in reth) vs
+                // write (MDBX cursor puts + page allocation). The periodic ~20s stall lives in one
+                // of these; MDBX freelist knobs (rp_augment/coalesce) had no effect, so localise it.
+                if start.elapsed() > std::time::Duration::from_secs(1) {
+                    tracing::warn!(
+                        target: "providers::db",
+                        merge_ms = merge_elapsed.as_millis(),
+                        write_ms = write_elapsed.as_millis(),
+                        trie_nodes_written,
+                        block_count,
+                        "Slow write_trie_updates (merge vs MDBX-write split)"
+                    );
+                }
             }
 
             // Full mode: update history indices
