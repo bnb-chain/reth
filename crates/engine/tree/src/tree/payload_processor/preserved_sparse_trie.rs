@@ -15,9 +15,40 @@ pub(super) type SparseTrie = SparseStateTrie<ConfigurableSparseTrie, Configurabl
 /// This is stored in [`PayloadProcessor`](super::PayloadProcessor) and cloned to pass to
 /// [`SparseTrieCacheTask`](super::sparse_trie::SparseTrieCacheTask) for trie reuse.
 #[derive(Debug, Default, Clone)]
-pub(super) struct SharedPreservedSparseTrie(Arc<Mutex<Option<PreservedSparseTrie>>>);
+pub struct SharedPreservedSparseTrie(Arc<Mutex<Option<PreservedSparseTrie>>>);
 
 impl SharedPreservedSparseTrie {
+    /// Seed `self` with a faithful, read-only clone of `src`'s anchored trie, but only if `src` is
+    /// currently anchored at `parent_state_root`. Returns `true` if seeded.
+    ///
+    /// Lets a *secondary* producer (e.g. the BSC miner building on the canonical head) reuse the
+    /// canonical-anchored warm trie maintained by the import path WITHOUT disturbing it: `src` is
+    /// only read and cloned here — never `take`n, stored, or cleared — so the import path's
+    /// continuation chain is never broken. The clone computes byte-identical state roots
+    /// (`SparseStateTrie::clone_for_reuse`), so the secondary producer can never derive a wrong
+    /// root from it. If `src` is mid-computation (taken out) or anchored elsewhere, returns
+    /// `false` and the caller falls back to its existing (correct) path.
+    pub fn seed_from(&self, src: &Self, parent_state_root: B256) -> bool {
+        let cloned = {
+            let guard = src.0.lock();
+            match guard.as_ref() {
+                Some(PreservedSparseTrie::Anchored { trie, state_root })
+                    if *state_root == parent_state_root =>
+                {
+                    Some(trie.clone_for_reuse())
+                }
+                _ => None,
+            }
+        };
+        match cloned {
+            Some(trie) => {
+                self.0.lock().replace(PreservedSparseTrie::anchored(trie, parent_state_root));
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Takes the preserved trie if present, leaving `None` in its place.
     pub(super) fn take(&self) -> Option<PreservedSparseTrie> {
         self.0.lock().take()
