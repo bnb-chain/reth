@@ -240,14 +240,23 @@ where
         let start_time = Instant::now();
 
         if let Some(last) = last_block {
+            // Diagnostic timers: split the Saving->Saved window into acquire-write-txn /
+            // save_blocks / commit so a persist stall can be attributed. `commit()` is already
+            // covered by the commit_*_duration_seconds metrics; a slow batch with a *fast* commit
+            // here localises the stall to write-txn acquisition or save_blocks (both otherwise
+            // invisible). Logged at WARN only when the batch is slow, so zero steady-state noise.
+            let acquire_start = Instant::now();
             let provider_rw = self.provider.database_provider_rw()?;
+            let acquire_ms = acquire_start.elapsed().as_millis();
 
             // Forward direction. save_blocks validates the state transition and
             // defers the rocksdb flush; we commit MDBX first so MDBX is the
             // source of truth for the canonical tip, then apply the pathdb
             // flush. A crash between the two leaves pathdb lagging MDBX, which
             // is recoverable; the reverse would be the "pathdb gap" deadlock.
+            let save_start = Instant::now();
             let pending_triedb_flushes = provider_rw.save_blocks(blocks, SaveBlocksMode::Full)?;
+            let save_blocks_ms = save_start.elapsed().as_millis();
 
             if let Some(finalized) = pending_finalized {
                 provider_rw.save_finalized_block_number(finalized.min(last.number))?;
@@ -262,8 +271,23 @@ where
                 }
             }
 
+            let commit_start = Instant::now();
             provider_rw.commit()?;
+            let commit_ms = commit_start.elapsed().as_millis();
             debug!(target: "engine::persistence", first=?first_block, last=?last_block, "Saved range of blocks");
+
+            let saving_to_saved_ms = acquire_start.elapsed().as_millis();
+            if saving_to_saved_ms > 1000 {
+                warn!(
+                    target: "engine::persistence",
+                    ?block_count,
+                    acquire_ms,
+                    save_blocks_ms,
+                    commit_ms,
+                    total_ms = saving_to_saved_ms,
+                    "Slow block-persistence batch (Saving->Saved phase breakdown)"
+                );
+            }
 
             for pending in pending_triedb_flushes {
                 let block_number = pending.block_number();
