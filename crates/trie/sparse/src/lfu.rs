@@ -18,7 +18,7 @@ struct LfuEntryMeta {
 /// Bucketed LFU cache with O(1) eviction and O(1) touch operations.
 ///
 /// Generic over the key type `K`.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct BucketedLfu<K> {
     capacity: usize,
     /// Maps each key to its frequency and bucket position.

@@ -81,6 +81,35 @@ impl SparseStateTrie {
     }
 }
 
+impl<A: Clone, S: Clone> SparseStateTrie<A, S> {
+    /// Produce a faithful deep copy of the *revealed trie structure* for read-only reuse.
+    ///
+    /// Intended for computing a candidate state root off a canonical-anchored trie (e.g. a miner
+    /// payload build) WITHOUT disturbing the original trie. The returned trie computes
+    /// byte-identical state roots to `self` because the consensus-relevant state — the revealed
+    /// account/storage trie nodes (`state`, `storage`) and the update-retention flag — is deep
+    /// copied verbatim. Only transient, root-irrelevant scratch is reset:
+    /// - `account_rlp_buf`: a reusable RLP scratch buffer (recomputed on use);
+    /// - `deferred_drops`: per-reveal buffers awaiting drop (the copy starts with none);
+    /// - `metrics`: a fresh handle (observability only).
+    ///
+    /// The original trie is left completely untouched (no take / store / clear), so a producer
+    /// maintaining `self` on the canonical chain is never disturbed by a read-only consumer.
+    pub fn clone_for_reuse(&self) -> Self {
+        Self {
+            state: self.state.clone(),
+            storage: self.storage.clone(),
+            retain_updates: self.retain_updates,
+            account_rlp_buf: Vec::new(),
+            deferred_drops: DeferredDrops::default(),
+            hot_slots_lfu: self.hot_slots_lfu.clone(),
+            hot_accounts_lfu: self.hot_accounts_lfu.clone(),
+            #[cfg(feature = "metrics")]
+            metrics: Default::default(),
+        }
+    }
+}
+
 impl<A, S> SparseStateTrie<A, S> {
     /// Set the retention of branch node updates and deletions.
     pub const fn set_updates(&mut self, retain_updates: bool) {
@@ -877,7 +906,7 @@ where
 
 /// The fields of [`SparseStateTrie`] related to storage tries. This is kept separate from the rest
 /// of [`SparseStateTrie`] to help enforce allocation re-use.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct StorageTries<S = ParallelSparseTrie> {
     /// Sparse storage tries.
     tries: B256Map<RevealableSparseTrie<S>>,
