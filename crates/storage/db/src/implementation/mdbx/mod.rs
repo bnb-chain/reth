@@ -482,12 +482,22 @@ impl DatabaseEnv {
             .ok()
             .map(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "off"))
             .unwrap_or(true);
+        // MDBX_LIFORECLAIM: recycle the most-recently-freed GC pages first (LIFO) instead of FIFO.
+        // FIFO must scan past GC head entries that are still pinned by long-lived readers to find a
+        // usable page — pure CPU that periodically dominates single-page-allocating writes
+        // (write_trie_updates). LIFO is the MDBX-recommended policy for long-lived-reader workloads.
+        // Env-gated; default off (reth historical behaviour). RETH_MDBX_LIFORECLAIM=1 enables.
+        let liforeclaim = std::env::var("RETH_MDBX_LIFORECLAIM")
+            .ok()
+            .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on"))
+            .unwrap_or(false);
         inner_env.set_flags(EnvironmentFlags {
             mode,
             // We disable readahead because it improves performance for linear scans, but
             // worsens it for random access (which is our access pattern outside of sync)
             no_rdahead: true,
             coalesce,
+            liforeclaim,
             exclusive: args.exclusive.unwrap_or_default(),
             ..Default::default()
         });
@@ -529,8 +539,9 @@ impl DatabaseEnv {
         tracing::info!(
             target: "reth::db",
             coalesce,
+            liforeclaim,
             rp_augment_limit,
-            "MDBX freelist tuning (RETH_MDBX_COALESCE / RETH_MDBX_RP_AUGMENT_LIMIT)"
+            "MDBX freelist tuning (RETH_MDBX_COALESCE / RETH_MDBX_LIFORECLAIM / RETH_MDBX_RP_AUGMENT_LIMIT)"
         );
 
         if let Some(log_level) = args.log_level {
