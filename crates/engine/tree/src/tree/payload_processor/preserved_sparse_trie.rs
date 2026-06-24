@@ -18,6 +18,18 @@ pub(super) type SparseTrie = SparseStateTrie<ConfigurableSparseTrie, Configurabl
 pub struct SharedPreservedSparseTrie(Arc<Mutex<Option<PreservedSparseTrie>>>);
 
 impl SharedPreservedSparseTrie {
+    /// Returns the state root this trie is currently anchored at, or `None` if it is empty or
+    /// taken out (mid-computation). Read-only; for diagnostics (e.g. classifying why a secondary
+    /// producer's [`seed_from`] missed: anchored-elsewhere vs unavailable).
+    ///
+    /// [`seed_from`]: Self::seed_from
+    pub fn anchored_root(&self) -> Option<B256> {
+        match self.0.lock().as_ref() {
+            Some(PreservedSparseTrie::Anchored { state_root, .. }) => Some(*state_root),
+            _ => None,
+        }
+    }
+
     /// Seed `self` with a faithful, read-only clone of `src`'s anchored trie, but only if `src` is
     /// currently anchored at `parent_state_root`. Returns `true` if seeded.
     ///
