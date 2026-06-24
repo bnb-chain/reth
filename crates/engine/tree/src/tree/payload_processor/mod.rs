@@ -466,9 +466,54 @@ where
             from_multi_proof,
             parent_state_root,
             config.multiproof_chunk_size(),
+            None,
         );
 
         StateRootHandle::new(parent_state_root, updates_tx, state_root_rx)
+    }
+
+    /// Like [`spawn_state_root`](Self::spawn_state_root) but reuses a canonical/recent sparse trie
+    /// from the snapshot ring (keyed by `parent_state_root`) as a read-only starting point, and
+    /// publishes the result back into the ring instead of taking/storing the shared preserved slot.
+    ///
+    /// Returns `None` if the ring has no trie anchored at `parent_state_root` (the caller falls back
+    /// to [`spawn_state_root`](Self::spawn_state_root)). Intended for a secondary producer (the BSC
+    /// miner) doing repeated same-height rebuilds within a slot: each rebuild starts warm from the
+    /// (immutable, ring-held) parent trie and never clobbers another rebuild's anchor.
+    pub fn spawn_state_root_via_ring<F>(
+        &self,
+        multiproof_provider_factory: F,
+        parent_state_root: B256,
+        halve_workers: bool,
+        config: &TreeConfig,
+    ) -> Option<StateRootHandle>
+    where
+        F: DatabaseProviderROFactory<Provider: TrieCursorFactory + HashedCursorFactory>
+            + Clone
+            + Send
+            + Sync
+            + 'static,
+    {
+        let initial_clone =
+            preserved_sparse_trie::clone_canonical_snapshot(parent_state_root)?;
+
+        let (updates_tx, from_multi_proof) = crossbeam_channel::unbounded();
+        let task_ctx = ProofTaskCtx::new(multiproof_provider_factory);
+        #[cfg(feature = "trie-debug")]
+        let task_ctx = task_ctx.with_proof_jitter(config.proof_jitter());
+        let proof_handle = ProofWorkerHandle::new(&self.executor, task_ctx, halve_workers);
+        let (state_root_tx, state_root_rx) = channel();
+
+        self.spawn_sparse_trie_task(
+            proof_handle,
+            state_root_tx,
+            from_multi_proof,
+            parent_state_root,
+            config.multiproof_chunk_size(),
+            Some(initial_clone),
+        );
+
+        Some(StateRootHandle::new(parent_state_root, updates_tx, state_root_rx))
     }
 
     /// Transaction count threshold below which proof workers are halved, since fewer transactions
@@ -668,6 +713,10 @@ where
         from_multi_proof: CrossbeamReceiver<StateRootMessage>,
         parent_state_root: B256,
         chunk_size: usize,
+        // `Some` => ring mode: start from this faithful clone and publish the result into the
+        // canonical ring instead of taking/storing the shared preserved slot (read-only reuse for a
+        // secondary producer). `None` => default behaviour (take/store the shared preserved slot).
+        initial_clone: Option<preserved_sparse_trie::SparseTrie>,
     ) {
         let preserved_sparse_trie = self.sparse_state_trie.clone();
         let trie_metrics = self.trie_metrics.clone();
@@ -688,27 +737,37 @@ where
             // If this payload's parent state root matches the preserved trie's anchor,
             // we can reuse the pruned trie structure. Otherwise, we clear the trie but
             // keep allocations.
-            let start = Instant::now();
-            let preserved = preserved_sparse_trie.take();
-            trie_metrics
-                .sparse_trie_cache_wait_duration_histogram
-                .record(start.elapsed().as_secs_f64());
-
-            let mut sparse_state_trie = preserved
-                .map(|preserved| preserved.into_trie_for(parent_state_root))
-                .unwrap_or_else(|| {
-                    debug!(
-                        target: "engine::tree::payload_processor",
-                        "Creating new sparse trie - no preserved trie available"
-                    );
-                    let default_trie = RevealableSparseTrie::blind_from(
-                        ConfigurableSparseTrie::Arena(ArenaParallelSparseTrie::default()),
-                    );
-                    SparseStateTrie::default()
-                        .with_accounts_trie(default_trie.clone())
-                        .with_default_storage_trie(default_trie)
-                        .with_updates(true)
-                });
+            // Ring mode (initial_clone is Some): a secondary producer (BSC miner) starts from a
+            // faithful clone of a canonical/recent trie taken from the snapshot ring, and on
+            // success publishes its result back into the ring (keyed by the computed root) instead
+            // of taking/storing the shared preserved slot. This way repeated same-height rebuilds
+            // within a slot each start warm from the (immutable, ring-held) parent trie and never
+            // clobber each other's anchor.
+            let ring_mode = initial_clone.is_some();
+            let mut sparse_state_trie = if let Some(clone) = initial_clone {
+                clone
+            } else {
+                let start = Instant::now();
+                let preserved = preserved_sparse_trie.take();
+                trie_metrics
+                    .sparse_trie_cache_wait_duration_histogram
+                    .record(start.elapsed().as_secs_f64());
+                preserved
+                    .map(|preserved| preserved.into_trie_for(parent_state_root))
+                    .unwrap_or_else(|| {
+                        debug!(
+                            target: "engine::tree::payload_processor",
+                            "Creating new sparse trie - no preserved trie available"
+                        );
+                        let default_trie = RevealableSparseTrie::blind_from(
+                            ConfigurableSparseTrie::Arena(ArenaParallelSparseTrie::default()),
+                        );
+                        SparseStateTrie::default()
+                            .with_accounts_trie(default_trie.clone())
+                            .with_default_storage_trie(default_trie)
+                            .with_updates(true)
+                    })
+            };
             sparse_state_trie.set_hot_cache_capacities(max_hot_slots, max_hot_accounts);
 
             let mut task = SparseTrieCacheTask::new_with_trie(
@@ -722,6 +781,45 @@ where
             );
 
             let result = task.run();
+
+            if ring_mode {
+                // Ring mode: never take/store the shared preserved slot. Publish the result trie
+                // into the canonical ring (keyed by its computed root) so a subsequent build on this
+                // candidate finds it warm. No guard needed (the shared slot is untouched).
+                let task_result = result.as_ref().ok().cloned();
+                if state_root_tx.send(result).is_err() {
+                    let (_trie, deferred) = task.into_cleared_trie(
+                        SPARSE_TRIE_MAX_NODES_SHRINK_CAPACITY,
+                        SPARSE_TRIE_MAX_VALUES_SHRINK_CAPACITY,
+                    );
+                    executor.spawn_drop(deferred);
+                    return;
+                }
+                let deferred = if let Some(result) = task_result {
+                    let (trie, deferred) = task.into_trie_for_reuse(
+                        max_hot_slots,
+                        max_hot_accounts,
+                        SPARSE_TRIE_MAX_NODES_SHRINK_CAPACITY,
+                        SPARSE_TRIE_MAX_VALUES_SHRINK_CAPACITY,
+                        disable_cache_pruning,
+                        &result.trie_updates,
+                    );
+                    trie_metrics
+                        .sparse_trie_retained_memory_bytes
+                        .set(trie.memory_size() as f64);
+                    // Move the result into the ring keyed by its computed root (no shared slot).
+                    preserved_sparse_trie::publish_canonical_trie_snapshot(result.state_root, trie);
+                    deferred
+                } else {
+                    let (_trie, deferred) = task.into_cleared_trie(
+                        SPARSE_TRIE_MAX_NODES_SHRINK_CAPACITY,
+                        SPARSE_TRIE_MAX_VALUES_SHRINK_CAPACITY,
+                    );
+                    deferred
+                };
+                executor.spawn_drop(deferred);
+                return;
+            }
 
             // Acquire the guard before sending the result to prevent a race condition:
             // Without this, the next block could start after send() but before store(),

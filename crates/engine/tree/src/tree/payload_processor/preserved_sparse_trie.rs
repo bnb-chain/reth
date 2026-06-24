@@ -22,8 +22,22 @@ fn snapshot_capacity() -> usize {
             .ok()
             .and_then(|v| v.trim().parse::<usize>().ok())
             .filter(|n| *n > 0)
-            .unwrap_or(8)
+            // Must comfortably exceed the number of rebuilds a producer does within one slot (each
+            // rebuild of the same height publishes a distinct candidate root), so the parent entry
+            // survives the slot and the committed candidate is found next slot. Default 32.
+            .unwrap_or(32)
     })
+}
+
+/// Return a faithful read-only clone of the ring trie anchored at `state_root`, if present.
+///
+/// Used by a secondary producer (BSC miner) to obtain a warm starting trie per build attempt that
+/// it computes on independently and never stores back into a shared slot — so repeated same-height
+/// rebuilds within a slot do not clobber each other's anchor. Returns `None` if the root is not in
+/// the ring (caller falls back to its existing path).
+pub(super) fn clone_canonical_snapshot(state_root: B256) -> Option<SparseTrie> {
+    let ring = snapshots().lock();
+    ring.iter().rev().find(|(r, _)| *r == state_root).map(|(_, trie)| trie.clone_for_reuse())
 }
 
 /// Ring of the most-recent canonical sparse-trie clones, keyed by their state root.
