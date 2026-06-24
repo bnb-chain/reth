@@ -54,8 +54,27 @@ pub mod receipt_root_task;
 pub mod sparse_trie;
 pub mod triedb_prefetcher;
 
-use preserved_sparse_trie::{PreservedSparseTrie, SharedPreservedSparseTrie};
+use preserved_sparse_trie::PreservedSparseTrie;
+pub use preserved_sparse_trie::SharedPreservedSparseTrie;
 use triedb_prefetcher::TrieDBPrefetchHandle;
+
+/// Globally-published handle to the engine import path's canonical-anchored preserved sparse trie.
+///
+/// An embedder (e.g. the BSC miner) building on the canonical head can seed its own preserved
+/// trie with a read-only clone of this one to avoid cold rebuilds, without disturbing the import
+/// path. Published once at engine launch; absent → consumers fall back to their own path.
+static ENGINE_PRESERVED_SPARSE_TRIE: std::sync::OnceLock<SharedPreservedSparseTrie> =
+    std::sync::OnceLock::new();
+
+/// Publish the engine import path's preserved sparse trie (idempotent; first writer wins).
+pub fn set_engine_preserved_sparse_trie(trie: SharedPreservedSparseTrie) {
+    let _ = ENGINE_PRESERVED_SPARSE_TRIE.set(trie);
+}
+
+/// Get the engine import path's preserved sparse trie, if published.
+pub fn engine_preserved_sparse_trie() -> Option<SharedPreservedSparseTrie> {
+    ENGINE_PRESERVED_SPARSE_TRIE.get().cloned()
+}
 
 /// Default node capacity for shrinking the sparse trie. This is used to limit the number of trie
 /// nodes in allocated sparse tries.
@@ -393,6 +412,18 @@ where
     /// When `halve_workers` is true, the proof worker pool is halved (for small blocks where
     /// fewer transactions produce fewer state changes and most workers would be idle).
     #[instrument(level = "debug", target = "engine::tree::payload_processor", skip_all)]
+    /// Returns a cloneable handle to this processor's preserved sparse trie (the warm,
+    /// canonical-anchored trie maintained across consecutive state-root computations). Used to
+    /// publish the engine trie for read-only reuse by embedders (see [`seed_from`]).
+    ///
+    /// [`seed_from`]: SharedPreservedSparseTrie::seed_from
+    pub fn preserved_sparse_trie(&self) -> SharedPreservedSparseTrie {
+        self.sparse_state_trie.clone()
+    }
+
+    /// Spawns the background state-root computation (proof workers + sparse-trie task) for a
+    /// payload whose parent has the given `parent_state_root`, returning a [`StateRootHandle`] to
+    /// await the result. Reuses the preserved sparse trie when its anchor matches.
     pub fn spawn_state_root<F>(
         &self,
         multiproof_provider_factory: F,

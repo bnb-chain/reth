@@ -247,6 +247,12 @@ where
             &config,
             precompile_cache_map.clone(),
         );
+        // Publish the import path's canonical-anchored preserved sparse trie so an embedder (BSC
+        // miner) can seed its own trie with a read-only clone and skip cold rebuilds. The import
+        // path is unaffected (clones are read-only; see `SharedPreservedSparseTrie::seed_from`).
+        crate::tree::payload_processor::set_engine_preserved_sparse_trie(
+            payload_processor.preserved_sparse_trie(),
+        );
         Self {
             provider,
             consensus,
