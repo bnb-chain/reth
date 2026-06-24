@@ -157,9 +157,14 @@ where
         (Arc::default(), Arc::new(range_state_revert))
     } else {
         // Step 2: collect the state revert from the database tip to just after the range.
+        // Bound the read to `db_tip_block`: changesets live in static files, which persistence
+        // writes *before* committing the corresponding MDBX state. An unbounded `next_block..`
+        // read can pick up changesets for blocks beyond this snapshot's tip during a concurrent
+        // persist, producing reverts that do not match the MDBX state this computation runs
+        // against and ultimately an incorrect trie (observed as a wrongly rejected block).
         let tail_state_revert = end_block
             .checked_add(1)
-            .map(|next_block| crate::state::from_reverts_auto(provider, next_block..))
+            .map(|next_block| crate::state::from_reverts_auto(provider, next_block..=db_tip_block))
             .transpose()?
             .unwrap_or_default();
 
@@ -429,6 +434,28 @@ impl ChangesetCache {
             + BlockNumReader
             + StorageSettingsCache,
     {
+        Ok(self.get_or_compute_range_tracked(provider, range)?.0)
+    }
+
+    /// Same as [`Self::get_or_compute_range`], additionally reporting whether the range had to be
+    /// recomputed from the database (`true`) via the aggregate fallback, as opposed to being
+    /// served entirely from the cache (`false`).
+    ///
+    /// The DB fallback reads data a concurrent persistence run may be rewriting; callers that feed
+    /// the result into consensus-critical computations (e.g. overlay state roots) use this flag to
+    /// decide whether the result needs revalidation.
+    pub fn get_or_compute_range_tracked<P>(
+        &self,
+        provider: &P,
+        range: RangeInclusive<BlockNumber>,
+    ) -> ProviderResult<(Arc<TrieUpdatesSorted>, bool)>
+    where
+        P: DBProvider
+            + ChangeSetReader
+            + StorageChangeSetReader
+            + BlockNumReader
+            + StorageSettingsCache,
+    {
         let db_tip_block = provider.best_block_number()?;
 
         let start_block = *range.start();
@@ -459,7 +486,7 @@ impl ChangesetCache {
                 end_block,
                 "Empty changeset range requested"
             );
-            return Ok(Arc::new(TrieUpdatesSorted::default()))
+            return Ok((Arc::new(TrieUpdatesSorted::default()), false))
         }
 
         let end_block_hash = provider.block_hash(end_block)?.ok_or_else(|| {
@@ -483,7 +510,7 @@ impl ChangesetCache {
                 "Changeset cache HIT for block range"
             );
 
-            return Ok(accumulated_reverts)
+            return Ok((accumulated_reverts, false))
         }
 
         let mut cached_reverts =
@@ -540,7 +567,7 @@ impl ChangesetCache {
             );
 
             self.inner.write().insert(range_key, Arc::clone(&accumulated_reverts));
-            return Ok(accumulated_reverts)
+            return Ok((accumulated_reverts, false))
         }
 
         warn!(
@@ -575,7 +602,7 @@ impl ChangesetCache {
 
         self.inner.write().insert(range_key, Arc::clone(&accumulated_reverts));
 
-        Ok(accumulated_reverts)
+        Ok((accumulated_reverts, true))
     }
 }
 

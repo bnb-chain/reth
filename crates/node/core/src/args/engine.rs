@@ -656,6 +656,9 @@ impl EngineArgs {
             tracing::warn!(target: "reth::cli", "--engine.legacy-state-root has no effect anymore, use --engine.state-root-fallback to force synchronous state root computation");
         }
         let config = TreeConfig::default()
+            // Set the backpressure threshold before the persistence threshold: each setter
+            // debug-asserts `backpressure > threshold`, so raising the threshold first would
+            // trip the assertion against the default backpressure value (e.g. threshold >= 16).
             .with_persistence_backpressure_threshold(self.persistence_backpressure_threshold())
             .with_persistence_threshold(self.persistence_threshold)
             .with_memory_block_buffer_target(self.memory_block_buffer_target)
