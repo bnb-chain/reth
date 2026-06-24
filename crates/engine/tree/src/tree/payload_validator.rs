@@ -246,7 +246,10 @@ where
             evm_config.clone(),
             &config,
             precompile_cache_map.clone(),
-        );
+        )
+        // Import path: publish a canonical sparse-trie snapshot after each state-root computation
+        // so an embedder (BSC miner) can seed a warm trie for read-only reuse.
+        .with_canonical_snapshot_publishing(true);
         // Publish the import path's canonical-anchored preserved sparse trie so an embedder (BSC
         // miner) can seed its own trie with a read-only clone and skip cold rebuilds. The import
         // path is unaffected (clones are read-only; see `SharedPreservedSparseTrie::seed_from`).

@@ -4,11 +4,54 @@ use alloy_primitives::B256;
 use parking_lot::Mutex;
 use reth_primitives_traits::FastInstant as Instant;
 use reth_trie_sparse::{ConfigurableSparseTrie, SparseStateTrie};
-use std::sync::Arc;
+use std::{
+    collections::VecDeque,
+    sync::{Arc, OnceLock},
+};
 use tracing::debug;
 
 /// Type alias for the sparse trie type used in preservation.
 pub(super) type SparseTrie = SparseStateTrie<ConfigurableSparseTrie, ConfigurableSparseTrie>;
+
+/// Capacity of the canonical sparse-trie snapshot ring (the most-recent N canonical tries kept
+/// for read-only reuse by a secondary producer). Tunable via `BSC_MINER_SPARSE_SNAPSHOT_N`.
+fn snapshot_capacity() -> usize {
+    static CAP: OnceLock<usize> = OnceLock::new();
+    *CAP.get_or_init(|| {
+        std::env::var("BSC_MINER_SPARSE_SNAPSHOT_N")
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .filter(|n| *n > 0)
+            .unwrap_or(8)
+    })
+}
+
+/// Ring of the most-recent canonical sparse-trie clones, keyed by their state root.
+///
+/// Populated by the import path after each canonical block's root is computed, and read by a
+/// secondary producer (the BSC miner) to seed a warm starting trie WITHOUT racing or disturbing
+/// the import path's live trie. Keying by state root + keeping the last N tolerates the
+/// secondary producer building on a parent that is a few blocks behind the import tip
+/// (mismatch), and the stable copies are immune to the import path mid-computation (None).
+static CANONICAL_TRIE_SNAPSHOTS: OnceLock<Mutex<VecDeque<(B256, SparseTrie)>>> = OnceLock::new();
+
+fn snapshots() -> &'static Mutex<VecDeque<(B256, SparseTrie)>> {
+    CANONICAL_TRIE_SNAPSHOTS.get_or_init(|| Mutex::new(VecDeque::new()))
+}
+
+/// Publish a canonical sparse-trie snapshot (a faithful read-only clone) keyed by its state root.
+/// Bounded ring; the oldest is evicted past the capacity. Called by the import path.
+pub(super) fn publish_canonical_trie_snapshot(state_root: B256, trie: SparseTrie) {
+    let cap = snapshot_capacity();
+    let mut ring = snapshots().lock();
+    if let Some(pos) = ring.iter().position(|(r, _)| *r == state_root) {
+        ring.remove(pos);
+    }
+    ring.push_back((state_root, trie));
+    while ring.len() > cap {
+        ring.pop_front();
+    }
+}
 
 /// Shared handle to a preserved sparse trie that can be reused across payload validations.
 ///
@@ -27,6 +70,31 @@ impl SharedPreservedSparseTrie {
         match self.0.lock().as_ref() {
             Some(PreservedSparseTrie::Anchored { state_root, .. }) => Some(*state_root),
             _ => None,
+        }
+    }
+
+    /// Seed `self` from the canonical snapshot ring with a faithful read-only clone of the trie
+    /// anchored at `parent_state_root`, if present. Returns `true` if seeded.
+    ///
+    /// Unlike [`seed_from`](Self::seed_from) (which reads the import path's single *live* trie and
+    /// thus misses when import is mid-computation or has advanced past the parent), this reads the
+    /// bounded ring of recent canonical clones — immune to import being busy, and tolerant of the
+    /// caller's parent being a few blocks behind the import tip. The clone computes byte-identical
+    /// roots, so the caller can never derive a wrong root.
+    pub fn seed_from_canonical_snapshot(&self, parent_state_root: B256) -> bool {
+        let cloned = {
+            let ring = snapshots().lock();
+            ring.iter()
+                .rev()
+                .find(|(r, _)| *r == parent_state_root)
+                .map(|(_, trie)| trie.clone_for_reuse())
+        };
+        match cloned {
+            Some(trie) => {
+                self.0.lock().replace(PreservedSparseTrie::anchored(trie, parent_state_root));
+                true
+            }
+            None => false,
         }
     }
 

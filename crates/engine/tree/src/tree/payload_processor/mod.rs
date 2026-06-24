@@ -152,6 +152,10 @@ where
     disable_bal_parallel_state_root: bool,
     /// Whether BAL batched IO is disabled.
     disable_bal_batch_io: bool,
+    /// When set, after each successful state-root computation a faithful read-only clone of the
+    /// resulting (anchored) sparse trie is published to the canonical snapshot ring for read-only
+    /// reuse by a secondary producer (the BSC miner). Enabled only on the import-path processor.
+    publish_canonical_snapshots: bool,
 }
 
 impl<N, Evm> PayloadProcessor<Evm>
@@ -190,7 +194,16 @@ where
             disable_bal_parallel_execution: config.disable_bal_parallel_execution(),
             disable_bal_parallel_state_root: config.disable_bal_parallel_state_root(),
             disable_bal_batch_io: config.disable_bal_batch_io(),
+            publish_canonical_snapshots: false,
         }
+    }
+
+    /// Enable publishing canonical sparse-trie snapshots after each state-root computation, for
+    /// read-only reuse by a secondary producer (the BSC miner). Enable only on the import-path
+    /// processor (the one whose preserved trie tracks the canonical chain).
+    pub fn with_canonical_snapshot_publishing(mut self, enabled: bool) -> Self {
+        self.publish_canonical_snapshots = enabled;
+        self
     }
 }
 
@@ -661,6 +674,7 @@ where
         let max_hot_slots = self.sparse_trie_max_hot_slots;
         let max_hot_accounts = self.sparse_trie_max_hot_accounts;
         let disable_cache_pruning = self.disable_sparse_trie_cache_pruning;
+        let publish_canonical = self.publish_canonical_snapshots;
         let executor = self.executor.clone();
 
         let parent_span = Span::current();
@@ -758,6 +772,15 @@ where
                 trie_metrics
                     .sparse_trie_retained_storage_tries
                     .set(trie.retained_storage_tries_count() as f64);
+                // Import path only: publish a faithful read-only clone to the canonical snapshot
+                // ring (keyed by this block's state root) before storing, so a secondary producer
+                // (BSC miner) can seed a warm trie without racing/disturbing this live trie.
+                if publish_canonical {
+                    preserved_sparse_trie::publish_canonical_trie_snapshot(
+                        result.state_root,
+                        trie.clone_for_reuse(),
+                    );
+                }
                 guard.store(PreservedSparseTrie::anchored(trie, result.state_root));
                 deferred
             } else {
