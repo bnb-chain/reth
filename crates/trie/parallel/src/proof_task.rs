@@ -649,6 +649,10 @@ where
     /// If this function panics, the worker thread terminates but other workers
     /// continue operating and the system degrades gracefully.
     fn run(mut self) -> ProviderResult<()> {
+        // diag: time worker init (open RO provider + build cursors over the overlay). Workers are
+        // spawned per state-root; a large init_ms across the pool means the per-block overlay/
+        // provider setup is the bottleneck, not the proof compute.
+        let init_start = Instant::now();
         // Create provider from factory
         let provider = self.task_ctx.factory.database_provider_ro()?;
         let proof_tx = ProofTaskTx::new(provider, self.worker_id);
@@ -680,14 +684,34 @@ where
             instrumented_hashed_cursor,
         );
 
+        let init_elapsed = init_start.elapsed();
+        debug!(
+            target: "trie::proof_task",
+            worker_id = self.worker_id,
+            kind = "storage",
+            init_ms = init_elapsed.as_secs_f64() * 1e3,
+            "proof worker init complete (RO provider + cursors)"
+        );
+
         // Initially mark this worker as available.
         self.availability.mark_idle(self.worker_id);
 
         let mut total_idle_time = Duration::ZERO;
+        // diag: split waits — pure recv-queue wait vs busy compute, plus the wait before the very
+        // first job (distinguishes CPU starvation / late dispatch from slow init/compute).
+        let mut recv_wait_total = Duration::ZERO;
+        let mut busy_total = Duration::ZERO;
+        let mut first_job_wait = Duration::ZERO;
         let mut idle_start = Instant::now();
 
         while let Ok(job) = self.work_rx.recv() {
-            total_idle_time += idle_start.elapsed();
+            let waited = idle_start.elapsed();
+            total_idle_time += waited;
+            recv_wait_total += waited;
+            if storage_proofs_processed == 0 {
+                first_job_wait = waited;
+            }
+            let busy_start = Instant::now();
 
             // Mark worker as busy.
             self.availability.mark_busy(self.worker_id);
@@ -720,11 +744,28 @@ where
             // Mark worker as available again.
             self.availability.mark_idle(self.worker_id);
 
+            busy_total += busy_start.elapsed();
             idle_start = Instant::now();
         }
 
         // Drop calculator to release mutable borrows on cursor_metrics_cache.
         drop(v2_calculator);
+
+        // diag: per-state-root, per-worker breakdown. init_ms (overlay/provider setup) +
+        // first_job_wait_ms + recv_wait_ms (queue/starvation) + busy_ms (compute) should
+        // roughly cover the worker's lifetime. Large init/first_job_wait points away from
+        // compute as the slow-root cause.
+        debug!(
+            target: "trie::proof_task",
+            worker_id = self.worker_id,
+            kind = "storage",
+            jobs = storage_proofs_processed,
+            init_ms = init_elapsed.as_secs_f64() * 1e3,
+            first_job_wait_ms = first_job_wait.as_secs_f64() * 1e3,
+            recv_wait_ms = recv_wait_total.as_secs_f64() * 1e3,
+            busy_ms = busy_total.as_secs_f64() * 1e3,
+            "storage worker lifetime breakdown"
+        );
 
         trace!(
             target: "trie::proof_task",
@@ -886,6 +927,9 @@ where
     /// If this function panics, the worker thread terminates but other workers
     /// continue operating and the system degrades gracefully.
     fn run(mut self) -> ProviderResult<()> {
+        // diag: time worker init (open RO provider + build account/storage cursors over the
+        // overlay). See storage worker for rationale.
+        let init_start = Instant::now();
         let provider = self.task_ctx.factory.database_provider_ro()?;
         // Diagnostic: track how long this worker holds its RO txn (released on run() exit).
         let _ro_lifetime = WorkerRoLifetimeGuard {
@@ -949,15 +993,37 @@ where
                 instrumented_storage_hashed_cursor,
             )));
 
+        let init_elapsed = init_start.elapsed();
+        debug!(
+            target: "trie::proof_task",
+            worker_id = self.worker_id,
+            kind = "account",
+            init_ms = init_elapsed.as_secs_f64() * 1e3,
+            "proof worker init complete (RO provider + cursors)"
+        );
+
         // Count this worker as available only after successful initialization.
         self.availability.mark_idle(self.worker_id);
 
         let mut total_idle_time = Duration::ZERO;
+        // diag: see storage worker. `storage_wait_total` is the time account jobs spent blocked
+        // on storage-proof results (already folded into total_idle_time below); tracked
+        // separately so the breakdown distinguishes it from pure recv-queue wait.
+        let mut recv_wait_total = Duration::ZERO;
+        let mut busy_total = Duration::ZERO;
+        let mut storage_wait_total = Duration::ZERO;
+        let mut first_job_wait = Duration::ZERO;
         let mut idle_start = Instant::now();
         let mut value_encoder_stats_cache = ValueEncoderStats::default();
 
         while let Ok(job) = self.work_rx.recv() {
-            total_idle_time += idle_start.elapsed();
+            let waited = idle_start.elapsed();
+            total_idle_time += waited;
+            recv_wait_total += waited;
+            if account_proofs_processed == 0 {
+                first_job_wait = waited;
+            }
+            let busy_start = Instant::now();
 
             // Mark worker as busy.
             self.availability.mark_busy(self.worker_id);
@@ -984,6 +1050,7 @@ where
                         &mut account_proofs_processed,
                     );
                     total_idle_time += value_encoder_stats.storage_wait_time;
+                    storage_wait_total += value_encoder_stats.storage_wait_time;
                     value_encoder_stats_cache.extend(&value_encoder_stats);
                 }
             }
@@ -991,12 +1058,28 @@ where
             // Mark worker as available again.
             self.availability.mark_idle(self.worker_id);
 
+            busy_total += busy_start.elapsed();
             idle_start = Instant::now();
         }
 
         // Drop calculators to release mutable borrows on cursor_metrics_cache.
         drop(v2_account_calculator);
         drop(v2_storage_calculator);
+
+        // diag: per-state-root, per-worker breakdown (busy_ms includes storage_wait_ms, since the
+        // account job blocks in-thread on storage-proof results).
+        debug!(
+            target: "trie::proof_task",
+            worker_id = self.worker_id,
+            kind = "account",
+            jobs = account_proofs_processed,
+            init_ms = init_elapsed.as_secs_f64() * 1e3,
+            first_job_wait_ms = first_job_wait.as_secs_f64() * 1e3,
+            recv_wait_ms = recv_wait_total.as_secs_f64() * 1e3,
+            busy_ms = busy_total.as_secs_f64() * 1e3,
+            storage_wait_ms = storage_wait_total.as_secs_f64() * 1e3,
+            "account worker lifetime breakdown"
+        );
 
         trace!(
             target: "trie::proof_task",
