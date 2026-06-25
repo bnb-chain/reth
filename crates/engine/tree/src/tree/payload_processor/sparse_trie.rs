@@ -264,6 +264,16 @@ where
     pub(super) fn run(&mut self) -> Result<StateRootComputeOutcome, ParallelStateRootError> {
         let now = Instant::now();
 
+        // diag: per-stage wall-clock accumulators for the sparse-v2 state-root breakdown.
+        // These mirror the existing histograms but are emitted as a single debug! line per
+        // block so each stage's share of the total is directly readable.
+        let mut acc_channel_wait = std::time::Duration::ZERO;
+        let mut acc_coalesce = std::time::Duration::ZERO;
+        let mut acc_reveal = std::time::Duration::ZERO;
+        let mut acc_process = std::time::Duration::ZERO;
+        let mut proof_batches: u64 = 0;
+        let mut process_rounds: u64 = 0;
+
         let mut total_idle_time = std::time::Duration::ZERO;
         let mut idle_start = Instant::now();
 
@@ -283,6 +293,7 @@ where
                     };
 
                     total_idle_time += wake.duration_since(idle_start);
+                    acc_channel_wait += wake.duration_since(t);
                     self.metrics
                         .sparse_trie_channel_wait_duration_histogram
                         .record(wake.duration_since(t));
@@ -293,6 +304,7 @@ where
                 recv(self.proof_result_rx) -> message => {
                     let phase_end = Instant::now();
                     total_idle_time += phase_end.duration_since(idle_start);
+                    acc_channel_wait += phase_end.duration_since(t);
                     self.metrics
                         .sparse_trie_channel_wait_duration_histogram
                         .record(phase_end.duration_since(t));
@@ -303,21 +315,38 @@ where
                     };
 
                     let mut result = result.result?;
+                    let mut coalesced = 1u64;
                     while let Ok(next) = self.proof_result_rx.try_recv() {
                         let res = next.result?;
                         result.extend(res);
+                        coalesced += 1;
                     }
 
                     let phase_end = Instant::now();
+                    let coalesce_dur = phase_end.duration_since(t);
                     self.metrics
                         .sparse_trie_proof_coalesce_duration_histogram
-                        .record(phase_end.duration_since(t));
+                        .record(coalesce_dur);
+                    acc_coalesce += coalesce_dur;
                     t = phase_end;
 
                     self.on_proof_result(result)?;
+                    let reveal_dur = t.elapsed();
                     self.metrics
                         .sparse_trie_reveal_multiproof_duration_histogram
-                        .record(t.elapsed());
+                        .record(reveal_dur);
+                    acc_reveal += reveal_dur;
+                    proof_batches += 1;
+                    // diag: per-proof-batch reveal timing (the mdbx-backed proof is fetched by
+                    // the worker pool; `reveal_ms` is the cost of merging it into the sparse trie).
+                    debug!(
+                        target: "engine::tree::payload_processor::sparse_trie",
+                        batch = proof_batches,
+                        coalesced,
+                        coalesce_ms = coalesce_dur.as_secs_f64() * 1e3,
+                        reveal_ms = reveal_dur.as_secs_f64() * 1e3,
+                        "revealed multiproof batch into sparse trie"
+                    );
                 },
             }
 
@@ -328,7 +357,18 @@ where
                 t = Instant::now();
                 self.process_new_updates()?;
                 self.promote_pending_account_updates()?;
-                self.metrics.sparse_trie_process_updates_duration_histogram.record(t.elapsed());
+                let process_dur = t.elapsed();
+                self.metrics.sparse_trie_process_updates_duration_histogram.record(process_dur);
+                acc_process += process_dur;
+                process_rounds += 1;
+                if process_dur >= std::time::Duration::from_millis(2) {
+                    debug!(
+                        target: "engine::tree::payload_processor::sparse_trie",
+                        round = process_rounds,
+                        process_ms = process_dur.as_secs_f64() * 1e3,
+                        "applied + promoted pending updates to sparse trie (idle path)"
+                    );
+                }
 
                 if self.finished_state_updates &&
                     self.account_updates.is_empty() &&
@@ -349,7 +389,18 @@ where
                 // them to the trie,
                 t = Instant::now();
                 self.process_new_updates()?;
-                self.metrics.sparse_trie_process_updates_duration_histogram.record(t.elapsed());
+                let process_dur = t.elapsed();
+                self.metrics.sparse_trie_process_updates_duration_histogram.record(process_dur);
+                acc_process += process_dur;
+                process_rounds += 1;
+                if process_dur >= std::time::Duration::from_millis(2) {
+                    debug!(
+                        target: "engine::tree::payload_processor::sparse_trie",
+                        round = process_rounds,
+                        process_ms = process_dur.as_secs_f64() * 1e3,
+                        "applied pending updates to sparse trie (backpressure path)"
+                    );
+                }
                 self.dispatch_pending_targets();
             } else if self.pending_targets.len() > self.chunk_size {
                 // Make sure to dispatch targets if we've accumulated a lot of them.
@@ -388,8 +439,34 @@ where
         let debug_recorders = self.trie.take_debug_recorders();
 
         let end = Instant::now();
-        self.metrics.sparse_trie_final_update_duration_histogram.record(end.duration_since(start));
-        self.metrics.sparse_trie_total_duration_histogram.record(end.duration_since(now));
+        let final_dur = end.duration_since(start);
+        let total_dur = end.duration_since(now);
+        self.metrics.sparse_trie_final_update_duration_histogram.record(final_dur);
+        self.metrics.sparse_trie_total_duration_histogram.record(total_dur);
+
+        // diag: one-line per-block breakdown of where the sparse-v2 root time went.
+        // total = idle (waiting on channels) + reveal (merging proofs) + process (applying
+        // updates) + final (root_with_updates). Compare against the bsc-side deadline wait.
+        let to_ms = |d: std::time::Duration| d.as_secs_f64() * 1e3;
+        debug!(
+            target: "engine::tree::payload_processor::sparse_trie",
+            parent_state_root = ?self.parent_state_root,
+            state_root = ?state_root,
+            total_ms = to_ms(total_dur),
+            idle_ms = to_ms(total_idle_time),
+            channel_wait_ms = to_ms(acc_channel_wait),
+            proof_coalesce_ms = to_ms(acc_coalesce),
+            reveal_ms = to_ms(acc_reveal),
+            process_updates_ms = to_ms(acc_process),
+            final_root_ms = to_ms(final_dur),
+            proof_batches,
+            process_rounds,
+            acct_cache_hits = self.account_cache_hits,
+            acct_cache_misses = self.account_cache_misses,
+            storage_cache_hits = self.storage_cache_hits,
+            storage_cache_misses = self.storage_cache_misses,
+            "sparse-v2 state-root stage breakdown"
+        );
 
         self.metrics.sparse_trie_account_cache_hits.record(self.account_cache_hits as f64);
         self.metrics.sparse_trie_account_cache_misses.record(self.account_cache_misses as f64);

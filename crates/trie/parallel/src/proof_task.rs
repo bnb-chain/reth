@@ -788,6 +788,19 @@ where
             self.cached_storage_roots.insert(hashed_address, root);
         }
 
+        // diag: surface long-tail mdbx-backed storage proofs at debug so the proof-fetch
+        // stage can be correlated with the sparse-trie reveal/idle waits without enabling
+        // trace globally.
+        if proof_elapsed >= std::time::Duration::from_millis(20) {
+            debug!(
+                target: "trie::proof_task",
+                worker_id = self.worker_id,
+                hashed_address = ?hashed_address,
+                proof_ms = proof_elapsed.as_secs_f64() * 1e3,
+                "slow storage proof (mdbx read long-tail)"
+            );
+        }
+
         trace!(
             target: "trie::proof_task",
             worker_id = self.worker_id,
@@ -1082,6 +1095,19 @@ where
                 worker_id=self.worker_id,
                 account_proofs_processed,
                 "Account multiproof receiver dropped, discarding result"
+            );
+        }
+
+        // diag: surface long-tail account multiproofs at debug. `proof_ms` is the compute/db
+        // cost; `dispatch_ms` includes the time the request waited in the worker queue, so a
+        // large gap between them points at worker-pool saturation rather than slow mdbx reads.
+        if total_elapsed >= std::time::Duration::from_millis(30) {
+            debug!(
+                target: "trie::proof_task",
+                worker_id = self.worker_id,
+                proof_ms = proof_elapsed.as_secs_f64() * 1e3,
+                dispatch_ms = total_elapsed.as_secs_f64() * 1e3,
+                "slow account multiproof (mdbx read + queue long-tail)"
             );
         }
 
