@@ -414,11 +414,24 @@ impl DatabaseEnv {
 
         let mut inner_env = Environment::builder();
 
+        // WriteMap toggle (A/B). With WriteMap, every MDBX flush (commit fsync OR the
+        // SafeNoSync autosync / mid-txn dirty-page spill) is an msync() on the mmap, which the
+        // kernel services via page_mkclean + per-page ptep_clear_flush + flush_tlb_mm_range +
+        // smp_call_function_many (TLB-shootdown IPIs that briefly freeze EVERY core). Under a
+        // deep overlay at high TPS that fires continuously and starves the proof/sparse-trie
+        // threads, blowing the block's state-root deadline. Disabling WriteMap routes writes
+        // through pwrite()/buffered writeback (no page_mkclean / TLB shootdowns), at the cost of
+        // read-path syscalls. RETH_MDBX_WRITEMAP=0 disables; default on (reth historical).
+        let use_writemap = std::env::var("RETH_MDBX_WRITEMAP")
+            .ok()
+            .map(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "off"))
+            .unwrap_or(true);
         let mode = match kind {
             DatabaseEnvKind::RO => Mode::ReadOnly,
             DatabaseEnvKind::RW => {
-                // enable writemap mode in RW mode
-                inner_env.write_map();
+                if use_writemap {
+                    inner_env.write_map();
+                }
                 Mode::ReadWrite { sync_mode: args.sync_mode }
             }
         };
@@ -536,12 +549,45 @@ impl DatabaseEnv {
             .and_then(|v| v.trim().parse::<u64>().ok())
             .unwrap_or(256 * 1024);
         inner_env.set_rp_augment_limit(rp_augment_limit);
+
+        // SafeNoSync flush tuning (A/B). With SafeNoSync, MDBX still force-flushes (msync) when
+        // unsynced data exceeds `sync_bytes` OR `sync_period` elapses; large write txns also spill
+        // dirty pages mid-transaction once they exceed `txn_dp_limit`. Each such flush on a
+        // WriteMap env is the TLB-shootdown storm described above. Raising these defers/By bounds
+        // the flush frequency (cost: larger crash-loss window + more RAM held as dirty pages).
+        // All env-gated, unset = MDBX default.
+        //   RETH_MDBX_SYNC_BYTES=<bytes>      force-flush threshold of unsynced data
+        //   RETH_MDBX_SYNC_PERIOD_SECS=<secs> force-flush period since last steady commit
+        //   RETH_MDBX_TXN_DP_LIMIT=<pages>    dirty-page limit before mid-txn spill
+        let sync_bytes = std::env::var("RETH_MDBX_SYNC_BYTES")
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok());
+        if let Some(b) = sync_bytes {
+            inner_env.set_sync_bytes(b);
+        }
+        let sync_period_secs = std::env::var("RETH_MDBX_SYNC_PERIOD_SECS")
+            .ok()
+            .and_then(|v| v.trim().parse::<f64>().ok());
+        if let Some(s) = sync_period_secs {
+            inner_env.set_sync_period(std::time::Duration::from_secs_f64(s));
+        }
+        let txn_dp_limit = std::env::var("RETH_MDBX_TXN_DP_LIMIT")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok());
+        if let Some(l) = txn_dp_limit {
+            inner_env.set_txn_dp_limit(l);
+        }
+
         tracing::info!(
             target: "reth::db",
+            use_writemap,
             coalesce,
             liforeclaim,
             rp_augment_limit,
-            "MDBX freelist tuning (RETH_MDBX_COALESCE / RETH_MDBX_LIFORECLAIM / RETH_MDBX_RP_AUGMENT_LIMIT)"
+            ?sync_bytes,
+            ?sync_period_secs,
+            ?txn_dp_limit,
+            "MDBX tuning (RETH_MDBX_WRITEMAP / _COALESCE / _LIFORECLAIM / _RP_AUGMENT_LIMIT / _SYNC_BYTES / _SYNC_PERIOD_SECS / _TXN_DP_LIMIT)"
         );
 
         if let Some(log_level) = args.log_level {
