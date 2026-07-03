@@ -881,6 +881,22 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
         // Unwind storage history indices.
         self.unwind_storage_history_indices(changed_storages.iter().copied())?;
 
+        // In fastnode mode the trie tables (`AccountsTrie`/`StoragesTrie`) are not
+        // maintained: live-sync persists empty `TrieUpdates` and the hashing/Merkle
+        // stages are disabled. Computing a trie revert here would walk changesets
+        // against (near-)empty trie tables — expensive, and the resulting "revert"
+        // would write garbage nodes into tables that are intentionally unmaintained.
+        // The hashed-state and history unwinds above still run: hashed tables are the
+        // canonical state representation under storage v2.
+        if reth_chain_state::is_fastnode_active() {
+            debug!(
+                target: "providers::db",
+                from,
+                "Fastnode mode: skipping trie-state unwind (trie tables are not maintained)"
+            );
+            return Ok(())
+        }
+
         // Unwind accounts/storages trie tables using the revert.
         // Get the database tip block number
         let db_tip_block = self

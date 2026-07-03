@@ -11,6 +11,9 @@
 mod execution_stats;
 pub use execution_stats::ExecutionTimingStats;
 
+mod fastnode;
+pub use fastnode::{activate_fastnode, is_fastnode_active};
+
 mod in_memory;
 pub use in_memory::*;
 
