@@ -481,7 +481,7 @@ impl<TX: DbTxMut, N: NodeTypes> DatabaseProvider<TX, N> {
             pending_rocksdb_batches: Default::default(),
             commit_order,
             minimum_pruning_distance: MINIMUM_UNWIND_SAFE_DISTANCE,
-            metrics: metrics::DatabaseProviderMetrics::default(),
+            metrics: metrics::DatabaseProviderMetrics::shared(),
             reader_txn_tracker: None,
         }
     }
@@ -1233,7 +1233,7 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> DatabaseProvider<TX, N> {
             pending_rocksdb_batches: Default::default(),
             commit_order: CommitOrder::Normal,
             minimum_pruning_distance: MINIMUM_UNWIND_SAFE_DISTANCE,
-            metrics: metrics::DatabaseProviderMetrics::default(),
+            metrics: metrics::DatabaseProviderMetrics::shared(),
             reader_txn_tracker: None,
         }
     }

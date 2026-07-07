@@ -46,7 +46,7 @@ pub(crate) enum Action {
 }
 
 /// Database provider metrics
-#[derive(Metrics)]
+#[derive(Metrics, Clone)]
 #[metrics(scope = "storage.providers.database")]
 pub(crate) struct DatabaseProviderMetrics {
     /// Duration of insert block
@@ -125,6 +125,26 @@ pub(crate) struct DatabaseProviderMetrics {
     save_blocks_commit_sf_last: Gauge,
     /// Last duration of `RocksDB` commit in `save_blocks`
     save_blocks_commit_rocksdb_last: Gauge,
+}
+
+impl DatabaseProviderMetrics {
+    /// Shared instance. `Default` registers every handle through the global
+    /// metrics registry (lock + hashmap per histogram); a provider is built
+    /// per read path on hot paths, so register once and clone the handles
+    /// (each is an `Arc`) instead.
+    ///
+    /// INVARIANT: the metrics recorder must be installed before the first
+    /// `DatabaseProvider` is constructed, or every handle here freezes as a
+    /// no-op for the process lifetime. Stock reth launch runs
+    /// `check_consistency` (which opens a provider) before the Prometheus
+    /// recorder, so this is only safe on node wirings that install the
+    /// recorder first — nova does (`bin/nova` installs metrics before
+    /// `NovaNode::start` opens storage).
+    pub(crate) fn shared() -> Self {
+        static SHARED: std::sync::LazyLock<DatabaseProviderMetrics> =
+            std::sync::LazyLock::new(Default::default);
+        SHARED.clone()
+    }
 }
 
 /// Timings collected during a `save_blocks` call.
