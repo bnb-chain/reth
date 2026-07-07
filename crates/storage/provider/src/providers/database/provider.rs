@@ -869,7 +869,7 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
                         }
 
                         timings.write_hashed_state += start.elapsed();
-                    } else {
+                    } else if self.cached_storage_settings().writes_hashed_state() {
                         // Non-TrieDB mode: write hashed state to MDBX
                         self.write_hashed_state(&trie_data.hashed_state)?;
                     }
@@ -878,8 +878,12 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
 
             // Write all hashed state and trie updates in single batches.
             // This reduces cursor open/close overhead from N calls to 1.
-            // Skip in TrieDB mode — TrieDB manages its own trie data.
-            if save_mode.with_state() && !triedb_active {
+            // Skip in TrieDB mode — TrieDB manages its own trie data — and in
+            // plain-state v2, whose state commitment is not trie-derived.
+            if save_mode.with_state() &&
+                !triedb_active &&
+                self.cached_storage_settings().writes_hashed_state()
+            {
                 // Blocks are oldest-to-newest, merge_batch expects newest-to-oldest.
                 let start = Instant::now();
                 let merged_hashed_state = HashedPostStateSorted::merge_batch(
