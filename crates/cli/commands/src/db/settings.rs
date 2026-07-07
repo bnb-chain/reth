@@ -87,7 +87,7 @@ impl Command {
             println!("No storage settings found, creating new settings.");
         }
 
-        let mut settings @ StorageSettings { storage_v2: _ } =
+        let mut settings @ StorageSettings { storage_v2: _, hashed_state: _ } =
             settings.unwrap_or_else(StorageSettings::v1);
 
         // Update the setting based on the key
@@ -98,6 +98,9 @@ impl Command {
                     return Ok(());
                 }
                 settings.storage_v2 = value;
+                // The CLI toggle means full v2 semantics; plain-state v2 is only
+                // reachable via `StorageSettings::v2_with_plain_state` at genesis.
+                settings.hashed_state = value;
                 println!("Set storage_v2 = {}", value);
             }
         }

@@ -752,7 +752,10 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
 
             // Write all hashed state and trie updates in single batches.
             // This reduces cursor open/close overhead from N calls to 1.
-            if save_mode.with_state() && !state_trie_blocks.is_empty() {
+            if save_mode.with_state() &&
+                !state_trie_blocks.is_empty() &&
+                self.cached_storage_settings().writes_hashed_state()
+            {
                 let start = Instant::now();
                 let batch = ExecutedBlock::hashed_state_refs(state_trie_blocks);
                 let mask = ExecutedBlock::hashed_state_refs(state_trie_masking_blocks);
