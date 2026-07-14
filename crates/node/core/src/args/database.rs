@@ -62,6 +62,26 @@ pub struct DatabaseArgs {
         value_parser = value_parser!(SyncMode),
     )]
     pub sync_mode: Option<SyncMode>,
+    /// Threshold of unsynced bytes that forces the database to flush data to disk
+    /// (e.g., 512MB, 2GB).
+    ///
+    /// Only effective with `--db.sync-mode safe-no-sync`. Larger values make background
+    /// flushes rarer (and larger), at the cost of a bigger data-loss window on OS crash.
+    #[arg(long = "db.sync-bytes", value_parser = parse_byte_size)]
+    pub sync_bytes: Option<usize>,
+    /// Period in seconds since the last unsteady commit that forces the database to flush
+    /// data to disk.
+    ///
+    /// Only effective with `--db.sync-mode safe-no-sync`.
+    #[arg(long = "db.sync-period")]
+    pub sync_period: Option<u64>,
+    /// Maximum number of dirty pages a write transaction may hold in memory before spilling
+    /// them to disk mid-transaction.
+    ///
+    /// Raising this above the largest expected per-commit dirty set avoids mid-transaction
+    /// flushes, at the cost of more memory held until commit.
+    #[arg(long = "db.txn-dp-limit")]
+    pub txn_dp_limit: Option<u64>,
     /// `RocksDB` block cache size (e.g., 512MB, 4GB).
     ///
     /// Controls the size of the in-memory LRU cache for decompressed `RocksDB` blocks.
@@ -99,6 +119,9 @@ impl DatabaseArgs {
             .with_growth_step(self.growth_step)
             .with_max_readers(self.max_readers)
             .with_sync_mode(self.sync_mode)
+            .with_sync_bytes(self.sync_bytes)
+            .with_sync_period(self.sync_period.map(Duration::from_secs))
+            .with_txn_dp_limit(self.txn_dp_limit)
     }
 }
 
@@ -444,5 +467,30 @@ mod tests {
         let result =
             CommandParser::<DatabaseArgs>::try_parse_from(["reth", "--db.sync-mode", "ultra-fast"]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_command_parser_with_flush_tuning_defaults() {
+        let cmd = CommandParser::<DatabaseArgs>::try_parse_from(["reth"]).unwrap();
+        assert!(cmd.args.sync_bytes.is_none());
+        assert!(cmd.args.sync_period.is_none());
+        assert!(cmd.args.txn_dp_limit.is_none());
+    }
+
+    #[test]
+    fn test_command_parser_with_flush_tuning_values() {
+        let cmd = CommandParser::<DatabaseArgs>::try_parse_from([
+            "reth",
+            "--db.sync-bytes",
+            "2GB",
+            "--db.sync-period",
+            "30",
+            "--db.txn-dp-limit",
+            "262144",
+        ])
+        .unwrap();
+        assert_eq!(cmd.args.sync_bytes, Some(2 * GIGABYTE));
+        assert_eq!(cmd.args.sync_period, Some(30));
+        assert_eq!(cmd.args.txn_dp_limit, Some(262144));
     }
 }

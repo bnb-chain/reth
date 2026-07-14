@@ -27,7 +27,7 @@ use std::{
     ops::{Deref, Range},
     path::{Path, PathBuf},
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tx::Tx;
 
@@ -119,6 +119,23 @@ pub struct DatabaseArguments {
     /// environments). Choose `SafeNoSync` if performance is more important and occasional data
     /// loss is acceptable (e.g., testing or ephemeral data).
     sync_mode: SyncMode,
+    /// Threshold of unsynced bytes that forces MDBX to flush data buffers to disk.
+    ///
+    /// Only effective with [`SyncMode::SafeNoSync`]. In `WriteMap` mode every such flush is an
+    /// `msync` over the data mapping, which write-protects dirty pages and triggers cross-core
+    /// TLB shootdowns; raising this threshold trades crash-loss window for fewer, larger flushes.
+    sync_bytes: Option<usize>,
+    /// Period since the last unsteady commit that forces MDBX to flush data buffers to disk.
+    ///
+    /// Only effective with [`SyncMode::SafeNoSync`].
+    sync_period: Option<Duration>,
+    /// Maximum number of dirty pages a write transaction may hold before MDBX spills them to
+    /// disk mid-transaction.
+    ///
+    /// Spills flush through the same `msync` path as commits in `WriteMap` mode; raising this
+    /// above the largest expected per-commit dirty set avoids mid-transaction flushes at the
+    /// cost of keeping more dirty pages in memory until commit.
+    txn_dp_limit: Option<u64>,
 }
 
 impl Default for DatabaseArguments {
@@ -143,6 +160,9 @@ impl DatabaseArguments {
             exclusive: None,
             max_readers: None,
             sync_mode: SyncMode::Durable,
+            sync_bytes: None,
+            sync_period: None,
+            txn_dp_limit: None,
         }
     }
 
@@ -185,6 +205,34 @@ impl DatabaseArguments {
     pub const fn with_sync_mode(mut self, sync_mode: Option<SyncMode>) -> Self {
         if let Some(sync_mode) = sync_mode {
             self.sync_mode = sync_mode;
+        }
+
+        self
+    }
+
+    /// Sets the unsynced-bytes threshold that forces a data flush (`SafeNoSync` mode only).
+    pub const fn with_sync_bytes(mut self, sync_bytes: Option<usize>) -> Self {
+        if sync_bytes.is_some() {
+            self.sync_bytes = sync_bytes;
+        }
+
+        self
+    }
+
+    /// Sets the period since the last unsteady commit that forces a data flush (`SafeNoSync`
+    /// mode only).
+    pub const fn with_sync_period(mut self, sync_period: Option<Duration>) -> Self {
+        if sync_period.is_some() {
+            self.sync_period = sync_period;
+        }
+
+        self
+    }
+
+    /// Sets the maximum number of dirty pages a write transaction may hold before spilling.
+    pub const fn with_txn_dp_limit(mut self, txn_dp_limit: Option<u64>) -> Self {
+        if txn_dp_limit.is_some() {
+            self.txn_dp_limit = txn_dp_limit;
         }
 
         self
@@ -511,6 +559,20 @@ impl DatabaseEnv {
         // because we want to prioritize freelist lookup speed over database growth.
         // https://github.com/paradigmxyz/reth/blob/fa2b9b685ed9787636d962f4366caf34a9186e66/crates/storage/libmdbx-rs/mdbx-sys/libmdbx/mdbx.c#L16017.
         inner_env.set_rp_augment_limit(256 * 1024);
+
+        // Flush/spill tuning. These control how often MDBX flushes dirty pages outside of
+        // durable commits — in `WriteMap` mode each such flush is an `msync` over the data
+        // mapping whose page-table work stalls all cores (TLB shootdowns), so making flushes
+        // rarer and larger directly reduces that interference.
+        if let Some(sync_bytes) = args.sync_bytes {
+            inner_env.set_sync_bytes(sync_bytes);
+        }
+        if let Some(sync_period) = args.sync_period {
+            inner_env.set_sync_period(sync_period);
+        }
+        if let Some(txn_dp_limit) = args.txn_dp_limit {
+            inner_env.set_txn_dp_limit(txn_dp_limit);
+        }
 
         if let Some(log_level) = args.log_level {
             // Levels higher than [LogLevel::Notice] require libmdbx built with `MDBX_DEBUG` option.
