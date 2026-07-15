@@ -136,6 +136,16 @@ pub struct DatabaseArguments {
     /// above the largest expected per-commit dirty set avoids mid-transaction flushes at the
     /// cost of keeping more dirty pages in memory until commit.
     txn_dp_limit: Option<u64>,
+    /// Open the environment WITHOUT `WriteMap` mode (RW environments use `WriteMap` by
+    /// default).
+    ///
+    /// In `WriteMap` mode writers mutate pages directly in the shared file mapping, and every
+    /// flush is an `msync` whose `page_mkclean`/TLB-shootdown page-table work briefly stalls
+    /// all cores. Without `WriteMap`, dirty pages live in private shadow buffers and reach the
+    /// file via `pwrite`, which involves no page-table changes and no cross-core IPIs — at the
+    /// cost of one extra copy per dirty page and more memory held until commit. Reads are
+    /// unaffected (same read-only mapping, same MVCC semantics).
+    disable_writemap: bool,
 }
 
 impl Default for DatabaseArguments {
@@ -163,6 +173,7 @@ impl DatabaseArguments {
             sync_bytes: None,
             sync_period: None,
             txn_dp_limit: None,
+            disable_writemap: false,
         }
     }
 
@@ -226,6 +237,12 @@ impl DatabaseArguments {
             self.sync_period = sync_period;
         }
 
+        self
+    }
+
+    /// Disables `WriteMap` mode for read-write environments (see the field docs).
+    pub const fn with_disable_writemap(mut self, disable_writemap: bool) -> Self {
+        self.disable_writemap = disable_writemap;
         self
     }
 
@@ -433,6 +450,28 @@ impl DatabaseMetrics for DatabaseEnv {
             metrics.push(("db.page_size", stat.page_size() as f64, vec![]));
         }
 
+        // MDBX internal page-op counters (cumulative since env creation). `msync` counts
+        // flush-to-disk operations over the mapping (each one is a TLB-shootdown source in
+        // WriteMap mode) and `spill` counts dirty pages written out mid-transaction — the two
+        // signals needed to observe flush/spill behavior and tune the `--db.sync-bytes` /
+        // `--db.txn-dp-limit` knobs.
+        if let Ok(info) =
+            self.inner.info().map_err(|error| error!(%error, "Failed to read db.info"))
+        {
+            let pgop = info.page_ops();
+            for (op, value) in [
+                ("msync", pgop.msync),
+                ("fsync", pgop.fsync),
+                ("spill", pgop.spill),
+                ("unspill", pgop.unspill),
+                ("wops", pgop.wops),
+                ("newly", pgop.newly),
+                ("cow", pgop.cow),
+            ] {
+                metrics.push(("db.pgop", value as f64, vec![Label::new("op", op)]));
+            }
+        }
+
         metrics.push((
             "db.timed_out_not_aborted_transactions",
             self.timed_out_not_aborted_transactions() as f64,
@@ -465,8 +504,13 @@ impl DatabaseEnv {
         let mode = match kind {
             DatabaseEnvKind::RO => Mode::ReadOnly,
             DatabaseEnvKind::RW => {
-                // enable writemap mode in RW mode
-                inner_env.write_map();
+                // WriteMap is the default for RW environments: writes go directly into the
+                // shared mapping (no shadow-buffer copy). Disabling it routes writes through
+                // private buffers + pwrite instead, trading a per-page copy for the absence
+                // of msync page-table work (TLB shootdowns) during flushes.
+                if !args.disable_writemap {
+                    inner_env.write_map();
+                }
                 Mode::ReadWrite { sync_mode: args.sync_mode }
             }
         };
@@ -774,6 +818,30 @@ mod tests {
                 .expect(ERROR_DB_CREATION);
         env.create_tables().expect(ERROR_TABLE_CREATION);
         env
+    }
+
+    #[test]
+    fn db_disable_writemap_roundtrip() {
+        let tempdir = tempfile::TempDir::new().expect(ERROR_TEMPDIR);
+        let mut env = DatabaseEnv::open(
+            tempdir.path(),
+            DatabaseEnvKind::RW,
+            DatabaseArguments::new(ClientVersion::default())
+                .with_geometry_max_size(Some(64 * MEGABYTE))
+                .with_growth_step(Some(4 * MEGABYTE))
+                .with_disable_writemap(true),
+        )
+        .expect(ERROR_DB_CREATION);
+        env.create_tables().expect(ERROR_TABLE_CREATION);
+
+        let value = Header::default();
+        let key = 1u64;
+        let tx = env.tx_mut().expect(ERROR_INIT_TX);
+        tx.put::<Headers>(key, value.clone()).expect(ERROR_PUT);
+        tx.commit().expect(ERROR_COMMIT);
+
+        let tx = env.tx().expect(ERROR_INIT_TX);
+        assert_eq!(tx.get::<Headers>(key).expect(ERROR_GET), Some(value));
     }
 
     const ERROR_DB_CREATION: &str = "Not able to create the mdbx file.";

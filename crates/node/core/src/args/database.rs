@@ -82,6 +82,15 @@ pub struct DatabaseArgs {
     /// flushes, at the cost of more memory held until commit.
     #[arg(long = "db.txn-dp-limit")]
     pub txn_dp_limit: Option<u64>,
+    /// Open the database WITHOUT MDBX WriteMap mode.
+    ///
+    /// By default writers mutate pages directly in the shared file mapping, and every flush
+    /// is an msync whose page-table maintenance briefly interrupts all CPU cores (TLB
+    /// shootdowns). With this flag, writes go through private buffers and pwrite instead:
+    /// no shootdowns, at the cost of one extra copy per dirty page and more memory held
+    /// until commit. Reads are unaffected.
+    #[arg(long = "db.disable-writemap")]
+    pub disable_writemap: bool,
     /// `RocksDB` block cache size (e.g., 512MB, 4GB).
     ///
     /// Controls the size of the in-memory LRU cache for decompressed `RocksDB` blocks.
@@ -122,6 +131,7 @@ impl DatabaseArgs {
             .with_sync_bytes(self.sync_bytes)
             .with_sync_period(self.sync_period.map(Duration::from_secs))
             .with_txn_dp_limit(self.txn_dp_limit)
+            .with_disable_writemap(self.disable_writemap)
     }
 }
 
@@ -492,5 +502,15 @@ mod tests {
         assert_eq!(cmd.args.sync_bytes, Some(2 * GIGABYTE));
         assert_eq!(cmd.args.sync_period, Some(30));
         assert_eq!(cmd.args.txn_dp_limit, Some(262144));
+    }
+
+    #[test]
+    fn test_command_parser_with_disable_writemap() {
+        let cmd = CommandParser::<DatabaseArgs>::try_parse_from(["reth"]).unwrap();
+        assert!(!cmd.args.disable_writemap);
+
+        let cmd = CommandParser::<DatabaseArgs>::try_parse_from(["reth", "--db.disable-writemap"])
+            .unwrap();
+        assert!(cmd.args.disable_writemap);
     }
 }
