@@ -30,7 +30,7 @@ use std::{
     ops::RangeInclusive,
     sync::{Arc, OnceLock},
 };
-use tracing::{debug, debug_span, warn};
+use tracing::{debug, debug_span, info, warn};
 
 #[cfg(feature = "metrics")]
 use reth_metrics::{
@@ -525,7 +525,7 @@ impl ChangesetCache {
         let changesets = Arc::new(changesets);
         let elapsed = start.elapsed();
 
-        debug!(
+        info!(
             target: "trie::changeset_cache",
             ?elapsed,
             block_number,
@@ -660,6 +660,39 @@ impl ChangesetCache {
         );
 
         Ok(accumulated_reverts)
+    }
+
+    /// Returns the blocks in `range` whose changesets are neither cached nor pending.
+    ///
+    /// Read-only scan with no side effects; used to decide whether a parallel
+    /// prefill is worthwhile before a sequential [`Self::get_or_compute_range`]
+    /// walk. Blocks are returned as `(number, hash)` pairs in newest-to-oldest
+    /// order, matching the walk order of the range accumulation.
+    pub fn missing_in_range<P>(
+        &self,
+        provider: &P,
+        range: RangeInclusive<BlockNumber>,
+    ) -> ProviderResult<Vec<(BlockNumber, B256)>>
+    where
+        P: BlockNumReader,
+    {
+        // Resolve hashes first so the cache lock is not held across DB reads.
+        let mut blocks = Vec::new();
+        for block_number in range.rev() {
+            let block_hash = provider.block_hash(block_number)?.ok_or_else(|| {
+                ProviderError::other(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("block hash not found for block number {}", block_number),
+                ))
+            })?;
+            blocks.push((block_number, block_hash));
+        }
+
+        let inner = self.inner.read();
+        blocks.retain(|(_, hash)| {
+            !inner.entries.contains_key(hash) && !inner.pending.contains_key(hash)
+        });
+        Ok(blocks)
     }
 }
 

@@ -32,7 +32,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tracing::{debug, debug_span, instrument};
+use tracing::{debug, debug_span, info, instrument, warn};
 
 /// Metrics for overlay state provider operations.
 #[derive(Clone, Metrics)]
@@ -499,10 +499,103 @@ impl<F, N: NodePrimitives> OverlayStateProviderFactory<F, N> {
     }
 }
 
+impl<F, N> OverlayStateProviderFactory<F, N>
+where
+    N: NodePrimitives,
+    F: DatabaseProviderFactory + Sync,
+    F::Provider: StageCheckpointReader
+        + PruneCheckpointReader
+        + DBProvider
+        + BlockNumReader
+        + ChangeSetReader
+        + StorageChangeSetReader
+        + StorageSettingsCache,
+{
+    /// Maximum number of worker threads used by [`Self::prefill_missing_changesets`].
+    const MAX_PREFILL_WORKERS: usize = 8;
+
+    /// Concurrently computes changesets that the upcoming overlay calculation would
+    /// otherwise recompute sequentially from the database.
+    ///
+    /// During stall recovery the overlay walks revert changesets newest→oldest; blocks
+    /// whose deferred trie tasks were cancelled are missing from the changeset cache and
+    /// each pays a multi-second DB recomputation. Doing them one at a time stretches a
+    /// one-slot hiccup into tens of seconds of degraded operation. This prefill computes
+    /// the missing entries in parallel (each worker on its own read-only provider) so the
+    /// sequential accumulation in `get_or_compute_range` runs entirely from cache.
+    ///
+    /// Best-effort: failures are logged and left for the sequential path to retry.
+    fn prefill_missing_changesets(&self, provider: &F::Provider) {
+        let Ok(db_tip_block) = self.overlay_builder.get_db_tip_block(provider) else { return };
+
+        // Only worthwhile when the overlay for this tip is not already cached.
+        if self.overlay_cache.contains_key(&db_tip_block.hash) {
+            return;
+        }
+
+        let revert_blocks = match self.overlay_builder.reverts_required(provider, db_tip_block) {
+            Ok(Some(range)) => range,
+            _ => return,
+        };
+
+        let cache = &self.overlay_builder.changeset_cache;
+        let missing = match cache.missing_in_range(provider, revert_blocks) {
+            Ok(missing) => missing,
+            Err(_) => return,
+        };
+        if missing.len() < 2 {
+            return;
+        }
+
+        let start = Instant::now();
+        let count = missing.len();
+        let workers = count.min(Self::MAX_PREFILL_WORKERS);
+        let chunk_size = count.div_ceil(workers);
+        let factory = &self.factory;
+
+        std::thread::scope(|scope| {
+            for part in missing.chunks(chunk_size) {
+                scope.spawn(move || {
+                    let worker_provider = match factory.database_provider_ro() {
+                        Ok(p) => p,
+                        Err(e) => {
+                            warn!(
+                                target: "providers::state::overlay",
+                                ?e,
+                                "Failed to open provider for changeset prefill"
+                            );
+                            return;
+                        }
+                    };
+                    for (block_number, block_hash) in part {
+                        if let Err(e) =
+                            cache.get_or_compute(*block_hash, *block_number, &worker_provider)
+                        {
+                            warn!(
+                                target: "providers::state::overlay",
+                                block_number,
+                                ?e,
+                                "Changeset prefill failed for block"
+                            );
+                        }
+                    }
+                });
+            }
+        });
+
+        info!(
+            target: "providers::state::overlay",
+            missing = count,
+            elapsed = ?start.elapsed(),
+            "Parallel changeset prefill complete"
+        );
+    }
+}
+
 impl<F, N> DatabaseProviderROFactory for OverlayStateProviderFactory<F, N>
 where
     N: NodePrimitives,
-    F: DatabaseProviderFactory,
+    F: DatabaseProviderFactory + Sync,
     F::Provider: StageCheckpointReader
         + PruneCheckpointReader
         + DBProvider
@@ -525,6 +618,11 @@ where
             self.overlay_builder.metrics.create_provider_duration.record(start.elapsed());
             res
         };
+
+        // Fill any changeset-cache gaps concurrently before the overlay calculation
+        // walks them sequentially (no-op when the overlay is cached or nothing is
+        // missing).
+        self.prefill_missing_changesets(&provider);
 
         let Overlay { trie_updates, hashed_post_state } = self.get_overlay(&provider)?;
 
