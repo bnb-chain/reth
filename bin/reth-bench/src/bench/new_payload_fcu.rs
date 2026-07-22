@@ -163,10 +163,10 @@ impl Command {
     /// Execute `benchmark new-payload-fcu` command
     pub async fn execute(self, _ctx: CliContext) -> eyre::Result<()> {
         if self.reorg.is_some() && self.benchmark.rlp_blocks {
-            bail!("--reorg cannot be combined with --rlp-blocks")
+            bail!("--reorg cannot be combined with --rlp-blocks");
         }
         if self.reorg.is_some() && self.enable_bal {
-            bail!("--reorg cannot be combined with --enable-bal")
+            bail!("--reorg cannot be combined with --enable-bal");
         }
 
         // Log mode configuration
