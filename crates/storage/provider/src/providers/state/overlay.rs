@@ -469,34 +469,6 @@ impl<F, N: NodePrimitives> OverlayStateProviderFactory<F, N> {
         self.overlay_cache = Default::default();
         self
     }
-
-    /// Fetches an [`Overlay`] from the cache based on the current db tip block. If there is no
-    /// cached value then this calculates the [`Overlay`] and populates the cache.
-    #[instrument(level = "debug", target = "providers::state::overlay", skip_all)]
-    fn get_overlay<Provider>(&self, provider: &Provider) -> ProviderResult<Overlay>
-    where
-        Provider: StageCheckpointReader
-            + PruneCheckpointReader
-            + ChangeSetReader
-            + StorageChangeSetReader
-            + DBProvider
-            + BlockNumReader
-            + StorageSettingsCache,
-    {
-        let db_tip_block = self.overlay_builder.get_db_tip_block(provider)?;
-
-        let overlay = match self.overlay_cache.entry(db_tip_block.hash) {
-            dashmap::Entry::Occupied(entry) => entry.get().clone(),
-            dashmap::Entry::Vacant(entry) => {
-                self.overlay_builder.metrics.overlay_cache_misses.increment(1);
-                let overlay = self.overlay_builder.build_overlay(provider)?;
-                entry.insert(overlay.clone());
-                overlay
-            }
-        };
-
-        Ok(overlay)
-    }
 }
 
 impl<F, N> OverlayStateProviderFactory<F, N>
@@ -525,14 +497,12 @@ where
     /// sequential accumulation in `get_or_compute_range` runs entirely from cache.
     ///
     /// Best-effort: failures are logged and left for the sequential path to retry.
-    fn prefill_missing_changesets(&self, provider: &F::Provider) {
-        let Ok(db_tip_block) = self.overlay_builder.get_db_tip_block(provider) else { return };
-
-        // Only worthwhile when the overlay for this tip is not already cached.
-        if self.overlay_cache.contains_key(&db_tip_block.hash) {
-            return;
-        }
-
+    ///
+    /// Called from the vacant arm of [`Self::get_overlay`] so it runs exactly once per
+    /// `db_tip` (the `overlay_cache` entry serializes concurrent proof workers), and never
+    /// on the steady-state cache-hit path. Must not touch `overlay_cache`: the caller holds
+    /// that shard's entry guard, so re-reading it here would deadlock.
+    fn prefill_missing_changesets(&self, provider: &F::Provider, db_tip_block: BlockNumHash) {
         let revert_blocks = match self.overlay_builder.reverts_required(provider, db_tip_block) {
             Ok(Some(range)) => range,
             _ => return,
@@ -590,6 +560,33 @@ where
             "Parallel changeset prefill complete"
         );
     }
+
+    /// Fetches an [`Overlay`] from the cache based on the current db tip block. If there is no
+    /// cached value then this calculates the [`Overlay`] and populates the cache.
+    ///
+    /// The DashMap `entry` API serializes construction per `db_tip`, so the changeset prefill
+    /// fires exactly once per tip (inside the vacant arm) rather than once per proof worker,
+    /// and cache hits pay none of the prefill/revert-scan cost.
+    #[instrument(level = "debug", target = "providers::state::overlay", skip_all)]
+    fn get_overlay(&self, provider: &F::Provider) -> ProviderResult<Overlay> {
+        let db_tip_block = self.overlay_builder.get_db_tip_block(provider)?;
+
+        let overlay = match self.overlay_cache.entry(db_tip_block.hash) {
+            dashmap::Entry::Occupied(entry) => entry.get().clone(),
+            dashmap::Entry::Vacant(entry) => {
+                self.overlay_builder.metrics.overlay_cache_misses.increment(1);
+                // Fill changeset-cache gaps concurrently before build_overlay walks them
+                // sequentially. Safe to run while holding this vacant entry: prefill workers
+                // use their own providers and never re-enter overlay_cache.
+                self.prefill_missing_changesets(provider, db_tip_block);
+                let overlay = self.overlay_builder.build_overlay(provider)?;
+                entry.insert(overlay.clone());
+                overlay
+            }
+        };
+
+        Ok(overlay)
+    }
 }
 
 impl<F, N> DatabaseProviderROFactory for OverlayStateProviderFactory<F, N>
@@ -618,11 +615,6 @@ where
             self.overlay_builder.metrics.create_provider_duration.record(start.elapsed());
             res
         };
-
-        // Fill any changeset-cache gaps concurrently before the overlay calculation
-        // walks them sequentially (no-op when the overlay is cached or nothing is
-        // missing).
-        self.prefill_missing_changesets(&provider);
 
         let Overlay { trie_updates, hashed_post_state } = self.get_overlay(&provider)?;
 
