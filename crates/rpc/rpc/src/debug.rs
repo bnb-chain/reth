@@ -6,13 +6,10 @@ use alloy_primitives::{hex::decode, uint, Address, Bytes, B256, U64};
 use alloy_rlp::{Decodable, Encodable};
 use alloy_rpc_types::BlockTransactionsKind;
 use alloy_rpc_types_debug::ExecutionWitness;
-<<<<<<< HEAD
-use alloy_rpc_types_eth::{state::EvmOverrides, BlockError, Bundle, StateContext, TransactionInfo};
-=======
 use alloy_rpc_types_eth::{
     state::EvmOverrides, Account, AccountInfo, BlockError, Bundle, Index, StateContext,
+    TransactionInfo,
 };
->>>>>>> v2.4.1
 use alloy_rpc_types_trace::geth::{
     call::FlatCallFrame, BlockTraceResult, FourByteFrame, GethDebugBuiltInTracerType,
     GethDebugTracerType, GethDebugTracingCallOptions, GethDebugTracingOptions, GethTrace,
@@ -25,11 +22,7 @@ use parking_lot::RwLock;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec, EthereumHardforks};
 use reth_engine_primitives::ConsensusEngineEvent;
 use reth_errors::RethError;
-<<<<<<< HEAD
-use reth_evm::{execute::Executor, ConfigureEvm, EvmEnvFor, TxEnvFor};
-=======
-use reth_evm::{block::BlockExecutor, execute::Executor, ConfigureEvm, EvmEnvFor};
->>>>>>> v2.4.1
+use reth_evm::{block::BlockExecutor, execute::Executor, ConfigureEvm, EvmEnvFor, TxEnvFor};
 use reth_primitives_traits::{
     Block as BlockTrait, BlockBody, BlockTy, ReceiptWithBloom, RecoveredBlock,
 };
@@ -41,39 +34,29 @@ use reth_rpc_eth_api::{
     FromEthApiError, FromEvmError, RpcConvert, RpcNodeCore,
 };
 use reth_rpc_eth_types::{EthApiError, StateCacheDb};
-<<<<<<< HEAD
 use reth_rpc_server_types::{
     result::{internal_rpc_err, rpc_error_with_code},
     ToRpcResult,
 };
-=======
-use reth_rpc_server_types::{result::internal_rpc_err, ToRpcResult};
->>>>>>> v2.4.1
 use reth_storage_api::{
     BlockIdReader, BlockReaderIdExt, HashedPostStateProvider, HeaderProvider, ProviderBlock,
     ReceiptProviderIdExt, StateProviderFactory, StateRootProvider, StorageRootProvider,
     TransactionVariant,
 };
 use reth_tasks::{pool::BlockingTaskGuard, Runtime};
-<<<<<<< HEAD
-use reth_trie_common::{updates::TrieUpdates, ExecutionWitnessMode, HashedPostState};
+use reth_transaction_pool::TransactionPool;
+use reth_trie_common::{
+    updates::TrieUpdates, ExecutionWitnessMode, HashedPostState, HashedStorage,
+};
 use revm::{
     context_interface::Block as BlockEnvTrait, database::states::bundle_state::BundleRetention,
-    state::EvmState, DatabaseCommit,
+    state::EvmState, Database, DatabaseCommit,
 };
 use revm_inspectors::tracing::{
     DebugInspector, FourByteInspector, MuxInspector, TracingInspector, TracingInspectorConfig,
     TransactionContext,
 };
 use rust_eth_triedb::triedb_manager::is_triedb_active;
-=======
-use reth_transaction_pool::TransactionPool;
-use reth_trie_common::{
-    updates::TrieUpdates, ExecutionWitnessMode, HashedPostState, HashedStorage,
-};
-use revm::{database::states::bundle_state::BundleRetention, Database, DatabaseCommit};
-use revm_inspectors::tracing::{DebugInspector, TransactionContext};
->>>>>>> v2.4.1
 use serde::{Deserialize, Serialize};
 use std::{collections::VecDeque, sync::Arc};
 use tokio::sync::{AcquireError, OwnedSemaphorePermit};

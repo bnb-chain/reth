@@ -139,7 +139,6 @@ where
                     exex_manager_handle,
                 )),
             )
-<<<<<<< HEAD
             .build(provider_factory, static_file_producer);
 
         info!(
@@ -169,22 +168,11 @@ where
                     stage_config.execution.into(),
                     stage_config.execution_external_clean_threshold(),
                     exex_manager_handle,
-                )),
+                ))
+                .disable_all(disabled_stages),
             )
             .build(provider_factory, static_file_producer)
     };
-=======
-            .set(ExecutionStage::new(
-                evm_config,
-                consensus,
-                stage_config.execution.into(),
-                stage_config.execution_external_clean_threshold(),
-                exex_manager_handle,
-            ))
-            .disable_all(disabled_stages),
-        )
-        .build(provider_factory, static_file_producer);
->>>>>>> v2.4.1
 
     Ok(pipeline)
 }

@@ -199,11 +199,11 @@ impl Layers {
         Ok(())
     }
 
-<<<<<<< HEAD
     #[cfg(not(feature = "samply"))]
     pub(crate) fn samply(&self, _config: LayerInfo) -> eyre::Result<()> {
         Err(eyre::eyre!("samply feature is disabled"))
-=======
+    }
+
     pub(crate) fn chrome(
         &mut self,
         config: LayerInfo,
@@ -221,7 +221,6 @@ impl Layers {
             &config.filters,
         )?));
         Ok(guard)
->>>>>>> v2.4.1
     }
 
     #[cfg(feature = "tracy")]

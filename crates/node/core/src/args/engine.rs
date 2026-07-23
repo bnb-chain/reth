@@ -680,16 +680,12 @@ impl EngineArgs {
 
     /// Creates a [`TreeConfig`] from the engine arguments.
     pub fn tree_config(&self) -> TreeConfig {
-<<<<<<< HEAD
-        let mut config = TreeConfig::default()
-=======
         #[allow(deprecated)]
         if self.legacy_state_root_task_enabled {
             tracing::warn!(target: "reth::cli", "--engine.legacy-state-root has no effect anymore, use --engine.state-root-fallback to force synchronous state root computation");
         }
-        let config = TreeConfig::default()
+        let mut config = TreeConfig::default()
             .with_persistence_backpressure_threshold(self.persistence_backpressure_threshold())
->>>>>>> v2.4.1
             .with_persistence_threshold(self.persistence_threshold)
             .with_memory_block_buffer_target(self.memory_block_buffer_target)
             .with_invalid_header_hit_eviction_threshold(self.invalid_header_hit_eviction_threshold)

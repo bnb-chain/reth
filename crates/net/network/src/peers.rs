@@ -99,16 +99,13 @@ pub struct PeersManager {
     /// If true, discovered peers without a confirmed ENR fork ID will not be added until their
     /// fork ID is verified via EIP-868.
     enforce_enr_fork_id: bool,
-<<<<<<< HEAD
     /// The map of proxied node ids.
     proxied_node_ids_map: Arc<RwLock<HashSet<PeerId>>>,
-=======
     /// One-shot sleep that fires when it's time to rotate a peer; reset with jitter after each
     /// fire. `None` when rotation is disabled.
     peer_rotation_sleep: Option<Pin<Box<Sleep>>>,
     /// Mean duration for computing jittered rotation intervals. `None` when rotation is disabled.
     peer_rotation_mean: Option<Duration>,
->>>>>>> v2.4.1
 }
 
 impl PeersManager {
@@ -130,11 +127,8 @@ impl PeersManager {
             incoming_ip_throttle_duration,
             ip_filter,
             enforce_enr_fork_id,
-<<<<<<< HEAD
             proxied_node_ids,
-=======
             peer_rotation_interval,
->>>>>>> v2.4.1
         } = config;
         let (manager_tx, handle_rx) = mpsc::unbounded_channel();
         let now = Instant::now();
@@ -224,13 +218,10 @@ impl PeersManager {
             incoming_ip_throttle_duration,
             ip_filter,
             enforce_enr_fork_id,
-<<<<<<< HEAD
             proxied_node_ids_map,
-=======
             peer_rotation_sleep: peer_rotation_interval
                 .map(|mean| Box::pin(tokio::time::sleep(jitter_rotation_interval(mean)))),
             peer_rotation_mean: peer_rotation_interval,
->>>>>>> v2.4.1
         }
     }
 
@@ -589,14 +580,6 @@ impl PeersManager {
     /// reputation changes that can be attributed to network conditions. If the peer is a
     /// trusted peer, it will also be less strict with the reputation slashing.
     pub(crate) fn apply_reputation_change(&mut self, peer_id: &PeerId, rep: ReputationChangeKind) {
-<<<<<<< HEAD
-        let (outcome, new_reputation) = if let Some(peer) = self.peers.get_mut(peer_id) {
-            // First check if we should reset the reputation
-            let outcome = if rep.is_reset() {
-                peer.reset_reputation()
-            } else {
-                let mut reputation_change = self.reputation_weights.change(rep).as_i32();
-=======
         trace!(target: "net::peers", ?peer_id, reputation=?rep, "applying reputation change");
 
         let reputation_change = if rep.is_reset() {
@@ -611,7 +594,6 @@ impl PeersManager {
 
         let outcome = if let Some(peer) = self.peers.get_mut(peer_id) {
             if let Some(mut reputation_change) = reputation_change {
->>>>>>> v2.4.1
                 if peer.is_trusted() || peer.is_static() {
                     // exempt trusted and static peers from reputation slashing for
                     if matches!(
@@ -631,14 +613,9 @@ impl PeersManager {
                     }
                 }
                 peer.apply_reputation(reputation_change, rep)
-<<<<<<< HEAD
-            };
-            (outcome, peer.reputation)
-=======
             } else {
                 peer.reset_reputation()
             }
->>>>>>> v2.4.1
         } else {
             return;
         };

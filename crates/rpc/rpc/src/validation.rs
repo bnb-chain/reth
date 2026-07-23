@@ -1,51 +1,3 @@
-use alloy_consensus::{
-    BlobTransactionValidationError, BlockHeader, EnvKzgSettings, Transaction, TxReceipt,
-};
-use alloy_eip7928::{bal::DecodedBal, compute_block_access_list_hash};
-use alloy_eips::eip7685::RequestsOrHash;
-use alloy_primitives::{map::AddressSet, Address, B256, U256};
-use alloy_rpc_types_beacon::relay::{
-    BidTrace, BuilderBlockValidationRequest, BuilderBlockValidationRequestV2,
-    BuilderBlockValidationRequestV3, BuilderBlockValidationRequestV4,
-    BuilderBlockValidationRequestV5, BuilderBlockValidationRequestV6,
-};
-use alloy_rpc_types_engine::{
-    BlobsBundleV1, BlobsBundleV2, CancunPayloadFields, ExecutionData, ExecutionPayload,
-    ExecutionPayloadSidecar, PraguePayloadFields,
-};
-use async_trait::async_trait;
-use core::fmt;
-use jsonrpsee::core::RpcResult;
-use jsonrpsee_types::error::ErrorObject;
-use reth_chainspec::{ChainSpecProvider, EthereumHardforks};
-use reth_consensus::{Consensus, FullConsensus};
-use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
-use reth_engine_primitives::PayloadValidator;
-use reth_errors::{BlockExecutionError, ConsensusError, ProviderError};
-use reth_evm::{execute::Executor, ConfigureEvm};
-use reth_execution_types::BlockExecutionOutput;
-use reth_metrics::{
-    metrics,
-    metrics::{gauge, Gauge},
-    Metrics,
-};
-use reth_node_api::{NewPayloadError, PayloadTypes};
-use reth_primitives_traits::{
-    constants::GAS_LIMIT_BOUND_DIVISOR, BlockBody, GotExpected, NodePrimitives, RecoveredBlock,
-    SealedBlock, SealedHeaderFor,
-};
-use reth_revm::{cached::CachedReads, database::StateProviderDatabase};
-use reth_rpc_api::BlockSubmissionValidationApiServer;
-use reth_rpc_server_types::result::{
-    internal_rpc_err, invalid_params_rpc_err, rpc_error_with_code,
-};
-use reth_storage_api::{BlockReaderIdExt, StateProviderFactory};
-use reth_tasks::Runtime;
-<<<<<<< HEAD
-use revm_primitives::{Address, B256, U256};
-use rust_eth_triedb::triedb_manager::is_triedb_active;
-=======
->>>>>>> v2.4.1
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
@@ -385,31 +337,9 @@ where
         &self,
         blobs_bundle: BlobsBundleV1,
     ) -> Result<Vec<B256>, ValidationApiError> {
-<<<<<<< HEAD
-        if is_triedb_active() {
-            return Err(ValidationApiError::MethodNotAvailable(
-                "validation_validateBlobsBundle".to_string(),
-            ));
-        }
-
-        if blobs_bundle.commitments.len() != blobs_bundle.proofs.len() ||
-            blobs_bundle.commitments.len() != blobs_bundle.blobs.len()
-        {
-            return Err(ValidationApiError::InvalidBlobsBundle)
-        }
-
-        let versioned_hashes = blobs_bundle
-            .commitments
-            .iter()
-            .map(|c| kzg_to_versioned_hash(c.as_slice()))
-            .collect::<Vec<_>>();
-
-        let sidecar = blobs_bundle.pop_sidecar(blobs_bundle.blobs.len());
-=======
         let versioned_hashes = blobs_bundle.versioned_hashes();
         let sidecar =
             blobs_bundle.try_into_sidecar().map_err(|_| ValidationApiError::InvalidBlobsBundle)?;
->>>>>>> v2.4.1
 
         sidecar.validate(&versioned_hashes, EnvKzgSettings::default().get())?;
         Ok(versioned_hashes)
@@ -420,27 +350,9 @@ where
         &self,
         blobs_bundle: BlobsBundleV2,
     ) -> Result<Vec<B256>, ValidationApiError> {
-<<<<<<< HEAD
-        if is_triedb_active() {
-            return Err(ValidationApiError::MethodNotAvailable(
-                "validation_validateBlobsBundleV2".to_string(),
-            ));
-        }
-        let versioned_hashes = blobs_bundle
-            .commitments
-            .iter()
-            .map(|c| kzg_to_versioned_hash(c.as_slice()))
-            .collect::<Vec<_>>();
-
-        blobs_bundle
-            .try_into_sidecar()
-            .map_err(|_| ValidationApiError::InvalidBlobsBundle)?
-            .validate(&versioned_hashes, EnvKzgSettings::default().get())?;
-=======
         let versioned_hashes = blobs_bundle.versioned_hashes();
         let sidecar =
             blobs_bundle.try_into_sidecar().map_err(|_| ValidationApiError::InvalidBlobsBundle)?;
->>>>>>> v2.4.1
 
         sidecar.validate(&versioned_hashes, EnvKzgSettings::default().get())?;
         Ok(versioned_hashes)

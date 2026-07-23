@@ -70,15 +70,10 @@ use reth_node_metrics::{
 };
 use reth_provider::{
     providers::{NodeTypesForProvider, ProviderNodeTypes, RocksDBProvider, StaticFileProvider},
-<<<<<<< HEAD
-    BlockExecutionWriter, BlockHashReader, BlockNumReader, DBProvider, DatabaseProviderFactory,
-    HeaderProvider, ProviderError, ProviderFactory, ProviderResult, RocksDBProviderFactory,
-    StageCheckpointReader, StaticFileProviderBuilder, StaticFileProviderFactory, StorageSettings,
-=======
-    BalConfig, BalStoreHandle, BlockHashReader, BlockNumReader, InMemoryBalStore, ProviderError,
-    ProviderFactory, ProviderResult, RocksDBProviderFactory, StageCheckpointReader,
-    StaticFileProviderBuilder, StaticFileProviderFactory, StorageSettingsCache,
->>>>>>> v2.4.1
+    BalConfig, BalStoreHandle, BlockExecutionWriter, BlockHashReader, BlockNumReader, DBProvider,
+    DatabaseProviderFactory, HeaderProvider, InMemoryBalStore, ProviderError, ProviderFactory,
+    ProviderResult, RocksDBProviderFactory, StageCheckpointReader, StaticFileProviderBuilder,
+    StaticFileProviderFactory, StorageSettings, StorageSettingsCache,
 };
 use reth_prune::{PruneMode, PruneModes, PrunerBuilder};
 use reth_rpc_builder::config::RethRpcServerConfig;
@@ -837,15 +832,11 @@ where
 
     /// Convenience function to [`Self::init_genesis`]
     pub fn with_genesis(self) -> Result<Self, InitStorageError> {
-<<<<<<< HEAD
-        init_genesis_with_settings(self.provider_factory(), StorageSettings::base())?;
-=======
         init_genesis_with_settings_and_validate(
             self.provider_factory(),
             self.node_config().storage_settings(),
             !self.node_config().debug.skip_genesis_validation,
         )?;
->>>>>>> v2.4.1
         Ok(self)
     }
 
@@ -1082,8 +1073,10 @@ where
     /// This returns the configured `debug.tip` if set, otherwise it will check if backfill was
     /// previously interrupted and returns the block hash of the last checkpoint, see also
     /// [`Self::check_pipeline_consistency`]
-<<<<<<< HEAD
-    pub fn initial_backfill_target(&self) -> ProviderResult<Option<B256>>
+    pub fn initial_backfill_target(
+        &self,
+        disabled_stages: &[StageId],
+    ) -> ProviderResult<Option<B256>>
     where
         <T::Provider as DatabaseProviderFactory>::ProviderRW: BlockExecutionWriter,
     {
@@ -1092,12 +1085,6 @@ where
         // in sync (or TrieDB is inactive).
         self.align_mdbx_to_triedb_at_startup()?;
 
-=======
-    pub fn initial_backfill_target(
-        &self,
-        disabled_stages: &[StageId],
-    ) -> ProviderResult<Option<B256>> {
->>>>>>> v2.4.1
         let mut initial_target = self.node_config().debug.tip;
 
         if initial_target.is_none() {
@@ -1290,18 +1277,14 @@ where
     /// # Returns
     ///
     /// A target block hash if the pipeline is inconsistent, otherwise `None`.
-<<<<<<< HEAD
-    pub fn check_pipeline_consistency(&self) -> ProviderResult<Option<B256>> {
-        if is_triedb_active() {
-            return self.check_pipeline_consistency_under_triedb();
-        }
-
-=======
     pub fn check_pipeline_consistency(
         &self,
         disabled_stages: &[StageId],
     ) -> ProviderResult<Option<B256>> {
->>>>>>> v2.4.1
+        if is_triedb_active() {
+            return self.check_pipeline_consistency_under_triedb();
+        }
+
         // We skip the era stage if it's not enabled
         let era_enabled = self.era_import_source().is_some();
         let mut all_stages = StageId::ALL

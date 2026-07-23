@@ -1,165 +1,3 @@
-use crate::{
-    chain::ChainSpecInfo,
-    hooks::{Hook, Hooks},
-    process::register_process_metrics,
-    recorder::install_prometheus_recorder,
-    storage::StorageSettingsInfo,
-    version::VersionInfo,
-};
-use bytes::Bytes;
-use eyre::WrapErr;
-use http::{header::CONTENT_TYPE, HeaderValue, Request, Response, StatusCode};
-use http_body_util::Full;
-use metrics::describe_gauge;
-use metrics_process::Collector;
-use reqwest::Client;
-use reth_metrics::metrics::Unit;
-use reth_tasks::TaskExecutor;
-use std::{convert::Infallible, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
-
-/// Configuration for the [`MetricServer`]
-#[derive(Debug)]
-pub struct MetricServerConfig {
-    listen_addr: SocketAddr,
-    version_info: VersionInfo,
-    chain_spec_info: ChainSpecInfo,
-    storage_settings_info: Option<StorageSettingsInfo>,
-    task_executor: TaskExecutor,
-    hooks: Hooks,
-    push_gateway_url: Option<String>,
-    push_gateway_interval: Duration,
-    pprof_dump_dir: PathBuf,
-}
-
-impl MetricServerConfig {
-    /// Create a new [`MetricServerConfig`] with the given configuration
-    pub const fn new(
-        listen_addr: SocketAddr,
-        version_info: VersionInfo,
-        chain_spec_info: ChainSpecInfo,
-        task_executor: TaskExecutor,
-        hooks: Hooks,
-        pprof_dump_dir: PathBuf,
-    ) -> Self {
-        Self {
-            listen_addr,
-            hooks,
-            task_executor,
-            version_info,
-            chain_spec_info,
-            storage_settings_info: None,
-            push_gateway_url: None,
-            push_gateway_interval: Duration::from_secs(5),
-            pprof_dump_dir,
-        }
-    }
-
-    /// Set the storage settings information to expose over prometheus.
-    pub fn with_storage_settings_info(mut self, info: StorageSettingsInfo) -> Self {
-        self.storage_settings_info = Some(info);
-        self
-    }
-
-    /// Set the gateway URL and interval for pushing metrics
-    pub fn with_push_gateway(mut self, url: Option<String>, interval: Duration) -> Self {
-        self.push_gateway_url = url;
-        self.push_gateway_interval = interval;
-        self
-    }
-}
-
-/// [`MetricServer`] responsible for serving the metrics endpoint
-#[derive(Debug)]
-pub struct MetricServer {
-    config: MetricServerConfig,
-}
-
-impl MetricServer {
-    /// Create a new [`MetricServer`] with the given configuration
-    pub const fn new(config: MetricServerConfig) -> Self {
-        Self { config }
-    }
-
-    /// Spawns the metrics server
-    pub async fn serve(&self) -> eyre::Result<()> {
-        let MetricServerConfig {
-            listen_addr,
-            hooks,
-            task_executor,
-            version_info,
-            chain_spec_info,
-            storage_settings_info,
-            push_gateway_url,
-            push_gateway_interval,
-            pprof_dump_dir,
-        } = &self.config;
-
-        let hooks_for_endpoint = hooks.clone();
-        self.start_endpoint(
-            *listen_addr,
-            Arc::new(move || hooks_for_endpoint.iter().for_each(|hook| hook())),
-            task_executor.clone(),
-            pprof_dump_dir.clone(),
-        )
-        .await
-        .wrap_err_with(|| format!("Could not start Prometheus endpoint at {listen_addr}"))?;
-
-        // Start push-gateway task if configured
-        if let Some(url) = push_gateway_url {
-            self.start_push_gateway_task(
-                url.clone(),
-                *push_gateway_interval,
-                hooks.clone(),
-                task_executor.clone(),
-            )?;
-        }
-
-        // Describe metrics after recorder installation
-        describe_db_metrics();
-        describe_static_file_metrics();
-        describe_rocksdb_metrics();
-        Collector::default().describe();
-        describe_memory_stats();
-        describe_io_stats();
-
-        version_info.register_version_metrics();
-        chain_spec_info.register_chain_spec_metrics();
-        if let Some(storage_settings_info) = storage_settings_info {
-            storage_settings_info.register_storage_settings_metrics();
-        }
-        register_process_metrics();
-
-        Ok(())
-    }
-
-    async fn start_endpoint<F: Hook + 'static>(
-        &self,
-        listen_addr: SocketAddr,
-        hook: Arc<F>,
-        task_executor: TaskExecutor,
-        pprof_dump_dir: PathBuf,
-    ) -> eyre::Result<()> {
-        let listener = tokio::net::TcpListener::bind(listen_addr)
-            .await
-            .wrap_err("Could not bind to address")?;
-
-        tracing::info!(target: "reth::cli", "Starting metrics endpoint at {}", listener.local_addr().unwrap());
-
-<<<<<<< HEAD
-        task_executor.spawn_with_graceful_shutdown_signal(|mut signal| {
-            Box::pin(async move {
-                loop {
-                    let io = tokio::select! {
-                        _ = &mut signal => break,
-                        io = listener.accept() => {
-                            match io {
-                                Ok((stream, _remote_addr)) => stream,
-                                Err(err) => {
-                                    tracing::error!(%err, "failed to accept connection");
-                                    continue;
-                                }
-                            }
-=======
         let executor = task_executor.clone();
         task_executor.spawn_with_graceful_shutdown_signal(async move |mut signal| loop {
             let io = tokio::select! {
@@ -170,35 +8,9 @@ impl MetricServer {
                         Err(err) => {
                             tracing::error!(%err, "failed to accept connection");
                             continue;
->>>>>>> v2.4.1
                         }
                     };
 
-<<<<<<< HEAD
-                    let handle = install_prometheus_recorder();
-                    let hook = hook.clone();
-                    let pprof_dump_dir = pprof_dump_dir.clone();
-                    let service = tower::service_fn(move |req: Request<_>| {
-                        let path = req.uri().path().to_owned();
-                        let hook = hook.clone();
-                        let pprof_dump_dir = pprof_dump_dir.clone();
-                        async move {
-                            let response = tokio::task::spawn_blocking(move || {
-                                handle_request(&path, &*hook, handle, &pprof_dump_dir)
-                            })
-                            .await
-                            .unwrap_or_else(|err| {
-                                tracing::error!(%err, "metrics handler task failed");
-                                let mut response = Response::new(Full::new(Bytes::from_static(
-                                    b"metrics handler error",
-                                )));
-                                *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-                                response
-                            });
-                            Ok::<_, Infallible>(response)
-                        }
-                    });
-=======
             let handle = install_prometheus_recorder();
             let hook = hook.clone();
             let pprof_dump_dir = pprof_dump_dir.clone();
@@ -214,7 +26,6 @@ impl MetricServer {
                     Ok::<_, Infallible>(response)
                 }
             });
->>>>>>> v2.4.1
 
                     let mut shutdown = signal.clone().ignore_guard();
                     tokio::task::spawn(async move {
@@ -244,43 +55,6 @@ impl MetricServer {
         let client = Client::builder()
             .build()
             .wrap_err("Could not create HTTP client to push metrics to gateway")?;
-<<<<<<< HEAD
-        task_executor.spawn_with_graceful_shutdown_signal(move |mut signal| {
-            Box::pin(async move {
-                tracing::info!(url = %url, interval = ?interval, "Starting task to push metrics to gateway");
-                let handle = install_prometheus_recorder();
-                loop {
-                    tokio::select! {
-                        _ = &mut signal => {
-                            tracing::info!("Shutting down task to push metrics to gateway");
-                            break;
-                        }
-                        _ = tokio::time::sleep(interval) => {
-                            let hooks_clone = hooks.clone();
-                            let metrics = match tokio::task::spawn_blocking(move || {
-                                hooks_clone.iter().for_each(|hook| hook());
-                                handle.handle().render()
-                            })
-                            .await
-                            {
-                                Ok(m) => m,
-                                Err(err) => {
-                                    tracing::warn!(%err, "metrics gather failed; skipping push");
-                                    continue;
-                                }
-                            };
-                            match client.put(&url).header("Content-Type", "text/plain").body(metrics).send().await {
-                                Ok(response) => {
-                                    if !response.status().is_success() {
-                                        tracing::warn!(
-                                            status = %response.status(),
-                                            "Failed to push metrics to gateway"
-                                        );
-                                    }
-                                }
-                                Err(err) => {
-                                    tracing::warn!(%err, "Failed to push metrics to gateway");
-=======
         let executor = task_executor.clone();
         task_executor.spawn_with_graceful_shutdown_signal(async move |mut signal| {
             tracing::info!(url = %url, interval = ?interval, "Starting task to push metrics to gateway");
@@ -311,7 +85,6 @@ impl MetricServer {
                                         status = %response.status(),
                                         "Failed to push metrics to gateway"
                                     );
->>>>>>> v2.4.1
                                 }
                             }
                         }
@@ -423,11 +196,7 @@ fn describe_io_stats() {
 #[cfg(not(target_os = "linux"))]
 const fn describe_io_stats() {}
 
-<<<<<<< HEAD
-fn handle_request(
-=======
 async fn handle_request<F: Hook>(
->>>>>>> v2.4.1
     path: &str,
     hook: Arc<F>,
     executor: TaskExecutor,

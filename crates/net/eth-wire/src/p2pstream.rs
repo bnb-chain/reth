@@ -289,20 +289,18 @@ pub struct P2PStream<S> {
     /// message.
     disconnecting: bool,
 
-<<<<<<< HEAD
     /// Total ingress bytes counter (matches geth `p2p/ingress`).
     ingress_bytes: Counter,
 
     /// Total egress bytes counter (matches geth `p2p/egress`).
     egress_bytes: Counter,
-=======
+
     /// Whether the underlying sink has accepted messages that still need to be flushed.
     needs_flush: bool,
 
     /// Whether a queued p2p control message needs to be flushed even if no subprotocol messages
     /// are sent by the caller.
     needs_control_flush: bool,
->>>>>>> v2.4.1
 }
 
 impl<S> P2PStream<S> {
@@ -320,13 +318,10 @@ impl<S> P2PStream<S> {
             outgoing_messages: VecDeque::new(),
             outgoing_message_buffer_capacity: MAX_P2P_CAPACITY,
             disconnecting: false,
-<<<<<<< HEAD
             ingress_bytes: counter!("p2p.ingress"),
             egress_bytes: counter!("p2p.egress"),
-=======
             needs_flush: false,
             needs_control_flush: false,
->>>>>>> v2.4.1
         }
     }
 
@@ -689,25 +684,7 @@ where
         ready!(self.as_mut().poll_drain_outgoing(cx))?;
 
         let mut this = self.project();
-<<<<<<< HEAD
-        let poll_res = loop {
-            match this.inner.as_mut().poll_ready(cx) {
-                Poll::Pending => break Poll::Pending,
-                Poll::Ready(Err(err)) => break Poll::Ready(Err(err.into())),
-                Poll::Ready(Ok(())) => {
-                    let Some(message) = this.outgoing_messages.pop_front() else {
-                        break Poll::Ready(Ok(()))
-                    };
-                    // Track egress bytes (wire bytes, matches geth p2p/egress)
-                    this.egress_bytes.increment(message.len() as u64);
-                    if let Err(err) = this.inner.as_mut().start_send(message) {
-                        break Poll::Ready(Err(err.into()))
-                    }
-                }
-            }
-        };
-=======
->>>>>>> v2.4.1
+
 
         if *this.needs_flush {
             ready!(this.inner.as_mut().poll_flush(cx))?;
