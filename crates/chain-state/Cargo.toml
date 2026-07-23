@@ -20,14 +20,15 @@ reth-metrics.workspace = true
 reth-ethereum-primitives.workspace = true
 reth-primitives-traits = { workspace = true, features = ["dashmap"] }
 reth-storage-api.workspace = true
+reth-tasks = { workspace = true, features = ["rayon"], optional = true }
+reth-trie-sparse = { workspace = true, features = ["std"] }
 reth-trie.workspace = true
 
 # ethereum
 alloy-eips.workspace = true
 alloy-primitives = { workspace = true, features = ["std"] }
 alloy-consensus.workspace = true
-revm-database.workspace = true
-revm-state = { workspace = true, optional = true }
+revm.workspace = true
 
 # async
 tokio = { workspace = true, default-features = false, features = ["sync", "macros"] }
@@ -58,7 +59,6 @@ reth-testing-utils.workspace = true
 alloy-signer.workspace = true
 alloy-signer-local.workspace = true
 rand.workspace = true
-revm-state.workspace = true
 
 [features]
 serde = [
@@ -72,8 +72,7 @@ serde = [
     "reth-execution-types/serde",
     "reth-primitives-traits/serde",
     "reth-trie/serde",
-    "revm-database/serde",
-    "revm-state?/serde",
+    "revm/serde",
     "reth-storage-api/serde",
 ]
 test-utils = [
@@ -81,11 +80,16 @@ test-utils = [
     "alloy-signer",
     "alloy-signer-local",
     "rand",
+<<<<<<< HEAD
     "rayon",
     "revm-state",
+=======
+>>>>>>> v2.4.1
     "reth-chainspec/test-utils",
     "reth-primitives-traits/test-utils",
     "reth-trie/test-utils",
     "reth-ethereum-primitives/test-utils",
+    "reth-tasks?/test-utils",
+    "reth-trie-sparse/test-utils",
 ]
-rayon = ["dep:rayon"]
+rayon = ["dep:rayon", "dep:reth-tasks"]

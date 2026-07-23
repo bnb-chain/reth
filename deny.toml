@@ -10,11 +10,15 @@ ignore = [
     "RUSTSEC-2025-0141",
     # https://rustsec.org/advisories/RUSTSEC-2023-0089 atomic-polyfill is unmaintained, transitive dep via test-fuzz
     "RUSTSEC-2023-0089",
+<<<<<<< HEAD
     # https://rustsec.org/advisories/RUSTSEC-2026-0118 hickory-proto NSEC3 unbounded loop
     "RUSTSEC-2026-0118",
     # https://rustsec.org/advisories/RUSTSEC-2026-0119 hickory-proto O(n²) name compression
     "RUSTSEC-2026-0119",
     # https://rustsec.org/advisories/RUSTSEC-2026-0173 proc-macro-error2 unmaintained, transitive dep via aquamarine (build-time only)
+=======
+    # https://rustsec.org/advisories/RUSTSEC-2026-0173 proc-macro-error2 is unmaintained
+>>>>>>> v2.4.1
     "RUSTSEC-2026-0173",
 ]
 
@@ -28,7 +32,10 @@ multiple-versions = "warn"
 wildcards = "allow"
 highlight = "all"
 # List of crates to deny
-deny = [{ name = "openssl" }]
+deny = [
+    { name = "openssl" },
+    { name = "reqwest", deny-multiple-versions = true },
+]
 # Certain crates/versions that will be skipped when doing duplicate detection.
 skip = []
 # Similarly to `skip` allows you to skip certain crates during duplicate
@@ -66,7 +73,10 @@ allow = [
 
 # Allow 1 or more licenses on a per-crate basis, so that particular licenses
 # aren't accepted for every possible crate as with the normal allow list
-exceptions = []
+exceptions = [
+    # GMP bindings for the optional faster modexp precompile.
+    { allow = ["LGPL-3.0-or-later"], name = "gmp-mpfr-sys" },
+]
 
 [[licenses.clarify]]
 name = "rustls-webpki"
@@ -97,4 +107,7 @@ allow-git = [
     "https://github.com/bnb-chain/reth-bsc-triedb.git",
     "https://github.com/bnb-chain/reth-core.git",
     "https://github.com/sigp/discv5",
+    "https://github.com/paradigmxyz/revmc",
+    "https://github.com/paradigmxyz/revmc?branch=main",
+    "https://github.com/TheDan64/inkwell",
 ]

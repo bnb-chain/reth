@@ -53,7 +53,6 @@ alloy-rlp.workspace = true
 alloy-rpc-types-engine.workspace = true
 
 revm.workspace = true
-revm-primitives.workspace = true
 
 # common
 futures.workspace = true
@@ -71,7 +70,6 @@ schnellru.workspace = true
 rayon.workspace = true
 tracing.workspace = true
 derive_more.workspace = true
-parking_lot.workspace = true
 crossbeam-channel.workspace = true
 
 # optional deps for test-utils
@@ -86,6 +84,7 @@ serde_json = { workspace = true, optional = true }
 reth-evm-ethereum = { workspace = true, features = ["test-utils"] }
 reth-chain-state = { workspace = true, features = ["test-utils"] }
 reth-chainspec.workspace = true
+reth-db = { workspace = true, features = ["test-utils"] }
 reth-db-common.workspace = true
 reth-ethereum-consensus.workspace = true
 metrics-util = { workspace = true, features = ["debugging"] }
@@ -100,9 +99,6 @@ reth-testing-utils.workspace = true
 reth-tracing.workspace = true
 reth-node-ethereum.workspace = true
 reth-e2e-test-utils.workspace = true
-
-# revm
-revm-state.workspace = true
 
 assert_matches.workspace = true
 eyre.workspace = true
@@ -164,9 +160,9 @@ test-utils = [
     "reth-trie-parallel/test-utils",
     "reth-ethereum-primitives/test-utils",
     "reth-node-ethereum/test-utils",
-    "reth-evm-ethereum/test-utils",
     "reth-tasks/test-utils",
     "reth-execution-cache/test-utils",
+    "reth-evm-ethereum/test-utils",
 ]
 trie-debug = [
     "reth-trie-sparse/trie-debug",

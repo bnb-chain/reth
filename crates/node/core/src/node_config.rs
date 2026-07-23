@@ -2,8 +2,13 @@
 
 use crate::{
     args::{
+<<<<<<< HEAD
         DatabaseArgs, DatadirArgs, DebugArgs, DevArgs, EngineArgs, NetworkArgs, PayloadBuilderArgs,
         PruningArgs, RpcServerArgs, StateDbArgs, StaticFilesArgs, StorageArgs, TxPoolArgs,
+=======
+        DatabaseArgs, DatadirArgs, DebugArgs, DevArgs, EngineArgs, JitArgs, NetworkArgs,
+        PayloadBuilderArgs, PruningArgs, RpcServerArgs, StaticFilesArgs, StorageArgs, TxPoolArgs,
+>>>>>>> v2.4.1
     },
     dirs::{ChainPath, DataDirPath},
     utils::get_single_header,
@@ -15,6 +20,7 @@ use eyre::eyre;
 use reth_chainspec::{ChainSpec, EthChainSpec, MAINNET};
 use reth_config::config::PruneConfig;
 use reth_engine_local::MiningMode;
+use reth_engine_primitives::TreeConfig;
 use reth_ethereum_forks::{EthereumHardforks, Head};
 use reth_network_p2p::headers::client::HeadersClient;
 use reth_primitives_traits::SealedHeader;
@@ -157,6 +163,9 @@ pub struct NodeConfig<ChainSpec> {
 
     /// Storage layout configuration (v1/v2)
     pub storage: StorageArgs,
+
+    /// All JIT related arguments with --jit prefix
+    pub jit: JitArgs,
 }
 
 impl NodeConfig<ChainSpec> {
@@ -190,7 +199,13 @@ impl<ChainSpec> NodeConfig<ChainSpec> {
             static_files: StaticFilesArgs::default(),
             statedb: StateDbArgs::default(),
             storage: StorageArgs::default(),
+            jit: JitArgs::default(),
         }
+    }
+
+    /// Creates a [`TreeConfig`] from all node arguments that affect the engine tree.
+    pub fn tree_config(&self) -> TreeConfig {
+        self.engine.tree_config().with_skip_state_root(self.debug.skip_state_root)
     }
 
     /// Sets --dev mode for the node.
@@ -266,6 +281,7 @@ impl<ChainSpec> NodeConfig<ChainSpec> {
             static_files,
             statedb,
             storage,
+            jit,
             ..
         } = self;
         NodeConfig {
@@ -287,6 +303,7 @@ impl<ChainSpec> NodeConfig<ChainSpec> {
             static_files,
             statedb,
             storage,
+            jit,
         }
     }
 
@@ -586,6 +603,7 @@ impl<ChainSpec> NodeConfig<ChainSpec> {
             statedb: self.statedb,
             static_files: self.static_files,
             storage: self.storage,
+            jit: self.jit,
         }
     }
 
@@ -629,6 +647,21 @@ impl<ChainSpec> Clone for NodeConfig<ChainSpec> {
             statedb: self.statedb.clone(),
             static_files: self.static_files,
             storage: self.storage,
+            jit: self.jit.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tree_config_applies_debug_skip_state_root() {
+        let config = NodeConfig::default();
+        assert!(!config.tree_config().skip_state_root());
+
+        let config = config.with_debug(DebugArgs { skip_state_root: true, ..Default::default() });
+        assert!(config.tree_config().skip_state_root());
     }
 }

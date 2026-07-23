@@ -43,7 +43,9 @@ use reth_chainspec::{Chain, EthChainSpec, EthereumHardforks};
 use reth_config::{config::EtlConfig, PruneConfig, StateDbConfig};
 use reth_consensus::noop::NoopConsensus;
 use reth_db_api::{database::Database, database_metrics::DatabaseMetrics};
-use reth_db_common::init::{init_genesis_with_settings, InitStorageError};
+use reth_db_common::init::{
+    init_genesis_with_settings, init_genesis_with_settings_and_validate, InitStorageError,
+};
 use reth_downloaders::{bodies::noop::NoopBodiesDownloader, headers::noop::NoopHeaderDownloader};
 use reth_engine_local::MiningMode;
 use reth_evm::{noop::NoopEvmConfig, ConfigureEvm};
@@ -52,7 +54,7 @@ use reth_fs_util as fs;
 use reth_network_p2p::headers::client::HeadersClient;
 use reth_node_api::{FullNodeTypes, NodeTypes, NodeTypesWithDB, NodeTypesWithDBAdapter};
 use reth_node_core::{
-    args::DefaultEraHost,
+    args::{DefaultEraHost, PruneConfigKind},
     dirs::{ChainPath, DataDirPath},
     node_config::NodeConfig,
     primitives::BlockHeader,
@@ -63,22 +65,29 @@ use reth_node_metrics::{
     hooks::Hooks,
     recorder::install_prometheus_recorder,
     server::{MetricServer, MetricServerConfig},
+    storage::StorageSettingsInfo,
     version::VersionInfo,
 };
 use reth_provider::{
     providers::{NodeTypesForProvider, ProviderNodeTypes, RocksDBProvider, StaticFileProvider},
+<<<<<<< HEAD
     BlockExecutionWriter, BlockHashReader, BlockNumReader, DBProvider, DatabaseProviderFactory,
     HeaderProvider, ProviderError, ProviderFactory, ProviderResult, RocksDBProviderFactory,
     StageCheckpointReader, StaticFileProviderBuilder, StaticFileProviderFactory, StorageSettings,
+=======
+    BalConfig, BalStoreHandle, BlockHashReader, BlockNumReader, InMemoryBalStore, ProviderError,
+    ProviderFactory, ProviderResult, RocksDBProviderFactory, StageCheckpointReader,
+    StaticFileProviderBuilder, StaticFileProviderFactory, StorageSettingsCache,
+>>>>>>> v2.4.1
 };
-use reth_prune::{PruneModes, PrunerBuilder};
+use reth_prune::{PruneMode, PruneModes, PrunerBuilder};
 use reth_rpc_builder::config::RethRpcServerConfig;
 use reth_rpc_layer::JwtSecret;
 use reth_stages::{
     sets::DefaultStages, stages::EraImportSource, MetricEvent, PipelineBuilder, PipelineTarget,
-    StageId,
+    StageId, StageSet,
 };
-use reth_static_file::StaticFileProducer;
+use reth_static_file::{blocks_per_file_for_prune_distance, StaticFileProducer, StaticFileSegment};
 use reth_tasks::TaskExecutor;
 use reth_tracing::{
     throttle,
@@ -589,6 +598,7 @@ where
         &self,
         changeset_cache: ChangesetCache,
         rocksdb_provider: Option<RocksDBProvider>,
+        disabled_stages: &[StageId],
     ) -> eyre::Result<ProviderFactory<N>>
     where
         N: ProviderNodeTypes<DB = DB, ChainSpec = ChainSpec>,
@@ -598,11 +608,25 @@ where
         let static_files_config = &self.toml_config().static_files;
         static_files_config.validate()?;
 
+        let prune_config = self.prune_config();
+
+        let mut blocks_per_file = static_files_config.as_blocks_per_file_map();
+        // Receipts in static files are pruned by deleting whole files, so with the default file
+        // size a distance-based prune target is only reached every 500k blocks. Unless a file size
+        // is explicitly configured, derive one from the prune distance so retention tracks the
+        // configured distance.
+        if blocks_per_file.get(StaticFileSegment::Receipts).is_none() &&
+            let Some(PruneMode::Distance(distance)) = prune_config.segments.receipts
+        {
+            blocks_per_file
+                .insert(StaticFileSegment::Receipts, blocks_per_file_for_prune_distance(distance));
+        }
+
         // Apply per-segment blocks_per_file configuration
         let static_file_provider =
             StaticFileProviderBuilder::read_write(self.data_dir().static_files())
                 .with_metrics()
-                .with_blocks_per_file_for_segments(&static_files_config.as_blocks_per_file_map())
+                .with_blocks_per_file_for_segments(&blocks_per_file)
                 .with_genesis_block_number(self.chain_spec().genesis().number.unwrap_or_default())
                 .build()?;
 
@@ -617,7 +641,14 @@ where
                 .build()?
         };
 
-        let prune_config = self.prune_config();
+        let balstore_cache_size = self
+            .node_config()
+            .db
+            .balstore_cache_size
+            .unwrap_or(BalConfig::DEFAULT_IN_MEMORY_RETENTION_DISTANCE);
+        let bal_store = BalStoreHandle::new(InMemoryBalStore::new(
+            BalConfig::with_in_memory_retention_distance(balstore_cache_size),
+        ));
         let factory = ProviderFactory::new(
             self.right().clone(),
             self.chain_spec(),
@@ -627,7 +658,8 @@ where
         )?
         .with_prune_modes(prune_config.segments)
         .with_minimum_pruning_distance(prune_config.minimum_pruning_distance)
-        .with_changeset_cache(changeset_cache);
+        .with_changeset_cache(changeset_cache)
+        .with_bal_store(bal_store);
 
         // Check consistency between the database and static files, returning
         // the unwind targets for each storage layer if inconsistencies are
@@ -660,17 +692,21 @@ where
 
             // Builds an unwind-only pipeline
             let pipeline = PipelineBuilder::default()
-                .add_stages(DefaultStages::new(
-                    factory.clone(),
-                    tip_rx,
-                    Arc::new(NoopConsensus::default()),
-                    NoopHeaderDownloader::default(),
-                    NoopBodiesDownloader::default(),
-                    NoopEvmConfig::<Evm>::default(),
-                    self.toml_config().stages.clone(),
-                    self.prune_modes(),
-                    None,
-                ))
+                .add_stages(
+                    DefaultStages::new(
+                        factory.clone(),
+                        tip_rx,
+                        Arc::new(NoopConsensus::default()),
+                        NoopHeaderDownloader::default(),
+                        NoopBodiesDownloader::default(),
+                        NoopEvmConfig::<Evm>::default(),
+                        self.toml_config().stages.clone(),
+                        self.prune_modes(),
+                        None,
+                    )
+                    .builder()
+                    .disable_all(disabled_stages),
+                )
                 .build(
                     factory.clone(),
                     StaticFileProducer::new(factory.clone(), self.prune_modes()),
@@ -697,13 +733,15 @@ where
         self,
         changeset_cache: ChangesetCache,
         rocksdb_provider: Option<RocksDBProvider>,
+        disabled_stages: &[StageId],
     ) -> eyre::Result<LaunchContextWith<Attached<WithConfigs<ChainSpec>, ProviderFactory<N>>>>
     where
         N: ProviderNodeTypes<DB = DB, ChainSpec = ChainSpec>,
         Evm: ConfigureEvm<Primitives = N::Primitives> + 'static,
     {
-        let factory =
-            self.create_provider_factory::<N, Evm>(changeset_cache, rocksdb_provider).await?;
+        let factory = self
+            .create_provider_factory::<N, Evm>(changeset_cache, rocksdb_provider, disabled_stages)
+            .await?;
         let ctx = LaunchContextWith {
             inner: self.inner,
             attachment: self.attachment.map_right(|_| factory),
@@ -735,18 +773,36 @@ where
     /// This launches the prometheus endpoint.
     ///
     /// Convenience function to [`Self::start_prometheus_endpoint`]
-    pub async fn with_prometheus_server(self) -> eyre::Result<Self> {
+    pub async fn with_prometheus_server(self) -> eyre::Result<Self>
+    where
+        T::ChainSpec: EthereumHardforks,
+    {
         self.start_prometheus_endpoint().await?;
         Ok(self)
     }
 
     /// Starts the prometheus endpoint.
-    pub async fn start_prometheus_endpoint(&self) -> eyre::Result<()> {
+    pub async fn start_prometheus_endpoint(&self) -> eyre::Result<()>
+    where
+        T::ChainSpec: EthereumHardforks,
+    {
         // ensure recorder runs upkeep periodically
         install_prometheus_recorder().spawn_upkeep();
 
         let listen_addr = self.node_config().metrics.prometheus;
         if let Some(addr) = listen_addr {
+            let prune_config = self.prune_config();
+            let pruning_mode =
+                PruneConfigKind::from_config(&prune_config, self.chain_spec().as_ref()).as_str();
+            // On existing databases, stored settings are authoritative and already cached by the
+            // provider factory. Fresh databases do not have storage metadata until genesis is
+            // initialized, so report the configured setting during this pre-genesis startup window.
+            let storage_settings =
+                if self.provider_factory().get_stage_checkpoint(StageId::Headers)?.is_some() {
+                    self.provider_factory().cached_storage_settings()
+                } else {
+                    self.node_config().storage_settings()
+                };
             let config = MetricServerConfig::new(
                 addr,
                 VersionInfo {
@@ -762,6 +818,12 @@ where
                 metrics_hooks(self.provider_factory()),
                 self.data_dir().pprof_dumps(),
             )
+            .with_storage_settings_info(StorageSettingsInfo {
+                storage_v2: storage_settings.storage_v2,
+                pruning_mode,
+                prune_config: serde_json::to_string(&prune_config)
+                    .expect("serializing PruneConfig should not fail"),
+            })
             .with_push_gateway(
                 self.node_config().metrics.push_gateway_url.clone(),
                 self.node_config().metrics.push_gateway_interval,
@@ -775,7 +837,15 @@ where
 
     /// Convenience function to [`Self::init_genesis`]
     pub fn with_genesis(self) -> Result<Self, InitStorageError> {
+<<<<<<< HEAD
         init_genesis_with_settings(self.provider_factory(), StorageSettings::base())?;
+=======
+        init_genesis_with_settings_and_validate(
+            self.provider_factory(),
+            self.node_config().storage_settings(),
+            !self.node_config().debug.skip_genesis_validation,
+        )?;
+>>>>>>> v2.4.1
         Ok(self)
     }
 
@@ -1012,6 +1082,7 @@ where
     /// This returns the configured `debug.tip` if set, otherwise it will check if backfill was
     /// previously interrupted and returns the block hash of the last checkpoint, see also
     /// [`Self::check_pipeline_consistency`]
+<<<<<<< HEAD
     pub fn initial_backfill_target(&self) -> ProviderResult<Option<B256>>
     where
         <T::Provider as DatabaseProviderFactory>::ProviderRW: BlockExecutionWriter,
@@ -1021,10 +1092,16 @@ where
         // in sync (or TrieDB is inactive).
         self.align_mdbx_to_triedb_at_startup()?;
 
+=======
+    pub fn initial_backfill_target(
+        &self,
+        disabled_stages: &[StageId],
+    ) -> ProviderResult<Option<B256>> {
+>>>>>>> v2.4.1
         let mut initial_target = self.node_config().debug.tip;
 
         if initial_target.is_none() {
-            initial_target = self.check_pipeline_consistency()?;
+            initial_target = self.check_pipeline_consistency(disabled_stages)?;
         }
 
         Ok(initial_target)
@@ -1213,15 +1290,23 @@ where
     /// # Returns
     ///
     /// A target block hash if the pipeline is inconsistent, otherwise `None`.
+<<<<<<< HEAD
     pub fn check_pipeline_consistency(&self) -> ProviderResult<Option<B256>> {
         if is_triedb_active() {
             return self.check_pipeline_consistency_under_triedb();
         }
 
+=======
+    pub fn check_pipeline_consistency(
+        &self,
+        disabled_stages: &[StageId],
+    ) -> ProviderResult<Option<B256>> {
+>>>>>>> v2.4.1
         // We skip the era stage if it's not enabled
         let era_enabled = self.era_import_source().is_some();
-        let mut all_stages =
-            StageId::ALL.into_iter().filter(|id| era_enabled || id != &StageId::Era);
+        let mut all_stages = StageId::ALL
+            .into_iter()
+            .filter(|id| (era_enabled || id != &StageId::Era) && !disabled_stages.contains(id));
 
         // Get the expected first stage based on config.
         let first_stage = all_stages.next().expect("there must be at least one stage");

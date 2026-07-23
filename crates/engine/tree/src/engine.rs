@@ -9,11 +9,14 @@ use crate::{
 use alloy_primitives::{map::B256Set, B256};
 use crossbeam_channel::Sender;
 use futures::{Stream, StreamExt};
-use reth_chain_state::ExecutedBlock;
 use reth_engine_primitives::{BeaconEngineMessage, ConsensusEngineEvent};
 use reth_ethereum_primitives::EthPrimitives;
+<<<<<<< HEAD
 use reth_evm::ConfigureEvm;
 use reth_payload_primitives::PayloadTypes;
+=======
+use reth_payload_primitives::{BuiltPayloadExecutedBlock, PayloadTypes};
+>>>>>>> v2.4.1
 use reth_primitives_traits::{Block, NodePrimitives, SealedBlock};
 use std::{
     fmt::Display,
@@ -235,7 +238,7 @@ impl EngineApiKind {
         matches!(self, Self::Ethereum)
     }
 
-    /// Returns true if this is the ethereum variant
+    /// Returns true if this is the opstack variant
     pub const fn is_opstack(&self) -> bool {
         matches!(self, Self::OpStack)
     }
@@ -252,7 +255,7 @@ where
     /// A custom request received from the engine.
     Custom(CustomRequestMessage<P, Evm, N>),
     /// Request to insert an already executed block, e.g. via payload building.
-    InsertExecutedBlock(ExecutedBlock<N>),
+    InsertExecutedBlock(BuiltPayloadExecutedBlock<N>),
 }
 
 impl<T: PayloadTypes, N: NodePrimitives, P, Evm> Display for EngineApiRequest<T, N, P, Evm>
@@ -262,9 +265,14 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Beacon(msg) => msg.fmt(f),
+<<<<<<< HEAD
             Self::Custom(msg) => msg.fmt(f),
             Self::InsertExecutedBlock(block) => {
                 write!(f, "InsertExecutedBlock({:?})", block.recovered_block().num_hash())
+=======
+            Self::InsertExecutedBlock(payload) => {
+                write!(f, "InsertExecutedBlock({:?})", payload.recovered_block.num_hash())
+>>>>>>> v2.4.1
             }
         }
     }

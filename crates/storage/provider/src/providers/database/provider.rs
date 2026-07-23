@@ -1,7 +1,7 @@
 use crate::{
     changesets_utils::StorageRevertsIter,
     providers::{
-        database::{chain::ChainStorage, metrics},
+        database::{chain::ChainStorage, metrics, DatabaseProviderMetrics},
         rocksdb::{PendingRocksDBBatches, RocksDBProvider, RocksDBWriteCtx},
         static_file::{StaticFileWriteCtx, StaticFileWriter},
         NodeTypesForProvider, StaticFileProvider,
@@ -33,8 +33,13 @@ use alloy_primitives::{
 use itertools::Itertools;
 use parking_lot::RwLock;
 use rayon::slice::ParallelSliceMut;
+<<<<<<< HEAD
 use reth_chain_state::{ComputedTrieData, ExecutedBlock};
 use reth_chainspec::{ChainInfo, ChainSpecProvider, EthChainSpec, EthereumHardforks};
+=======
+use reth_chain_state::ExecutedBlock;
+use reth_chainspec::{ChainInfo, ChainSpecProvider, EthChainSpec};
+>>>>>>> v2.4.1
 use reth_db_api::{
     cursor::{DbCursorRO, DbCursorRW, DbDupCursorRO, DbDupCursorRW},
     database::{Database, ReaderTxnTracker},
@@ -67,14 +72,18 @@ use reth_storage_api::{
 use reth_storage_errors::provider::{ProviderResult, StaticFileWriterError};
 use reth_trie::{
     updates::{StorageTrieUpdatesSorted, TrieUpdatesSorted},
-    HashedPostStateSorted,
+    ComputedTrieData, HashedPostStateSorted,
 };
 use reth_trie_db::{ChangesetCache, DatabaseStorageTrieCursor, TrieTableAdapter};
-use revm_database::states::{
+use revm::database::states::{
     PlainStateReverts, PlainStorageChangeset, PlainStorageRevert, StateChangeset,
 };
+<<<<<<< HEAD
 use rust_eth_triedb::{get_global_triedb, triedb_manager::is_triedb_active};
 use rust_eth_triedb_common::DiffLayer;
+=======
+use smallvec::SmallVec;
+>>>>>>> v2.4.1
 use std::{
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet},
@@ -245,7 +254,7 @@ pub struct DatabaseProvider<TX, N: NodeTypes> {
     /// Minimum distance from tip required for pruning
     minimum_pruning_distance: u64,
     /// Database provider metrics
-    metrics: metrics::DatabaseProviderMetrics,
+    metrics: Arc<DatabaseProviderMetrics>,
     /// Database handle used to inspect active MDBX readers during unwind commits.
     reader_txn_tracker: Option<Arc<dyn ReaderTxnTracker>>,
 }
@@ -466,6 +475,7 @@ impl<TX: DbTxMut, N: NodeTypes> DatabaseProvider<TX, N> {
         runtime: reth_tasks::Runtime,
         db_path: PathBuf,
         commit_order: CommitOrder,
+        metrics: Arc<DatabaseProviderMetrics>,
     ) -> Self {
         Self {
             tx,
@@ -481,7 +491,7 @@ impl<TX: DbTxMut, N: NodeTypes> DatabaseProvider<TX, N> {
             pending_rocksdb_batches: Default::default(),
             commit_order,
             minimum_pruning_distance: MINIMUM_UNWIND_SAFE_DISTANCE,
-            metrics: metrics::DatabaseProviderMetrics::default(),
+            metrics,
             reader_txn_tracker: None,
         }
     }
@@ -499,6 +509,7 @@ impl<TX: DbTxMut, N: NodeTypes> DatabaseProvider<TX, N> {
         changeset_cache: ChangesetCache,
         runtime: reth_tasks::Runtime,
         db_path: PathBuf,
+        metrics: Arc<DatabaseProviderMetrics>,
     ) -> Self {
         Self::new_rw_inner(
             tx,
@@ -512,6 +523,7 @@ impl<TX: DbTxMut, N: NodeTypes> DatabaseProvider<TX, N> {
             runtime,
             db_path,
             CommitOrder::Normal,
+            metrics,
         )
     }
 
@@ -528,6 +540,7 @@ impl<TX: DbTxMut, N: NodeTypes> DatabaseProvider<TX, N> {
         changeset_cache: ChangesetCache,
         runtime: reth_tasks::Runtime,
         db_path: PathBuf,
+        metrics: Arc<DatabaseProviderMetrics>,
     ) -> Self {
         Self::new_rw_inner(
             tx,
@@ -541,6 +554,7 @@ impl<TX: DbTxMut, N: NodeTypes> DatabaseProvider<TX, N> {
             runtime,
             db_path,
             CommitOrder::Unwind,
+            metrics,
         )
     }
 }
@@ -651,8 +665,8 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
             .map(|(n, _)| n + 1)
             .unwrap_or_default();
 
-        let tx_nums: Vec<TxNumber> = {
-            let mut nums = Vec::with_capacity(blocks.len());
+        let tx_nums: SmallVec<[TxNumber; 4]> = {
+            let mut nums = SmallVec::with_capacity(blocks.len());
             let mut current = first_tx_num;
             for block in &blocks {
                 nums.push(current);
@@ -883,7 +897,7 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
                 // Blocks are oldest-to-newest, merge_batch expects newest-to-oldest.
                 let start = Instant::now();
                 let merged_hashed_state = HashedPostStateSorted::merge_batch(
-                    blocks.iter().rev().map(|b| b.trie_data().hashed_state),
+                    blocks.iter().rev().map(|b| b.trie_data().sorted.hashed_state),
                 );
                 if !merged_hashed_state.is_empty() {
                     self.write_hashed_state(&merged_hashed_state)?;
@@ -1214,6 +1228,7 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> DatabaseProvider<TX, N> {
         changeset_cache: ChangesetCache,
         runtime: reth_tasks::Runtime,
         db_path: PathBuf,
+        metrics: Arc<DatabaseProviderMetrics>,
     ) -> Self {
         Self {
             tx,
@@ -1229,7 +1244,7 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> DatabaseProvider<TX, N> {
             pending_rocksdb_batches: Default::default(),
             commit_order: CommitOrder::Normal,
             minimum_pruning_distance: MINIMUM_UNWIND_SAFE_DISTANCE,
-            metrics: metrics::DatabaseProviderMetrics::default(),
+            metrics,
             reader_txn_tracker: None,
         }
     }
@@ -1269,6 +1284,10 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> DatabaseProvider<TX, N> {
         BF: FnOnce(H, BodyTy<N>, Vec<Address>) -> ProviderResult<Option<B>>,
     {
         let Some(block_number) = self.convert_hash_or_number(id)? else { return Ok(None) };
+        let earliest_available = self.static_file_provider.earliest_history_height();
+        if block_number < earliest_available {
+            return Err(ProviderError::BlockExpired { requested: block_number, earliest_available })
+        }
         let Some(header) = header_by_number(block_number)? else { return Ok(None) };
 
         // Get the block body
@@ -2354,7 +2373,13 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> ReceiptProvider for DatabasePr
             return if tx_range.is_empty() {
                 Ok(Some(Vec::new()))
             } else {
-                self.receipts_by_tx_range(tx_range).map(Some)
+                let receipts = self.receipts_by_tx_range(tx_range)?;
+
+                if receipts.len() != body.tx_count as usize {
+                    return Ok(None)
+                }
+
+                Ok(Some(receipts))
             }
         }
         Ok(None)
@@ -4178,10 +4203,10 @@ mod tests {
     use reth_storage_api::MetadataWriter;
     use reth_testing_utils::generators::{self, random_block, BlockParams};
     use reth_trie::{
-        HashedPostState, KeccakKeyHasher, Nibbles, StoredNibbles, StoredNibblesSubKey,
+        HashedPostState, KeccakKeyHasher, Nibbles, SortedTrieData, StoredNibbles,
+        StoredNibblesSubKey,
     };
-    use revm_database::BundleState;
-    use revm_state::AccountInfo;
+    use revm::{database::BundleState, state::AccountInfo};
     use std::{sync::mpsc, time::Duration};
 
     #[test]
@@ -4449,6 +4474,20 @@ mod tests {
         }
 
         assert_eq!(range_result, individual_results);
+    }
+
+    #[test]
+    fn test_receipts_by_block_returns_none_for_missing_unpruned_receipts() {
+        let factory = create_test_provider_factory();
+        let data = BlockchainTestData::default();
+
+        let provider_rw = factory.provider_rw().unwrap();
+        provider_rw.insert_block(&data.genesis.try_recover().unwrap()).unwrap();
+        provider_rw.insert_block(&data.blocks[0].0).unwrap();
+        provider_rw.commit().unwrap();
+
+        let provider = factory.provider().unwrap();
+        assert!(provider.receipts_by_block(1.into()).unwrap().is_none());
     }
 
     #[test]
@@ -4732,12 +4771,11 @@ mod tests {
 
             let provider = factory.provider().unwrap();
 
-            for (block, num_receipts) in [(0, 0), (tip_block - 1, 1)] {
-                assert!(provider
-                    .receipts_by_block(block.into())
-                    .unwrap()
-                    .is_some_and(|r| r.len() == num_receipts));
-            }
+            assert!(provider.receipts_by_block(0.into()).unwrap().is_none());
+            assert!(provider
+                .receipts_by_block((tip_block - 1).into())
+                .unwrap()
+                .is_some_and(|r| r.len() == 1));
         }
 
         // Static files mode
@@ -4795,14 +4833,16 @@ mod tests {
             // to the block number it belongs to easily identify and assert.
             let provider = factory.provider().unwrap();
             assert!(EitherWriter::receipts_destination(&provider).is_static_file());
-            for (num, num_receipts) in [(0, 0), (1, 0), (2, 1), (3, 1)] {
-                assert!(provider
-                    .receipts_by_block(num.into())
-                    .unwrap()
-                    .is_some_and(|r| r.len() == num_receipts));
+            for (num, has_receipt) in [(0, false), (1, false), (2, true), (3, true)] {
+                let receipts = provider.receipts_by_block(num.into()).unwrap();
+                if has_receipt {
+                    assert!(receipts.is_some_and(|r| r.len() == 1));
+                } else {
+                    assert!(receipts.is_none());
+                }
 
                 let receipt = provider.receipt(num).unwrap();
-                if num_receipts > 0 {
+                if has_receipt {
                     assert!(receipt.is_some_and(|r| r.cumulative_gas_used == num));
                 } else {
                     assert!(receipt.is_none());
@@ -5108,8 +5148,7 @@ mod tests {
     fn test_write_state_and_historical_read_hashed() {
         use reth_storage_api::StateProvider;
         use reth_trie::{HashedPostState, KeccakKeyHasher};
-        use revm_database::BundleState;
-        use revm_state::AccountInfo;
+        use revm::{database::BundleState, state::AccountInfo};
 
         let factory = create_test_provider_factory();
         factory.set_storage_settings_cache(StorageSettings::v2());
@@ -5322,7 +5361,10 @@ mod tests {
                     },
                     state: bundle,
                 }),
-                ComputedTrieData { hashed_state: Arc::new(hashed_state), ..Default::default() },
+                ComputedTrieData {
+                    sorted: SortedTrieData::new(Arc::new(hashed_state), Default::default()),
+                    ..Default::default()
+                },
             );
             blocks.push(executed);
         }

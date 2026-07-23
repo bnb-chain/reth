@@ -84,7 +84,10 @@ pub struct NetworkConfig<C, N: NetworkPrimitives = EthNetworkPrimitives> {
     pub status: UnifiedStatus,
     /// Sets the hello message for the p2p handshake in `RLPx`
     pub hello_message: HelloMessageWithProtocols,
-    /// Additional protocols to announce and handle in `RLPx`
+    /// Additional `RLPx` sub-protocols to announce and handle alongside `eth`.
+    ///
+    /// Does not cover `snap/2`, which is supported natively (see
+    /// [`NetworkConfigBuilder::with_snap`]).
     pub extra_protocols: RlpxSubProtocols,
     /// Whether to disable transaction gossip
     pub tx_gossip_disabled: bool,
@@ -207,7 +210,8 @@ pub struct NetworkConfigBuilder<N: NetworkPrimitives = EthNetworkPrimitives> {
     executor: Runtime,
     /// Sets the hello message for the p2p handshake in `RLPx`
     hello_message: Option<HelloMessageWithProtocols>,
-    /// The executor to use for spawning tasks.
+    /// Additional `RLPx` sub-protocols to announce and handle alongside `eth`. Does not cover
+    /// `snap/2`, which is supported natively (see [`NetworkConfigBuilder::with_snap`]).
     extra_protocols: RlpxSubProtocols,
     /// Head used to start set for the fork filter and status.
     head: Option<Head>,
@@ -228,8 +232,13 @@ pub struct NetworkConfigBuilder<N: NetworkPrimitives = EthNetworkPrimitives> {
     required_block_hashes: Vec<BlockNumHash>,
     /// Optional network id
     network_id: Option<u64>,
+<<<<<<< HEAD
     /// The node ids of the proxied nodes.
     proxied_node_ids: Vec<PeerId>,
+=======
+    /// Whether to advertise the `snap/2` satellite protocol (EIP-8189) in the handshake.
+    snap_enabled: bool,
+>>>>>>> v2.4.1
 }
 
 impl NetworkConfigBuilder<EthNetworkPrimitives> {
@@ -273,7 +282,11 @@ impl<N: NetworkPrimitives> NetworkConfigBuilder<N> {
             eth_max_message_size: MAX_MESSAGE_SIZE,
             required_block_hashes: Vec::new(),
             network_id: None,
+<<<<<<< HEAD
             proxied_node_ids: Vec::new(),
+=======
+            snap_enabled: false,
+>>>>>>> v2.4.1
         }
     }
 
@@ -553,8 +566,18 @@ impl<N: NetworkPrimitives> NetworkConfigBuilder<N> {
     }
 
     /// Adds a new additional protocol to the `RLPx` sub-protocol list.
+    ///
+    /// Not for `snap/2`, which is supported natively (see [`Self::with_snap`]).
     pub fn add_rlpx_sub_protocol(mut self, protocol: impl IntoRlpxSubProtocol) -> Self {
         self.extra_protocols.push(protocol);
+        self
+    }
+
+    /// Toggles advertisement of the `snap/2` satellite protocol (EIP-8189).
+    ///
+    /// Default off: snap/2 is only negotiated with peers when explicitly enabled.
+    pub const fn with_snap(mut self, snap_enabled: bool) -> Self {
+        self.snap_enabled = snap_enabled;
         self
     }
 
@@ -658,7 +681,11 @@ impl<N: NetworkPrimitives> NetworkConfigBuilder<N> {
             eth_max_message_size,
             required_block_hashes,
             network_id,
+<<<<<<< HEAD
             proxied_node_ids,
+=======
+            snap_enabled,
+>>>>>>> v2.4.1
         } = self;
 
         let head = head.unwrap_or_else(|| Head {
@@ -669,20 +696,29 @@ impl<N: NetworkPrimitives> NetworkConfigBuilder<N> {
             total_difficulty: chain_spec.genesis().difficulty,
         });
 
+        let listener_addr = listener_addr.unwrap_or(DEFAULT_DISCOVERY_ADDRESS);
+        // Static NAT addresses (`extip`/`extaddr`) tell peers which IP to dial, but that IP may
+        // not exist on a local interface. Keep binding to `listener_addr` and use the NAT IP only
+        // as the ENR address.
+        let advertised_ip = nat.clone().and_then(|nat| nat.as_external_ip(listener_addr.port()));
+
         discovery_v5_builder = discovery_v5_builder.map(|mut builder| {
             if let Some(network_stack_id) = NetworkStackId::id(&chain_spec) {
                 let fork_id = chain_spec.fork_id(&head);
                 builder = builder.fork(network_stack_id, fork_id)
             }
 
+            if let Some(ip) = advertised_ip {
+                builder = builder.advertised_ip(ip);
+            }
+
             builder
         });
-
-        let listener_addr = listener_addr.unwrap_or(DEFAULT_DISCOVERY_ADDRESS);
 
         let mut hello_message =
             hello_message.unwrap_or_else(|| HelloMessage::builder(peer_id).build());
         hello_message.port = listener_addr.port();
+        hello_message = hello_message.with_snap(snap_enabled);
 
         // set the status
         let mut status = UnifiedStatus::spec_builder(&chain_spec, &head);
@@ -780,6 +816,34 @@ mod tests {
     fn builder() -> NetworkConfigBuilder {
         let secret_key = SecretKey::new(&mut rand_08::thread_rng());
         NetworkConfigBuilder::new(secret_key, Runtime::test())
+    }
+
+    #[test]
+    fn test_snap_advertisement_default_off() {
+        // snap/2 must not be advertised unless explicitly enabled.
+        let config = builder().build(NoopProvider::default());
+        assert!(config.hello_message.protocols.iter().all(|p| p.cap.name != "snap"));
+    }
+
+    #[test]
+    fn test_snap_advertisement_when_enabled() {
+        let config = builder().with_snap(true).build(NoopProvider::default());
+        let snap_caps =
+            config.hello_message.protocols.iter().filter(|p| p.cap.name == "snap").count();
+        assert_eq!(snap_caps, 1);
+        assert_eq!(
+            config
+                .hello_message
+                .protocols
+                .iter()
+                .find(|p| p.cap.name == "snap")
+                .unwrap()
+                .cap
+                .version,
+            2
+        );
+        // eth is still advertised alongside snap.
+        assert!(config.hello_message.protocols.iter().any(|p| p.cap.name == "eth"));
     }
 
     #[test]

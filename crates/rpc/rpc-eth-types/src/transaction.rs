@@ -2,7 +2,12 @@
 //!
 //! Transaction wrapper that labels transaction with its origin.
 
+<<<<<<< HEAD
 use alloy_primitives::{Bytes, B256};
+=======
+use alloy_consensus::transaction::TxHashRef;
+use alloy_primitives::B256;
+>>>>>>> v2.4.1
 use alloy_rpc_types_eth::TransactionInfo;
 use reth_ethereum_primitives::TransactionSigned;
 use reth_primitives_traits::{NodePrimitives, Recovered, SignedTransaction};
@@ -69,7 +74,7 @@ impl<T: SignedTransaction> TransactionSource<T> {
                 base_fee,
             } => {
                 let tx_info = TransactionInfo {
-                    hash: Some(transaction.trie_hash()),
+                    hash: Some(*transaction.tx_hash()),
                     index: Some(index),
                     block_hash: Some(block_hash),
                     block_number: Some(block_number),
@@ -86,7 +91,7 @@ impl<T: SignedTransaction> TransactionSource<T> {
     pub fn split(self) -> (Recovered<T>, TransactionInfo) {
         match self {
             Self::Pool(tx) => {
-                let hash = tx.trie_hash();
+                let hash = *tx.tx_hash();
                 (tx, TransactionInfo { hash: Some(hash), ..Default::default() })
             }
             Self::Block {
@@ -97,7 +102,7 @@ impl<T: SignedTransaction> TransactionSource<T> {
                 block_timestamp,
                 base_fee,
             } => {
-                let hash = transaction.trie_hash();
+                let hash = *transaction.tx_hash();
                 (
                     transaction,
                     TransactionInfo {

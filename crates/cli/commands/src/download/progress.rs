@@ -325,7 +325,7 @@ impl SharedProgress {
 // `try_update` (the suggested replacement) is still unstable (atomic_try_update, rust#135894).
 #[allow(deprecated)]
 fn sub_bytes(counter: &AtomicU64, bytes: u64) {
-    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+    let _ = counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
         Some(current.saturating_sub(bytes))
     });
 }

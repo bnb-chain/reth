@@ -20,7 +20,7 @@ use reth_provider::{providers::ProviderNodeTypes, ProviderFactory};
 use reth_stages::{
     prelude::DefaultStages,
     stages::{EraImportSource, ExecutionStage},
-    Pipeline, StageSet,
+    Pipeline, StageId, StageSet,
 };
 use reth_static_file::StaticFileProducer;
 use reth_tasks::TaskExecutor;
@@ -43,6 +43,7 @@ pub fn build_networked_pipeline<N, Client, Evm>(
     evm_config: Evm,
     exex_manager_handle: ExExManagerHandle<N::Primitives>,
     era_import_source: Option<EraImportSource>,
+    disabled_stages: &[StageId],
 ) -> eyre::Result<Pipeline<N>>
 where
     N: ProviderNodeTypes,
@@ -71,6 +72,7 @@ where
         evm_config,
         exex_manager_handle,
         era_import_source,
+        disabled_stages,
     )?;
 
     Ok(pipeline)
@@ -91,6 +93,7 @@ pub fn build_pipeline<N, H, B, Evm>(
     evm_config: Evm,
     exex_manager_handle: ExExManagerHandle<N::Primitives>,
     era_import_source: Option<EraImportSource>,
+    disabled_stages: &[StageId],
 ) -> eyre::Result<Pipeline<N>>
 where
     N: ProviderNodeTypes,
@@ -136,6 +139,7 @@ where
                     exex_manager_handle,
                 )),
             )
+<<<<<<< HEAD
             .build(provider_factory, static_file_producer);
 
         info!(
@@ -169,6 +173,18 @@ where
             )
             .build(provider_factory, static_file_producer)
     };
+=======
+            .set(ExecutionStage::new(
+                evm_config,
+                consensus,
+                stage_config.execution.into(),
+                stage_config.execution_external_clean_threshold(),
+                exex_manager_handle,
+            ))
+            .disable_all(disabled_stages),
+        )
+        .build(provider_factory, static_file_producer);
+>>>>>>> v2.4.1
 
     Ok(pipeline)
 }
