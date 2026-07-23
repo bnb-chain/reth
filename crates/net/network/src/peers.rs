@@ -124,6 +124,9 @@ impl PeersManager {
             incoming_ip_throttle_duration,
             ip_filter,
             enforce_enr_fork_id,
+            // BSC: consumed by reth-bsc's own peer management; reth's PeersManager does not
+            // enforce proxying here. Re-add enforcement (proxied_node_ids_map) if needed.
+            proxied_node_ids: _,
             peer_rotation_interval,
         } = config;
         let (manager_tx, handle_rx) = mpsc::unbounded_channel();
