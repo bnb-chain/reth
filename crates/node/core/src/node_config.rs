@@ -3,8 +3,7 @@
 use crate::{
     args::{
         DatabaseArgs, DatadirArgs, DebugArgs, DevArgs, EngineArgs, JitArgs, NetworkArgs,
-        PayloadBuilderArgs, PruningArgs, RpcServerArgs, StateDbArgs, StaticFilesArgs, StorageArgs,
-        TxPoolArgs,
+        PayloadBuilderArgs, PruningArgs, RpcServerArgs, StaticFilesArgs, StorageArgs, TxPoolArgs,
     },
     dirs::{ChainPath, DataDirPath},
     utils::get_single_header,
@@ -154,10 +153,7 @@ pub struct NodeConfig<ChainSpec> {
     /// All static files related arguments
     pub static_files: StaticFilesArgs,
 
-    /// All state database related arguments
-    pub statedb: StateDbArgs,
-
-    /// Storage layout configuration (v1/v2)
+    /// All storage related arguments with --storage prefix
     pub storage: StorageArgs,
 
     /// All JIT related arguments with --jit prefix
@@ -193,7 +189,6 @@ impl<ChainSpec> NodeConfig<ChainSpec> {
             engine: EngineArgs::default(),
             era: EraArgs::default(),
             static_files: StaticFilesArgs::default(),
-            statedb: StateDbArgs::default(),
             storage: StorageArgs::default(),
             jit: JitArgs::default(),
         }
@@ -275,7 +270,6 @@ impl<ChainSpec> NodeConfig<ChainSpec> {
             engine,
             era,
             static_files,
-            statedb,
             storage,
             jit,
             ..
@@ -297,7 +291,6 @@ impl<ChainSpec> NodeConfig<ChainSpec> {
             engine,
             era,
             static_files,
-            statedb,
             storage,
             jit,
         }
@@ -370,15 +363,15 @@ impl<ChainSpec> NodeConfig<ChainSpec> {
         self
     }
 
-    /// Set the storage args for the node
-    pub const fn with_storage(mut self, storage: StorageArgs) -> Self {
-        self.storage = storage;
-        self
-    }
-
     /// Set the pruning args for the node
     pub fn with_pruning(mut self, pruning: PruningArgs) -> Self {
         self.pruning = pruning;
+        self
+    }
+
+    /// Set the storage args for the node
+    pub const fn with_storage(mut self, storage: StorageArgs) -> Self {
+        self.storage = storage;
         self
     }
 
@@ -596,7 +589,6 @@ impl<ChainSpec> NodeConfig<ChainSpec> {
             pruning: self.pruning,
             engine: self.engine,
             era: self.era,
-            statedb: self.statedb,
             static_files: self.static_files,
             storage: self.storage,
             jit: self.jit,
@@ -640,7 +632,6 @@ impl<ChainSpec> Clone for NodeConfig<ChainSpec> {
             datadir: self.datadir.clone(),
             engine: self.engine.clone(),
             era: self.era.clone(),
-            statedb: self.statedb.clone(),
             static_files: self.static_files,
             storage: self.storage,
             jit: self.jit.clone(),

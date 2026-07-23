@@ -17,7 +17,6 @@ use crate::node_config::{
     DEFAULT_CROSS_BLOCK_CACHE_SIZE_MB, DEFAULT_MEMORY_BLOCK_BUFFER_TARGET,
     DEFAULT_PERSISTENCE_THRESHOLD, DEFAULT_RESERVED_CPU_CORES,
 };
-use reth_engine_primitives::DEFAULT_MIN_BLOCKS_FOR_PIPELINE_RUN;
 
 /// Global static engine defaults
 static ENGINE_DEFAULTS: OnceLock<DefaultEngineValues> = OnceLock::new();
@@ -54,8 +53,6 @@ pub struct DefaultEngineValues {
     state_root_task_timeout: Option<String>,
     share_execution_cache_with_payload_builder: bool,
     share_sparse_trie_with_payload_builder: bool,
-    /// Whether to enable V2 storage proofs by default.
-    enable_proof_v2: bool,
     suppress_persistence_during_build: bool,
     bal_parallel_execution_disabled: bool,
     bal_parallel_state_root_disabled: bool,
@@ -237,12 +234,6 @@ impl DefaultEngineValues {
         self
     }
 
-    /// Set whether to enable V2 storage proofs by default
-    pub const fn with_enable_proof_v2(mut self, v: bool) -> Self {
-        self.enable_proof_v2 = v;
-        self
-    }
-
     /// Set whether to suppress persistence during payload building by default
     pub const fn with_suppress_persistence_during_build(mut self, v: bool) -> Self {
         self.suppress_persistence_during_build = v;
@@ -292,7 +283,6 @@ impl Default for DefaultEngineValues {
             state_root_task_timeout: Some("4s".to_string()),
             share_execution_cache_with_payload_builder: false,
             share_sparse_trie_with_payload_builder: false,
-            enable_proof_v2: false,
             suppress_persistence_during_build: false,
             bal_parallel_execution_disabled: false,
             bal_parallel_state_root_disabled: false,
@@ -436,11 +426,6 @@ pub struct EngineArgs {
     /// If not specified, defaults to the same count as storage workers.
     #[arg(long = "engine.account-worker-count", default_value = Resettable::from(DefaultEngineValues::get_global().account_worker_count.map(|v| v.to_string().into())))]
     pub account_worker_count: Option<usize>,
-    /// Skip state root validation for fastnode mode.
-    /// This disables validation of state root hashes during live sync and also automatically
-    /// disables hashing stages for maximum sync speed at the cost of reduced validation.
-    #[arg(long = "engine.skip-state-root-validation", default_value = "false")]
-    pub skip_state_root_validation: bool,
 
     /// Configure the number of prewarming threads.
     /// If not specified, defaults to available parallelism.
@@ -558,16 +543,6 @@ pub struct EngineArgs {
         value_parser = humantime::parse_duration,
     )]
     pub proof_jitter: Option<Duration>,
-
-    /// Configure the minimum number of blocks required to trigger a pipeline run for backfilling.
-    /// When the local head is behind the forkchoice head by more than this threshold,
-    /// the pipeline will be used to backfill blocks instead of downloading them individually.
-    #[arg(long = "engine.min-blocks-for-pipeline-run", default_value_t = DEFAULT_MIN_BLOCKS_FOR_PIPELINE_RUN)]
-    pub min_blocks_for_pipeline_run: u64,
-
-    /// Enable V2 storage proofs for state root calculations
-    #[arg(long = "engine.enable-proof-v2", default_value_t = DefaultEngineValues::get_global().enable_proof_v2)]
-    pub enable_proof_v2: bool,
 }
 
 #[allow(deprecated)]
@@ -601,7 +576,6 @@ impl Default for EngineArgs {
             state_root_task_timeout,
             share_execution_cache_with_payload_builder,
             share_sparse_trie_with_payload_builder,
-            enable_proof_v2,
             suppress_persistence_during_build,
             bal_parallel_execution_disabled,
             bal_parallel_state_root_disabled,
@@ -647,9 +621,6 @@ impl Default for EngineArgs {
             disable_bal_batch_io: false,
             #[cfg(feature = "trie-debug")]
             proof_jitter: None,
-            skip_state_root_validation: false,
-            min_blocks_for_pipeline_run: DEFAULT_MIN_BLOCKS_FOR_PIPELINE_RUN,
-            enable_proof_v2,
         }
     }
 }
@@ -684,7 +655,7 @@ impl EngineArgs {
         if self.legacy_state_root_task_enabled {
             tracing::warn!(target: "reth::cli", "--engine.legacy-state-root has no effect anymore, use --engine.state-root-fallback to force synchronous state root computation");
         }
-        let mut config = TreeConfig::default()
+        let config = TreeConfig::default()
             .with_persistence_backpressure_threshold(self.persistence_backpressure_threshold())
             .with_persistence_threshold(self.persistence_threshold)
             .with_memory_block_buffer_target(self.memory_block_buffer_target)
@@ -714,20 +685,10 @@ impl EngineArgs {
             .with_share_sparse_trie_with_payload_builder(
                 self.share_sparse_trie_with_payload_builder,
             )
-            .with_skip_state_root_validation(self.skip_state_root_validation)
-            .with_min_blocks_for_pipeline_run(self.min_blocks_for_pipeline_run)
-            .with_enable_proof_v2(self.enable_proof_v2)
             .with_suppress_persistence_during_build(self.suppress_persistence_during_build)
             .without_bal_parallel_execution(self.bal_parallel_execution_disabled)
             .without_bal_parallel_state_root(self.bal_parallel_state_root_disabled)
             .without_bal_batch_io(self.disable_bal_batch_io);
-
-        if let Some(count) = self.storage_worker_count {
-            config = config.with_storage_worker_count(count);
-        }
-        if let Some(count) = self.account_worker_count {
-            config = config.with_account_worker_count(count);
-        }
         #[cfg(feature = "trie-debug")]
         let config = config.with_proof_jitter(self.proof_jitter);
         config
@@ -849,9 +810,6 @@ mod tests {
             disable_bal_batch_io: true,
             #[cfg(feature = "trie-debug")]
             proof_jitter: None,
-            skip_state_root_validation: false,
-            min_blocks_for_pipeline_run: DEFAULT_MIN_BLOCKS_FOR_PIPELINE_RUN,
-            enable_proof_v2: false,
         };
 
         let parsed_args = CommandParser::<EngineArgs>::parse_from([

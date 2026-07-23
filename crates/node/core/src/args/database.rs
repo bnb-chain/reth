@@ -35,17 +35,15 @@ pub struct DatabaseArgs {
     pub max_size: Option<usize>,
     /// Database page size (e.g., 4KB, 8KB, 16KB).
     ///
-    /// NOTE: Page size can only be set when creating a new database and cannot be changed later.
-    /// The page size must be a power of 2 between 256 bytes and 64KB.
-    /// If not specified, uses the system default (typically 4KB on Linux, 16KB on macOS).
+    /// Specifies the page size used by the MDBX database.
     ///
     /// The page size determines the maximum database size.
     /// MDBX supports up to 2^31 pages, so with the default 4KB page size, the maximum
     /// database size is 8TB. To allow larger databases, increase this value to 8KB or higher.
     ///
-    /// WARNING: Changing page size on an existing database will cause errors.
-    /// Only use this flag when initializing a new node.
-    #[arg(long = "db.page-size", value_parser = parse_byte_size, verbatim_doc_comment)]
+    /// WARNING: This setting is only configurable at database creation; changing
+    /// it later requires re-syncing.
+    #[arg(long = "db.page-size", value_parser = parse_byte_size)]
     pub page_size: Option<usize>,
     /// Database growth step (e.g., 4GB, 4KB)
     #[arg(long = "db.growth-step", value_parser = parse_byte_size)]
@@ -99,7 +97,6 @@ impl DatabaseArgs {
             .with_log_level(self.log_level)
             .with_exclusive(self.exclusive)
             .with_max_read_transaction_duration(max_read_transaction_duration)
-            .with_page_size(self.page_size)
             .with_geometry_max_size(self.max_size)
             .with_geometry_page_size(self.page_size)
             .with_growth_step(self.growth_step)
@@ -220,7 +217,7 @@ impl fmt::Display for ByteSize {
 }
 
 /// Value parser function that supports various formats.
-pub fn parse_byte_size(s: &str) -> Result<usize, String> {
+fn parse_byte_size(s: &str) -> Result<usize, String> {
     s.parse::<ByteSize>().map(Into::into)
 }
 

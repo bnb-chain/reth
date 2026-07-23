@@ -18,7 +18,7 @@ pub use debug::{DebugArgs, InvalidBlockHookType, InvalidBlockSelection};
 
 /// DatabaseArgs struct for configuring the database
 mod database;
-pub use database::{parse_byte_size, ByteSize, DatabaseArgs};
+pub use database::DatabaseArgs;
 
 /// LogArgs struct for configuring the logger
 mod log;
@@ -72,11 +72,7 @@ pub use era::{DefaultEraHost, EraArgs, EraSourceArgs};
 mod static_files;
 pub use static_files::{StaticFilesArgs, MINIMAL_BLOCKS_PER_FILE};
 
-/// `StateDbArgs` for configuring state database.
-mod statedb;
-pub use statedb::StateDbArgs;
-
-/// `StorageArgs` for configuring storage layout (v1/v2).
+/// `StorageArgs` for configuring storage settings.
 mod storage;
 pub use storage::{DefaultStorageValues, StorageArgs};
 

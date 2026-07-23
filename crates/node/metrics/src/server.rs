@@ -156,7 +156,9 @@ impl MetricServer {
                             tracing::error!(%err, "failed to accept connection");
                             continue;
                         }
-                    };
+                    }
+                }
+            };
 
             let handle = install_prometheus_recorder();
             let hook = hook.clone();
@@ -174,18 +176,12 @@ impl MetricServer {
                 }
             });
 
-                    let mut shutdown = signal.clone().ignore_guard();
-                    tokio::task::spawn(async move {
-                        let _ = jsonrpsee_server::serve_with_graceful_shutdown(
-                            io,
-                            service,
-                            &mut shutdown,
-                        )
-                        .await
-                        .inspect_err(|error| tracing::debug!(%error, "failed to serve request"));
-                    });
-                }
-            })
+            let mut shutdown = signal.clone().ignore_guard();
+            tokio::task::spawn(async move {
+                let _ = jsonrpsee_server::serve_with_graceful_shutdown(io, service, &mut shutdown)
+                    .await
+                    .inspect_err(|error| tracing::debug!(%error, "failed to serve request"));
+            });
         });
 
         Ok(())
@@ -234,10 +230,13 @@ impl MetricServer {
                                     );
                                 }
                             }
+                            Err(err) => {
+                                tracing::warn!(%err, "Failed to push metrics to gateway");
+                            }
                         }
                     }
                 }
-            })
+            }
         });
         Ok(())
     }
@@ -352,6 +351,7 @@ async fn handle_request<F: Hook>(
 ) -> Response<Full<Bytes>> {
     match path {
         "/debug/pprof/heap" => handle_pprof_heap(pprof_dump_dir),
+        "/debug/tokio/dump" => handle_tokio_dump().await,
         _ => {
             let metrics_handle = handle.handle().clone();
             let metrics = match executor
@@ -451,6 +451,31 @@ fn jemalloc_pprof_dump(pprof_dump_dir: &PathBuf) -> eyre::Result<Vec<u8>> {
 fn handle_pprof_heap(_pprof_dump_dir: &PathBuf) -> Response<Full<Bytes>> {
     let mut response = Response::new(Full::new(Bytes::from_static(
         b"jemalloc pprof support not compiled. Rebuild with the jemalloc-prof feature.",
+    )));
+    *response.status_mut() = StatusCode::NOT_IMPLEMENTED;
+    response
+}
+
+#[cfg(tokio_unstable)]
+async fn handle_tokio_dump() -> Response<Full<Bytes>> {
+    let handle = tokio::runtime::Handle::current();
+    let dump = handle.dump().await;
+
+    let mut output = String::new();
+    for (i, task) in dump.tasks().iter().enumerate() {
+        let trace = task.trace();
+        output.push_str(&format!("task {i}:\n{trace}\n\n"));
+    }
+
+    let mut response = Response::new(Full::new(Bytes::from(output)));
+    response.headers_mut().insert(CONTENT_TYPE, HeaderValue::from_static("text/plain"));
+    response
+}
+
+#[cfg(not(tokio_unstable))]
+async fn handle_tokio_dump() -> Response<Full<Bytes>> {
+    let mut response = Response::new(Full::new(Bytes::from_static(
+        b"tokio task dump not available. Rebuild with RUSTFLAGS=\"--cfg tokio_unstable\" and tokio's `taskdump` feature.",
     )));
     *response.status_mut() = StatusCode::NOT_IMPLEMENTED;
     response
