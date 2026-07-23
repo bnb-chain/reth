@@ -1,3 +1,4 @@
+# Runs benchmarks.
 
 on:
   workflow_dispatch: # disabled temporarily

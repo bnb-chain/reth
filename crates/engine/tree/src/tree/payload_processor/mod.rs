@@ -1,3 +1,49 @@
+//! Entrypoint for payload processing.
+
+use super::precompile_cache::PrecompileCacheMap;
+use crate::tree::{
+    payload_processor::prewarm::{PrewarmCacheTask, PrewarmContext, PrewarmMode, PrewarmTaskEvent},
+    CachedStateCacheMetrics, CachedStateMetrics, CachedStateMetricsSource, ExecutionCache,
+    ExecutionEnv, PayloadExecutionCache, SavedCache, StateProviderBuilder, TreeConfig,
+};
+use alloy_eips::eip1898::BlockWithParent;
+use alloy_primitives::B256;
+use crossbeam_channel::{Receiver as CrossbeamReceiver, Sender as CrossbeamSender};
+use prewarm::PrewarmMetrics;
+use rayon::prelude::*;
+use reth_evm::{
+    block::ExecutableTxParts,
+    execute::{ExecutableTxFor, WithTxEnv},
+    ConfigureEvm, ConvertTx, ExecutableTxIterator, ExecutableTxTuple, SpecFor, TxEnvFor,
+};
+use reth_primitives_traits::{FastInstant as Instant, NodePrimitives};
+use reth_provider::{BlockExecutionOutput, BlockReader, StateProviderFactory, StateReader};
+use reth_revm::db::BundleState;
+use reth_tasks::Runtime;
+pub use reth_trie_parallel::{
+    error::StateRootTaskError,
+    state_root_task::{
+        evm_state_to_hashed_post_state, PayloadStateRootHandle, StateAccessHint,
+        StateRootComputeOutcome, StateRootHandle, StateRootHintStream, StateRootMessage,
+        StateRootSink, StateRootTaskCancelGuard, StateRootUpdateHook, StateRootUpdateStream,
+    },
+};
+use rust_eth_triedb::triedb_reth::TrieDBPrefetchState;
+use rust_eth_triedb_common::DiffLayers;
+use rust_eth_triedb_pathdb::PathDB;
+use std::{
+    ops::Not,
+    sync::{
+        atomic::{AtomicBool, AtomicUsize},
+        mpsc, Arc, OnceLock,
+    },
+};
+use tracing::{debug, instrument, trace, warn, Span};
+
+pub mod bal;
+pub(crate) mod bal_prewarm_pool;
+pub mod prewarm;
+pub mod receipt_root_task;
 
 /// Blocks with fewer transactions than this skip prewarming, since the fixed overhead of spawning
 /// prewarm workers exceeds the execution time saved.

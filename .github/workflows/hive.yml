@@ -1,3 +1,41 @@
+# Runs `ethereum/hive` tests.
+
+name: hive
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 */6 * * *"
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  prepare-reth-stable:
+    uses: ./.github/workflows/prepare-reth.yml
+    with:
+      image_tag: ghcr.io/paradigmxyz/reth:latest
+      binary_name: reth
+      cargo_features: "asm-keccak"
+      artifact_name: "reth-stable"
+
+  prepare-reth-edge:
+    uses: ./.github/workflows/prepare-reth.yml
+    with:
+      image_tag: ghcr.io/paradigmxyz/reth:latest
+      binary_name: reth
+      cargo_features: "asm-keccak edge"
+      artifact_name: "reth-edge"
+
+  prepare-hive:
+    if: github.repository == 'paradigmxyz/reth'
+    timeout-minutes: 45
+    runs-on: ubuntu-latest
+    steps:
       - uses: actions/checkout@v6
       - name: Checkout hive tests
         uses: actions/checkout@v6

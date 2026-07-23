@@ -1,3 +1,163 @@
+//! Session handles.
+
+use crate::{
+    message::PeerMessage,
+    session::{active::BroadcastItemCounter, conn::EthRlpxConnection, Direction, SessionId},
+    PendingSessionHandshakeError,
+};
+use reth_ecies::ECIESError;
+use reth_eth_wire::{
+    errors::EthStreamError, Capabilities, DisconnectReason, EthVersion, NetworkPrimitives,
+    UnifiedStatus,
+};
+use reth_network_api::PeerInfo;
+use reth_network_peers::{NodeRecord, PeerId};
+use reth_network_types::PeerKind;
+use std::{io, net::SocketAddr, sync::Arc, time::Instant};
+use tokio::sync::{
+    mpsc::{self, error::SendError},
+    oneshot,
+};
+use tracing::trace;
+
+/// A handler attached to a peer session that's not authenticated yet, pending Handshake and hello
+/// message which exchanges the `capabilities` of the peer.
+///
+/// This session needs to wait until it is authenticated.
+#[derive(Debug)]
+pub struct PendingSessionHandle {
+    /// Can be used to tell the session to disconnect the connection/abort the handshake process.
+    pub(crate) disconnect_tx: Option<oneshot::Sender<()>>,
+    /// The direction of the session
+    pub(crate) direction: Direction,
+}
+
+// === impl PendingSessionHandle ===
+
+impl PendingSessionHandle {
+    /// Sends a disconnect command to the pending session.
+    pub fn disconnect(&mut self) {
+        if let Some(tx) = self.disconnect_tx.take() {
+            let _ = tx.send(());
+        }
+    }
+
+    /// Returns the direction of the pending session (inbound or outbound).
+    pub const fn direction(&self) -> Direction {
+        self.direction
+    }
+}
+
+/// An established session with a remote peer.
+///
+/// Within an active session that supports the `Ethereum Wire Protocol`, three high-level tasks can
+/// be performed: chain synchronization, block propagation and transaction exchange.
+#[derive(Debug)]
+pub struct ActiveSessionHandle<N: NetworkPrimitives> {
+    /// The direction of the session
+    pub(crate) direction: Direction,
+    /// The assigned id for this session
+    pub(crate) session_id: SessionId,
+    /// negotiated eth version
+    pub(crate) version: EthVersion,
+    /// The identifier of the remote peer
+    pub(crate) remote_id: PeerId,
+    /// The timestamp when the session has been established.
+    pub(crate) established: Instant,
+    /// Announced capabilities of the peer.
+    pub(crate) capabilities: Arc<Capabilities>,
+    /// Sender for commands to the spawned session with broadcast-aware backpressure.
+    pub(crate) commands: SessionCommandSender<N>,
+    /// The client's name and version
+    pub(crate) client_version: Arc<str>,
+    /// The address we're connected to
+    pub(crate) remote_addr: SocketAddr,
+    /// The local address of the connection.
+    pub(crate) local_addr: Option<SocketAddr>,
+    /// The TCP listening port the peer announced in its `Hello` message, if non-zero.
+    ///
+    /// This is effectively deprecated, but we still keep it around if a peer announced it as it's
+    /// likely still more useful than the ephemeral source port.
+    pub(crate) peer_listen_port: Option<u16>,
+    /// The Status message the peer sent for the `eth` handshake
+    pub(crate) status: Arc<UnifiedStatus>,
+    /// Current total difficulty, updated when receiving `NewBlock` messages
+    /// This is essential for BSC and other chains that rely on TD
+    pub(crate) current_td: Arc<parking_lot::Mutex<Option<alloy_primitives::U256>>>,
+}
+
+// === impl ActiveSessionHandle ===
+
+impl<N: NetworkPrimitives> ActiveSessionHandle<N> {
+    /// Sends a disconnect command to the session.
+    pub fn disconnect(&self, reason: Option<DisconnectReason>) {
+        self.commands.disconnect(reason);
+    }
+
+    /// Sends a disconnect command to the session via the unbounded channel.
+    pub fn try_disconnect(
+        &self,
+        reason: Option<DisconnectReason>,
+    ) -> Result<(), SendError<SessionCommand<N>>> {
+        self.commands.try_disconnect(reason)
+    }
+
+    /// Returns the direction of the active session (inbound or outbound).
+    pub const fn direction(&self) -> Direction {
+        self.direction
+    }
+
+    /// Returns the assigned session id for this session.
+    pub const fn session_id(&self) -> SessionId {
+        self.session_id
+    }
+
+    /// Returns the negotiated eth version for this session.
+    pub const fn version(&self) -> EthVersion {
+        self.version
+    }
+
+    /// Returns the identifier of the remote peer.
+    pub const fn remote_id(&self) -> PeerId {
+        self.remote_id
+    }
+
+    /// Returns the timestamp when the session has been established.
+    pub const fn established(&self) -> Instant {
+        self.established
+    }
+
+    /// Returns the announced capabilities of the peer.
+    pub fn capabilities(&self) -> Arc<Capabilities> {
+        self.capabilities.clone()
+    }
+
+    /// Returns the client's name and version.
+    pub fn client_version(&self) -> Arc<str> {
+        self.client_version.clone()
+    }
+
+    /// Returns the address we're connected to.
+    pub const fn remote_addr(&self) -> SocketAddr {
+        self.remote_addr
+    }
+
+    /// Returns the current number of in-flight broadcast items.
+    pub fn queued_broadcast_items(&self) -> usize {
+        self.commands.queued_broadcast_items()
+    }
+
+    /// Returns the current total difficulty
+    pub fn current_td(&self) -> Option<alloy_primitives::U256> {
+        *self.current_td.lock()
+    }
+
+    /// Updates the current total difficulty
+    pub fn update_td(&self, td: Option<alloy_primitives::U256>) {
+        *self.current_td.lock() = td;
+    }
+
+    /// Extracts the [`PeerInfo`] from the session handle.
     pub(crate) fn peer_info(&self, record: &NodeRecord, kind: PeerKind) -> PeerInfo {
         // For inbound connections, the `record` was built from the TCP socket address, which
         // carries the peer's OS-assigned ephemeral source port (not dialable). If the peer

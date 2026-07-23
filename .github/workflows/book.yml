@@ -1,3 +1,25 @@
+# Documentation and mdbook related jobs.
+
+name: book
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize, closed]
+  merge_group:
+
+env:
+  RUSTC_WRAPPER: "sccache"
+  PINNED_NIGHTLY: nightly-2026-01-22
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
         uses: actions/checkout@v6
 
       - run: .github/scripts/install_llvm.sh ubuntu

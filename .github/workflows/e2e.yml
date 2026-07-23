@@ -1,3 +1,30 @@
+# Runs e2e tests using the testsuite framework
+
+name: e2e
+
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  SEED: rustethereumethereumrust
+  RUSTC_WRAPPER: "sccache"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: e2e-testsuite
+    runs-on: ubuntu-latest
+    env:
+      RUST_BACKTRACE: 1
+    timeout-minutes: 90
+    steps:
       - name: Free disk space
         uses: jlumbroso/free-disk-space@main
         with:
