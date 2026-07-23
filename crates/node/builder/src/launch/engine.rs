@@ -319,6 +319,18 @@ impl EngineNodeLauncher {
         let terminate_after_backfill = ctx.terminate_after_initial_backfill();
         let startup_sync_state_idle = ctx.node_config().debug.startup_sync_state_idle;
 
+        // BSC extension: channel for injecting `EngineApiRequest`s (e.g. `InsertExecutedBlock`)
+        // directly into the engine tree from outside the launcher (parlia block-import path).
+        // The receiver is polled in the consensus-engine select loop; the sender is exposed on
+        // `FullNode::engine_api_tx`.
+        let (engine_api_tx, engine_api_rx) = tokio::sync::mpsc::unbounded_channel::<
+            EngineApiRequest<
+                <N as NodeTypes>::Payload,
+                <N as NodeTypes>::Primitives,
+            >,
+        >();
+        let mut engine_api_stream = UnboundedReceiverStream::from(engine_api_rx).fuse();
+
         info!(target: "reth::cli", "Starting consensus engine");
         let consensus_engine = move |mut on_graceful_shutdown| async move {
             if let Some(initial_target) = initial_target {
@@ -390,6 +402,10 @@ impl EngineNodeLauncher {
                             orchestrator.handler_mut().handler_mut().on_event(EngineApiRequest::InsertExecutedBlock(executed_block).into());
                         }
                     }
+                    // BSC extension: externally-injected engine requests (parlia block-import).
+                    req = engine_api_stream.select_next_some(), if !engine_api_stream.is_terminated() => {
+                        orchestrator.handler_mut().handler_mut().on_event(req.into());
+                    }
                     shutdown_req = &mut shutdown_rx => {
                         if let Ok(req) = shutdown_req {
                             debug!(target: "reth::cli", "received engine shutdown request");
@@ -436,6 +452,7 @@ impl EngineNodeLauncher {
                 beacon_engine_handle,
                 engine_shutdown,
             },
+            engine_api_tx: Some(engine_api_tx),
         };
         // Notify on node started
         on_node_started.on_event(FullNode::clone(&full_node))?;
