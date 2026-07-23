@@ -737,13 +737,6 @@ pub trait TransactionPool: Clone + Debug + Send + Sync {
         versioned_hashes: &[B256],
     ) -> Result<Vec<Option<BlobAndProofV2>>, BlobStoreError>;
 
-    /// Inserts a blob sidecar into the blob store for the given transaction hash.
-    fn insert_blob(
-        &self,
-        tx_hash: TxHash,
-        blob: BlobTransactionSidecarVariant,
-    ) -> Result<(), BlobStoreError>;
-
     /// Return the [`BlobCellsAndProofsV1`]s for a list of blob versioned hashes and requested cell
     /// indices.
     ///

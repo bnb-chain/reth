@@ -153,7 +153,7 @@ impl<C: ChainSpecParser<ChainSpec: EthChainSpec + Hardforks + EthereumHardforks>
                 let db_at = {
                     |block_number: u64| {
                         StateProviderDatabase(
-                            provider_factory
+                            provider
                                 .history_by_block_number(block_number)
                                 .unwrap(),
                         )

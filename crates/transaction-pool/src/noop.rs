@@ -349,14 +349,6 @@ impl<T: EthPoolTransaction> TransactionPool for NoopTransactionPool<T> {
         Ok(None)
     }
 
-    fn insert_blob(
-        &self,
-        _tx_hash: TxHash,
-        _blob: BlobTransactionSidecarVariant,
-    ) -> Result<(), BlobStoreError> {
-        Ok(())
-    }
-
     fn get_all_blobs(
         &self,
         _tx_hashes: Vec<TxHash>,
@@ -437,15 +429,6 @@ impl<T: EthPoolTransaction> TransactionValidator for MockTransactionValidator<T>
             return TransactionValidationOutcome::Invalid(
                 transaction,
                 InvalidPoolTransactionError::Underpriced,
-            );
-        }
-        // Reject blob transactions with zero max_fee_per_blob_gas
-        if transaction.max_fee_per_blob_gas() == Some(0) {
-            return TransactionValidationOutcome::Invalid(
-                transaction,
-                InvalidPoolTransactionError::Eip4844(
-                    crate::error::Eip4844PoolTransactionError::ZeroBlobFee,
-                ),
             );
         }
         let maybe_sidecar = transaction.take_blob().maybe_sidecar().cloned();

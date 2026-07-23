@@ -13,7 +13,7 @@ use alloy_rlp::{Decodable, Encodable, Error as RlpError, EMPTY_LIST_CODE};
 use futures::{Sink, SinkExt, StreamExt};
 use pin_project::pin_project;
 use reth_codecs::add_arbitrary_tests;
-use reth_metrics::metrics::{counter, Counter};
+use reth_metrics::metrics::counter;
 use reth_primitives_traits::GotExpected;
 use std::{
     collections::VecDeque,
@@ -289,12 +289,6 @@ pub struct P2PStream<S> {
     /// message.
     disconnecting: bool,
 
-    /// Total ingress bytes counter (matches geth `p2p/ingress`).
-    ingress_bytes: Counter,
-
-    /// Total egress bytes counter (matches geth `p2p/egress`).
-    egress_bytes: Counter,
-
     /// Whether the underlying sink has accepted messages that still need to be flushed.
     needs_flush: bool,
 
@@ -318,8 +312,6 @@ impl<S> P2PStream<S> {
             outgoing_messages: VecDeque::new(),
             outgoing_message_buffer_capacity: MAX_P2P_CAPACITY,
             disconnecting: false,
-            ingress_bytes: counter!("p2p.ingress"),
-            egress_bytes: counter!("p2p.egress"),
             needs_flush: false,
             needs_control_flush: false,
         }
@@ -480,9 +472,6 @@ where
                 // empty messages are not allowed
                 return Poll::Ready(Some(Err(P2PStreamError::EmptyProtocolMessage)))
             }
-
-            // Track ingress bytes (raw wire bytes, matches geth p2p/ingress)
-            this.ingress_bytes.increment(bytes.len() as u64);
 
             // first decode disconnect reasons, because they can be encoded in a variety of forms
             // over the wire, in both snappy compressed and uncompressed forms.
@@ -684,7 +673,6 @@ where
         ready!(self.as_mut().poll_drain_outgoing(cx))?;
 
         let mut this = self.project();
-
 
         if *this.needs_flush {
             ready!(this.inner.as_mut().poll_flush(cx))?;

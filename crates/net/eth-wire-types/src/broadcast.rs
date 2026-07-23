@@ -6,8 +6,8 @@ use alloy_consensus::transaction::TxHashRef;
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{
     bytes::BufMut,
-    map::{B256Map, B256Set, HashMap, HashSet},
-    Bytes, TxHash, B128, B256, U128, U256,
+    map::{B256Map, B256Set},
+    Bytes, TxHash, B128, B256, U128,
 };
 use alloy_rlp::{
     decode_append, Decodable, Encodable, Header, RlpDecodable, RlpDecodableWrapper, RlpEncodable,
@@ -91,9 +91,6 @@ pub trait NewBlockPayload:
 
     /// Returns a reference to the block.
     fn block(&self) -> &Self::Block;
-
-    /// Returns the total difficulty if available
-    fn td(&self) -> Option<U256>;
 }
 
 /// A new block with the current total difficulty, which includes the difficulty of the returned
@@ -113,10 +110,6 @@ impl<B: Block + 'static> NewBlockPayload for NewBlock<B> {
 
     fn block(&self) -> &Self::Block {
         &self.block
-    }
-
-    fn td(&self) -> Option<U256> {
-        Some(U256::from(self.td))
     }
 }
 

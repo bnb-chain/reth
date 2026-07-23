@@ -186,7 +186,6 @@ impl Layers {
         }
     }
 
-    #[cfg(feature = "samply")]
     pub(crate) fn samply(&mut self, config: LayerInfo) -> eyre::Result<()> {
         self.add_layer(
             tracing_samply::SamplyLayer::new()
@@ -197,11 +196,6 @@ impl Layers {
                 )?),
         );
         Ok(())
-    }
-
-    #[cfg(not(feature = "samply"))]
-    pub(crate) fn samply(&self, _config: LayerInfo) -> eyre::Result<()> {
-        Err(eyre::eyre!("samply feature is disabled"))
     }
 
     pub(crate) fn chrome(

@@ -19,12 +19,13 @@ use reth_rpc_server_types::constants::{
     DEFAULT_PROOF_PERMITS,
 };
 use reth_tasks::{pool::BlockingTaskPool, Runtime};
-use std::{fmt, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 /// A helper to build the `EthApi` handler instance.
 ///
 /// This builder type contains all settings to create an [`EthApiInner`] or an [`EthApi`] instance
 /// directly.
+#[derive(Debug)]
 pub struct EthApiBuilder<N: RpcNodeCore, Rpc, NextEnv = ()> {
     components: N,
     rpc_converter: Rpc,
@@ -48,13 +49,6 @@ pub struct EthApiBuilder<N: RpcNodeCore, Rpc, NextEnv = ()> {
     send_raw_transaction_sync_timeout: Duration,
     evm_memory_limit: u64,
     force_blob_sidecar_upcasting: bool,
-    current_validators_len: Option<Arc<dyn Fn() -> Option<usize> + Send + Sync>>,
-}
-
-impl<N: RpcNodeCore, Rpc, NextEnv> fmt::Debug for EthApiBuilder<N, Rpc, NextEnv> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("EthApiBuilder").finish_non_exhaustive()
-    }
 }
 
 impl<Provider, Pool, Network, EvmConfig, ChainSpec>
@@ -109,7 +103,6 @@ impl<N: RpcNodeCore, Rpc, NextEnv> EthApiBuilder<N, Rpc, NextEnv> {
             send_raw_transaction_sync_timeout,
             evm_memory_limit,
             force_blob_sidecar_upcasting,
-            current_validators_len,
         } = self;
         EthApiBuilder {
             components,
@@ -134,7 +127,6 @@ impl<N: RpcNodeCore, Rpc, NextEnv> EthApiBuilder<N, Rpc, NextEnv> {
             send_raw_transaction_sync_timeout,
             evm_memory_limit,
             force_blob_sidecar_upcasting,
-            current_validators_len,
         }
     }
 }
@@ -170,7 +162,6 @@ where
             send_raw_transaction_sync_timeout: Duration::from_secs(30),
             evm_memory_limit: (1 << 32) - 1,
             force_blob_sidecar_upcasting: false,
-            current_validators_len: None,
         }
     }
 }
@@ -213,7 +204,6 @@ where
             send_raw_transaction_sync_timeout,
             evm_memory_limit,
             force_blob_sidecar_upcasting,
-            current_validators_len,
         } = self;
         EthApiBuilder {
             components,
@@ -238,7 +228,6 @@ where
             send_raw_transaction_sync_timeout,
             evm_memory_limit,
             force_blob_sidecar_upcasting,
-            current_validators_len,
         }
     }
 
@@ -270,7 +259,6 @@ where
             send_raw_transaction_sync_timeout,
             evm_memory_limit,
             force_blob_sidecar_upcasting,
-            current_validators_len,
         } = self;
         EthApiBuilder {
             components,
@@ -295,63 +283,6 @@ where
             send_raw_transaction_sync_timeout,
             evm_memory_limit,
             force_blob_sidecar_upcasting,
-            current_validators_len,
-        }
-    }
-
-    /// Sets a callback that resolves the current validator set size.
-    pub fn with_current_validators_len<F>(self, current_validators_len: F) -> Self
-    where
-        F: Fn() -> Option<usize> + Send + Sync + 'static,
-    {
-        let Self {
-            components,
-            rpc_converter,
-            gas_cap,
-            max_simulate_blocks,
-            eth_proof_window,
-            fee_history_cache_config,
-            proof_permits,
-            eth_state_cache_config,
-            eth_cache,
-            gas_oracle,
-            blocking_task_pool,
-            task_spawner,
-            gas_oracle_config,
-            next_env,
-            max_batch_size,
-            max_blocking_io_requests,
-            pending_block_kind,
-            raw_tx_forwarder,
-            send_raw_transaction_sync_timeout,
-            evm_memory_limit,
-            force_blob_sidecar_upcasting,
-            ..
-        } = self;
-
-        Self {
-            components,
-            rpc_converter,
-            gas_cap,
-            max_simulate_blocks,
-            eth_proof_window,
-            fee_history_cache_config,
-            proof_permits,
-            eth_state_cache_config,
-            eth_cache,
-            gas_oracle,
-            blocking_task_pool,
-            task_spawner,
-            gas_oracle_config,
-            next_env,
-            max_batch_size,
-            max_blocking_io_requests,
-            pending_block_kind,
-            raw_tx_forwarder,
-            send_raw_transaction_sync_timeout,
-            evm_memory_limit,
-            force_blob_sidecar_upcasting,
-            current_validators_len: Some(Arc::new(current_validators_len)),
         }
     }
 
@@ -600,7 +531,6 @@ where
             send_raw_transaction_sync_timeout,
             evm_memory_limit,
             force_blob_sidecar_upcasting,
-            current_validators_len,
         } = self;
 
         let provider = components.provider().clone();
@@ -654,7 +584,6 @@ where
             send_raw_transaction_sync_timeout,
             evm_memory_limit,
             force_blob_sidecar_upcasting,
-            current_validators_len,
         )
     }
 
