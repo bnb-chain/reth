@@ -6,13 +6,8 @@ use crate::{
     tree::{error::InsertPayloadError, payload_validator::TreeCtx},
 };
 use alloy_consensus::BlockHeader;
-<<<<<<< HEAD
-use alloy_eips::{eip1898::BlockWithParent, BlockNumHash, NumHash};
-use alloy_primitives::{BlockHash, BlockNumber, B256};
-=======
 use alloy_eips::{eip1898::BlockWithParent, merge::EPOCH_SLOTS, BlockNumHash, NumHash};
-use alloy_primitives::{map::B256Map, B256};
->>>>>>> v2.4.1
+use alloy_primitives::{map::B256Map, BlockHash, BlockNumber, B256};
 use alloy_rpc_types_engine::{
     ForkchoiceState, PayloadStatus, PayloadStatusEnum, PayloadValidationError,
 };
@@ -48,7 +43,6 @@ use revm::interpreter::debug_unreachable;
 use revm_primitives::U256;
 use rust_eth_triedb_common::{DiffLayer, DiffLayers};
 use state::TreeState;
-<<<<<<< HEAD
 use std::{
     collections::HashMap,
     fmt::{Debug, Display},
@@ -57,9 +51,6 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-=======
-use std::{fmt::Debug, ops, sync::Arc, time::Duration};
->>>>>>> v2.4.1
 
 use crossbeam_channel::{Receiver, Sender};
 use tokio::sync::{
@@ -1721,14 +1712,10 @@ where
             },
             FromEngine::Request(request) => {
                 match request {
-<<<<<<< HEAD
-                    EngineApiRequest::InsertExecutedBlock(block) => {
-                        let start = Instant::now();
-                        let block_num_hash = block.recovered_block().num_hash();
-=======
                     EngineApiRequest::InsertExecutedBlock(payload) => {
-                        let block_num_hash = payload.recovered_block.num_hash();
->>>>>>> v2.4.1
+                        let start = Instant::now();
+                        let block = payload;
+                        let block_num_hash = block.recovered_block.num_hash();
                         if block_num_hash.number <= self.state.tree_state.canonical_block_number() {
                             // outdated block that can be skipped
                             log_handler_duration(
@@ -3397,8 +3384,6 @@ where
                 fatal @ InsertBlockFatalError::Provider(_) => Err(fatal),
             },
         }
-<<<<<<< HEAD
-=======
         self.emit_event(EngineApiEvent::BeaconConsensus(ConsensusEngineEvent::InvalidBlock {
             block: Box::new(block),
             error: validation_err.to_string(),
@@ -3408,7 +3393,6 @@ where
             PayloadStatusEnum::Invalid { validation_error: validation_err.to_string() },
             latest_valid_hash,
         ))
->>>>>>> v2.4.1
     }
 
     /// Handles a [`NewPayloadError`] by converting it to a [`PayloadStatus`].
