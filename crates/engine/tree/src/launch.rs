@@ -69,10 +69,7 @@ pub fn build_engine_orchestrator<N, Client, S, V, C>(
     runtime: Runtime,
 ) -> ChainOrchestrator<
     EngineHandler<
-        EngineApiRequestHandler<
-            EngineApiRequest<N::Payload, N::Primitives, BlockchainProvider<N>, C>,
-            N::Primitives,
-        >,
+        EngineApiRequestHandler<EngineApiRequest<N::Payload, N::Primitives>, N::Primitives>,
         S,
         BasicBlockDownloader<Client, <N::Primitives as NodePrimitives>::Block>,
     >,
