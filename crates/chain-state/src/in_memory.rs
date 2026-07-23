@@ -759,16 +759,12 @@ pub struct ExecutedBlock<N: NodePrimitives = EthPrimitives> {
     ///
     /// This allows deferring the computation of the trie data which can be expensive.
     /// The data can be populated asynchronously after the block was validated.
-<<<<<<< HEAD
-    pub trie_data: DeferredTrieData,
+    pub trie_data: LazyTrieData,
     /// Difflayer that result from triedb commit during mining.
     ///
     /// If present, this precomputed difflayer can be used directly when persisting
     /// to triedb, avoiding re-computation from hashed state.
     pub difflayer: Option<Arc<DiffLayer>>,
-=======
-    pub trie_data: LazyTrieData,
->>>>>>> v2.4.1
 }
 
 impl<N: NodePrimitives> Default for ExecutedBlock<N> {
@@ -784,12 +780,8 @@ impl<N: NodePrimitives> Default for ExecutedBlock<N> {
                 },
                 state: Default::default(),
             }),
-<<<<<<< HEAD
-            trie_data: DeferredTrieData::ready(ComputedTrieData::default()),
-            difflayer: None,
-=======
             trie_data: LazyTrieData::ready(ComputedTrieData::default()),
->>>>>>> v2.4.1
+            difflayer: None,
         }
     }
 }
@@ -812,16 +804,12 @@ impl<N: NodePrimitives> ExecutedBlock<N> {
         execution_output: Arc<BlockExecutionOutput<N::Receipt>>,
         trie_data: ComputedTrieData,
     ) -> Self {
-<<<<<<< HEAD
         Self {
             recovered_block,
             execution_output,
-            trie_data: DeferredTrieData::ready(trie_data),
+            trie_data: LazyTrieData::ready(trie_data),
             difflayer: None,
         }
-=======
-        Self { recovered_block, execution_output, trie_data: LazyTrieData::ready(trie_data) }
->>>>>>> v2.4.1
     }
 
     /// Create a new [`ExecutedBlock`] with deferred trie data.

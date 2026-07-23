@@ -125,12 +125,7 @@ use crate::tree::{
 use alloy_consensus::constants::KECCAK_EMPTY;
 use alloy_primitives::Address;
 use reth_chain_state::{
-<<<<<<< HEAD
-    CanonicalInMemoryState, ComputedTrieData, DeferredTrieData, ExecutedBlock,
-    ExecutionTimingStats, LazyOverlay,
-=======
     CanonicalInMemoryState, ExecutedBlock, ExecutionTimingStats, StateTrieOverlayManager,
->>>>>>> v2.4.1
 };
 use reth_consensus::{ConsensusError, FullConsensus, ReceiptRootBloom};
 use reth_engine_primitives::{
@@ -158,19 +153,13 @@ use reth_provider::{
     StorageChangeSetReader, StorageSettingsCache,
 };
 use reth_revm::db::{states::bundle_state::BundleRetention, BundleAccount, State};
-<<<<<<< HEAD
-use reth_trie::{updates::TrieUpdates, HashedPostState};
-use reth_trie_db::ChangesetCache;
-use reth_trie_parallel::root::{ParallelStateRoot, ParallelStateRootError};
-use revm_primitives::{Address, KECCAK_EMPTY};
-use rust_eth_triedb::{get_global_triedb, TrieDBError};
-=======
 use reth_trie::{
     hashed_cursor::HashedCursorFactory, prefix_set::TriePrefixSetsMut,
-    trie_cursor::TrieCursorFactory, updates::TrieUpdates, LazyTrieData,
+    trie_cursor::TrieCursorFactory, updates::TrieUpdates, ComputedTrieData, HashedPostState,
+    LazyTrieData,
 };
 use reth_trie_db::ChangesetCache;
->>>>>>> v2.4.1
+use rust_eth_triedb::{get_global_triedb, TrieDBError};
 use std::{
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -455,7 +444,6 @@ where
         }
     }
 
-<<<<<<< HEAD
     /// Handles execution errors by checking if header validation errors should take precedence.
     ///
     /// When an execution error occurs, this function checks if there are any header validation
@@ -767,15 +755,13 @@ where
                 execution_output: output,
                 // trie_data is unused in triedb mode: state root is managed by triedb,
                 // overlays and changeset computation are skipped when triedb is active.
-                trie_data: DeferredTrieData::ready(ComputedTrieData::default()),
+                trie_data: LazyTrieData::ready(ComputedTrieData::default()),
                 difflayer: Some(difflayer),
             },
             None,
         ))
     }
 
-=======
->>>>>>> v2.4.1
     /// Validates a block that has already been converted from a payload.
     ///
     /// This method performs:
@@ -801,7 +787,6 @@ where
         V: PayloadValidator<T, Block = N::Block> + Clone,
         Evm: ConfigureEngineEvm<T::ExecutionData, Primitives = N>,
     {
-<<<<<<< HEAD
         if rust_eth_triedb::triedb_manager::is_triedb_active() {
             // Track which triedb validation path is used and how long it takes.
             let block_num_hash = input.num_hash();
@@ -823,25 +808,6 @@ where
             return res;
         }
 
-        // Spawn payload conversion on a background thread so it runs concurrently with the
-        // rest of the function (setup + execution). For payloads this overlaps the cost of
-        // RLP decoding + header hashing.
-        let is_payload = matches!(&input, BlockOrPayload::Payload(_));
-        let convert_to_block = match &input {
-            BlockOrPayload::Payload(_) => {
-                let payload_clone = input.clone();
-                let validator = self.validator.clone();
-                let handle = self.payload_processor.executor().spawn_blocking_named(
-                    "payload-convert",
-                    move || {
-                        let BlockOrPayload::Payload(payload) = payload_clone else {
-                            unreachable!()
-                        };
-                        validator.convert_payload_to_block(payload)
-                    },
-                );
-                Either::Left(handle)
-=======
         let parent_hash = input.parent_hash();
         let _jit_pause = JitPauseGuard::new(&self.evm_config);
 
@@ -858,7 +824,6 @@ where
             }
             Err(e) => {
                 return Err(InsertBlockError::new(self.convert_to_block(input)?, e.into()).into())
->>>>>>> v2.4.1
             }
         };
 
