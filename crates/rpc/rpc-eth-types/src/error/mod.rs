@@ -147,9 +147,6 @@ pub enum EthApiError {
     /// When the percentile array is invalid
     #[error("invalid reward percentiles")]
     InvalidRewardPercentiles,
-    /// Method not available error (used when `TrieDB` is active)
-    #[error("The method {0} does not exist/is not available")]
-    MethodNotAvailable(String),
     /// Error thrown when a spawned blocking task failed to deliver an anticipated response.
     ///
     /// This only happens if the blocking task panics and is aborted before it can return a
@@ -302,10 +299,6 @@ impl From<EthApiError> for jsonrpsee_types::error::ErrorObject<'static> {
             EthApiError::InvalidBlockData(_) |
             EthApiError::Internal(_) |
             EthApiError::EvmCustom(_) => internal_rpc_err(error.to_string()),
-            EthApiError::MethodNotAvailable(method) => rpc_error_with_code(
-                -32601,
-                format!("The method {method} does not exist/is not available"),
-            ),
             EthApiError::UnknownBlockOrTxIndex | EthApiError::TransactionNotFound => {
                 rpc_error_with_code(EthRpcErrorCode::ResourceNotFound.code(), error.to_string())
             }
@@ -674,9 +667,6 @@ pub enum RpcInvalidTransactionError {
     /// fee cap.
     #[error("max priority fee per gas higher than max fee per gas")]
     TipAboveFeeCap,
-    /// Thrown if the max priority fee per gas is 0 for an EIP-1559 transaction.
-    #[error("max priority fee per gas is 0")]
-    TipZero,
     /// A sanity error to avoid huge numbers specified in the tip field.
     #[error("max priority fee per gas higher than 2^256-1")]
     TipVeryHigh,
@@ -1121,9 +1111,6 @@ impl From<InvalidPoolTransactionError> for RpcPoolError {
                 Self::Invalid(RpcInvalidTransactionError::PriorityFeeBelowMinimum {
                     minimum_priority_fee,
                 })
-            }
-            InvalidPoolTransactionError::TipZero => {
-                Self::Invalid(RpcInvalidTransactionError::TipZero)
             }
         }
     }
