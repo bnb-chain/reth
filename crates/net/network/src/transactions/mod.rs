@@ -26,10 +26,7 @@ use policy::NetworkPolicies;
 
 pub(crate) use fetcher::{FetchEvent, TransactionFetcher};
 
-use self::constants::{
-    tx_manager::*, DEFAULT_SOFT_LIMIT_BYTE_SIZE_TRANSACTIONS_BROADCAST_MESSAGE,
-    TX_MAX_BROADCAST_SIZE,
-};
+use self::constants::{tx_manager::*, DEFAULT_SOFT_LIMIT_BYTE_SIZE_TRANSACTIONS_BROADCAST_MESSAGE};
 use crate::{
     budget::{
         DEFAULT_BUDGET_TRY_DRAIN_NETWORK_TRANSACTION_EVENTS,
@@ -85,10 +82,7 @@ use std::{
     task::{Context, Poll},
     time::{Duration, Instant},
 };
-use tokio::{
-    sync::{mpsc, oneshot, oneshot::error::RecvError},
-    time::{self, Interval, MissedTickBehavior},
-};
+use tokio::sync::{mpsc, oneshot, oneshot::error::RecvError};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{debug, trace};
 
@@ -342,8 +336,6 @@ pub struct TransactionsManager<Pool, N: NetworkPrimitives = EthNetworkPrimitives
     pending_transactions: mpsc::Receiver<TxHash>,
     /// Incoming events from the [`NetworkManager`](crate::NetworkManager).
     transaction_events: MemoryBoundedReceiver<NetworkTransactionEvent<N>>,
-    /// Periodic timer that retries hash-only announcements for older local pending transactions.
-    reannounce_local_transactions: Interval,
     /// How the `TransactionsManager` is configured.
     config: TransactionsManagerConfig,
     /// Network Policies
@@ -388,7 +380,6 @@ impl<Pool: TransactionPool, N: NetworkPrimitives> TransactionsManager<Pool, N> {
         transactions_manager_config: TransactionsManagerConfig,
         policies: NetworkPolicies<N>,
     ) -> Self {
-        let transactions_manager_config = transactions_manager_config.sanitized();
         let network_events = network.event_listener();
 
         let (command_tx, command_rx) = mpsc::unbounded_channel();
@@ -406,11 +397,6 @@ impl<Pool: TransactionPool, N: NetworkPrimitives> TransactionsManager<Pool, N> {
         metrics
             .capacity_pending_pool_imports
             .increment(pending_pool_imports_info.max_pending_pool_imports as u64);
-        let mut reannounce_local_transactions = time::interval_at(
-            time::Instant::now() + DEFAULT_REANNOUNCE_LOCAL_TRANSACTIONS_INTERVAL,
-            DEFAULT_REANNOUNCE_LOCAL_TRANSACTIONS_INTERVAL,
-        );
-        reannounce_local_transactions.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
         Self {
             pool,
@@ -426,7 +412,6 @@ impl<Pool: TransactionPool, N: NetworkPrimitives> TransactionsManager<Pool, N> {
             command_rx: UnboundedReceiverStream::new(command_rx),
             pending_transactions: pending,
             transaction_events: from_network,
-            reannounce_local_transactions,
             config: transactions_manager_config,
             policies,
             metrics,
@@ -980,20 +965,6 @@ where
         peer_id: PeerId,
         propagation_mode: PropagationMode,
     ) {
-        if let Some(propagated) = self.propagate_hashes_to_peer(hashes, peer_id, propagation_mode) {
-            self.pool.on_propagated(propagated);
-        }
-    }
-
-    /// Propagate the transaction hashes to the given peer.
-    ///
-    /// Note: This will only send the hashes for transactions that exist in the pool.
-    fn propagate_hashes_to_peer(
-        &mut self,
-        hashes: Vec<TxHash>,
-        peer_id: PeerId,
-        propagation_mode: PropagationMode,
-    ) -> Option<PropagatedTransactions> {
         trace!(target: "net::tx", "Start propagating transactions as hashes");
 
         // This fetches a transactions from the pool, including the blob transactions, which are
@@ -1001,7 +972,7 @@ where
         let propagated = {
             let Some(peer) = self.peers.get_mut(&peer_id) else {
                 // no such peer
-                return None
+                return
             };
 
             let to_propagate =
@@ -1027,7 +998,7 @@ where
 
             if new_pooled_hashes.is_empty() {
                 // nothing to propagate
-                return None
+                return
             }
 
             for hash in new_pooled_hashes.iter_hashes().copied() {
@@ -1046,7 +1017,8 @@ where
             propagated
         };
 
-        Some(propagated)
+        // notify pool so events get fired
+        self.pool.on_propagated(propagated);
     }
 
     /// Propagate the transactions to all connected peers either as full objects or hashes.
@@ -1176,64 +1148,6 @@ where
 
         // notify pool so events get fired
         self.pool.on_propagated(propagated);
-    }
-
-    /// Reannounces local pending transactions as hashes to a square root subset of peers.
-    fn reannounce_local_pending_transactions(&mut self, now: Instant) {
-        let hashes = transaction_hashes_to_reannounce(
-            self.pool.get_local_pending_transactions(),
-            now,
-            self.config.reannounce_time,
-        );
-        let propagated = self.reannounce_transaction_hashes(hashes);
-        if !propagated.0.is_empty() {
-            self.pool.on_propagated(propagated);
-        }
-    }
-
-    /// Reannounces the provided transaction hashes as hash-only gossip to a square root subset of
-    /// eligible peers.
-    fn reannounce_transaction_hashes(&mut self, hashes: Vec<TxHash>) -> PropagatedTransactions {
-        let mut propagated = PropagatedTransactions::default();
-
-        if hashes.is_empty() ||
-            self.peers.is_empty() ||
-            self.network.is_initially_syncing() ||
-            self.network.tx_gossip_disabled()
-        {
-            return propagated
-        }
-
-        let mut peers = self
-            .peers
-            .iter_mut()
-            .filter_map(|(peer_id, peer)| {
-                self.policies.propagation_policy().can_propagate(peer).then_some(*peer_id)
-            })
-            .collect::<Vec<_>>();
-        peers.truncate((peers.len() as f64).sqrt() as usize);
-        if peers.is_empty() {
-            return propagated
-        }
-
-        debug!(
-            target: "net::tx",
-            txs = hashes.len(),
-            peers = peers.len(),
-            "Reannouncing local pending transactions"
-        );
-
-        for peer_id in peers {
-            if let Some(peer_propagated) =
-                self.propagate_hashes_to_peer(hashes.clone(), peer_id, PropagationMode::Forced)
-            {
-                for (hash, kinds) in peer_propagated.0 {
-                    propagated.0.entry(hash).or_default().extend(kinds);
-                }
-            }
-        }
-
-        propagated
     }
 
     /// Request handler for an incoming request for transactions
@@ -1952,23 +1866,6 @@ impl<P: PoolTransaction> Typed2718 for PropagatePooledTransactionEncoder<P> {
     }
 }
 
-fn transaction_hashes_to_reannounce<T: PoolTransaction>(
-    pending: impl IntoIterator<Item = Arc<ValidPoolTransaction<T>>>,
-    now: Instant,
-    reannounce_time: Duration,
-) -> Vec<TxHash> {
-    pending
-        .into_iter()
-        .filter(|tx| {
-            tx.propagate &&
-                tx.is_local() &&
-                now.saturating_duration_since(tx.timestamp) >= reannounce_time
-        })
-        .map(|tx| *tx.hash())
-        .take(DEFAULT_MAX_COUNT_REANNOUNCED_LOCAL_TRANSACTIONS)
-        .collect()
-}
-
 /// Helper type to construct the appropriate message to send to the peer based on whether the peer
 /// should receive them in full or as pooled
 #[derive(Debug, Clone)]
@@ -2015,15 +1912,6 @@ impl PropagateTransactionsBuilder {
         match self {
             Self::Pooled(builder) => builder.push(transaction),
             Self::Full(builder) => builder.push(transaction),
-        }
-    }
-
-    /// Appends a transaction as a hash-only announcement, regardless of whether this builder
-    /// would otherwise send full transactions.
-    fn push_pooled(&mut self, transaction: &PropagateTransaction<T>) {
-        match self {
-            Self::Pooled(builder) => builder.push(transaction),
-            Self::Full(builder) => builder.pooled.push(transaction),
         }
     }
 }
@@ -3371,86 +3259,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_large_tx_broadcast_threshold() {
-        reth_tracing::init_test_tracing();
-
-        let (mut tx_manager, network) = new_tx_manager().await;
-
-        network.handle().update_sync_state(SyncState::Idle);
-
-        // Register two peers so we can test Basic on one and Forced on the other
-        let peer_id_1 = PeerId::random();
-        let (tx1, _rx1) = mpsc::channel::<PeerRequest>(1);
-        let session_info_1 = SessionInfo {
-            peer_id: peer_id_1,
-            remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
-            client_version: Arc::from(""),
-            capabilities: Arc::new(vec![].into()),
-            status: Arc::new(Default::default()),
-            version: EthVersion::Eth68,
-            peer_kind: PeerKind::Basic,
-        };
-        let messages_1: PeerRequestSender<PeerRequest> = PeerRequestSender::new(peer_id_1, tx1);
-        tx_manager.on_network_event(NetworkEvent::ActivePeerSession {
-            info: session_info_1,
-            messages: messages_1,
-        });
-
-        let mut factory = MockTransactionFactory::default();
-
-        // A small transaction (within TX_MAX_BROADCAST_SIZE) should be sent in full via Basic mode
-        let small_tx = Arc::new(factory.create_eip1559());
-        let small_propagate = vec![PropagateTransaction::pool_tx(small_tx.clone())];
-        let propagated = tx_manager.propagate_transactions(small_propagate, PropagationMode::Basic);
-        let prop_txs = propagated.0.get(small_tx.transaction.hash()).unwrap();
-        assert_eq!(prop_txs.len(), 1);
-        assert!(prop_txs[0].is_full(), "small tx should be broadcast in full");
-
-        // A large transaction (exceeding TX_MAX_BROADCAST_SIZE) should be hash-only in Basic mode
-        let mut large_valid_tx = factory.create_eip1559();
-        large_valid_tx.transaction.set_size(TX_MAX_BROADCAST_SIZE + 1);
-        let large_tx = Arc::new(large_valid_tx);
-        let large_propagate = vec![PropagateTransaction::pool_tx(large_tx.clone())];
-        let propagated = tx_manager.propagate_transactions(large_propagate, PropagationMode::Basic);
-        let prop_txs = propagated.0.get(large_tx.transaction.hash()).unwrap();
-        assert_eq!(prop_txs.len(), 1);
-        assert!(prop_txs[0].is_hash(), "large tx should be hash-only in Basic mode");
-
-        // Register a second peer to test Forced mode with a fresh seen set
-        let peer_id_2 = PeerId::random();
-        let (tx2, _rx2) = mpsc::channel::<PeerRequest>(1);
-        let session_info_2 = SessionInfo {
-            peer_id: peer_id_2,
-            remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 1),
-            client_version: Arc::from(""),
-            capabilities: Arc::new(vec![].into()),
-            status: Arc::new(Default::default()),
-            version: EthVersion::Eth68,
-            peer_kind: PeerKind::Basic,
-        };
-        let messages_2: PeerRequestSender<PeerRequest> = PeerRequestSender::new(peer_id_2, tx2);
-        tx_manager.on_network_event(NetworkEvent::ActivePeerSession {
-            info: session_info_2,
-            messages: messages_2,
-        });
-
-        // The same large transaction should be sent in full via Forced mode (e.g.
-        // broadcast_transactions before pool insertion)
-        let mut large_valid_tx_2 = factory.create_eip1559();
-        large_valid_tx_2.transaction.set_size(TX_MAX_BROADCAST_SIZE + 1);
-        let large_tx_2 = Arc::new(large_valid_tx_2);
-        let large_propagate_2 = vec![PropagateTransaction::pool_tx(large_tx_2.clone())];
-        let propagated =
-            tx_manager.propagate_transactions(large_propagate_2, PropagationMode::Forced);
-        let prop_txs = propagated.0.get(large_tx_2.transaction.hash()).unwrap();
-        // Forced mode should deliver to both peers in full
-        assert!(
-            prop_txs.iter().all(|p| p.is_full()),
-            "large tx should be broadcast in full in Forced mode"
-        );
-    }
-
-    #[tokio::test]
     async fn test_propagate_full() {
         reth_tracing::init_test_tracing();
 
@@ -3573,96 +3381,6 @@ mod tests {
 
         let peer = tx_manager.peers.get(&peer_id).expect("peer should exist");
         assert!(peer.seen_transactions.contains(&tx_hash));
-    }
-
-    #[test]
-    fn test_transaction_hashes_to_reannounce_filters_local_age_and_propagation() {
-        let mut factory = MockTransactionFactory::default();
-        let now = Instant::now();
-
-        let mut old_local =
-            factory.validated_with_origin(TransactionOrigin::Local, MockTransaction::eip1559());
-        old_local.propagate = true;
-        old_local.timestamp = now - Duration::from_secs(60);
-        let old_local_hash = *old_local.hash();
-
-        let mut fresh_local =
-            factory.validated_with_origin(TransactionOrigin::Local, MockTransaction::eip1559());
-        fresh_local.propagate = true;
-        fresh_local.timestamp = now - Duration::from_secs(59);
-
-        let mut old_external =
-            factory.validated_with_origin(TransactionOrigin::External, MockTransaction::eip1559());
-        old_external.propagate = true;
-        old_external.timestamp = now - Duration::from_secs(60);
-
-        let mut old_local_no_propagation =
-            factory.validated_with_origin(TransactionOrigin::Local, MockTransaction::eip1559());
-        old_local_no_propagation.propagate = false;
-        old_local_no_propagation.timestamp = now - Duration::from_secs(60);
-
-        let hashes = transaction_hashes_to_reannounce(
-            vec![
-                Arc::new(old_local),
-                Arc::new(fresh_local),
-                Arc::new(old_external),
-                Arc::new(old_local_no_propagation),
-            ],
-            now,
-            Duration::from_secs(60),
-        );
-
-        assert_eq!(hashes, vec![old_local_hash]);
-    }
-
-    #[test]
-    fn test_transaction_hashes_to_reannounce_respects_max_per_interval() {
-        let mut factory = MockTransactionFactory::default();
-        let now = Instant::now();
-        let pending = (0..(DEFAULT_MAX_COUNT_REANNOUNCED_LOCAL_TRANSACTIONS + 1))
-            .map(|_| {
-                let mut tx = factory
-                    .validated_with_origin(TransactionOrigin::Local, MockTransaction::eip1559());
-                tx.propagate = true;
-                tx.timestamp = now - Duration::from_secs(60);
-                Arc::new(tx)
-            })
-            .collect::<Vec<_>>();
-
-        let hashes = transaction_hashes_to_reannounce(pending, now, Duration::from_secs(60));
-
-        assert_eq!(hashes.len(), DEFAULT_MAX_COUNT_REANNOUNCED_LOCAL_TRANSACTIONS);
-    }
-
-    #[tokio::test]
-    async fn test_reannounce_transaction_hashes_force_hashes_to_sqrt_peers() {
-        reth_tracing::init_test_tracing();
-
-        let (mut tx_manager, network) = new_tx_manager().await;
-        network.handle().update_sync_state(SyncState::Idle);
-
-        let mut factory = MockTransactionFactory::default();
-        let tx = factory.create_eip1559();
-        let hash = *tx.hash();
-
-        tx_manager
-            .pool
-            .add_transaction(TransactionOrigin::Local, tx.transaction.clone())
-            .await
-            .unwrap();
-
-        for _ in 0..4 {
-            let peer_id = PeerId::random();
-            let (mut peer, _rx) = new_mock_session(peer_id, EthVersion::Eth68);
-            peer.seen_transactions.insert(hash);
-            tx_manager.peers.insert(peer_id, peer);
-        }
-
-        let propagated = tx_manager.reannounce_transaction_hashes(vec![hash]);
-        let kinds = propagated.0.get(&hash).unwrap();
-
-        assert_eq!(kinds.len(), 2);
-        assert!(kinds.iter().all(PropagateKind::is_hash));
     }
 
     #[tokio::test]

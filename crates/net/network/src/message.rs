@@ -34,8 +34,6 @@ pub struct NewBlockMessage<P = NewBlock<reth_ethereum_primitives::Block>> {
     pub hash: B256,
     /// Raw received message
     pub block: Arc<P>,
-    /// Total difficulty (extracted from the `NewBlock` message for BSC and other chains)
-    pub td: Option<alloy_primitives::U256>,
 }
 
 // === impl NewBlockMessage ===
@@ -44,11 +42,6 @@ impl<P: NewBlockPayload> NewBlockMessage<P> {
     /// Returns the block number of the block
     pub fn number(&self) -> u64 {
         self.block.block().header().number()
-    }
-
-    /// Returns the total difficulty if available
-    pub const fn td(&self) -> Option<alloy_primitives::U256> {
-        self.td
     }
 }
 

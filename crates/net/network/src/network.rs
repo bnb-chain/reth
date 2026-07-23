@@ -117,15 +117,8 @@ impl<N: NetworkPrimitives> NetworkHandle<N> {
     /// Caution: in `PoS` this is a noop because new blocks are no longer announced over devp2p.
     /// Instead they are sent to the node by CL and can be requested over devp2p.
     /// Broadcasting new blocks is considered a protocol violation.
-    ///
-    /// For BSC and other `PoW`-based chains, the `total_difficulty` parameter is essential.
-    pub fn announce_block(
-        &self,
-        block: N::NewBlockPayload,
-        hash: B256,
-        total_difficulty: Option<alloy_primitives::U256>,
-    ) {
-        self.send_message(NetworkHandleMessage::AnnounceBlock(block, hash, total_difficulty))
+    pub fn announce_block(&self, block: N::NewBlockPayload, hash: B256) {
+        self.send_message(NetworkHandleMessage::AnnounceBlock(block, hash))
     }
 
     /// Sends a [`PeerRequest`] to the given peer's session.
@@ -479,7 +472,7 @@ impl<N: NetworkPrimitives> SyncStateProvider for NetworkHandle<N> {
     // used to guard the txpool
     fn is_initially_syncing(&self) -> bool {
         if self.inner.initial_sync_done.load(Ordering::Relaxed) {
-            return false;
+            return false
         }
         self.inner.is_syncing.load(Ordering::Relaxed)
     }
@@ -576,7 +569,7 @@ pub(crate) enum NetworkHandleMessage<N: NetworkPrimitives = EthNetworkPrimitives
     /// Unbans a peer.
     UnbanPeer(PeerId),
     /// Broadcasts an event to announce a new block to all nodes.
-    AnnounceBlock(N::NewBlockPayload, B256, Option<alloy_primitives::U256>),
+    AnnounceBlock(N::NewBlockPayload, B256),
     /// Sends a list of transactions to the given peer.
     SendTransaction {
         /// The ID of the peer to which the transactions are sent.

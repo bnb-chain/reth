@@ -9,7 +9,7 @@ use crate::{
     session::BlockRangeInfo,
     FetchClient,
 };
-use alloy_consensus::{BlockHeader, Sealable};
+use alloy_consensus::BlockHeader;
 use alloy_primitives::{
     map::{FbBuildHasher, HashMap},
     B256,
@@ -179,7 +179,6 @@ impl<N: NetworkPrimitives> NetworkState<N> {
             peer,
             ActivePeer {
                 best_hash: status.blockhash,
-                best_td: status.total_difficulty,
                 capabilities,
                 request_tx,
                 pending_response: None,
@@ -209,10 +208,8 @@ impl<N: NetworkPrimitives> NetworkState<N> {
         // number of peers)
         let num_propagate = (self.active_peers.len() as f64).sqrt() as u64 + 1;
 
-        let hash = msg.block.block().header().hash_slow();
         let number = msg.block.block().header().number();
         let mut count = 0;
-        let mut proxied_peer_count = 0;
 
         // Shuffle to propagate to a random sample of peers on every block announcement
         let mut peers: Vec<_> = self.active_peers.iter_mut().collect();
@@ -221,7 +218,7 @@ impl<N: NetworkPrimitives> NetworkState<N> {
         for (peer_id, peer) in peers {
             if peer.blocks.contains(&msg.hash) {
                 // skip peers which already reported the block
-                continue;
+                continue
             }
 
             // Queue a `NewBlock` message for the peer
@@ -238,27 +235,12 @@ impl<N: NetworkPrimitives> NetworkState<N> {
                 peer.blocks.insert(msg.hash);
 
                 count += 1;
-            } else if self.peers_manager.is_proxied_peer(peer_id) {
-                debug!("peer:{} is proxied, sending new block:{}", peer_id, number);
-                self.queued_messages
-                    .push_back(StateAction::NewBlock { peer_id: *peer_id, block: msg.clone() });
-
-                // update peer block info
-                if self.state_fetcher.update_peer_block(peer_id, msg.hash, number) {
-                    peer.best_hash = msg.hash;
-                }
-
-                // mark the block as seen by the peer
-                peer.blocks.insert(msg.hash);
-                proxied_peer_count += 1;
             }
-            // todo: evn
-        }
 
-        debug!(
-            "Propagated block hash:{}, count:{}, proxied_peer_count:{}",
-            hash, count, proxied_peer_count,
-        );
+            if count >= num_propagate {
+                break
+            }
+        }
     }
 
     /// Completes the block propagation process started in [`NetworkState::announce_new_block()`]
@@ -269,7 +251,7 @@ impl<N: NetworkPrimitives> NetworkState<N> {
         for (peer_id, peer) in &mut self.active_peers {
             if peer.blocks.contains(&msg.hash) {
                 // skip peers which already reported the block
-                continue;
+                continue
             }
 
             if self.state_fetcher.update_peer_block(peer_id, msg.hash, number) {
@@ -291,37 +273,18 @@ impl<N: NetworkPrimitives> NetworkState<N> {
         self.state_fetcher.update_peer_block(peer_id, hash, number);
     }
 
-    /// Gets the peer's real-time best block information
-    /// Returns (`best_hash`, `best_number`, `best_td`)
-    pub(crate) fn get_peer_best_block(
-        &self,
-        peer_id: &PeerId,
-    ) -> Option<(B256, Option<u64>, Option<alloy_primitives::U256>)> {
-        let active_peer = self.active_peers.get(peer_id)?;
-        let best_number = self.state_fetcher.get_peer_best_number(peer_id);
-        Some((active_peer.best_hash, best_number, active_peer.best_td))
-    }
-
     /// Invoked when a new [`ForkId`] is activated.
     pub(crate) fn update_fork_id(&self, fork_id: ForkId) {
         self.discovery.update_fork_id(fork_id)
     }
 
-    /// Invoked after a `NewBlock` message was received by the peer with TD info.
+    /// Invoked after a `NewBlock` message was received by the peer.
     ///
-    /// This will keep track of blocks we know a peer has and update the TD
-    pub(crate) fn on_new_block_with_td(
-        &mut self,
-        peer_id: PeerId,
-        hash: B256,
-        td: Option<alloy_primitives::U256>,
-    ) {
-        // Mark the blocks as seen and update TD
+    /// This will keep track of blocks we know a peer has
+    pub(crate) fn on_new_block(&mut self, peer_id: PeerId, hash: B256) {
+        // Mark the blocks as seen
         if let Some(peer) = self.active_peers.get_mut(&peer_id) {
             peer.blocks.insert(hash);
-            if td.is_some() {
-                peer.best_td = td;
-            }
         }
     }
 
@@ -392,7 +355,7 @@ impl<N: NetworkPrimitives> NetworkState<N> {
                 let peer_id = record.id;
                 let tcp_addr = record.tcp_addr();
                 if tcp_addr.port() == 0 {
-                    return;
+                    return
                 }
                 let udp_addr = record.udp_addr();
                 let addr = PeerAddr::new(tcp_addr, Some(udp_addr));
@@ -558,7 +521,7 @@ impl<N: NetworkPrimitives> NetworkState<N> {
         loop {
             // drain buffered messages
             if let Some(message) = self.queued_messages.pop_front() {
-                return Poll::Ready(message);
+                return Poll::Ready(message)
             }
 
             while let Poll::Ready(discovery) = self.discovery.poll(cx) {
@@ -628,7 +591,7 @@ impl<N: NetworkPrimitives> NetworkState<N> {
             // We need to poll again in case we have received any responses because they may have
             // triggered follow-up requests.
             if self.queued_messages.is_empty() {
-                return Poll::Pending;
+                return Poll::Pending
             }
         }
     }
@@ -641,8 +604,6 @@ impl<N: NetworkPrimitives> NetworkState<N> {
 pub(crate) struct ActivePeer<N: NetworkPrimitives> {
     /// Best block of the peer.
     pub(crate) best_hash: B256,
-    /// Total difficulty of the peer (None in `PoS`)
-    pub(crate) best_td: Option<alloy_primitives::U256>,
     /// The capabilities of the remote peer.
     pub(crate) capabilities: Arc<Capabilities>,
     /// A communication channel directly to the session task.

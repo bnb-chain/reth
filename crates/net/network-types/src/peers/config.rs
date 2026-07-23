@@ -3,7 +3,7 @@
 use std::{collections::HashSet, time::Duration};
 
 use reth_net_banlist::{BanList, IpFilter};
-use reth_network_peers::{NodeRecord, PeerId, TrustedPeer};
+use reth_network_peers::{NodeRecord, TrustedPeer};
 
 use crate::{peers::PersistedPeerInfo, BackoffKind, ReputationChangeWeights};
 
@@ -183,8 +183,6 @@ pub struct PeersConfig {
     ///
     /// This filters out peers from other networks that pollute the discovery table.
     pub enforce_enr_fork_id: bool,
-    /// The node ids of the proxied nodes.
-    pub proxied_node_ids: Vec<PeerId>,
     /// How often to rotate a random non-protected peer (inbound or outbound) to open a slot for
     /// new nodes. Set to `None` to disable rotation.
     #[cfg_attr(feature = "serde", serde(default, with = "humantime_serde"))]
@@ -210,7 +208,6 @@ impl Default for PeersConfig {
             incoming_ip_throttle_duration: INBOUND_IP_THROTTLE_DURATION,
             ip_filter: IpFilter::default(),
             enforce_enr_fork_id: false,
-            proxied_node_ids: Vec::new(),
             peer_rotation_interval: Some(DEFAULT_PEER_ROTATION_INTERVAL),
         }
     }

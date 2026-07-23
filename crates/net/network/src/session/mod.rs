@@ -426,7 +426,7 @@ impl<N: NetworkPrimitives> SessionManager<N> {
     ) {
         if !self.disconnections_counter.has_capacity() {
             // drop the connection if we don't have capacity for gracefully disconnecting
-            return;
+            return
         }
 
         let guard = self.disconnections_counter.clone();
@@ -535,7 +535,7 @@ impl<N: NetworkPrimitives> SessionManager<N> {
                         peer_id,
                         remote_addr,
                         direction,
-                    });
+                    })
                 }
 
                 let (commands_tx, commands_rx) = mpsc::channel(self.session_command_buffer);
@@ -624,8 +624,6 @@ impl<N: NetworkPrimitives> SessionManager<N> {
                     client_version: Arc::clone(&client_version),
                     remote_addr,
                     local_addr,
-                    // Initialize current_td from status
-                    current_td: Arc::new(parking_lot::Mutex::new(status.total_difficulty)),
                     peer_listen_port,
                 };
 
@@ -980,7 +978,7 @@ async fn start_pending_outbound_session<N: NetworkPrimitives>(
                     error,
                 })
                 .await;
-            return;
+            return
         }
     };
     authenticate(
@@ -1030,7 +1028,7 @@ async fn authenticate<N: NetworkPrimitives>(
                     direction,
                 })
                 .await;
-            return;
+            return
         }
     };
 

@@ -232,8 +232,6 @@ pub struct NetworkConfigBuilder<N: NetworkPrimitives = EthNetworkPrimitives> {
     required_block_hashes: Vec<BlockNumHash>,
     /// Optional network id
     network_id: Option<u64>,
-    /// The node ids of the proxied nodes.
-    proxied_node_ids: Vec<PeerId>,
     /// Whether to advertise the `snap/2` satellite protocol (EIP-8189) in the handshake.
     snap_enabled: bool,
 }
@@ -279,7 +277,6 @@ impl<N: NetworkPrimitives> NetworkConfigBuilder<N> {
             eth_max_message_size: MAX_MESSAGE_SIZE,
             required_block_hashes: Vec::new(),
             network_id: None,
-            proxied_node_ids: Vec::new(),
             snap_enabled: false,
         }
     }
@@ -486,14 +483,6 @@ impl<N: NetworkPrimitives> NetworkConfigBuilder<N> {
         self.boot_nodes.iter()
     }
 
-    /// Sets the proxied peer IDs.
-    ///
-    /// These peer IDs will be treated specially in the network layer.
-    pub fn proxied_peers(mut self, peer_ids: Vec<PeerId>) -> Self {
-        self.proxied_node_ids = peer_ids;
-        self
-    }
-
     /// Disable the DNS discovery.
     pub fn disable_dns_discovery(mut self) -> Self {
         self.dns_discovery_config = None;
@@ -675,7 +664,6 @@ impl<N: NetworkPrimitives> NetworkConfigBuilder<N> {
             eth_max_message_size,
             required_block_hashes,
             network_id,
-            proxied_node_ids,
             snap_enabled,
         } = self;
 
@@ -733,10 +721,6 @@ impl<N: NetworkPrimitives> NetworkConfigBuilder<N> {
             dns_networks.insert(link.parse().expect("is valid DNS link entry"));
         }
 
-        // Set proxied_node_ids in peers_config
-        let mut peers_config = peers_config.unwrap_or_default();
-        peers_config.proxied_node_ids = proxied_node_ids;
-
         NetworkConfig {
             client,
             secret_key,
@@ -746,7 +730,7 @@ impl<N: NetworkPrimitives> NetworkConfigBuilder<N> {
             discovery_v5_config: discovery_v5_builder.map(|builder| builder.build()),
             discovery_v4_addr: discovery_addr.unwrap_or(DEFAULT_DISCOVERY_ADDRESS),
             listener_addr,
-            peers_config,
+            peers_config: peers_config.unwrap_or_default(),
             sessions_config: sessions_config.unwrap_or_default(),
             chain_id,
             block_import: block_import.unwrap_or_else(|| Box::<ProofOfStakeBlockImport>::default()),
@@ -770,7 +754,7 @@ impl<N: NetworkPrimitives> NetworkConfigBuilder<N> {
 ///
 /// This affects block propagation in the `eth` sub-protocol [EIP-3675](https://eips.ethereum.org/EIPS/eip-3675#devp2p)
 ///
-/// In `PoS` `NewBlockHashes` and `NewBlock` messages become invalid.
+/// In POS `NewBlockHashes` and `NewBlock` messages become invalid.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum NetworkMode {
