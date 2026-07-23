@@ -7,11 +7,11 @@ use crate::{
 };
 use alloy_consensus::BlockHeader;
 use alloy_eips::{eip1898::BlockWithParent, merge::EPOCH_SLOTS, BlockNumHash, NumHash};
-use alloy_primitives::{map::B256Map, BlockHash, BlockNumber, B256};
+use alloy_primitives::{map::B256Map, B256};
 use alloy_rpc_types_engine::{
     ForkchoiceState, PayloadStatus, PayloadStatusEnum, PayloadValidationError,
 };
-use error::{InsertBlockError, InsertBlockFatalError};
+use error::{InsertBlockError, InsertBlockFatalError, InsertBlockValidationError};
 use reth_chain_state::{
     CanonicalInMemoryState, ExecutedBlock, ExecutionTimingStats, MemoryOverlayStateProvider,
     NewCanonicalChain, StateTrieOverlayManager,
@@ -21,7 +21,7 @@ use reth_engine_primitives::{
     BeaconEngineMessage, BeaconOnNewPayloadError, ConsensusEngineEvent, ExecutionPayload,
     ForkchoiceStateTracker, NewPayloadTimings, OnForkChoiceUpdated, SlowBlockInfo,
 };
-use reth_errors::{ConsensusError, ProviderResult, RethError, RethResult};
+use reth_errors::{ConsensusError, ProviderResult};
 use reth_evm::ConfigureEvm;
 use reth_payload_builder::{BuildNewPayload, PayloadBuilderHandle};
 use reth_payload_primitives::{BuiltPayload, NewPayloadError, PayloadAttributes, PayloadTypes};
@@ -40,17 +40,8 @@ use reth_tasks::{spawn_os_thread, utils::increase_thread_priority};
 use reth_trie::ComputedTrieData;
 use reth_trie_db::ChangesetCache;
 use revm::interpreter::debug_unreachable;
-use revm_primitives::U256;
-use rust_eth_triedb_common::{DiffLayer, DiffLayers};
 use state::TreeState;
-use std::{
-    collections::HashMap,
-    fmt::{Debug, Display},
-    marker::PhantomData,
-    ops,
-    sync::Arc,
-    time::Duration,
-};
+use std::{fmt::Debug, ops, sync::Arc, time::Duration};
 
 use crossbeam_channel::{Receiver, Sender};
 use tokio::sync::{
@@ -81,7 +72,7 @@ pub use metrics::EngineApiMetrics;
 pub use payload_processor::*;
 pub use payload_validator::{BasicEngineValidator, EngineValidator};
 pub use persistence_state::PersistenceState;
-pub use reth_engine_primitives::{TreeConfig, DEFAULT_MIN_BLOCKS_FOR_PIPELINE_RUN};
+pub use reth_engine_primitives::TreeConfig;
 pub use reth_execution_cache::{
     CachedStateCacheMetrics, CachedStateMetrics, CachedStateMetricsSource, CachedStateProvider,
     ExecutionCache, PayloadExecutionCache, SavedCache,
@@ -99,11 +90,7 @@ pub mod state;
 /// E.g.: Local head `block.number` is 100 and the forkchoice head `block.number` is 133 (more than
 /// an epoch has slots), then this exceeds the threshold at which the pipeline should be used to
 /// backfill this gap.
-///
-/// This is kept for backwards compatibility with tests. Use
-/// `TreeConfig::min_blocks_for_pipeline_run()` for configurable threshold.
-#[cfg(test)]
-pub(crate) const MIN_BLOCKS_FOR_PIPELINE_RUN: u64 = DEFAULT_MIN_BLOCKS_FOR_PIPELINE_RUN;
+pub(crate) const MIN_BLOCKS_FOR_PIPELINE_RUN: u64 = EPOCH_SLOTS;
 
 /// The minimum number of blocks to retain in the changeset cache after eviction.
 ///
@@ -229,36 +216,6 @@ impl<N: NodePrimitives> EngineApiTreeState<N> {
     pub fn has_invalid_header(&mut self, hash: &B256) -> bool {
         self.invalid_headers.get(hash).is_some()
     }
-
-    /// Returns merged difflayers by parent block hash
-    pub(crate) fn merged_difflayer_by_hash(&self, parent_block_hash: B256) -> Option<DiffLayers> {
-        self.tree_state.merged_difflayer_by_hash(parent_block_hash)
-    }
-
-    /// Returns the difflayer for a specific block by its hash.
-    ///
-    /// This retrieves the single difflayer that was generated when the block was executed.
-    /// Returns `None` if the block is not found or has no difflayer.
-    pub fn difflayer_by_block_hash(&self, block_hash: B256) -> Option<Arc<DiffLayer>> {
-        self.tree_state.blocks_by_hash.get(&block_hash).and_then(|block| block.difflayer.clone())
-    }
-
-    /// Returns merged difflayers accumulated from the parent block hash up to the tip.
-    ///
-    /// This method walks back from the given parent block hash, merging all difflayers
-    /// from ancestor blocks that are in memory (not yet persisted).
-    ///
-    /// # Arguments
-    ///
-    /// * `parent_block_hash` - The hash of the parent block to start accumulating from
-    ///
-    /// # Returns
-    ///
-    /// Returns `Some(DiffLayers)` with all accumulated diff layers, or `None` if no
-    /// difflayers are found or the parent block is not in memory.
-    pub fn get_merged_difflayers(&self, parent_block_hash: B256) -> Option<DiffLayers> {
-        self.merged_difflayer_by_hash(parent_block_hash)
-    }
 }
 
 /// The outcome of a tree operation.
@@ -343,7 +300,6 @@ pub enum TreeAction {
 ///
 /// This type is responsible for processing engine API requests, maintaining the canonical state and
 /// emitting events.
-#[allow(clippy::type_complexity)]
 pub struct EngineApiTreeHandler<N, P, T, V, C>
 where
     N: NodePrimitives,
@@ -363,9 +319,9 @@ where
     /// them one by one so that we can handle incoming engine API in between and don't become
     /// unresponsive. This can happen during live sync transition where we're trying to close the
     /// gap (up to 3 epochs of blocks in the worst case).
-    incoming_tx: Sender<FromEngine<EngineApiRequest<T, N, P, C>, N::Block>>,
+    incoming_tx: Sender<FromEngine<EngineApiRequest<T, N>, N::Block>>,
     /// Incoming engine API requests.
-    incoming: Receiver<FromEngine<EngineApiRequest<T, N, P, C>, N::Block>>,
+    incoming: Receiver<FromEngine<EngineApiRequest<T, N>, N::Block>>,
     /// Outgoing events that are emitted to the handler.
     outgoing: UnboundedSender<EngineApiEvent<N>>,
     /// Channels to the persistence layer.
@@ -513,10 +469,8 @@ where
         evm_config: C,
         changeset_cache: ChangesetCache,
         runtime: reth_tasks::Runtime,
-    ) -> (
-        Sender<FromEngine<EngineApiRequest<T, N, P, C>, N::Block>>,
-        UnboundedReceiver<EngineApiEvent<N>>,
-    ) {
+    ) -> (Sender<FromEngine<EngineApiRequest<T, N>, N::Block>>, UnboundedReceiver<EngineApiEvent<N>>)
+    {
         let best_block_number = provider.best_block_number().unwrap_or(0);
         let header = provider.sealed_header(best_block_number).ok().flatten().unwrap_or_default();
 
@@ -568,8 +522,7 @@ where
     }
 
     /// Returns a new [`Sender`] to send messages to this type.
-    #[allow(clippy::type_complexity)]
-    pub fn sender(&self) -> Sender<FromEngine<EngineApiRequest<T, N, P, C>, N::Block>> {
+    pub fn sender(&self) -> Sender<FromEngine<EngineApiRequest<T, N>, N::Block>> {
         self.incoming_tx.clone()
     }
 
@@ -589,41 +542,6 @@ where
     const fn should_backpressure(&self) -> bool {
         self.persistence_state.in_progress() &&
             self.persistence_gap() >= self.config.persistence_backpressure_threshold()
-    }
-
-    /// Returns the difflayer for a specific block by its hash.
-    ///
-    /// This retrieves the single difflayer that was generated when the block was executed
-    /// and is currently held in memory (not yet persisted to disk).
-    ///
-    /// # Arguments
-    ///
-    /// * `block_hash` - The hash of the block to retrieve the difflayer for
-    ///
-    /// # Returns
-    ///
-    /// Returns `Some(Arc<DiffLayer>)` if the block exists in memory and has a difflayer,
-    /// `None` otherwise.
-    pub fn difflayer_by_block_hash(&self, block_hash: B256) -> Option<Arc<DiffLayer>> {
-        self.state.difflayer_by_block_hash(block_hash)
-    }
-
-    /// Returns merged difflayers accumulated from the parent block hash.
-    ///
-    /// This method walks back from the given parent block hash through the chain
-    /// of in-memory blocks, merging all difflayers to provide a consolidated view
-    /// of state changes since the last persisted block.
-    ///
-    /// # Arguments
-    ///
-    /// * `parent_block_hash` - The hash of the parent block to start accumulating from
-    ///
-    /// # Returns
-    ///
-    /// Returns `Some(DiffLayers)` with all accumulated diff layers merged together,
-    /// or `None` if no difflayers are found.
-    pub fn get_merged_difflayers(&self, parent_block_hash: B256) -> Option<DiffLayers> {
-        self.state.get_merged_difflayers(parent_block_hash)
     }
 
     /// Run the engine API handler.
@@ -720,7 +638,7 @@ where
     ///
     /// Unlike `wait_for_event`, this deliberately does not read from the tree input channel. Any
     /// requests sent to the tree remain queued upstream until persistence catches up.
-    fn wait_for_persistence_event(&mut self) -> LoopEvent<T, N, P, C> {
+    fn wait_for_persistence_event(&mut self) -> LoopEvent<T, N> {
         let maybe_persistence = self.persistence_state.rx.take();
 
         if let Some((persistence_rx, start_time, _action)) = maybe_persistence {
@@ -738,7 +656,7 @@ where
     ///
     /// Uses biased selection to prioritize persistence completion to update in-memory state and
     /// unblock further writes.
-    fn wait_for_event(&mut self) -> LoopEvent<T, N, P, C> {
+    fn wait_for_event(&mut self) -> LoopEvent<T, N> {
         // Take ownership of persistence rx if present
         let maybe_persistence = self.persistence_state.rx.take();
 
@@ -1642,65 +1560,16 @@ where
     /// Returns `ControlFlow::Break(())` if the engine should terminate.
     fn on_engine_message(
         &mut self,
-        msg: FromEngine<EngineApiRequest<T, N, P, C>, N::Block>,
+        msg: FromEngine<EngineApiRequest<T, N>, N::Block>,
     ) -> Result<ops::ControlFlow<()>, InsertBlockFatalError> {
-        const SLOW_HANDLER_WARN_THRESHOLD: std::time::Duration =
-            std::time::Duration::from_millis(300);
-
-        #[inline]
-        fn log_handler_duration(kind: &'static str, elapsed: std::time::Duration) {
-            tracing::debug!(
-                target: "engine::tree",
-                handler = kind,
-                elapsed_ms = elapsed.as_millis(),
-                "engine-tree handler finished"
-            );
-            if elapsed >= SLOW_HANDLER_WARN_THRESHOLD {
-                tracing::warn!(
-                    target: "engine::tree",
-                    handler = kind,
-                    elapsed_ms = elapsed.as_millis(),
-                    "engine-tree handler is slow"
-                );
-            }
-        }
-
-        #[inline]
-        fn log_handler_duration_with_block<B: core::fmt::Debug>(
-            kind: &'static str,
-            block: &B,
-            elapsed: std::time::Duration,
-        ) {
-            tracing::debug!(
-                target: "engine::tree",
-                handler = kind,
-                block = ?block,
-                elapsed_ms = elapsed.as_millis(),
-                "engine-tree handler finished"
-            );
-            if elapsed >= SLOW_HANDLER_WARN_THRESHOLD {
-                tracing::warn!(
-                    target: "engine::tree",
-                    handler = kind,
-                    block = ?block,
-                    elapsed_ms = elapsed.as_millis(),
-                    "engine-tree handler is slow"
-                );
-            }
-        }
-
         match msg {
             FromEngine::Event(event) => match event {
                 FromOrchestrator::BackfillSyncStarted => {
-                    let start = Instant::now();
                     debug!(target: "engine::tree", "received backfill sync started event");
                     self.backfill_sync_state = BackfillSyncState::Active;
-                    log_handler_duration("event.backfill_sync_started", start.elapsed());
                 }
                 FromOrchestrator::BackfillSyncFinished(ctrl) => {
-                    let start = Instant::now();
                     self.on_backfill_sync_finished(ctrl)?;
-                    log_handler_duration("event.backfill_sync_finished", start.elapsed());
                 }
                 FromOrchestrator::Terminate { tx } => {
                     debug!(target: "engine::tree", "received terminate request");
@@ -1713,15 +1582,9 @@ where
             FromEngine::Request(request) => {
                 match request {
                     EngineApiRequest::InsertExecutedBlock(payload) => {
-                        let start = Instant::now();
-                        let block = payload;
-                        let block_num_hash = block.recovered_block.num_hash();
+                        let block_num_hash = payload.recovered_block.num_hash();
                         if block_num_hash.number <= self.state.tree_state.canonical_block_number() {
                             // outdated block that can be skipped
-                            log_handler_duration(
-                                "request.insert_executed_block(outdated)",
-                                start.elapsed(),
-                            );
                             return Ok(ops::ControlFlow::Continue(()))
                         }
 
@@ -1756,7 +1619,6 @@ where
                         self.emit_event(EngineApiEvent::BeaconConsensus(
                             ConsensusEngineEvent::CanonicalBlockAdded(block, now.elapsed()),
                         ));
-                        log_handler_duration("request.insert_executed_block", start.elapsed());
                     }
                     EngineApiRequest::Beacon(request) => {
                         match request {
@@ -1802,13 +1664,8 @@ where
                                         .increment(1);
                                     warn!(target: "engine::tree", ?state, elapsed=?start.elapsed(), "Failed to deliver forkchoiceUpdated response, receiver dropped (request cancelled): {err:?}");
                                 }
-                                log_handler_duration(
-                                    "request.beacon.forkchoice_updated",
-                                    start.elapsed(),
-                                );
                             }
                             BeaconEngineMessage::NewPayload { payload, tx } => {
-                                let block_num_hash = payload.num_hash();
                                 let start = Instant::now();
                                 let gas_used = payload.gas_used();
                                 let num_hash = payload.num_hash();
@@ -1838,11 +1695,6 @@ where
 
                                 // handle the event if any
                                 self.on_maybe_tree_event(maybe_event)?;
-                                log_handler_duration_with_block(
-                                    "request.beacon.new_payload",
-                                    &block_num_hash,
-                                    start.elapsed(),
-                                );
                             }
                             BeaconEngineMessage::RethNewPayload {
                                 payload,
@@ -1930,42 +1782,14 @@ where
 
                                 self.on_maybe_tree_event(maybe_event)?;
                             }
-                            BeaconEngineMessage::QueryTd { number, hash, tx } => {
-                                let start = Instant::now();
-                                debug!(target: "engine::tree", number=?number, hash=?hash, "querying header and TD by engine message");
-                                let output = self.query_header_with_td(number, hash);
-
-                                if let Err(err) = tx.send(output.map(|o| o.1).map_err(Into::into)) {
-                                    error!(target: "engine::tree", "Failed to send event: {err:?}");
-                                }
-                                log_handler_duration("request.beacon.query_td", start.elapsed());
-                            }
                         }
                     }
-                    EngineApiRequest::Custom(request) => match request {
-                        CustomRequestMessage::RequestDiffLayer { parent_hash, tx, .. } => {
-                            let start = Instant::now();
-                            let output = self
-                                .state
-                                .get_merged_difflayers(parent_hash)
-                                .ok_or_else(|| "DiffLayers not found".to_string());
-                            if tx.send(output.map_err(RethError::msg)).is_err() {
-                                error!(target: "engine::tree", "Failed to send event");
-                            }
-                            log_handler_duration(
-                                "request.custom.request_difflayer",
-                                start.elapsed(),
-                            );
-                        }
-                    },
                 }
             }
             FromEngine::DownloadedBlocks(blocks) => {
-                let start = Instant::now();
                 if let Some(event) = self.on_downloaded(blocks)? {
                     self.on_tree_event(event)?;
                 }
-                log_handler_duration("downloaded_blocks", start.elapsed());
             }
         }
         Ok(ops::ControlFlow::Continue(()))
@@ -2387,27 +2211,17 @@ where
             .ok_or_else(|| ProviderError::StateForNumberNotFound(block.header().number()))?;
         let hashed_state = self.provider.hashed_post_state(execution_output.state());
 
-        // In TrieDB mode, skip computing trie updates from MDBX - TrieDB manages its own trie data
-        let trie_updates = if rust_eth_triedb::triedb_manager::is_triedb_active() {
-            debug!(
-                target: "engine::tree",
-                number = ?block.number(),
-                "skipping block trie updates computation in TrieDB mode",
-            );
-            reth_trie::updates::TrieUpdatesSorted::default()
-        } else {
-            debug!(
-                target: "engine::tree",
-                number = ?block.number(),
-                "computing block trie updates",
-            );
-            let db_provider = self.provider.database_provider_ro()?;
-            reth_trie_db::compute_block_trie_updates(
-                &self.changeset_cache,
-                &db_provider,
-                block.number(),
-            )?
-        };
+        debug!(
+            target: "engine::tree",
+            number = ?block.number(),
+            "computing block trie updates",
+        );
+        let db_provider = self.provider.database_provider_ro()?;
+        let trie_updates = reth_trie_db::compute_block_trie_updates(
+            &self.changeset_cache,
+            &db_provider,
+            block.number(),
+        )?;
 
         let sorted_hashed_state = Arc::new(hashed_state.into_sorted());
         let sorted_trie_updates = Arc::new(trie_updates);
@@ -2738,7 +2552,7 @@ where
     /// If the `local_tip` is greater than the `block`, then this will return false.
     #[inline]
     const fn exceeds_backfill_run_threshold(&self, local_tip: u64, block: u64) -> bool {
-        block > local_tip && block - local_tip > self.config.min_blocks_for_pipeline_run()
+        block > local_tip && block - local_tip > MIN_BLOCKS_FOR_PIPELINE_RUN
     }
 
     /// Returns how far the local tip is from the given block. If the local tip is at the same
@@ -3204,41 +3018,6 @@ where
             Ok(Some(_)) => {}
         }
 
-        // Pathdb gap: when TrieDB is active, executing this block requires either a
-        // chain of in-memory difflayers to bridge back to the pathdb disk layer, or a
-        // parent whose state root equals that disk layer. After a restart the
-        // difflayer chain is empty, and if we reconnect to a fork whose parent
-        // diverges from pathdb's last flush, re-executing would read stale trie nodes
-        // and compute a wrong state root. Buffer as Disconnected so the P2P layer
-        // walks ancestors sequentially until a block touches the disk layer.
-        if rust_eth_triedb::triedb_manager::is_triedb_active() {
-            let has_difflayers =
-                self.state.tree_state.merged_difflayer_by_hash(block_id.parent).is_some();
-            if !has_difflayers {
-                let triedb = rust_eth_triedb::triedb_manager::get_global_triedb();
-                if let Ok((_, persist_root)) = triedb.latest_persist_state() &&
-                    let Ok(Some(parent_header)) = self.sealed_header_by_hash(block_id.parent) &&
-                    parent_header.state_root() != persist_root
-                {
-                    warn!(
-                        target: "engine::tree",
-                        block = ?block_num_hash,
-                        parent = ?block_id.parent,
-                        parent_state_root = ?parent_header.state_root(),
-                        pathdb_persist_root = ?persist_root,
-                        "Triedb pathdb gap: no difflayers and parent state root diverges from disk layer; buffering as Disconnected",
-                    );
-                    let block = convert_to_block(self, input)?;
-                    let missing_ancestor = block.parent_num_hash();
-                    self.state.buffer.insert_block(block);
-                    return Ok(InsertPayloadOk::Inserted(BlockStatus::Disconnected {
-                        head: self.state.tree_state.current_canonical_head,
-                        missing_ancestor,
-                    }));
-                }
-            }
-        }
-
         // determine whether we are on a fork chain by comparing the block number with the
         // canonical head. This is a simple check that is sufficient for the event emission below.
         // A block is considered a fork if its number is less than or equal to the canonical head,
@@ -3246,11 +3025,6 @@ where
         let is_fork = block_id.block.number <= self.state.tree_state.current_canonical_head.number;
 
         let ctx = TreeCtx::new(&mut self.state, &self.canonical_in_memory_state);
-
-        let current_timestamp_nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
 
         let start = Instant::now();
 
@@ -3288,12 +3062,6 @@ where
             self.execution_timing_stats.insert(executed.recovered_block().hash(), stats);
         }
 
-        let gas_used = executed.sealed_block().header().gas_used();
-        let block_timestamp = executed.sealed_block().header().timestamp();
-        let block_timestamp_nanos = block_timestamp as u128 * 1_000_000_000;
-        let timestamp_delay_nanos =
-            current_timestamp_nanos.saturating_sub(block_timestamp_nanos) as f64;
-
         // if the parent is the canonical head, we can insert the block as the pending block
         if self.state.tree_state.canonical_block_hash() == executed.recovered_block().parent_hash()
         {
@@ -3317,8 +3085,6 @@ where
             .engine
             .block_insert_total_duration
             .record(block_insert_start.elapsed().as_secs_f64());
-        self.metrics.engine.block_insert_mgasps.set(gas_used as f64 / elapsed.as_secs_f64());
-        self.metrics.engine.block_insert_timestamp_delay.record(timestamp_delay_nanos);
         debug!(target: "engine::tree", block=?block_num_hash, "Finished inserting block");
         Ok(InsertPayloadOk::Inserted(BlockStatus::Valid))
     }
@@ -3336,53 +3102,35 @@ where
 
         // if invalid block, we check the validation error. Otherwise return the fatal
         // error.
-        match error.ensure_validation_error() {
-            Ok(validation_err) => {
-                // Permanent validation error: cache in invalid_headers so that
-                // descendants are immediately rejected without re-execution.
-                warn!(
-                    target: "engine::tree",
-                    invalid_hash=%block.hash(),
-                    invalid_number=block.number(),
-                    %validation_err,
-                    "Invalid block error on new payload",
-                );
-                let latest_valid_hash =
-                    self.latest_valid_hash_for_invalid_payload(block.parent_hash())?;
+        let validation_err = error.ensure_validation_error()?;
 
-                // keep track of the invalid header
-                self.state.invalid_headers.insert(block.block_with_parent());
-                self.emit_event(EngineApiEvent::BeaconConsensus(
-                    ConsensusEngineEvent::InvalidBlock(Box::new(block)),
-                ));
+        // If the error was due to an invalid payload, the payload is added to the
+        // invalid headers cache and `Ok` with [PayloadStatusEnum::Invalid] is
+        // returned.
+        warn!(
+            target: "engine::tree",
+            invalid_hash=%block.hash(),
+            invalid_number=block.number(),
+            %validation_err,
+            "Invalid block error on new payload",
+        );
+        let latest_valid_hash = self.latest_valid_hash_for_invalid_payload(block.parent_hash())?;
 
-                Ok(PayloadStatus::new(
-                    PayloadStatusEnum::Invalid { validation_error: validation_err.to_string() },
-                    latest_valid_hash,
-                ))
-            }
-            Err(fatal) => match fatal {
-                // Internal block execution error (e.g., BSC transient FutureBlock).
-                // Reject the block but do NOT cache in invalid_headers — the error
-                // may be transient and the block (or its descendants) could become
-                // processable later.
-                InsertBlockFatalError::BlockExecutionError(err) => {
-                    warn!(
-                        target: "engine::tree",
-                        block_hash=%block.hash(),
-                        block_number=block.number(),
-                        %err,
-                        "Internal block execution error on new payload (not caching as invalid)",
-                    );
-
-                    Ok(PayloadStatus::new(
-                        PayloadStatusEnum::Invalid { validation_error: err.to_string() },
-                        None,
-                    ))
-                }
-                // Provider errors are truly fatal — propagate to shut down the engine.
-                fatal @ InsertBlockFatalError::Provider(_) => Err(fatal),
-            },
+        // keep track of the invalid header unless the consensus impl considers it transient
+        let is_transient = match &validation_err {
+            InsertBlockValidationError::Consensus(err) => self.consensus.is_transient_error(err),
+            _ => false,
+        };
+        if is_transient {
+            warn!(
+                target: "engine::tree",
+                invalid_hash=%block.hash(),
+                invalid_number=block.number(),
+                %validation_err,
+                "Skipping invalid header cache insert for transient validation error",
+            );
+        } else {
+            self.state.invalid_headers.insert(block.block_with_parent());
         }
         self.emit_event(EngineApiEvent::BeaconConsensus(ConsensusEngineEvent::InvalidBlock {
             block: Box::new(block),
@@ -3655,125 +3403,17 @@ where
         debug!(target: "engine::tree", %hash, "no canonical state found for block");
         Ok(None)
     }
-
-    /// Query the header and TD of the given `(number, hash)`.
-    ///
-    /// - If `hash` is on the canonical chain, returns the provider's header and TD directly.
-    /// - If `hash` is an in-memory fork block held in `tree_state`, walks its parent chain
-    ///   (accumulating each fork block's difficulty) until a canonical ancestor is reached, and
-    ///   adds the canonical TD as the base.
-    /// - Returns `Ok((fork_header, None))` when a canonical ancestor is found but its TD entry is
-    ///   missing, or when the walk falls below `last_block_number` and the final canonical lookup
-    ///   also fails. Callers treat `None` as "TD unknown".
-    /// - Returns `Err(ProviderError::HeaderNotFound)` when `hash` itself is in neither place, or
-    ///   when the walk above `last_block_number` reaches a parent that is in neither.
-    pub fn query_header_with_td(
-        &self,
-        number: BlockNumber,
-        hash: BlockHash,
-    ) -> ProviderResult<(N::BlockHeader, Option<U256>)> {
-        // Canonical DB hit: return header and TD directly.
-        if let Some(block_number) = self.provider.block_number(hash)? {
-            tracing::debug!(target: "engine::tree", ?number, ?hash, "querying TD from canonical chain");
-            let header = self
-                .provider
-                .header_by_number(block_number)?
-                .ok_or(ProviderError::HeaderNotFound(block_number.into()))?;
-            let td = self.provider.header_td_by_number(block_number)?;
-            return Ok((header, td))
-        }
-
-        tracing::debug!(target: "engine::tree", ?number, ?hash, "querying TD from fork headers");
-        let ret_header = self
-            .state
-            .tree_state
-            .blocks_by_hash
-            .get(&hash)
-            .map(|b| b.recovered_block.clone_header())
-            .ok_or(ProviderError::HeaderNotFound(hash.into()))?;
-        let mut ret_td = ret_header.difficulty();
-
-        let last_block_number = self.provider.last_block_number()?;
-        let mut current_number = number - 1;
-        let mut current_hash = ret_header.parent_hash();
-
-        // Walk fork parents while still above the persisted canonical tip.
-        // Each hop either hits a canonical ancestor (done) or steps to the
-        // next in-memory fork parent; a parent that is in neither place at
-        // this level is a real gap and surfaces as `HeaderNotFound`.
-        while current_number >= last_block_number {
-            if let Some(block_number) = self.provider.block_number(current_hash)? {
-                return self.resolve_fork_td(ret_header, ret_td, block_number)
-            }
-            let parent = self
-                .state
-                .tree_state
-                .blocks_by_hash
-                .get(&current_hash)
-                .map(|b| b.recovered_block.clone_header())
-                .ok_or(ProviderError::HeaderNotFound(current_hash.into()))?;
-            ret_td = ret_td.wrapping_add(parent.difficulty());
-            current_hash = parent.parent_hash();
-            current_number -= 1;
-        }
-
-        // Fork at or below the canonical tip — the loop above was skipped,
-        // so `current_hash` still points at the fork's direct parent,
-        // which is typically a canonical ancestor we can resolve with one
-        // more lookup.
-        //
-        //   canonical:  …──●──●   ← tip (last_block_number)
-        //                     ↑
-        //                     └── current_hash: probe once more
-        //
-        // If this lookup also misses, return `Ok((ret_header, None))`
-        // ("TD unknown"), not `Err` — callers depend on that contract.
-        if let Some(block_number) = self.provider.block_number(current_hash)? {
-            return self.resolve_fork_td(ret_header, ret_td, block_number)
-        }
-        tracing::warn!(
-            target: "engine::tree",
-            ?current_number, ?current_hash, ?last_block_number,
-            "fork walked below last_block_number without hitting a canonical ancestor",
-        );
-        Ok((ret_header, None))
-    }
-
-    /// Combines the accumulated fork-chain difficulty `ret_td` with the TD
-    /// of the canonical ancestor at `block_number` to produce the total
-    /// difficulty of the fork block identified by `ret_header`. If the
-    /// canonical TD entry is missing, returns `(ret_header, None)` —
-    /// callers treat `None` as "TD unknown".
-    fn resolve_fork_td(
-        &self,
-        ret_header: N::BlockHeader,
-        ret_td: U256,
-        block_number: BlockNumber,
-    ) -> ProviderResult<(N::BlockHeader, Option<U256>)> {
-        Ok(match self.provider.header_td_by_number(block_number)? {
-            Some(td) => (ret_header, Some(ret_td.wrapping_add(td))),
-            None => {
-                tracing::warn!(
-                    target: "engine::tree",
-                    ?block_number,
-                    "canonical ancestor has no TD entry; returning None",
-                );
-                (ret_header, None)
-            }
-        })
-    }
 }
 
 /// Events received in the main engine loop.
 #[derive(Debug)]
-enum LoopEvent<T, N, P, C>
+enum LoopEvent<T, N>
 where
     N: NodePrimitives,
     T: PayloadTypes,
-    C: ConfigureEvm<Primitives = N>,
 {
     /// An engine API message was received.
-    EngineMessage(FromEngine<EngineApiRequest<T, N, P, C>, N::Block>),
+    EngineMessage(FromEngine<EngineApiRequest<T, N>, N::Block>),
     /// A persistence task completed.
     PersistenceComplete {
         /// The unified result of the persistence operation.
@@ -3842,43 +3482,4 @@ pub trait WaitForCaches {
     ///
     /// Returns the time spent waiting for each cache separately.
     fn wait_for_caches(&self) -> CacheWaitDurations;
-}
-
-/// A custom request message for the engine tree handler.
-///
-/// Used by `reth-bsc` in `TrieDB` mode: during the miner flow, the miner needs the
-/// merged `DiffLayers` from the in-memory tree state so that `TrieDB` can compute
-/// the state root incrementally on top of the parent block's trie.
-#[derive(Debug)]
-pub enum CustomRequestMessage<P, Evm, N>
-where
-    Evm: ConfigureEvm<Primitives = N>,
-    N: NodePrimitives,
-{
-    /// Request the merged diff layers for a given parent hash.
-    ///
-    /// The miner sends this before calling `intermediate_and_commit_hashed_post_state`
-    /// so that `TrieDB` can apply cached trie diffs instead of reading everything from disk.
-    RequestDiffLayer {
-        /// The parent hash to get the diff layers for.
-        parent_hash: BlockHash,
-        /// The sender for returning the diff layers.
-        tx: oneshot::Sender<RethResult<DiffLayers>>,
-        /// Phantom data to hold the generic types.
-        _phantom: PhantomData<(P, Evm, N)>,
-    },
-}
-
-impl<P, Evm, N> Display for CustomRequestMessage<P, Evm, N>
-where
-    Evm: ConfigureEvm<Primitives = N>,
-    N: NodePrimitives,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::RequestDiffLayer { parent_hash, .. } => {
-                write!(f, "RequestDiffLayer(parent_hash: {:?})", parent_hash)
-            }
-        }
-    }
 }

@@ -24,8 +24,7 @@ use reth_stages::{
 };
 use reth_static_file::StaticFileProducer;
 use reth_tasks::TaskExecutor;
-use reth_tracing::tracing::{debug, info};
-use rust_eth_triedb::triedb_manager::is_triedb_active;
+use reth_tracing::tracing::debug;
 use tokio::sync::watch;
 
 /// Constructs a [Pipeline] that's wired to the network
@@ -110,69 +109,31 @@ where
 
     let (tip_tx, tip_rx) = watch::channel(B256::ZERO);
 
-    let prune_modes = prune_config.segments;
-
-    let pipeline = if is_triedb_active() {
-        let pipeline = builder
-            .with_tip_sender(tip_tx)
-            .with_metrics_tx(metrics_tx)
-            .add_stages(
-                DefaultStages::new(
-                    provider_factory.clone(),
-                    tip_rx,
-                    Arc::clone(&consensus),
-                    header_downloader,
-                    body_downloader,
-                    evm_config.clone(),
-                    stage_config.clone(),
-                    prune_modes,
-                    era_import_source,
-                )
-                .builder()
-                .disable(reth_stages::StageId::MerkleExecute)
-                .disable(reth_stages::StageId::MerkleUnwind)
-                .set(ExecutionStage::new(
-                    evm_config,
-                    consensus,
-                    stage_config.execution.into(),
-                    stage_config.execution_external_clean_threshold(),
-                    exex_manager_handle,
-                )),
+    let pipeline = builder
+        .with_tip_sender(tip_tx)
+        .with_metrics_tx(metrics_tx)
+        .add_stages(
+            DefaultStages::new(
+                provider_factory.clone(),
+                tip_rx,
+                Arc::clone(&consensus),
+                header_downloader,
+                body_downloader,
+                evm_config.clone(),
+                stage_config.clone(),
+                prune_config.segments,
+                era_import_source,
             )
-            .build(provider_factory, static_file_producer);
-
-        info!(
-            target: "reth::builder",
-            "Pipeline built with TrieDB, without merkle execute/unwind/changesets"
-        );
-        pipeline
-    } else {
-        builder
-            .with_tip_sender(tip_tx)
-            .with_metrics_tx(metrics_tx)
-            .add_stages(
-                DefaultStages::new(
-                    provider_factory.clone(),
-                    tip_rx,
-                    Arc::clone(&consensus),
-                    header_downloader,
-                    body_downloader,
-                    evm_config.clone(),
-                    stage_config.clone(),
-                    prune_modes,
-                    era_import_source,
-                )
-                .set(ExecutionStage::new(
-                    evm_config,
-                    consensus,
-                    stage_config.execution.into(),
-                    stage_config.execution_external_clean_threshold(),
-                    exex_manager_handle,
-                ))
-                .disable_all(disabled_stages),
-            )
-            .build(provider_factory, static_file_producer)
-    };
+            .set(ExecutionStage::new(
+                evm_config,
+                consensus,
+                stage_config.execution.into(),
+                stage_config.execution_external_clean_threshold(),
+                exex_manager_handle,
+            ))
+            .disable_all(disabled_stages),
+        )
+        .build(provider_factory, static_file_producer);
 
     Ok(pipeline)
 }

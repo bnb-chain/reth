@@ -9,7 +9,6 @@ use alloy_primitives::{Address, Bytes, B256, U256};
 use alloy_rpc_types_eth::{Account, AccountInfo, EIP1186AccountProofResponse};
 use alloy_serde::JsonStorageKey;
 use futures::Future;
-use reth_engine_primitives::is_fastnode_active;
 use reth_errors::RethError;
 use reth_evm::{ConfigureEvm, EvmEnvFor};
 use reth_primitives_traits::{BlockTy, RecoveredBlock, SealedHeaderFor};
@@ -23,7 +22,6 @@ use reth_storage_api::{
     BlockIdReader, BlockReaderIdExt, StateProvider, StateProviderBox, StateProviderFactory,
 };
 use reth_transaction_pool::TransactionPool;
-use rust_eth_triedb::triedb_manager::is_triedb_active;
 use std::{collections::HashMap, sync::Arc};
 
 /// Helper methods for `eth_` methods relating to state (accounts).
@@ -167,16 +165,6 @@ pub trait EthState: LoadState + SpawnBlocking {
         Self: EthApiSpec,
     {
         Ok(async move {
-            // Check if TrieDB is active, return error if so
-            if is_triedb_active() {
-                return Err(EthApiError::MethodNotAvailable("eth_getProof".to_string()).into())
-            }
-
-            // In fastnode mode, trie tables are not maintained so proofs would be invalid
-            if is_fastnode_active() {
-                return Err(EthApiError::MethodNotAvailable("eth_getProof".to_string()).into())
-            }
-
             let _permit = self
                 .acquire_owned_tracing()
                 .await
@@ -203,34 +191,32 @@ pub trait EthState: LoadState + SpawnBlocking {
         &self,
         address: Address,
         block_id: BlockId,
-    ) -> impl Future<Output = Result<Option<Account>, Self::Error>> + Send {
-        self.spawn_blocking_io_fut(move |this| async move {
-            // Check if TrieDB is active, return error if so
-            if is_triedb_active() {
-                return Err(EthApiError::MethodNotAvailable("eth_getAccount".to_string()).into())
-            }
+    ) -> impl Future<Output = Result<Option<Account>, Self::Error>> + Send
+    where
+        Self: EthApiSpec,
+    {
+        async move {
+            self.ensure_within_proof_window(block_id)?;
 
-            // In fastnode mode, trie tables are not maintained so storage root would be invalid
-            if is_fastnode_active() {
-                return Err(EthApiError::MethodNotAvailable("eth_getAccount".to_string()).into())
-            }
+            self.spawn_blocking_io_fut(async move |this| {
+                let state = this.state_at_block_id(block_id).await?;
+                let account = state.basic_account(&address).map_err(Self::Error::from_eth_err)?;
+                let Some(account) = account else { return Ok(None) };
 
-            let state = this.state_at_block_id(block_id).await?;
-            let account = state.basic_account(&address).map_err(Self::Error::from_eth_err)?;
-            let Some(account) = account else { return Ok(None) };
+                let balance = account.balance;
+                let nonce = account.nonce;
+                let code_hash = account.bytecode_hash.unwrap_or(KECCAK_EMPTY);
 
-            let balance = account.balance;
-            let nonce = account.nonce;
-            let code_hash = account.bytecode_hash.unwrap_or(KECCAK_EMPTY);
+                // Provide a default `HashedStorage` value in order to
+                // get the storage root hash of the current state.
+                let storage_root = state
+                    .storage_root(address, Default::default())
+                    .map_err(Self::Error::from_eth_err)?;
 
-            // Provide a default `HashedStorage` value in order to
-            // get the storage root hash of the current state.
-            let storage_root = state
-                .storage_root(address, Default::default())
-                .map_err(Self::Error::from_eth_err)?;
-
-            Ok(Some(Account { balance, nonce, code_hash, storage_root }))
-        })
+                Ok(Some(Account { balance, nonce, code_hash, storage_root }))
+            })
+            .await
+        }
     }
 
     /// Retrieves the account's balance, nonce, and code for a given address.

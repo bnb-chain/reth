@@ -14,9 +14,9 @@ use crate::{
     BlockReader, BlockWriter, BundleStateInit, ChainStateBlockReader, ChainStateBlockWriter,
     DBProvider, EitherReader, EitherWriter, EitherWriterDestination, HashingWriter, HeaderProvider,
     HeaderSyncGapProvider, HistoricalStateProvider, HistoricalStateProviderRef, HistoryWriter,
-    LatestStateProvider, LatestStateProviderRef, OriginalValuesKnown, PipelineConsistency,
-    ProviderError, PruneCheckpointReader, PruneCheckpointWriter, RawRocksDBBatch, RevertsInit,
-    RocksBatchArg, RocksDBProviderFactory, StageCheckpointReader, StateProviderBox, StateWriter,
+    LatestStateProvider, LatestStateProviderRef, OriginalValuesKnown, ProviderError,
+    PruneCheckpointReader, PruneCheckpointWriter, RawRocksDBBatch, RevertsInit, RocksBatchArg,
+    RocksDBProviderFactory, StageCheckpointReader, StateProviderBox, StateWriter,
     StaticFileProviderFactory, StatsReader, StorageReader, StorageTrieWriter, TransactionVariant,
     TransactionsProvider, TransactionsProviderExt, TrieWriter,
 };
@@ -28,13 +28,13 @@ use alloy_eips::BlockHashOrNumber;
 use alloy_primitives::{
     keccak256,
     map::{hash_map, AddressSet, B256Map, HashMap},
-    Address, BlockHash, BlockNumber, StorageKey, StorageValue, TxHash, TxNumber, B256, U256,
+    Address, BlockHash, BlockNumber, StorageKey, StorageValue, TxHash, TxNumber, B256,
 };
 use itertools::Itertools;
 use parking_lot::RwLock;
 use rayon::slice::ParallelSliceMut;
-use reth_chain_state::{ComputedTrieData, ExecutedBlock};
-use reth_chainspec::{ChainInfo, ChainSpecProvider, EthChainSpec, EthereumHardforks};
+use reth_chain_state::ExecutedBlock;
+use reth_chainspec::{ChainInfo, ChainSpecProvider, EthChainSpec};
 use reth_db_api::{
     cursor::{DbCursorRO, DbCursorRW, DbDupCursorRO, DbDupCursorRW},
     database::{Database, ReaderTxnTracker},
@@ -73,8 +73,6 @@ use reth_trie_db::{ChangesetCache, DatabaseStorageTrieCursor, TrieTableAdapter};
 use revm::database::states::{
     PlainStateReverts, PlainStorageChangeset, PlainStorageRevert, StateChangeset,
 };
-use rust_eth_triedb::{get_global_triedb, triedb_manager::is_triedb_active};
-use rust_eth_triedb_common::DiffLayer;
 use smallvec::SmallVec;
 use std::{
     cmp::Ordering,
@@ -101,38 +99,6 @@ impl CommitOrder {
     /// Returns true if this is unwind commit order.
     pub const fn is_unwind(&self) -> bool {
         matches!(self, Self::Unwind)
-    }
-}
-
-/// A precomputed `TrieDB` flush produced by [`DatabaseProvider::save_blocks`] and
-/// deferred so the caller can commit the MDBX transaction first.
-///
-/// System invariant: `pathdb_tip <= mdbx_tip`. If pathdb ever exceeds MDBX, the
-/// node cannot unwind (MDBX lacks the changeset for blocks pathdb still thinks
-/// are persisted) — this is the "Triedb pathdb gap" deadlock. To preserve the
-/// invariant on the forward path, the MDBX commit must precede [`Self::apply`].
-/// If a crash happens between the two, pathdb lags MDBX, which is recoverable
-/// via re-execution or P2P backfill.
-#[derive(Debug, Clone)]
-pub struct TriedbPendingFlush {
-    block_number: BlockNumber,
-    state_root: B256,
-    difflayer: Arc<DiffLayer>,
-}
-
-impl TriedbPendingFlush {
-    /// Flush the pending difflayer to the global `TrieDB`.
-    pub fn apply(self) -> ProviderResult<()> {
-        let mut triedb = get_global_triedb();
-        triedb
-            .flush(self.block_number, self.state_root, &Some(self.difflayer))
-            .map_err(ProviderError::other)?;
-        Ok(())
-    }
-
-    /// The block number this flush is associated with.
-    pub const fn block_number(&self) -> BlockNumber {
-        self.block_number
     }
 }
 
@@ -324,29 +290,10 @@ impl<TX: DbTx + 'static, N: NodeTypes> DatabaseProvider<TX, N> {
         Ok(())
     }
 
-    /// State provider for latest state.
-    ///
-    /// No [`PipelineConsistency`] guard is needed here: `LatestStateProviderRef` reads
-    /// `PlainState` directly and always returns the Execution-stage tip. The guard only
-    /// protects historical providers whose `InPlainState` fallback would silently serve
-    /// future-block data when the history index lags behind.
+    /// State provider for latest state
     pub fn latest<'a>(&'a self) -> Box<dyn StateProvider + 'a> {
         trace!(target: "providers::db", "Returning latest state provider");
         Box::new(LatestStateProviderRef::new(self))
-    }
-
-    /// Reads pipeline stage checkpoints and builds [`PipelineConsistency`] info.
-    ///
-    /// During pipeline sync the Execution stage commits `PlainState` before the history index
-    /// stages run. This helper detects that gap so [`HistoricalStateProviderRef`] can reject
-    /// `InPlainState` reads that would return data from a future block.
-    fn build_pipeline_consistency(&self) -> ProviderResult<PipelineConsistency> {
-        let execution_tip = self.get_stage_checkpoint(StageId::Execution)?.map(|c| c.block_number);
-        let account_history_tip =
-            self.get_stage_checkpoint(StageId::IndexAccountHistory)?.map(|c| c.block_number);
-        let storage_history_tip =
-            self.get_stage_checkpoint(StageId::IndexStorageHistory)?.map(|c| c.block_number);
-        Ok(PipelineConsistency { execution_tip, account_history_tip, storage_history_tip })
     }
 
     /// Storage provider for state at that given block hash
@@ -354,13 +301,18 @@ impl<TX: DbTx + 'static, N: NodeTypes> DatabaseProvider<TX, N> {
         &'a self,
         block_hash: BlockHash,
     ) -> ProviderResult<Box<dyn StateProvider + 'a>> {
-        let mut block_number =
+        let block_number =
             self.block_number(block_hash)?.ok_or(ProviderError::BlockHashNotFound(block_hash))?;
-        let pipeline_consistency = self.build_pipeline_consistency()?;
+        self.history_by_block_number(block_number)
+    }
+
+    /// Storage provider for state at that given block number
+    pub fn history_by_block_number<'a>(
+        &'a self,
+        mut block_number: BlockNumber,
+    ) -> ProviderResult<Box<dyn StateProvider + 'a>> {
         if block_number == self.best_block_number().unwrap_or_default() &&
-            block_number == self.last_block_number().unwrap_or_default() &&
-            pipeline_consistency.account_inconsistency().is_none() &&
-            pipeline_consistency.storage_inconsistency().is_none()
+            block_number == self.last_block_number().unwrap_or_default()
         {
             return Ok(Box::new(LatestStateProviderRef::new(self)))
         }
@@ -374,9 +326,7 @@ impl<TX: DbTx + 'static, N: NodeTypes> DatabaseProvider<TX, N> {
             self.get_prune_checkpoint(PruneSegment::StorageHistory)?;
 
         let mut state_provider =
-            HistoricalStateProviderRef::new(self, block_number, self.changeset_cache.clone())
-                .with_pipeline_consistency(pipeline_consistency);
-
+            HistoricalStateProviderRef::new(self, block_number, self.changeset_cache.clone());
         // If we pruned account or storage history, we can't return state on every historical block.
         // Instead, we should cap it at the latest prune checkpoint for corresponding prune segment.
         if let Some(prune_checkpoint_block_number) =
@@ -625,21 +575,15 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
     ///
     /// Use [`SaveBlocksMode::Full`] for production (includes receipts, state, trie).
     /// Use [`SaveBlocksMode::BlocksOnly`] for block structure only (used by `insert_block`).
-    ///
-    /// When `TrieDB` is active, precomputed-difflayer blocks are validated here but
-    /// their rocksdb flush is deferred and returned as `TriedbPendingFlush`. The
-    /// caller MUST call [`Self::commit`] on the MDBX transaction before applying
-    /// the returned flushes — see `TriedbPendingFlush` for the invariant. In
-    /// non-TrieDB mode the returned vector is always empty.
     #[instrument(level = "debug", target = "providers::db", skip_all, fields(block_count = blocks.len()))]
     pub fn save_blocks(
         &self,
         blocks: Vec<ExecutedBlock<N::Primitives>>,
         save_mode: SaveBlocksMode,
-    ) -> ProviderResult<Vec<TriedbPendingFlush>> {
+    ) -> ProviderResult<()> {
         if blocks.is_empty() {
             debug!(target: "providers::db", "Attempted to write empty block range");
-            return Ok(Vec::new())
+            return Ok(())
         }
 
         let total_start = Instant::now();
@@ -685,12 +629,6 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
         // Propagate tracing context into rayon-spawned threads so that static file
         // and RocksDB write spans appear as children of save_blocks in traces.
         let span = tracing::Span::current();
-
-        // Deferred TrieDB flushes collected during MDBX writes; moved out of the
-        // in_place_scope closure so the caller can apply them after MDBX commit.
-        let mut pending_flushes: Vec<TriedbPendingFlush> = Vec::new();
-        let pending_flushes_ref = &mut pending_flushes;
-
         runtime.storage_pool().in_place_scope(|s| {
             // SF writes
             s.spawn(|_| {
@@ -753,14 +691,8 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
                 );
             }
 
-            // Get TrieDB instance if active
-            let triedb_active = is_triedb_active();
-            let mut triedb_opt = triedb_active.then(get_global_triedb);
-
             for (i, block) in blocks.iter().enumerate() {
                 let recovered_block = block.recovered_block();
-                let block_number = recovered_block.number();
-                let state_root = recovered_block.state_root();
 
                 let start = Instant::now();
                 self.insert_block_mdbx_only(recovered_block, tx_nums[i])?;
@@ -786,106 +718,12 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
                         },
                     )?;
                     timings.write_state += start.elapsed();
-
-                    let trie_data = block.trie_data();
-
-                    if let Some(ref mut triedb) = triedb_opt {
-                        // TrieDB mode: update TrieDB instead of writing hashed state to MDBX
-                        let start = Instant::now();
-
-                        if let Some(ref difflayer) = block.difflayer {
-                            // The difflayer was precomputed during validation (newPayload).
-                            // Root was already verified there, so defer the flush until the
-                            // caller has committed MDBX.
-                            debug!(
-                                target: "providers::db",
-                                block_number,
-                                state_root = ?state_root,
-                                "Deferring precomputed triedb difflayer flush until after MDBX commit",
-                            );
-                            pending_flushes_ref.push(TriedbPendingFlush {
-                                block_number,
-                                state_root,
-                                difflayer: difflayer.clone(),
-                            });
-                        } else {
-                            // Compute-path: this needs pathdb at block_number - 1 for
-                            // parent_root, so it must flush inline. Mixing compute-path
-                            // with pending precomputed flushes would require draining
-                            // pending to pathdb BEFORE MDBX commit, which opens a
-                            // pathdb > mdbx crash window. The precomputed path covers
-                            // every validator flow — reject the mix instead of silently
-                            // risking the invariant.
-                            if !pending_flushes_ref.is_empty() {
-                                return Err(ProviderError::Database(
-                                    reth_db_api::DatabaseError::Other(format!(
-                                        "triedb save_blocks batch mixes precomputed and compute-path blocks \
-                                         (block_number={block_number}, {} pending precomputed flushes); \
-                                         refuse to flush pathdb before MDBX commit",
-                                        pending_flushes_ref.len()
-                                    )),
-                                ));
-                            }
-
-                            let (latest_block_number, latest_state_root) =
-                                triedb.latest_persist_state().map_err(ProviderError::other)?;
-
-                            if block_number > 0 && latest_block_number != block_number - 1 {
-                                return Err(ProviderError::Database(reth_db_api::DatabaseError::Other(format!(
-                                    "triedb state gap in save_blocks: latest_block_number={}, expected={}, block_number={}",
-                                    latest_block_number,
-                                    block_number - 1,
-                                    block_number
-                                ))));
-                            }
-
-                            let triedb_hashed_post_state =
-                                trie_data.hashed_state.to_triedb_hashed_post_state();
-
-                            debug!(
-                                target: "providers::db",
-                                block_number,
-                                latest_triedb_block = latest_block_number,
-                                parent_root = ?latest_state_root,
-                                expected_root = ?state_root,
-                                "Computing triedb state root in save_blocks",
-                            );
-
-                            let (new_root, difflayer) = triedb
-                                .intermediate_and_commit_hashed_post_state(
-                                    latest_state_root,
-                                    None,
-                                    &triedb_hashed_post_state,
-                                    None,
-                                )
-                                .map_err(ProviderError::other)?;
-
-                            if new_root != state_root {
-                                return Err(ProviderError::Database(reth_db_api::DatabaseError::Other(format!(
-                                    "triedb update failed in save_blocks: new_root({:?}) != expected_root({:?}), block_number={}",
-                                    new_root,
-                                    state_root,
-                                    block_number
-                                ))));
-                            }
-
-                            triedb
-                                .flush(block_number, new_root, &Some(difflayer))
-                                .map_err(ProviderError::other)?;
-                        }
-
-                        timings.write_hashed_state += start.elapsed();
-                    } else {
-                        // Non-TrieDB mode: write hashed state to MDBX
-                        self.write_hashed_state(&trie_data.hashed_state)?;
-                    }
                 }
             }
 
             // Write all hashed state and trie updates in single batches.
             // This reduces cursor open/close overhead from N calls to 1.
-            // Skip in TrieDB mode — TrieDB manages its own trie data.
-            if save_mode.with_state() && !triedb_active {
+            if save_mode.with_state() {
                 // Blocks are oldest-to-newest, merge_batch expects newest-to-oldest.
                 let start = Instant::now();
                 let merged_hashed_state = HashedPostStateSorted::merge_batch(
@@ -938,7 +776,7 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
         self.metrics.record_save_blocks(&timings);
         debug!(target: "providers::db", range = ?first_number..=last_block_number, "Appended block data");
 
-        Ok(pending_flushes)
+        Ok(())
     }
 
     /// Writes MDBX-only data for a block (indices, lookups, and senders if configured for MDBX).
@@ -1028,22 +866,18 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
         self.unwind_storage_history_indices(changed_storages.iter().copied())?;
 
         // Unwind accounts/storages trie tables using the revert.
-        // Skip in TrieDB mode - TrieDB manages its own trie data.
-        if !is_triedb_active() {
-            // Get the database tip block number
-            let db_tip_block = self
-                .get_stage_checkpoint(reth_stages_types::StageId::Finish)?
-                .as_ref()
-                .map(|chk| chk.block_number)
-                .ok_or_else(|| ProviderError::InsufficientChangesets {
-                    requested: from,
-                    available: 0..=0,
-                })?;
+        // Get the database tip block number
+        let db_tip_block = self
+            .get_stage_checkpoint(reth_stages_types::StageId::Finish)?
+            .as_ref()
+            .map(|chk| chk.block_number)
+            .ok_or_else(|| ProviderError::InsufficientChangesets {
+                requested: from,
+                available: 0..=0,
+            })?;
 
-            let trie_revert =
-                self.changeset_cache.get_or_compute_range(self, from..=db_tip_block)?;
-            self.write_trie_updates_sorted(&trie_revert)?;
-        }
+        let trie_revert = self.changeset_cache.get_or_compute_range(self, from..=db_tip_block)?;
+        self.write_trie_updates_sorted(&trie_revert)?;
 
         Ok(())
     }
@@ -1101,15 +935,9 @@ impl<TX: DbTx + 'static, N: NodeTypes> TryIntoHistoricalStateProvider for Databa
             });
         }
 
-        // Only use the LatestStateProvider fast path when there is no pipeline gap.
-        // During pipeline sync the Execution stage may have advanced PlainState beyond the
-        // Finish checkpoint, so LatestStateProvider would return data from a future block.
-        let pipeline_consistency = self.build_pipeline_consistency()?;
-        if block_number == best_block &&
-            pipeline_consistency.account_inconsistency().is_none() &&
-            pipeline_consistency.storage_inconsistency().is_none()
-        {
-            return Ok(Box::new(LatestStateProvider::new(self)))
+        // If requesting state at the best block, use the latest state provider
+        if block_number == best_block {
+            return Ok(Box::new(LatestStateProvider::new(self)));
         }
 
         // +1 as the changeset that we want is the one that was applied after this block.
@@ -1119,8 +947,9 @@ impl<TX: DbTx + 'static, N: NodeTypes> TryIntoHistoricalStateProvider for Databa
             self.get_prune_checkpoint(PruneSegment::AccountHistory)?;
         let storage_history_prune_checkpoint =
             self.get_prune_checkpoint(PruneSegment::StorageHistory)?;
-        let mut state_provider = HistoricalStateProvider::new(self, block_number)
-            .with_pipeline_consistency(pipeline_consistency);
+        let changeset_cache = self.changeset_cache.clone();
+
+        let mut state_provider = HistoricalStateProvider::new(self, block_number, changeset_cache);
 
         // If we pruned account or storage history, we can't return state on every historical block.
         // Instead, we should cap it at the latest prune checkpoint for corresponding prune segment.
@@ -1926,37 +1755,7 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> HeaderProvider for DatabasePro
     }
 
     fn header_by_number(&self, num: BlockNumber) -> ProviderResult<Option<Self::Header>> {
-        self.static_file_provider.get_with_static_file_or_database(
-            StaticFileSegment::Headers,
-            num,
-            |static_file| static_file.header_by_number(num),
-            || Ok(self.tx.get::<tables::Headers<Self::Header>>(num)?),
-        )
-    }
-
-    fn header_td(&self, block_hash: &BlockHash) -> ProviderResult<Option<U256>> {
-        if let Some(num) = self.block_number(*block_hash)? {
-            self.header_td_by_number(num)
-        } else {
-            Ok(None)
-        }
-    }
-
-    fn header_td_by_number(&self, number: BlockNumber) -> ProviderResult<Option<U256>> {
-        if self.chain_spec.is_paris_active_at_block(number) &&
-            let Some(td) = self.chain_spec.final_paris_total_difficulty()
-        {
-            // if this block is higher than the final paris(merge) block, return the final paris
-            // difficulty
-            return Ok(Some(td));
-        }
-
-        self.static_file_provider.get_with_static_file_or_database(
-            StaticFileSegment::Headers,
-            number,
-            |static_file| static_file.header_td_by_number(number),
-            || Ok(self.tx.get::<tables::HeaderTerminalDifficulties>(number)?.map(|td| td.0)),
-        )
+        self.static_file_provider.header_by_number(num)
     }
 
     fn headers_range(
@@ -1970,21 +1769,7 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> HeaderProvider for DatabasePro
         &self,
         number: BlockNumber,
     ) -> ProviderResult<Option<SealedHeader<Self::Header>>> {
-        self.static_file_provider.get_with_static_file_or_database(
-            StaticFileSegment::Headers,
-            number,
-            |static_file| static_file.sealed_header(number),
-            || {
-                if let Some(header) = self.header_by_number(number)? {
-                    let hash = self
-                        .block_hash(number)?
-                        .ok_or_else(|| ProviderError::HeaderNotFound(number.into()))?;
-                    Ok(Some(SealedHeader::new(header, hash)))
-                } else {
-                    Ok(None)
-                }
-            },
-        )
+        self.static_file_provider.sealed_header(number)
     }
 
     fn sealed_headers_while(
@@ -3359,12 +3144,6 @@ impl<TX: DbTxMut + DbTx + 'static, N: NodeTypes> TrieWriter for DatabaseProvider
     /// Returns the number of entries modified.
     #[instrument(level = "debug", target = "providers::db", skip_all)]
     fn write_trie_updates_sorted(&self, trie_updates: &TrieUpdatesSorted) -> ProviderResult<usize> {
-        if rust_eth_triedb::triedb_manager::is_triedb_active() {
-            tracing::error!("write_trie_updates is not supported triedb");
-            return Err(ProviderError::Database(reth_db_api::DatabaseError::Other(
-                "write_trie_updates is not supported triedb".to_string(),
-            )));
-        }
         if trie_updates.is_empty() {
             return Ok(0)
         }
@@ -3393,13 +3172,6 @@ impl<TX: DbTxMut + DbTx + 'static, N: NodeTypes> StorageTrieWriter for DatabaseP
         &self,
         storage_tries: impl Iterator<Item = (&'a B256, &'a StorageTrieUpdatesSorted)>,
     ) -> ProviderResult<usize> {
-        if rust_eth_triedb::triedb_manager::is_triedb_active() {
-            tracing::error!("write_storage_trie_updates is not supported triedb");
-            return Err(ProviderError::Database(reth_db_api::DatabaseError::Other(
-                "write_trie_updates is not supported triedb".to_string(),
-            )));
-        }
-
         let mut num_entries = 0;
         let mut storage_tries = storage_tries.collect::<Vec<_>>();
         storage_tries.sort_unstable_by(|a, b| a.0.cmp(b.0));
@@ -3762,10 +3534,8 @@ impl<TX: DbTxMut + DbTx + 'static, N: NodeTypesForProvider> BlockWriter
             ComputedTrieData::default(),
         );
 
-        // Delegate to save_blocks with BlocksOnly mode (skips receipts/state/trie).
-        // BlocksOnly never touches triedb, so the returned vec is always empty.
-        let _pending = self.save_blocks(vec![executed_block], SaveBlocksMode::BlocksOnly)?;
-        debug_assert!(_pending.is_empty());
+        // Delegate to save_blocks with BlocksOnly mode (skips receipts/state/trie)
+        self.save_blocks(vec![executed_block], SaveBlocksMode::BlocksOnly)?;
 
         // Return the body indices
         self.block_body_indices(block_number)?

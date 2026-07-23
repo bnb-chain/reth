@@ -185,11 +185,6 @@ pub struct EngineMetrics {
     pub(crate) failed_forkchoice_updated_response_deliveries: Counter,
     /// block insert duration
     pub(crate) block_insert_total_duration: Histogram,
-    /// Block insert throughput in mgas/s
-    pub(crate) block_insert_mgasps: Gauge,
-    /// Block insertion delay: the difference between current timestamp and block header timestamp
-    /// (in nanoseconds)
-    pub(crate) block_insert_timestamp_delay: Histogram,
 }
 
 /// Metrics for engine forkchoiceUpdated responses.
@@ -540,18 +535,6 @@ pub struct BlockValidationMetrics {
     pub hashed_post_state_size: Histogram,
     /// Size of `TrieUpdatesSorted` (`total_len`)
     pub trie_updates_sorted_size: Histogram,
-    /// Size of `AnchoredTrieInput` overlay `TrieUpdatesSorted` (`total_len`)
-    pub anchored_overlay_trie_updates_size: Histogram,
-    /// Size of `AnchoredTrieInput` overlay `HashedPostStateSorted` (`total_len`)
-    pub anchored_overlay_hashed_state_size: Histogram,
-    /// triedb validate execution duration
-    pub triedb_validate_execution_duration: Histogram,
-    /// triedb validate root duration
-    pub triedb_validate_root_duration: Histogram,
-    /// Total number of times the triedb validation path was entered.
-    pub triedb_validate_entry_total: Counter,
-    /// Histogram of triedb validation duration.
-    pub triedb_validate_entry_duration: Histogram,
 }
 
 impl BlockValidationMetrics {

@@ -28,9 +28,6 @@ pub use reth_trie_parallel::{
         StateRootSink, StateRootTaskCancelGuard, StateRootUpdateHook, StateRootUpdateStream,
     },
 };
-use rust_eth_triedb::triedb_reth::TrieDBPrefetchState;
-use rust_eth_triedb_common::DiffLayers;
-use rust_eth_triedb_pathdb::PathDB;
 use std::{
     ops::Not,
     sync::{

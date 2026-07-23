@@ -155,11 +155,9 @@ use reth_provider::{
 use reth_revm::db::{states::bundle_state::BundleRetention, BundleAccount, State};
 use reth_trie::{
     hashed_cursor::HashedCursorFactory, prefix_set::TriePrefixSetsMut,
-    trie_cursor::TrieCursorFactory, updates::TrieUpdates, ComputedTrieData, HashedPostState,
-    LazyTrieData,
+    trie_cursor::TrieCursorFactory, updates::TrieUpdates, LazyTrieData,
 };
 use reth_trie_db::ChangesetCache;
-use rust_eth_triedb::{get_global_triedb, TrieDBError};
 use std::{
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -337,9 +335,6 @@ where
         state_trie_overlays: StateTrieOverlayManager<N>,
         runtime: reth_tasks::Runtime,
     ) -> Self {
-        // R1: publish the engine's shared Runtime so an embedder's miner can submit proof
-        // work to the same rayon pools instead of building a second competing set.
-        reth_tasks::set_shared_engine_runtime(runtime.clone());
         let precompile_cache_map = PrecompileCacheMap::default();
         let payload_processor = PayloadProcessor::new(
             runtime.clone(),
@@ -444,324 +439,6 @@ where
         }
     }
 
-    /// Handles execution errors by checking if header validation errors should take precedence.
-    ///
-    /// When an execution error occurs, this function checks if there are any header validation
-    /// errors that should be reported instead, as header validation errors have higher priority.
-    fn handle_execution_error<T: PayloadTypes<BuiltPayload: BuiltPayload<Primitives = N>>>(
-        &self,
-        input: BlockOrPayload<T>,
-        execution_err: InsertBlockErrorKind,
-        parent_block: &SealedHeader<N::BlockHeader>,
-    ) -> InsertPayloadResult<N>
-    where
-        V: PayloadValidator<T, Block = N::Block>,
-    {
-        debug!(
-            target: "engine::tree::payload_validator",
-            ?execution_err,
-            block = ?input.num_hash(),
-            "Block execution failed, checking for header validation errors"
-        );
-
-        // If execution failed, we should first check if there are any header validation
-        // errors that take precedence over the execution error
-        let block = self.convert_to_block(input)?;
-
-        // Validate block consensus rules which includes header validation
-        if let Err(consensus_err) = self.validate_block_inner(&block, None) {
-            // Header validation error takes precedence over execution error
-            return Err(InsertBlockError::new(block, consensus_err.into()).into())
-        }
-
-        // Also validate against the parent
-        if let Err(consensus_err) =
-            self.consensus.validate_header_against_parent(block.sealed_header(), parent_block)
-        {
-            // Parent validation error takes precedence over execution error
-            return Err(InsertBlockError::new(block, consensus_err.into()).into())
-        }
-
-        // No header validation errors, return the original execution error
-        Err(InsertBlockError::new(block, execution_err).into())
-    }
-
-    /// Validates a block that has already been converted from a payload with triedb.
-    ///
-    /// This is a simplified path that skips state root computation since the triedb backend
-    /// handles state root verification independently.
-    pub fn validate_block_with_state_with_triedb<
-        T: PayloadTypes<BuiltPayload: BuiltPayload<Primitives = N>>,
-    >(
-        &mut self,
-        input: BlockOrPayload<T>,
-        mut ctx: TreeCtx<'_, N>,
-    ) -> ValidationOutcome<N, InsertPayloadError<N::Block>>
-    where
-        V: PayloadValidator<T, Block = N::Block>,
-        Evm: ConfigureEngineEvm<T::ExecutionData, Primitives = N>,
-    {
-        /// A helper macro for handling errors after the input has been converted to a block
-        macro_rules! ensure_ok_post_block {
-            ($expr:expr, $block:expr) => {
-                match $expr {
-                    Ok(val) => val,
-                    Err(e) => {
-                        return Err(
-                            InsertBlockError::new($block.into_sealed_block(), e.into()).into()
-                        )
-                    }
-                }
-            };
-        }
-
-        let parent_hash = input.parent_hash();
-        let block_num_hash = input.num_hash();
-
-        // Look up difflayers for this parent; passed to the prefetcher and state root commit.
-        let difflayers = ctx.state().merged_difflayer_by_hash(parent_hash);
-
-        // Acquire the global triedb and extract the path_db handle for the prefetcher.
-        let mut triedb = get_global_triedb();
-        let path_db = triedb.get_mut_path_db_ref();
-
-        trace!(target: "engine::tree", block=?block_num_hash, parent=?parent_hash, "Fetching block state provider (triedb path)");
-
-        let provider_builder = match self.state_provider_builder(parent_hash, ctx.state()) {
-            Ok(Some(pb)) => pb,
-            Ok(None) => {
-                return Err(InsertBlockError::new(
-                    self.convert_to_block(input)?,
-                    ProviderError::HeaderNotFound(parent_hash.into()).into(),
-                )
-                .into())
-            }
-            Err(e) => {
-                return Err(InsertBlockError::new(self.convert_to_block(input)?, e.into()).into())
-            }
-        };
-
-        let state_provider = match provider_builder.build() {
-            Ok(sp) => sp,
-            Err(e) => {
-                return Err(InsertBlockError::new(self.convert_to_block(input)?, e.into()).into())
-            }
-        };
-
-        let parent_block = match self.sealed_header_by_hash(parent_hash, ctx.state()) {
-            Ok(Some(pb)) => pb,
-            Ok(None) => {
-                return Err(InsertBlockError::new(
-                    self.convert_to_block(input)?,
-                    ProviderError::HeaderNotFound(parent_hash.into()).into(),
-                )
-                .into())
-            }
-            Err(e) => {
-                return Err(InsertBlockError::new(self.convert_to_block(input)?, e.into()).into())
-            }
-        };
-
-        let evm_env = match self.evm_env_for(&input) {
-            Ok(env) => env,
-            Err(e) => {
-                return Err(InsertBlockError::new(
-                    self.convert_to_block(input)?,
-                    InsertBlockErrorKind::Other(Box::new(NewPayloadError::other(e))),
-                )
-                .into())
-            }
-        };
-
-        let env = ExecutionEnv {
-            evm_env,
-            hash: input.hash(),
-            parent_hash: input.parent_hash(),
-            parent_state_root: parent_block.state_root(),
-            transaction_count: input.transaction_count(),
-            gas_used: input.gas_used(),
-            withdrawals: input.withdrawals().map(|w| w.to_vec()),
-            decoded_bal: None,
-        };
-
-        let txs = self.tx_iterator_for(&input)?;
-
-        // Spawn the payload processor with the triedb prefetcher. The prefetcher starts
-        // fetching trie proofs in the background while the block executes, so that the
-        // state-root commit below can proceed without blocking on trie I/O.
-        let mut handle = self.payload_processor.spawn_cache_with_triedb_prefetcher(
-            parent_block.state_root(),
-            path_db.clone(),
-            difflayers.clone(),
-            env.clone(),
-            txs,
-            provider_builder,
-        );
-
-        // Use cached state provider before executing, used in execution after prewarming threads
-        // complete.
-        let mut state_provider: Box<dyn StateProvider + Send> = Box::new(state_provider);
-        if let Some((caches, cache_metrics)) = handle.caches().zip(handle.cache_metrics()) {
-            state_provider =
-                Box::new(CachedStateProvider::new(state_provider, caches, cache_metrics));
-        }
-
-        let execution_start = Instant::now();
-        // Execute the block and handle any execution errors.
-        let (output, senders, receipt_root_rx) =
-            match self.execute_block(state_provider, env, &input, &mut handle) {
-                Ok(result) => result,
-                Err(e) => {
-                    return Err(InsertBlockError::new(self.convert_to_block(input)?, e).into())
-                }
-            };
-
-        self.metrics
-            .block_validation
-            .triedb_validate_execution_duration
-            .record(execution_start.elapsed().as_secs_f64());
-
-        // Spawn hashed_state computation as a background task so it runs in parallel
-        // with the receipt root wait below.
-        let hashed_state_output = output.clone();
-        let hashed_state_provider = self.provider.clone();
-        let hashed_state: LazyHashedPostState =
-            self.payload_processor.executor().spawn_blocking_named("hash-post-state", move || {
-                hashed_state_provider.hashed_post_state(&hashed_state_output.state)
-            });
-
-        // After executing the block we can stop prewarming transactions.
-        handle.stop_prewarming_execution();
-
-        let block = self.convert_to_block(input)?;
-        let block = block.with_senders(senders);
-
-        // Wait for the receipt root computation to complete.
-        let receipt_root_bloom = receipt_root_rx.blocking_recv().ok();
-
-        let hashed_state = ensure_ok_post_block!(
-            self.validate_post_execution(
-                &block,
-                &parent_block,
-                &output,
-                &mut ctx,
-                None,
-                receipt_root_bloom,
-                hashed_state,
-            ),
-            block
-        );
-
-        let output = Arc::new(output);
-        let valid_block_tx = handle.terminate_caching(Some(output.clone()));
-
-        // Wait for the prefetcher result (may be None if prefetch failed/wasn't available).
-        let prefetch_state = match handle.triedb_preftch_result() {
-            Ok(state) => state,
-            Err(e) => {
-                warn!(
-                    target: "engine::tree",
-                    block = ?block_num_hash,
-                    "Failed to get triedb prefetch result: {:?}, continuing without prefetcher",
-                    e
-                );
-                None
-            }
-        };
-        let had_prefetch_state = prefetch_state.is_some();
-
-        // Commit the state root via triedb, accelerated by the prefetch state.
-        let trie_hashed_state = hashed_state.get().to_triedb_hashed_post_state();
-        let block_state_root = block.state_root();
-        let root_start = Instant::now();
-        let (new_root, difflayer) = triedb
-            .intermediate_and_commit_hashed_post_state(
-                parent_block.state_root(),
-                difflayers.as_ref(),
-                &trie_hashed_state,
-                prefetch_state,
-            )
-            .map_err(|e: TrieDBError| {
-                InsertPayloadError::<N::Block>::from(InsertBlockError::new(
-                    block.clone().into_sealed_block(),
-                    ProviderError::other(e).into(),
-                ))
-            })?;
-        self.metrics
-            .block_validation
-            .triedb_validate_root_duration
-            .record(root_start.elapsed().as_secs_f64());
-
-        if new_root != block_state_root {
-            // Diagnostic: recompute without the prefetch state to determine whether the
-            // prefetch inputs are affecting correctness. Uses the non-committing API so
-            // the underlying DB/difflayers are not mutated.
-            let got_no_prefetch = if had_prefetch_state {
-                match triedb.intermediate_hashed_post_state(
-                    parent_block.state_root(),
-                    difflayers.as_ref(),
-                    &trie_hashed_state,
-                    None,
-                ) {
-                    Ok(root) => Some(root),
-                    Err(e) => {
-                        warn!(
-                            target: "engine::tree",
-                            error = ?e,
-                            "Failed to recompute triedb state root without prefetch_state"
-                        );
-                        None
-                    }
-                }
-            } else {
-                None
-            };
-            // Clean up any intermediate state the diagnostic may have left behind.
-            triedb.clean();
-
-            warn!(
-                target: "engine::tree",
-                invalid_hash = ?block.hash(),
-                invalid_number = block_num_hash.number,
-                parent_hash = ?parent_block.hash(),
-                parent_state_root = ?parent_block.state_root(),
-                got = ?new_root,
-                got_no_prefetch = ?got_no_prefetch,
-                expected = ?block_state_root,
-                tx_count = block.body().transaction_count(),
-                hashed_accounts = hashed_state.get().accounts.len(),
-                hashed_storages = hashed_state.get().storages.len(),
-                has_difflayers = difflayers.is_some(),
-                "mismatched block state root (triedb validate)"
-            );
-            self.on_invalid_block(&parent_block, &block, &*output, None, ctx.state_mut());
-            return Err(InsertBlockError::new(
-                block.into_sealed_block(),
-                ConsensusError::BodyStateRootDiff(
-                    GotExpected { got: new_root, expected: block_state_root }.into(),
-                )
-                .into(),
-            )
-            .into());
-        }
-
-        if let Some(valid_block_tx) = valid_block_tx {
-            let _ = valid_block_tx.send(());
-        }
-
-        Ok((
-            ExecutedBlock {
-                recovered_block: Arc::new(block),
-                execution_output: output,
-                // trie_data is unused in triedb mode: state root is managed by triedb,
-                // overlays and changeset computation are skipped when triedb is active.
-                trie_data: LazyTrieData::ready(ComputedTrieData::default()),
-                difflayer: Some(difflayer),
-            },
-            None,
-        ))
-    }
-
     /// Validates a block that has already been converted from a payload.
     ///
     /// This method performs:
@@ -787,27 +464,6 @@ where
         V: PayloadValidator<T, Block = N::Block> + Clone,
         Evm: ConfigureEngineEvm<T::ExecutionData, Primitives = N>,
     {
-        if rust_eth_triedb::triedb_manager::is_triedb_active() {
-            // Track which triedb validation path is used and how long it takes.
-            let block_num_hash = input.num_hash();
-            let start = Instant::now();
-            self.metrics.block_validation.triedb_validate_entry_total.increment(1);
-
-            let res = self.validate_block_with_state_with_triedb(input, ctx);
-
-            let elapsed = start.elapsed().as_secs_f64();
-            self.metrics.block_validation.triedb_validate_entry_duration.record(elapsed);
-
-            tracing::debug!(
-                target: "engine::tree",
-                block = ?block_num_hash,
-                elapsed_ms = (elapsed * 1000.0),
-                "Triedb validate_block_with_state completed"
-            );
-
-            return res;
-        }
-
         let parent_hash = input.parent_hash();
         let _jit_pause = JitPauseGuard::new(&self.evm_config);
 
@@ -1386,7 +1042,7 @@ where
         let execution_start = Instant::now();
 
         // Execute all transactions and finalize
-        let (executor, senders, last_sent_len) = self.execute_transactions(
+        let (executor, senders) = self.execute_transactions(
             executor,
             transaction_count,
             handle.iter_transactions(),
@@ -1394,25 +1050,14 @@ where
             &executed_tx_index,
             has_bal,
         )?;
+        drop(receipt_tx);
 
-        // Finish execution and get the result. `receipt_tx` is kept alive across this
-        // call: some executors (e.g. BSC) append additional receipts here (a system
-        // transaction's receipt) that were never streamed by the main loop above.
+        // Finish execution and get the result
         let post_exec_start = Instant::now();
         let (_evm, result) = debug_span!(target: "engine::tree", "BlockExecutor::finish")
             .in_scope(|| executor.finish())
             .map(|(evm, result)| (evm.into_db(), result))?;
         self.metrics.record_post_execution(post_exec_start.elapsed());
-
-        // Stream any receipts that were only appended during finalization, so the
-        // receipt-root task still receives the complete set instead of always
-        // finalizing short.
-        if result.receipts.len() > last_sent_len {
-            for (tx_index, receipt) in result.receipts.iter().enumerate().skip(last_sent_len) {
-                let _ = receipt_tx.send(IndexedReceipt::new(tx_index, receipt.clone()));
-            }
-        }
-        drop(receipt_tx);
 
         // Merge transitions into bundle state
         debug_span!(target: "engine::tree", "merge_transitions")
@@ -1630,7 +1275,7 @@ where
 
         drop(exec_span);
 
-        Ok((executor, senders, last_sent_len))
+        Ok((executor, senders))
     }
 
     /// Validates the block after execution.

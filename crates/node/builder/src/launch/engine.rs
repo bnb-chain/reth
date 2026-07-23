@@ -36,13 +36,12 @@ use reth_node_core::{
 use reth_node_events::node;
 use reth_provider::{
     providers::{BlockchainProvider, NodeTypesForProvider},
-    BlockNumReader, HeaderProvider, StorageSettingsCache,
+    BlockNumReader, StorageSettingsCache,
 };
 use reth_tasks::TaskExecutor;
 use reth_tokio_util::EventSender;
-use reth_tracing::tracing::{debug, error, info, warn};
+use reth_tracing::tracing::{debug, error, info};
 use reth_trie_db::ChangesetCache;
-use rust_eth_triedb::triedb_manager::is_triedb_active;
 use std::{future::Future, pin::Pin, sync::Arc};
 use tokio::sync::{mpsc::unbounded_channel, oneshot};
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -139,17 +138,6 @@ impl EngineNodeLauncher {
             })?
             .with_components(components_builder, on_component_initialized).await?;
 
-        let engine_tree_config = if is_triedb_active() &&
-            engine_tree_config.memory_block_buffer_target() < 256
-        {
-            info!(target: "reth::cli", "TrieDB is active, setting memory block buffer target to 256, old target={}", engine_tree_config.memory_block_buffer_target());
-            engine_tree_config.with_memory_block_buffer_target(256)
-        } else {
-            engine_tree_config.clone()
-        };
-
-        // Try to expire pre-merge transaction history if configured
-        ctx.expire_pre_merge_transactions()?;
         // spawn exexs if any
         let maybe_exex_manager_handle = ctx.launch_exex(installed_exex).await?;
 
@@ -204,16 +192,6 @@ impl EngineNodeLauncher {
         let event_sender = EventSender::default();
 
         let beacon_engine_handle = ConsensusEngineHandle::new(consensus_engine_tx.clone());
-        let (engine_api_tx, mut engine_api_rx) = unbounded_channel::<
-            EngineApiRequest<
-                <<T as FullNodeTypes>::Types as NodeTypes>::Payload,
-                <<T as FullNodeTypes>::Types as NodeTypes>::Primitives,
-                BlockchainProvider<
-                    NodeTypesWithDBAdapter<<T as FullNodeTypes>::Types, <T as FullNodeTypes>::DB>,
-                >,
-                <CB::Components as NodeComponents<T>>::Evm,
-            >,
-        >();
 
         // extract the jwt secret from the args if possible
         let jwt_secret = ctx.auth_jwt_secret()?;
@@ -319,7 +297,6 @@ impl EngineNodeLauncher {
             engine_events,
             beacon_engine_handle,
             engine_shutdown: _,
-            engine_api_tx: _rpc_engine_api_tx,
         } = add_ons.launch_add_ons(add_ons_ctx).await?;
 
         // Create engine shutdown handle
@@ -354,73 +331,12 @@ impl EngineNodeLauncher {
 
             let mut res = Ok(());
             let mut shutdown_rx = shutdown_rx.fuse();
-            // First shutdown wins: once either the TaskManager graceful signal
-            // or EngineShutdown has sent `FromOrchestrator::Terminate`, gate
-            // the other arm so the engine-tree doesn't receive a second
-            // Terminate (which would panic on done_tx send).
-            let mut terminating = false;
 
             // advance the chain and await payloads built locally to add into the engine api
             // tree handler to prevent re-execution if that block is received as payload from
             // the CL
             loop {
                 tokio::select! {
-                    // TaskManager graceful-shutdown signal (SIGTERM/Ctrl-C path).
-                    // Holds the GracefulShutdownGuard across the flush so
-                    // graceful_shutdown_with_timeout blocks until the
-                    // persist_until_complete round-trip finishes.
-                    _guard = &mut on_graceful_shutdown, if !terminating => {
-                        let canonical_tip = provider.best_block_number().ok();
-                        let persisted_before = provider.last_block_number().ok();
-                        info!(
-                            target: "reth::cli",
-                            ?canonical_tip, ?persisted_before,
-                            "Graceful shutdown: starting engine flush",
-                        );
-                        let flush_start = std::time::Instant::now();
-                        let (done_tx, done_rx) = oneshot::channel();
-                        orchestrator.handler_mut().handler_mut().on_event(
-                            FromOrchestrator::Terminate { tx: done_tx }.into()
-                        );
-                        match done_rx.await {
-                            Ok(()) => info!(
-                                target: "reth::cli",
-                                duration_ms = flush_start.elapsed().as_millis() as u64,
-                                ?persisted_before,
-                                persisted_after = ?provider.last_block_number().ok(),
-                                "Graceful shutdown: engine flush complete",
-                            ),
-                            Err(err) => warn!(
-                                target: "reth::cli",
-                                %err,
-                                duration_ms = flush_start.elapsed().as_millis() as u64,
-                                "Graceful shutdown: done-channel closed before completion",
-                            ),
-                        }
-                        // `break` enforces the invariant; no need to set
-                        // `terminating = true` here.
-                        break;
-                    }
-                    shutdown_req = &mut shutdown_rx, if !terminating => {
-                        if let Ok(req) = shutdown_req {
-                            debug!(target: "reth::cli", "received engine shutdown request");
-                            terminating = true;
-                            orchestrator.handler_mut().handler_mut().on_event(
-                                FromOrchestrator::Terminate { tx: req.done_tx }.into()
-                            );
-                        }
-                    }
-                    payload = built_payloads.select_next_some(), if !built_payloads.is_terminated() => {
-                        if let Some(executed_block) = payload.executed_block() {
-                            debug!(target: "reth::cli", block=?executed_block.recovered_block.num_hash(),  "inserting built payload");
-                            orchestrator.handler_mut().handler_mut().on_event(EngineApiRequest::InsertExecutedBlock(executed_block.into_executed_payload()).into());
-                        }
-                    }
-                    req = engine_api_rx.recv() => {
-                        if let Some(req) = req {
-                            orchestrator.handler_mut().handler_mut().on_event(req.into());
-                        }
-                    }
                     event = orchestrator.next() => {
                         let Some(event) = event else { break };
                         debug!(target: "reth::cli", "Event: {event}");
@@ -451,14 +367,8 @@ impl EngineNodeLauncher {
                                         hash: head.hash(),
                                         difficulty: head.difficulty(),
                                         timestamp: head.timestamp(),
-                                        // For Ethereum, total_difficulty becomes a constant at Paris
-                                        // so the first branch is the fast path. For chains where
-                                        // Paris never activates (BSC), fall back to the real TD from
-                                        // the provider so the status message doesn't advertise 0 and
-                                        // get filtered out by remote peers as a useless sync source.
                                         total_difficulty: chainspec.final_paris_total_difficulty()
                                             .filter(|_| chainspec.is_paris_active_at_block(head.number()))
-                                            .or_else(|| provider.header_td_by_number(head.number()).ok().flatten())
                                             .unwrap_or_default(),
                                     };
                                     network_handle.update_status(head_block);
@@ -525,7 +435,6 @@ impl EngineNodeLauncher {
                 engine_events,
                 beacon_engine_handle,
                 engine_shutdown,
-                engine_api_tx: Some(engine_api_tx),
             },
         };
         // Notify on node started

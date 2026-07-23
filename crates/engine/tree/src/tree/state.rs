@@ -8,7 +8,6 @@ use alloy_primitives::{
 };
 use reth_chain_state::{EthPrimitives, ExecutedBlock, StateTrieOverlayManager};
 use reth_primitives_traits::{AlloyBlockHeader, NodePrimitives, SealedHeader};
-use rust_eth_triedb_common::DiffLayers;
 use std::{
     collections::{btree_map, hash_map, BTreeMap, VecDeque},
     ops::Bound,
@@ -109,82 +108,6 @@ impl<N: NodePrimitives> TreeState<N> {
         }
 
         Some((parent_hash, blocks))
-    }
-
-    /// Prepares a cached lazy overlay for the current canonical head.
-    ///
-    /// This should be called after the canonical head changes to optimistically
-    /// prepare the overlay for the next payload that will likely build on it.
-    ///
-    /// Returns a clone of the prepared overlay so the caller can spawn a background
-    /// task to trigger computation via [`LazyOverlay::get`] for the cached anchor.
-    /// This ensures the overlay is actually computed before the next payload arrives.
-    pub(crate) fn prepare_canonical_overlay(&mut self) -> Option<PreparedCanonicalOverlay<N>> {
-        let canonical_hash = self.current_canonical_head.hash;
-
-        // Get blocks leading to the canonical head
-        let Some((anchor_hash, blocks)) = self.blocks_by_hash(canonical_hash) else {
-            // Canonical head not in memory (persisted), no overlay needed
-            self.cached_canonical_overlay = None;
-            return None;
-        };
-
-        let num_blocks = blocks.len();
-        let prepared = PreparedCanonicalOverlay {
-            parent_hash: canonical_hash,
-            overlay: LazyOverlay::new(blocks),
-            anchor_hash,
-        };
-        self.cached_canonical_overlay = Some(prepared.clone());
-
-        debug!(
-            target: "engine::tree",
-            %canonical_hash,
-            %anchor_hash,
-            num_blocks,
-            "Prepared cached canonical overlay"
-        );
-
-        Some(prepared)
-    }
-
-    /// Returns the cached overlay if it matches the requested parent hash and anchor.
-    ///
-    /// Both parent hash and anchor hash must match to ensure the overlay is valid.
-    /// This prevents using a stale overlay after persistence has advanced the anchor.
-    pub fn get_cached_overlay(
-        &self,
-        parent_hash: B256,
-        expected_anchor: B256,
-    ) -> Option<&PreparedCanonicalOverlay<N>> {
-        self.cached_canonical_overlay.as_ref().filter(|cached| {
-            cached.parent_hash == parent_hash && cached.anchor_hash == expected_anchor
-        })
-    }
-
-    /// Invalidates the cached overlay.
-    ///
-    /// Should be called when the anchor changes (e.g., after persistence).
-    pub(crate) fn invalidate_cached_overlay(&mut self) {
-        self.cached_canonical_overlay = None;
-    }
-
-    /// Returns merged difflayers accumulated from the parent block hash.
-    pub(crate) fn merged_difflayer_by_hash(&self, parent_block_hash: B256) -> Option<DiffLayers> {
-        let mut difflayers = DiffLayers::default();
-        let mut parent_hash = parent_block_hash;
-        while let Some(executed) = self.blocks_by_hash.get(&parent_hash) {
-            parent_hash = executed.recovered_block().parent_hash();
-            if let Some(executed_difflayer) = &executed.difflayer {
-                difflayers.insert_difflayer(executed_difflayer.clone());
-            }
-        }
-
-        if difflayers.is_empty() {
-            return None;
-        }
-
-        Some(difflayers)
     }
 
     /// Insert executed block into the state.
