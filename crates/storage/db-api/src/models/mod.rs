@@ -305,3 +305,25 @@ mod tests {
         validate_bitflag_backwards_compat!(StorageHashingCheckpoint, UnusedBits::NotZero);
     }
 }
+
+/// Raw binary blob storing a Parlia consensus snapshot for BNB Smart Chain checkpoints.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ParliaSnapshotBlob(pub Vec<u8>);
+
+impl crate::table::Compress for ParliaSnapshotBlob {
+    type Compressed = Vec<u8>;
+
+    fn compress(self) -> Self::Compressed {
+        self.0
+    }
+
+    fn compress_to_buf<B: bytes::BufMut + AsMut<[u8]>>(&self, buf: &mut B) {
+        buf.put_slice(&self.0);
+    }
+}
+
+impl crate::table::Decompress for ParliaSnapshotBlob {
+    fn decompress(value: &[u8]) -> Result<Self, reth_codecs::DecompressError> {
+        Ok(Self(value.to_vec()))
+    }
+}
