@@ -33,6 +33,16 @@ pub trait HeaderProvider: Send {
     /// Get header by block number
     fn header_by_number(&self, num: u64) -> ProviderResult<Option<Self::Header>>;
 
+    /// Get the total difficulty at the given block number (BSC parlia fork choice).
+    ///
+    /// Default returns `None`; providers that track total difficulty override this.
+    fn header_td_by_number(
+        &self,
+        _number: BlockNumber,
+    ) -> ProviderResult<Option<alloy_primitives::U256>> {
+        Ok(None)
+    }
+
     /// Get header by block number or hash
     fn header_by_hash_or_number(
         &self,
