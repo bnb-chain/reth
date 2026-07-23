@@ -46,8 +46,6 @@ arbitrary = { workspace = true, features = ["derive"], optional = true }
 rayon = { workspace = true, optional = true }
 
 # triedb dependencies (require std)
-rust-eth-triedb = { workspace = true, optional = true }
-rust-eth-triedb-state-trie = { workspace = true, optional = true }
 
 [dev-dependencies]
 reth-primitives-traits = { workspace = true, features = ["serde"] }
@@ -71,15 +69,10 @@ serde_with.workspace = true
 
 [features]
 default = ["std"]
-io-uring = ["rust-eth-triedb?/io-uring"]
 jemalloc = [
-    "rust-eth-triedb?/jemalloc",
-    "rust-eth-triedb-state-trie?/jemalloc",
 ]
 asm-keccak = [
-    "rust-eth-triedb?/asm-keccak",
     "alloy-primitives/asm-keccak",
-    "rust-eth-triedb-state-trie?/asm-keccak",
 ]
 std = [
     "alloy-consensus/std",
@@ -99,8 +92,6 @@ std = [
     "serde_json/std",
     "revm/std",
     "reth-codecs?/std",
-    "dep:rust-eth-triedb",
-    "dep:rust-eth-triedb-state-trie",
     "alloy-eips/std",
 ]
 eip1186 = ["alloy-rpc-types-eth/serde", "dep:alloy-serde"]
@@ -146,7 +137,6 @@ arbitrary = [
     "nybbles/arbitrary",
     "reth-codecs/arbitrary",
     "alloy-rpc-types-eth?/arbitrary",
-    "rust-eth-triedb-state-trie?/arbitrary",
     "alloy-eips/arbitrary",
     "revm/arbitrary",
 ]

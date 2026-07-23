@@ -31,7 +31,6 @@ reth-rpc-server-types.workspace = true
 reth-network-api.workspace = true
 reth-node-api.workspace = true
 reth-trie-common = { workspace = true, features = ["eip1186"] }
-rust-eth-triedb.workspace = true
 reth-prune-types.workspace = true
 
 # ethereum
@@ -65,13 +64,10 @@ serde_json.workspace = true
 tracing.workspace = true
 
 [features]
-io-uring = ["rust-eth-triedb/io-uring"]
 jemalloc = [
-    "rust-eth-triedb/jemalloc",
     "reth-trie-common/jemalloc",
 ]
 asm-keccak = [
-    "rust-eth-triedb/asm-keccak",
     "alloy-evm/asm-keccak",
     "alloy-primitives/asm-keccak",
     "reth-trie-common/asm-keccak",

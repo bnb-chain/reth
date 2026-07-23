@@ -46,7 +46,6 @@ rayon = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 
 # triedb
-rust-eth-triedb-common.workspace = true
 
 # optional deps for test-utils
 alloy-signer = { workspace = true, optional = true }
@@ -81,7 +80,6 @@ test-utils = [
     "alloy-signer-local",
     "rand",
     "rayon",
-    "revm-state",
     "reth-chainspec/test-utils",
     "reth-primitives-traits/test-utils",
     "reth-trie/test-utils",

@@ -19,7 +19,6 @@ reth-primitives-traits.workspace = true
 reth-storage-api.workspace = true
 reth-storage-errors.workspace = true
 reth-trie-common.workspace = true
-rust-eth-triedb-common = { workspace = true, optional = true }
 
 revm.workspace = true
 
@@ -43,7 +42,6 @@ reth-ethereum-primitives.workspace = true
 default = ["std"]
 std = [
     "dep:rayon",
-    "dep:rust-eth-triedb-common",
     "reth-primitives-traits/std",
     "alloy-eips/std",
     "alloy-primitives/std",

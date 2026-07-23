@@ -60,7 +60,6 @@ reth-discv4.workspace = true
 reth-discv5.workspace = true
 
 # triedb
-rust-eth-triedb.workspace = true
 
 # ethereum
 alloy-eips.workspace = true
@@ -117,9 +116,7 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [features]
 default = []
-io-uring = ["rust-eth-triedb/io-uring"]
 jemalloc = [
-    "rust-eth-triedb/jemalloc",
     "reth-cli-util/jemalloc",
     "reth-db-common/jemalloc",
     "reth-ethereum-cli/jemalloc",
@@ -132,7 +129,6 @@ jemalloc = [
     "reth-trie-db/jemalloc",
 ]
 asm-keccak = [
-    "rust-eth-triedb/asm-keccak",
     "alloy-primitives/asm-keccak",
     "reth-db-common/asm-keccak",
     "reth-ethereum-cli/asm-keccak",

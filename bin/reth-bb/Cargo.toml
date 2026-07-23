@@ -105,7 +105,6 @@ asm-keccak = [
     "alloy-primitives/asm-keccak",
     "alloy-evm/asm-keccak",
     "revm/asm-keccak",
-    "revm-primitives/asm-keccak",
     "reth-provider/asm-keccak",
     "reth-engine-tree/asm-keccak",
     "reth-node-builder/asm-keccak",
