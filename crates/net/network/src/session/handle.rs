@@ -170,6 +170,8 @@ impl<N: NetworkPrimitives> ActiveSessionHandle<N> {
             capabilities: self.capabilities.clone(),
             client_version: self.client_version.clone(),
             eth_version: self.version,
+            best_number: self.status.latest_block,
+            best_td: self.status.total_difficulty,
             status: self.status.clone(),
             session_established: self.established,
             kind,

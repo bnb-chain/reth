@@ -353,6 +353,14 @@ impl<N: NetworkPrimitives> NetworkConfigBuilder<N> {
         self
     }
 
+    /// Sets the node ids of the proxied nodes (BSC).
+    pub fn proxied_peers(mut self, peer_ids: Vec<PeerId>) -> Self {
+        let mut peers_config = self.peers_config.unwrap_or_default();
+        peers_config.proxied_node_ids = peer_ids;
+        self.peers_config = Some(peers_config);
+        self
+    }
+
     /// Sets a custom config for how sessions are handled.
     pub const fn sessions_config(mut self, config: SessionsConfig) -> Self {
         self.sessions_config = Some(config);
