@@ -232,13 +232,10 @@ pub struct NetworkConfigBuilder<N: NetworkPrimitives = EthNetworkPrimitives> {
     required_block_hashes: Vec<BlockNumHash>,
     /// Optional network id
     network_id: Option<u64>,
-<<<<<<< HEAD
     /// The node ids of the proxied nodes.
     proxied_node_ids: Vec<PeerId>,
-=======
     /// Whether to advertise the `snap/2` satellite protocol (EIP-8189) in the handshake.
     snap_enabled: bool,
->>>>>>> v2.4.1
 }
 
 impl NetworkConfigBuilder<EthNetworkPrimitives> {
@@ -282,11 +279,8 @@ impl<N: NetworkPrimitives> NetworkConfigBuilder<N> {
             eth_max_message_size: MAX_MESSAGE_SIZE,
             required_block_hashes: Vec::new(),
             network_id: None,
-<<<<<<< HEAD
             proxied_node_ids: Vec::new(),
-=======
             snap_enabled: false,
->>>>>>> v2.4.1
         }
     }
 
@@ -681,11 +675,8 @@ impl<N: NetworkPrimitives> NetworkConfigBuilder<N> {
             eth_max_message_size,
             required_block_hashes,
             network_id,
-<<<<<<< HEAD
             proxied_node_ids,
-=======
             snap_enabled,
->>>>>>> v2.4.1
         } = self;
 
         let head = head.unwrap_or_else(|| Head {

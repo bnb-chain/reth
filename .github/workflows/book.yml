@@ -1,32 +1,4 @@
-# Documentation and mdbook related jobs.
-
-name: book
-
-on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-    types: [opened, reopened, synchronize, closed]
-  merge_group:
-
-env:
-  RUSTC_WRAPPER: "sccache"
-  PINNED_NIGHTLY: nightly-2026-01-22
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    steps:
-      - name: Checkout
-<<<<<<< HEAD
         uses: actions/checkout@v6
-=======
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          persist-credentials: false
->>>>>>> v2.4.1
 
       - run: .github/scripts/install_llvm.sh ubuntu
 
@@ -72,17 +44,10 @@ jobs:
       # - name: Setup Pages
       #   uses: actions/configure-pages@v5
 
-<<<<<<< HEAD
       # - name: Upload artifact
       #   uses: actions/upload-pages-artifact@v4
       #   with:
       #     path: "./docs/vocs/docs/dist"
-=======
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
-        with:
-          path: "./docs/vocs/docs/dist/public"
->>>>>>> v2.4.1
 
   # deploy:
   #   # Only deploy if a push to main

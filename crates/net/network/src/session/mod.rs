@@ -624,12 +624,9 @@ impl<N: NetworkPrimitives> SessionManager<N> {
                     client_version: Arc::clone(&client_version),
                     remote_addr,
                     local_addr,
-<<<<<<< HEAD
                     // Initialize current_td from status
                     current_td: Arc::new(parking_lot::Mutex::new(status.total_difficulty)),
-=======
                     peer_listen_port,
->>>>>>> v2.4.1
                 };
 
                 self.active_sessions.insert(peer_id, handle);

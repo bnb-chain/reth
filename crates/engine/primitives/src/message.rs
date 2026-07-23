@@ -2,12 +2,8 @@ use crate::{
     error::BeaconForkChoiceUpdateError, BSCEngineMessageError, BeaconOnNewPayloadError,
     ExecutionPayload, ForkchoiceStatus,
 };
-<<<<<<< HEAD
-use alloy_primitives::{BlockHash, BlockNumber, U256};
-=======
 use alloy_eips::eip4895::Withdrawal;
-use alloy_primitives::{Bytes, B256};
->>>>>>> v2.4.1
+use alloy_primitives::{BlockHash, BlockNumber, Bytes, B256, U256};
 use alloy_rpc_types_engine::{
     ExecutionData, ForkChoiceUpdateResult, ForkchoiceState, ForkchoiceUpdateError,
     ForkchoiceUpdated, PayloadId, PayloadStatus, PayloadStatusEnum,

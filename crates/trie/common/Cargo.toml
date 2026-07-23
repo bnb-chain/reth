@@ -99,12 +99,9 @@ std = [
     "serde_json/std",
     "revm/std",
     "reth-codecs?/std",
-<<<<<<< HEAD
     "dep:rust-eth-triedb",
     "dep:rust-eth-triedb-state-trie",
-=======
     "alloy-eips/std",
->>>>>>> v2.4.1
 ]
 eip1186 = ["alloy-rpc-types-eth/serde", "dep:alloy-serde"]
 serde = [
@@ -149,11 +146,8 @@ arbitrary = [
     "nybbles/arbitrary",
     "reth-codecs/arbitrary",
     "alloy-rpc-types-eth?/arbitrary",
-<<<<<<< HEAD
     "rust-eth-triedb-state-trie?/arbitrary",
-=======
     "alloy-eips/arbitrary",
     "revm/arbitrary",
->>>>>>> v2.4.1
 ]
 rayon = ["dep:rayon"]

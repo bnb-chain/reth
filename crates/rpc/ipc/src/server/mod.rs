@@ -372,11 +372,7 @@ pub struct TowerServiceNoHttp<L> {
 impl<RpcMiddleware> Service<String> for TowerServiceNoHttp<RpcMiddleware>
 where
     RpcMiddleware: Layer<RpcService>,
-<<<<<<< HEAD
     for<'a> <RpcMiddleware as Layer<RpcService>>::Service:
-=======
-    <RpcMiddleware as Layer<RpcService>>::Service:
->>>>>>> v2.4.1
         Send + Sync + 'static + RpcServiceT<MethodResponse = MethodResponse>,
 {
     /// The response of a handled RPC call

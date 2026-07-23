@@ -2,13 +2,9 @@
 
 use crate::{
     args::{
-<<<<<<< HEAD
-        DatabaseArgs, DatadirArgs, DebugArgs, DevArgs, EngineArgs, NetworkArgs, PayloadBuilderArgs,
-        PruningArgs, RpcServerArgs, StateDbArgs, StaticFilesArgs, StorageArgs, TxPoolArgs,
-=======
         DatabaseArgs, DatadirArgs, DebugArgs, DevArgs, EngineArgs, JitArgs, NetworkArgs,
-        PayloadBuilderArgs, PruningArgs, RpcServerArgs, StaticFilesArgs, StorageArgs, TxPoolArgs,
->>>>>>> v2.4.1
+        PayloadBuilderArgs, PruningArgs, RpcServerArgs, StateDbArgs, StaticFilesArgs, StorageArgs,
+        TxPoolArgs,
     },
     dirs::{ChainPath, DataDirPath},
     utils::get_single_header,

@@ -5,14 +5,9 @@ use alloc::{sync::Arc, vec::Vec};
 use alloy_consensus::transaction::TxHashRef;
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{
-<<<<<<< HEAD
-    map::{HashMap, HashSet},
-    Bytes, TxHash, B256, U128, U256,
-=======
     bytes::BufMut,
-    map::{B256Map, B256Set},
-    Bytes, TxHash, B128, B256, U128,
->>>>>>> v2.4.1
+    map::{B256Map, B256Set, HashMap, HashSet},
+    Bytes, TxHash, B128, B256, U128, U256,
 };
 use alloy_rlp::{
     decode_append, Decodable, Encodable, Header, RlpDecodable, RlpDecodableWrapper, RlpEncodable,

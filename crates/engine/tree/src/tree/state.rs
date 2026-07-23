@@ -111,7 +111,6 @@ impl<N: NodePrimitives> TreeState<N> {
         Some((parent_hash, blocks))
     }
 
-<<<<<<< HEAD
     /// Prepares a cached lazy overlay for the current canonical head.
     ///
     /// This should be called after the canonical head changes to optimistically
@@ -188,8 +187,6 @@ impl<N: NodePrimitives> TreeState<N> {
         Some(difflayers)
     }
 
-=======
->>>>>>> v2.4.1
     /// Insert executed block into the state.
     pub fn insert_executed(&mut self, executed: ExecutedBlock<N>) {
         let hash = executed.recovered_block().hash();

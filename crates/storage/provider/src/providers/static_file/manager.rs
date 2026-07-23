@@ -8,20 +8,14 @@ use crate::{
     EitherWriterDestination, HeaderProvider, ReceiptProvider, StageCheckpointReader, StatsReader,
     TransactionVariant, TransactionsProvider, TransactionsProviderExt,
 };
-<<<<<<< HEAD
-use alloy_consensus::{transaction::TransactionMeta, Header};
-use alloy_eips::{eip2718::Encodable2718, BlockHashOrNumber};
-use alloy_primitives::{
-    b256, keccak256, Address, BlockHash, BlockNumber, TxHash, TxNumber, B256, U256,
-};
-=======
 use alloy_consensus::{
     transaction::{TransactionMeta, TxHashRef},
     Header,
 };
-use alloy_eips::BlockHashOrNumber;
-use alloy_primitives::{b256, Address, BlockHash, BlockNumber, TxHash, TxNumber, B256};
->>>>>>> v2.4.1
+use alloy_eips::{eip2718::Encodable2718, BlockHashOrNumber};
+use alloy_primitives::{
+    b256, keccak256, Address, BlockHash, BlockNumber, TxHash, TxNumber, B256, U256,
+};
 
 use parking_lot::RwLock;
 use reth_chain_state::ExecutedBlock;

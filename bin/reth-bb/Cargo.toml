@@ -105,13 +105,10 @@ asm-keccak = [
     "alloy-primitives/asm-keccak",
     "alloy-evm/asm-keccak",
     "revm/asm-keccak",
-<<<<<<< HEAD
     "revm-primitives/asm-keccak",
     "reth-provider/asm-keccak",
     "reth-engine-tree/asm-keccak",
     "reth-node-builder/asm-keccak",
-=======
->>>>>>> v2.4.1
 ]
 
 keccak-cache-global = [

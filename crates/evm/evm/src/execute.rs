@@ -22,16 +22,12 @@ use reth_primitives_traits::{
 use reth_storage_api::StateProvider;
 pub use reth_storage_errors::provider::ProviderError;
 use reth_trie_common::{updates::TrieUpdates, HashedPostState};
-<<<<<<< HEAD
-use revm::database::{states::bundle_state::BundleRetention, BundleState, State};
-#[cfg(feature = "std")]
-use rust_eth_triedb_common::DiffLayer;
-=======
 use revm::{
     database::{states::bundle_state::BundleRetention, BundleState, State},
     state::bal::Bal,
 };
->>>>>>> v2.4.1
+#[cfg(feature = "std")]
+use rust_eth_triedb_common::DiffLayer;
 
 /// A type that knows how to execute a block. It is assumed to operate on a
 /// [`crate::Evm`] internally and use [`State`] as database.

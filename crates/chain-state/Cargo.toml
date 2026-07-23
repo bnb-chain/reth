@@ -80,11 +80,8 @@ test-utils = [
     "alloy-signer",
     "alloy-signer-local",
     "rand",
-<<<<<<< HEAD
     "rayon",
     "revm-state",
-=======
->>>>>>> v2.4.1
     "reth-chainspec/test-utils",
     "reth-primitives-traits/test-utils",
     "reth-trie/test-utils",

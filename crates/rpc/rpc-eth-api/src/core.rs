@@ -18,11 +18,9 @@ use alloy_serde::JsonStorageKey;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use reth_primitives_traits::TxTy;
 use reth_rpc_convert::RpcTxReq;
-<<<<<<< HEAD
-use reth_rpc_eth_types::{EthApiError, FillTransaction, TransactionDataAndReceipt};
-=======
-use reth_rpc_eth_types::{EthApiError, EthCapabilities, FillTransaction};
->>>>>>> v2.4.1
+use reth_rpc_eth_types::{
+    EthApiError, EthCapabilities, FillTransaction, TransactionDataAndReceipt,
+};
 use reth_rpc_server_types::{result::internal_rpc_err, ToRpcResult};
 use serde_json::Value;
 use std::collections::HashMap;

@@ -48,7 +48,6 @@ impl BeaconForkChoiceUpdateError {
     }
 }
 
-<<<<<<< HEAD
 /// Represents error cases for a BSC message.
 #[derive(Debug, thiserror::Error)]
 pub enum BSCEngineMessageError {
@@ -63,7 +62,6 @@ impl BSCEngineMessageError {
         Self::Internal(Box::new(e))
     }
 }
-=======
 /// All error variants possible when inserting or validating a block.
 #[derive(Debug, thiserror::Error)]
 pub enum InsertBlockErrorKind {
@@ -134,4 +132,3 @@ pub enum InsertBlockValidationError {
     #[error(transparent)]
     Validation(#[from] BlockValidationError),
 }
->>>>>>> v2.4.1

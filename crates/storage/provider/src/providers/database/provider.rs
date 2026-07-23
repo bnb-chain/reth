@@ -33,13 +33,8 @@ use alloy_primitives::{
 use itertools::Itertools;
 use parking_lot::RwLock;
 use rayon::slice::ParallelSliceMut;
-<<<<<<< HEAD
 use reth_chain_state::{ComputedTrieData, ExecutedBlock};
 use reth_chainspec::{ChainInfo, ChainSpecProvider, EthChainSpec, EthereumHardforks};
-=======
-use reth_chain_state::ExecutedBlock;
-use reth_chainspec::{ChainInfo, ChainSpecProvider, EthChainSpec};
->>>>>>> v2.4.1
 use reth_db_api::{
     cursor::{DbCursorRO, DbCursorRW, DbDupCursorRO, DbDupCursorRW},
     database::{Database, ReaderTxnTracker},
@@ -78,12 +73,9 @@ use reth_trie_db::{ChangesetCache, DatabaseStorageTrieCursor, TrieTableAdapter};
 use revm::database::states::{
     PlainStateReverts, PlainStorageChangeset, PlainStorageRevert, StateChangeset,
 };
-<<<<<<< HEAD
 use rust_eth_triedb::{get_global_triedb, triedb_manager::is_triedb_active};
 use rust_eth_triedb_common::DiffLayer;
-=======
 use smallvec::SmallVec;
->>>>>>> v2.4.1
 use std::{
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet},

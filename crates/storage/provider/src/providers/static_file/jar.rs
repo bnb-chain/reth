@@ -6,15 +6,9 @@ use crate::{
     to_range, BlockHashReader, BlockNumReader, HeaderProvider, ReceiptProvider,
     TransactionsProvider,
 };
-<<<<<<< HEAD
-use alloy_consensus::transaction::TransactionMeta;
+use alloy_consensus::transaction::{TransactionMeta, TxHashRef};
 use alloy_eips::{eip2718::Encodable2718, BlockHashOrNumber};
 use alloy_primitives::{Address, BlockHash, BlockNumber, TxHash, TxNumber, B256, U256};
-=======
-use alloy_consensus::transaction::{TransactionMeta, TxHashRef};
-use alloy_eips::BlockHashOrNumber;
-use alloy_primitives::{Address, BlockHash, BlockNumber, TxHash, TxNumber, B256};
->>>>>>> v2.4.1
 use reth_chainspec::ChainInfo;
 use reth_db::static_file::{
     BlockHashMask, HeaderMask, HeaderWithHashMask, ReceiptMask, StaticFileCursor, TDWithHashMask,

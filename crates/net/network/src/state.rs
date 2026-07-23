@@ -9,16 +9,11 @@ use crate::{
     session::BlockRangeInfo,
     FetchClient,
 };
-<<<<<<< HEAD
 use alloy_consensus::{BlockHeader, Sealable};
-use alloy_primitives::B256;
-=======
-use alloy_consensus::BlockHeader;
 use alloy_primitives::{
     map::{FbBuildHasher, HashMap},
     B256,
 };
->>>>>>> v2.4.1
 use rand::seq::SliceRandom;
 use reth_eth_wire::{
     BlockHashNumber, Capabilities, DisconnectReason, EthNetworkPrimitives, GetReceipts70,

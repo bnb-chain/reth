@@ -17,16 +17,10 @@ reth-tracing-otlp = { workspace = true, optional = true }
 
 # obs
 tracing.workspace = true
-<<<<<<< HEAD
-tracing-subscriber = { workspace = true, features = ["env-filter", "fmt", "ansi", "json"] }
-tracing-appender.workspace = true
-tracing-journald.workspace = true
-=======
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt", "ansi", "json"], optional = true }
 tracing-appender = { workspace = true, optional = true }
 tracing-chrome = { workspace = true, optional = true }
 tracing-journald = { workspace = true, optional = true }
->>>>>>> v2.4.1
 tracing-logfmt = { workspace = true, optional = true }
 tracing-samply = { workspace = true, optional = true }
 tracing-tracy = { workspace = true, optional = true }

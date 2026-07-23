@@ -2,12 +2,8 @@
 //!
 //! Transaction wrapper that labels transaction with its origin.
 
-<<<<<<< HEAD
-use alloy_primitives::{Bytes, B256};
-=======
 use alloy_consensus::transaction::TxHashRef;
-use alloy_primitives::B256;
->>>>>>> v2.4.1
+use alloy_primitives::{Bytes, B256};
 use alloy_rpc_types_eth::TransactionInfo;
 use reth_ethereum_primitives::TransactionSigned;
 use reth_primitives_traits::{NodePrimitives, Recovered, SignedTransaction};

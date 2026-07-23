@@ -667,7 +667,6 @@ impl TreeConfig {
         self
     }
 
-<<<<<<< HEAD
     /// Returns the number of storage proof worker threads.
     pub const fn storage_worker_count(&self) -> usize {
         self.storage_worker_count
@@ -729,13 +728,6 @@ impl TreeConfig {
         self
     }
 
-    /// Whether or not to use state root task
-    pub const fn use_state_root_task(&self) -> bool {
-        self.has_enough_parallelism && !self.legacy_state_root
-    }
-
-=======
->>>>>>> v2.4.1
     /// Returns whether cache metrics recording is disabled.
     pub const fn disable_cache_metrics(&self) -> bool {
         self.disable_cache_metrics

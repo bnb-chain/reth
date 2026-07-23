@@ -23,12 +23,8 @@ use reth_storage_api::{
     BlockIdReader, BlockReaderIdExt, StateProvider, StateProviderBox, StateProviderFactory,
 };
 use reth_transaction_pool::TransactionPool;
-<<<<<<< HEAD
 use rust_eth_triedb::triedb_manager::is_triedb_active;
-use std::collections::HashMap;
-=======
 use std::{collections::HashMap, sync::Arc};
->>>>>>> v2.4.1
 
 /// Helper methods for `eth_` methods relating to state (accounts).
 pub trait EthState: LoadState + SpawnBlocking {
