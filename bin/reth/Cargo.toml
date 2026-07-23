@@ -138,10 +138,6 @@ keccak-cache-global = [
     "alloy-primitives/keccak-cache-global",
 ]
 
-io-uring = [
-    "reth-provider/io-uring",
-    "reth-node-builder/io-uring",
-]
 jemalloc = [
     "reth-cli-util/jemalloc",
     "reth-node-core/jemalloc",
