@@ -6,11 +6,10 @@ use alloy_consensus::{transaction::TxHashRef, BlockHeader};
 use alloy_primitives::B256;
 use alloy_rpc_types_eth::{BlockId, TransactionInfo};
 use futures::Future;
-use reth_chainspec::ChainSpecProvider;
-use reth_errors::ProviderError;
+use reth_errors::{ProviderError, RethError};
 use reth_evm::{
-    evm::EvmFactoryExt, system_calls, tracing::TracingCtx, ConfigureEvm, Database, Evm, EvmEnvFor,
-    EvmFor, HaltReasonFor, InspectorFor, TxEnvFor,
+    block::BlockExecutor, evm::EvmFactoryExt, tracing::TracingCtx, ConfigureEvm, Database, Evm,
+    EvmEnvFor, EvmFor, HaltReasonFor, InspectorFor, TxEnvFor,
 };
 use reth_primitives_traits::{BlockBody, Recovered, RecoveredBlock};
 use reth_revm::{
@@ -180,7 +179,7 @@ pub trait Trace: LoadState<Error: FromEvmError<Self::Evm>> + Call {
             self.spawn_with_state_at_block(parent_block, move |this, mut db| {
                 let block_txs = block.transactions_recovered();
 
-                this.apply_pre_execution_changes(&block, &mut db, evm_env.clone())?;
+                this.apply_pre_execution_changes(&block, &mut db)?;
 
                 // replay all transactions prior to the targeted transaction
                 this.replay_transactions_until(&mut db, evm_env.clone(), block_txs, *tx.tx_hash())?;
@@ -287,7 +286,7 @@ pub trait Trace: LoadState<Error: FromEvmError<Self::Evm>> + Call {
                 let block_timestamp = evm_env.block_env.timestamp().saturating_to();
                 let base_fee = evm_env.block_env.basefee();
 
-                this.apply_pre_execution_changes(&block, &mut db, evm_env.clone())?;
+                this.apply_pre_execution_changes(&block, &mut db)?;
 
                 // prepare transactions, we do everything upfront to reduce time spent with open
                 // state
@@ -413,15 +412,12 @@ pub trait Trace: LoadState<Error: FromEvmError<Self::Evm>> + Call {
         &self,
         block: &RecoveredBlock<ProviderBlock<Self::Provider>>,
         db: &mut StateCacheDb,
-        evm_env: EvmEnvFor<Self::Evm>,
     ) -> Result<(), Self::Error> {
-        // BSC does not have a beacon chain, so we only apply EIP-2935 (blockhashes contract),
-        // not EIP-4788 (beacon root contract). Calling apply_pre_execution_changes on the
-        // executor would also invoke apply_beacon_root_contract_call, which fails for BSC blocks
-        // that have no parent_beacon_block_root set.
-        let mut evm = self.evm_config().evm_with_env(&mut *db, evm_env);
-        system_calls::SystemCaller::new(self.provider().chain_spec())
-            .apply_blockhashes_contract_call(block.parent_hash(), &mut evm)
+        self.evm_config()
+            .executor_for_block(db, block.sealed_block())
+            .map_err(RethError::other)
+            .map_err(Self::Error::from_eth_err)?
+            .apply_pre_execution_changes()
             .map_err(Self::Error::from_eth_err)?;
         Ok(())
     }
