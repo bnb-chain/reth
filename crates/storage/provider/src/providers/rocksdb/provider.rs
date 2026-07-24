@@ -468,7 +468,9 @@ impl RocksDBProviderInner {
     }
 
     /// Gets the column family handle for a table.
-    fn cf_handle<T: Table>(&self) -> Result<std::sync::Arc<rocksdb::BoundColumnFamily<'_>>, DatabaseError> {
+    fn cf_handle<T: Table>(
+        &self,
+    ) -> Result<std::sync::Arc<rocksdb::BoundColumnFamily<'_>>, DatabaseError> {
         let cf = match self {
             Self::ReadWrite { db, .. } => db.cf_handle(T::NAME),
             Self::Secondary { db, .. } => db.cf_handle(T::NAME),
@@ -820,7 +822,9 @@ impl RocksDBProvider {
     }
 
     /// Gets the column family handle for a table.
-    fn get_cf_handle<T: Table>(&self) -> Result<std::sync::Arc<rocksdb::BoundColumnFamily<'_>>, DatabaseError> {
+    fn get_cf_handle<T: Table>(
+        &self,
+    ) -> Result<std::sync::Arc<rocksdb::BoundColumnFamily<'_>>, DatabaseError> {
         self.0.cf_handle::<T>()
     }
 
@@ -1000,9 +1004,10 @@ impl RocksDBProvider {
     pub fn iter_from<T: Table>(&self, key: T::Key) -> ProviderResult<RocksDBIter<'_, T>> {
         let cf = self.get_cf_handle::<T>()?;
         let encoded_key = key.encode();
-        let iter = self
-            .0
-            .iterator_cf(&cf, IteratorMode::From(encoded_key.as_ref(), rocksdb::Direction::Forward));
+        let iter = self.0.iterator_cf(
+            &cf,
+            IteratorMode::From(encoded_key.as_ref(), rocksdb::Direction::Forward),
+        );
         Ok(RocksDBIter { inner: iter, _marker: std::marker::PhantomData })
     }
 
@@ -1120,9 +1125,10 @@ impl RocksDBProvider {
         let start_bytes = start_key.encode();
 
         // Create a forward iterator starting from our seek position.
-        let iter = self
-            .0
-            .iterator_cf(&cf, IteratorMode::From(start_bytes.as_ref(), rocksdb::Direction::Forward));
+        let iter = self.0.iterator_cf(
+            &cf,
+            IteratorMode::From(start_bytes.as_ref(), rocksdb::Direction::Forward),
+        );
 
         let mut result = Vec::new();
         for item in iter {
@@ -1169,9 +1175,10 @@ impl RocksDBProvider {
         let start_key = StorageShardedKey::new(address, storage_key, 0u64);
         let start_bytes = start_key.encode();
 
-        let iter = self
-            .0
-            .iterator_cf(&cf, IteratorMode::From(start_bytes.as_ref(), rocksdb::Direction::Forward));
+        let iter = self.0.iterator_cf(
+            &cf,
+            IteratorMode::From(start_bytes.as_ref(), rocksdb::Direction::Forward),
+        );
 
         let mut result = Vec::new();
         for item in iter {
@@ -1558,7 +1565,9 @@ impl fmt::Debug for RocksReadSnapshot<'_> {
 
 impl<'db> RocksReadSnapshot<'db> {
     /// Gets the column family handle for a table.
-    fn cf_handle<T: Table>(&self) -> Result<std::sync::Arc<rocksdb::BoundColumnFamily<'db>>, DatabaseError> {
+    fn cf_handle<T: Table>(
+        &self,
+    ) -> Result<std::sync::Arc<rocksdb::BoundColumnFamily<'db>>, DatabaseError> {
         self.provider.get_cf_handle::<T>()
     }
 
@@ -2567,9 +2576,10 @@ impl<'db> RocksTx<'db> {
     pub fn iter_from<T: Table>(&self, key: T::Key) -> ProviderResult<RocksTxIter<'_, T>> {
         let cf = self.provider.get_cf_handle::<T>()?;
         let encoded_key = key.encode();
-        let iter = self
-            .inner
-            .iterator_cf(&cf, IteratorMode::From(encoded_key.as_ref(), rocksdb::Direction::Forward));
+        let iter = self.inner.iterator_cf(
+            &cf,
+            IteratorMode::From(encoded_key.as_ref(), rocksdb::Direction::Forward),
+        );
         Ok(RocksTxIter { inner: iter, _marker: std::marker::PhantomData })
     }
 
