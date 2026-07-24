@@ -93,8 +93,9 @@ jemalloc = [
     "reth-trie-db/jemalloc",
 ]
 asm-keccak = [
-    "alloy-primitives/asm-keccak",
-    "reth-trie-db/asm-keccak",
+	"alloy-primitives/asm-keccak",
+	"reth-trie-db/asm-keccak",
+	"revm/asm-keccak"
 ]
 test-utils = [
     "reth-db/test-utils",
