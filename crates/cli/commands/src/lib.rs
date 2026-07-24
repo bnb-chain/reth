@@ -6,6 +6,7 @@
     issue_tracker_base_url = "https://github.com/paradigmxyz/reth/issues/"
 )]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
+#![allow(semicolon_in_expressions_from_macros)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod common;
