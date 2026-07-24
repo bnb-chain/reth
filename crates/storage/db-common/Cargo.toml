@@ -27,7 +27,6 @@ reth-execution-errors.workspace = true
 # triedb
 
 # alloy
-alloy-trie.workspace = true
 
 # eth
 alloy-consensus.workspace = true
