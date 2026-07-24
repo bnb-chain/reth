@@ -324,10 +324,7 @@ impl EngineNodeLauncher {
         // The receiver is polled in the consensus-engine select loop; the sender is exposed on
         // `FullNode::engine_api_tx`.
         let (engine_api_tx, engine_api_rx) = tokio::sync::mpsc::unbounded_channel::<
-            EngineApiRequest<
-                <N as NodeTypes>::Payload,
-                <N as NodeTypes>::Primitives,
-            >,
+            EngineApiRequest<<N as NodeTypes>::Payload, <N as NodeTypes>::Primitives>,
         >();
         let mut engine_api_stream = UnboundedReceiverStream::from(engine_api_rx).fuse();
 

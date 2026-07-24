@@ -700,10 +700,11 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
 
                 // BSC parlia: persist per-block total difficulty into the (otherwise deprecated)
                 // `HeaderTerminalDifficulties` MDBX table. Parlia fork choice ranks by cumulative
-                // difficulty, which upstream reth no longer tracks (#19151). Persisting it here lets
-                // `header_td`/`header_td_by_number` serve it without walking the chain to genesis on
-                // a cold restart, and lets the miner advertise the correct TD on `NewBlock`.
-                // TD(0) = genesis difficulty; TD(n) = TD(n-1) + difficulty(n). Blocks are written
+                // difficulty, which upstream reth no longer tracks (#19151). Persisting it here
+                // lets `header_td`/`header_td_by_number` serve it without walking
+                // the chain to genesis on a cold restart, and lets the miner
+                // advertise the correct TD on `NewBlock`. TD(0) = genesis
+                // difficulty; TD(n) = TD(n-1) + difficulty(n). Blocks are written
                 // oldest-first, so the parent's TD is already in the table (this batch or a prior
                 // one).
                 {
