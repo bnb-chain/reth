@@ -71,8 +71,8 @@ serde_with.workspace = true
 default = ["std"]
 jemalloc = []
 asm-keccak = [
-	"alloy-primitives/asm-keccak",
-	"revm/asm-keccak"
+    "alloy-primitives/asm-keccak",
+    "revm/asm-keccak",
 ]
 std = [
     "alloy-consensus/std",
