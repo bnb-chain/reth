@@ -68,7 +68,7 @@ reth-ethereum-engine-primitives = { workspace = true, optional = true }
 # parallel utils
 rayon.workspace = true
 
-rocksdb.workspace = true
+rocksdb = { workspace = true, features = ["multi-threaded-cf"] }
 
 [dev-dependencies]
 reth-db = { workspace = true, features = ["test-utils"] }
