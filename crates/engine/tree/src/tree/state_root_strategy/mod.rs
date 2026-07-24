@@ -719,10 +719,10 @@ struct StateRootTaskOptions<'a, N: NodePrimitives> {
 /// FCU→build path (e.g. BSC parlia), so they cannot receive a handle from
 /// [`StateRootStrategy::prepare_payload_builder`] and must spawn the task themselves.
 ///
-/// Usage mirrors the stock payload builder: install [`StateRootHandle::take_state_hook`] on the
-/// building EVM's DB before execution, then read the result via [`StateRootHandle::state_root`]
-/// (or [`StateRootHandle::take_state_root_rx`] for a bounded wait) after execution finishes and
-/// the hook has been dropped.
+/// Usage mirrors the stock payload builder: take the hook via
+/// [`StateRootHandle::take_execution_hook`] and install it on the building EVM's DB before
+/// execution, then read the result via [`StateRootHandle::state_root`] after execution finishes
+/// and the hook has been dropped.
 ///
 /// `multiproof_provider_factory` should be an [`OverlayStateProviderFactory`] anchored at the
 /// parent and configured with the same `state_trie_overlays` manager so the proof workers can
