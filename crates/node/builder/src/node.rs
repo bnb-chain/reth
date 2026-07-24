@@ -134,6 +134,7 @@ pub struct FullNode<Node: FullNodeComponents, AddOns: NodeAddOns<Node>> {
     /// BSC extension: the parlia block-import path executes blocks itself and inserts the
     /// already-executed result into the engine tree without a `newPayload` round-trip. `None`
     /// when the launcher did not wire the channel.
+    #[allow(clippy::type_complexity)]
     pub engine_api_tx: Option<
         tokio::sync::mpsc::UnboundedSender<
             reth_engine_tree::engine::EngineApiRequest<
