@@ -8048,7 +8048,6 @@ dependencies = [
  "alloy-consensus",
  "alloy-genesis",
  "alloy-primitives",
- "alloy-trie",
  "boyer-moore-magiclen",
  "eyre",
  "reth-chainspec",
@@ -9962,7 +9961,6 @@ dependencies = [
  "reth-evm",
  "reth-primitives-traits",
  "reth-rpc-traits",
- "serde",
  "serde_json",
  "thiserror 2.0.18",
 ]
