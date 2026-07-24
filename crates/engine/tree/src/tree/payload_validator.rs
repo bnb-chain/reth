@@ -335,6 +335,12 @@ where
         state_trie_overlays: StateTrieOverlayManager<N>,
         runtime: reth_tasks::Runtime,
     ) -> Self {
+        // Publish the engine's task Runtime so out-of-tree payload builders (e.g. the BSC parlia
+        // miner) can spawn their own state-root tasks on the *same* rayon proof-worker pools
+        // instead of building competing per-block Runtimes. First-publish-wins; readers call
+        // `reth_tasks::shared_engine_runtime()`.
+        reth_tasks::set_shared_engine_runtime(runtime.clone());
+
         let precompile_cache_map = PrecompileCacheMap::default();
         let payload_processor = PayloadProcessor::new(
             runtime.clone(),

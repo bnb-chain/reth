@@ -713,6 +713,50 @@ struct StateRootTaskOptions<'a, N: NodePrimitives> {
     pending_sparse_trie_prune_blocks: Option<Vec<ExecutedBlock<N>>>,
 }
 
+/// Spawns a standalone payload-builder state-root task and returns its [`StateRootHandle`].
+///
+/// This is the entry point for chains whose miner builds blocks *outside* the engine's
+/// FCU→build path (e.g. BSC parlia), so they cannot receive a handle from
+/// [`StateRootStrategy::prepare_payload_builder`] and must spawn the task themselves.
+///
+/// Usage mirrors the stock payload builder: install [`StateRootHandle::take_state_hook`] on the
+/// building EVM's DB before execution, then read the result via [`StateRootHandle::state_root`]
+/// (or [`StateRootHandle::take_state_root_rx`] for a bounded wait) after execution finishes and
+/// the hook has been dropped.
+///
+/// `multiproof_provider_factory` should be an [`OverlayStateProviderFactory`] anchored at the
+/// parent and configured with the same `state_trie_overlays` manager so the proof workers can
+/// resolve a not-yet-persisted parent.
+pub fn spawn_payload_builder_state_root<N, F>(
+    executor: &reth_tasks::Runtime,
+    state_trie_overlays: &StateTrieOverlayManager<N>,
+    multiproof_provider_factory: F,
+    parent_state_root: B256,
+    transaction_count: Option<usize>,
+    config: &TreeConfig,
+    pending_sparse_trie_prune_blocks: Option<Vec<ExecutedBlock<N>>>,
+) -> StateRootHandle
+where
+    N: NodePrimitives,
+    F: DatabaseProviderROFactory<Provider: TrieCursorFactory + HashedCursorFactory>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+{
+    DefaultStateRootStrategy { metrics: Default::default() }.spawn_state_root(
+        executor,
+        state_trie_overlays,
+        multiproof_provider_factory,
+        StateRootTaskOptions {
+            parent_state_root,
+            transaction_count,
+            config,
+            pending_sparse_trie_prune_blocks,
+        },
+    )
+}
+
 fn sparse_trie_retained_paths<N: NodePrimitives>(
     prune_blocks: Vec<ExecutedBlock<N>>,
     current_changed_paths: &TriePrefixSetsMut,
