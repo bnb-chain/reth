@@ -523,6 +523,42 @@ impl<N: ProviderNodeTypes> HeaderProvider for ConsistentProvider<N> {
         )
     }
 
+    fn header_td(&self, hash: &BlockHash) -> ProviderResult<Option<alloy_primitives::U256>> {
+        if let Some(num) = self.block_number(*hash)? {
+            self.header_td_by_number(num)
+        } else {
+            // Hash not (yet) known to this provider — TD is unknown; the caller falls back.
+            Ok(None)
+        }
+    }
+
+    fn header_td_by_number(
+        &self,
+        number: BlockNumber,
+    ) -> ProviderResult<Option<alloy_primitives::U256>> {
+        // BSC parlia TD. Persisted per-block TD lives in the DB up to the on-disk tip; blocks above
+        // it are only in memory. Walk down from `number`, summing difficulties, until we reach a
+        // block whose TD is already known (persisted, or the genesis fallback), then add the
+        // running sum. This short-circuits at the on-disk tip in the common case (so it walks only
+        // the small in-memory tail and stays O(1) on a cold restart at a deep head), while
+        // tolerating a not-fully-populated table.
+        let mut suffix = alloy_primitives::U256::ZERO;
+        let mut cursor = number;
+        loop {
+            if let Some(base) = self.storage_provider.header_td_by_number(cursor)? {
+                return Ok(Some(base + suffix));
+            }
+            // `cursor`'s TD isn't persisted: fold in its difficulty and descend to the parent.
+            let Some(header) = self.header_by_number(cursor)? else { return Ok(None) };
+            suffix += header.difficulty();
+            if cursor == 0 {
+                // Genesis with no persisted TD — its difficulty is already folded into `suffix`.
+                return Ok(Some(suffix));
+            }
+            cursor -= 1;
+        }
+    }
+
     fn headers_range(
         &self,
         range: impl RangeBounds<BlockNumber>,

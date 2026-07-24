@@ -206,6 +206,17 @@ impl<N: ProviderNodeTypes> HeaderProvider for BlockchainProvider<N> {
         self.consistent_provider()?.header_by_number(num)
     }
 
+    fn header_td(&self, hash: &BlockHash) -> ProviderResult<Option<alloy_primitives::U256>> {
+        self.consistent_provider()?.header_td(hash)
+    }
+
+    fn header_td_by_number(
+        &self,
+        number: BlockNumber,
+    ) -> ProviderResult<Option<alloy_primitives::U256>> {
+        self.consistent_provider()?.header_td_by_number(number)
+    }
+
     fn headers_range(
         &self,
         range: impl RangeBounds<BlockNumber>,

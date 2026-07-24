@@ -698,6 +698,28 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
                 self.insert_block_mdbx_only(recovered_block, tx_nums[i])?;
                 timings.insert_block += start.elapsed();
 
+                // BSC parlia: persist per-block total difficulty into the (otherwise deprecated)
+                // `HeaderTerminalDifficulties` MDBX table. Parlia fork choice ranks by cumulative
+                // difficulty, which upstream reth no longer tracks (#19151). Persisting it here lets
+                // `header_td`/`header_td_by_number` serve it without walking the chain to genesis on
+                // a cold restart, and lets the miner advertise the correct TD on `NewBlock`.
+                // TD(0) = genesis difficulty; TD(n) = TD(n-1) + difficulty(n). Blocks are written
+                // oldest-first, so the parent's TD is already in the table (this batch or a prior
+                // one).
+                {
+                    let number = recovered_block.number();
+                    let difficulty = recovered_block.header().difficulty();
+                    let td = if number == 0 {
+                        difficulty
+                    } else {
+                        // Parent TD via `header_td_by_number` (not a raw table read) so the genesis
+                        // fallback is applied when the parent is block 0 — otherwise TD(1) would
+                        // omit the genesis difficulty and every persisted TD would be off by it.
+                        self.header_td_by_number(number - 1)?.unwrap_or_default() + difficulty
+                    };
+                    self.tx.put::<tables::HeaderTerminalDifficulties>(number, td.into())?;
+                }
+
                 if save_mode.with_state() {
                     let execution_output = block.execution_outcome();
 
@@ -1756,6 +1778,30 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> HeaderProvider for DatabasePro
 
     fn header_by_number(&self, num: BlockNumber) -> ProviderResult<Option<Self::Header>> {
         self.static_file_provider.header_by_number(num)
+    }
+
+    fn header_td(&self, block_hash: &BlockHash) -> ProviderResult<Option<alloy_primitives::U256>> {
+        if let Some(num) = self.block_number(*block_hash)? {
+            self.header_td_by_number(num)
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn header_td_by_number(
+        &self,
+        number: BlockNumber,
+    ) -> ProviderResult<Option<alloy_primitives::U256>> {
+        // Persisted per-block total difficulty (BSC parlia; see the write in `save_blocks`).
+        if let Some(td) = self.tx.get::<tables::HeaderTerminalDifficulties>(number)? {
+            return Ok(Some(td.0));
+        }
+        // Genesis is initialized outside `save_blocks`, so its TD isn't in the table: fall back
+        // to the genesis header's own difficulty.
+        if number == 0 {
+            return Ok(self.header_by_number(0)?.map(|h| h.difficulty()));
+        }
+        Ok(None)
     }
 
     fn headers_range(
