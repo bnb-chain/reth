@@ -112,10 +112,6 @@ export const rethCliSidebar: SidebarItem = {
                     ]
                 },
                 {
-                    text: "reth db migrate",
-                    link: "/cli/reth/db/migrate"
-                },
-                {
                     text: "reth db repair-trie",
                     link: "/cli/reth/db/repair-trie"
                 },
