@@ -92,7 +92,7 @@ pub trait NewBlockPayload:
     /// Returns a reference to the block.
     fn block(&self) -> &Self::Block;
 
-    /// Returns the total difficulty if available (BSC parlia; `None` by default / in PoS).
+    /// Returns the total difficulty if available (BSC parlia; `None` by default / in `PoS`).
     fn td(&self) -> Option<alloy_primitives::U256> {
         None
     }

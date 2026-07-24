@@ -276,7 +276,7 @@ pub struct PeerInfo {
     pub kind: PeerKind,
     /// Real-time tracked best block number of the peer (derived from its `Status`).
     pub best_number: Option<u64>,
-    /// Real-time tracked total difficulty of the peer (`None` in PoS; derived from its `Status`).
+    /// Real-time tracked total difficulty of the peer (`None` in `PoS`; derived from its `Status`).
     pub best_td: Option<alloy_primitives::U256>,
 }
 
