@@ -29,8 +29,6 @@ reth-trie = { workspace = true, features = ["metrics"] }
 reth-trie-db = { workspace = true, features = ["metrics"] }
 
 # triedb
-rust-eth-triedb.workspace = true
-rust-eth-triedb-common.workspace = true
 reth-nippy-jar.workspace = true
 reth-codecs.workspace = true
 reth-chain-state.workspace = true
@@ -39,13 +37,13 @@ reth-static-file-types = { workspace = true, features = ["std"] }
 reth-fs-util.workspace = true
 
 # ethereum
+alloy-eip7928.workspace = true
 alloy-eips.workspace = true
 alloy-genesis.workspace = true
 alloy-primitives.workspace = true
 alloy-rpc-types-engine.workspace = true
 alloy-consensus.workspace = true
-revm-database.workspace = true
-revm-state = { workspace = true, optional = true }
+revm.workspace = true
 
 # tracing
 tracing.workspace = true
@@ -58,17 +56,19 @@ metrics.workspace = true
 itertools.workspace = true
 notify = { workspace = true, default-features = false, features = ["macos_fsevent"] }
 parking_lot.workspace = true
+smallvec.workspace = true
 strum.workspace = true
 eyre.workspace = true
+reth-tokio-util.workspace = true
+tokio = { workspace = true, features = ["sync"], optional = true }
 
 # test-utils
 reth-ethereum-engine-primitives = { workspace = true, optional = true }
-tokio = { workspace = true, features = ["sync"], optional = true }
 
 # parallel utils
 rayon.workspace = true
 
-rocksdb.workspace = true
+rocksdb = { workspace = true, features = ["multi-threaded-cf"] }
 
 [dev-dependencies]
 reth-db = { workspace = true, features = ["test-utils"] }
@@ -80,28 +80,22 @@ reth-ethereum-engine-primitives.workspace = true
 reth-ethereum-primitives.workspace = true
 reth-tracing.workspace = true
 
-revm-database-interface.workspace = true
-revm-state.workspace = true
-
 tempfile.workspace = true
 assert_matches.workspace = true
 rand.workspace = true
 
 tokio = { workspace = true, features = ["sync", "macros", "rt-multi-thread"] }
+tokio-stream = { workspace = true, features = ["sync"] }
 
 [features]
-io-uring = ["rust-eth-triedb/io-uring"]
 jemalloc = [
-    "rust-eth-triedb/jemalloc",
     "rocksdb/jemalloc",
     "reth-trie-db/jemalloc",
-    "rust-eth-triedb-common/jemalloc",
 ]
 asm-keccak = [
-    "rust-eth-triedb/asm-keccak",
-    "rust-eth-triedb-common/asm-keccak",
     "alloy-primitives/asm-keccak",
     "reth-trie-db/asm-keccak",
+    "revm/asm-keccak",
 ]
 test-utils = [
     "reth-db/test-utils",
@@ -117,7 +111,6 @@ test-utils = [
     "reth-trie-db/test-utils",
     "reth-prune-types/test-utils",
     "reth-stages-types/test-utils",
-    "revm-state",
-    "tokio",
     "reth-tasks/test-utils",
+    "dep:tokio",
 ]

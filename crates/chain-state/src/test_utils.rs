@@ -1,6 +1,6 @@
 use crate::{
     in_memory::ExecutedBlock, CanonStateNotification, CanonStateNotifications,
-    CanonStateSubscriptions, ComputedTrieData,
+    CanonStateSubscriptions,
 };
 use alloy_consensus::{Header, SignableTransaction, TxEip1559, TxReceipt, EMPTY_ROOT_HASH};
 use alloy_eips::eip1559::{ETHEREUM_BLOCK_GAS_LIMIT_30M, INITIAL_BASE_FEE};
@@ -9,7 +9,6 @@ use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use core::marker::PhantomData;
 use rand::Rng;
-use rayon::iter::IntoParallelRefIterator;
 use reth_chainspec::{ChainSpec, EthereumHardfork, MIN_TRANSACTION_GAS};
 use reth_ethereum_primitives::{
     Block, BlockBody, EthPrimitives, Receipt, Transaction, TransactionSigned,
@@ -21,9 +20,8 @@ use reth_primitives_traits::{
     SignedTransaction,
 };
 use reth_storage_api::NodePrimitivesProvider;
-use reth_trie::root::state_root_unhashed;
-use revm_database::BundleState;
-use revm_state::AccountInfo;
+use reth_trie::{root::state_root_unhashed, ComputedTrieData, SortedTrieData};
+use revm::{database::BundleState, state::AccountInfo};
 use std::{
     ops::Range,
     sync::{Arc, Mutex},
@@ -294,7 +292,7 @@ impl<N: NodePrimitives> TestBlockBuilder<N> {
 
         let hashed_state = reth_trie::HashedPostState::from_bundle_state::<
             reth_trie::KeccakKeyHasher,
-        >(bundle.state.par_iter())
+        >(bundle.state.iter())
         .into_sorted();
 
         let block_receipts = if receipts.is_empty() {
@@ -314,8 +312,10 @@ impl<N: NodePrimitives> TestBlockBuilder<N> {
             receipts.into_iter().flatten().collect()
         };
 
-        let trie_data =
-            ComputedTrieData { hashed_state: Arc::new(hashed_state), ..Default::default() };
+        let trie_data = ComputedTrieData {
+            sorted: SortedTrieData { hashed_state: Arc::new(hashed_state), ..Default::default() },
+            ..Default::default()
+        };
 
         let block_hash = recovered.hash();
         let executed = ExecutedBlock::new(

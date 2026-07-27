@@ -6,14 +6,14 @@ use crate::{
     AccountReader, BalProvider, BalStoreHandle, BlockHashReader, BlockIdReader, BlockNumReader,
     BlockReader, BlockReaderIdExt, BlockSource, CanonChainTracker, CanonStateNotifications,
     CanonStateSubscriptions, ChainSpecProvider, ChainStateBlockReader, ChangeSetReader,
-    DatabaseProviderFactory, HashedPostStateProvider, HeaderProvider, InMemoryBalStore,
-    ProviderError, ProviderFactory, PruneCheckpointReader, ReceiptProvider, ReceiptProviderIdExt,
+    DatabaseProviderFactory, HashedPostStateProvider, HeaderProvider, ProviderError,
+    ProviderFactory, PruneCheckpointReader, ReceiptProvider, ReceiptProviderIdExt,
     RocksDBProviderFactory, StageCheckpointReader, StateProviderBox, StateProviderFactory,
     StateReader, StaticFileProviderFactory, TransactionVariant, TransactionsProvider,
 };
 use alloy_consensus::transaction::TransactionMeta;
 use alloy_eips::{BlockHashOrNumber, BlockId, BlockNumHash, BlockNumberOrTag};
-use alloy_primitives::{Address, BlockHash, BlockNumber, TxHash, TxNumber, B256, U256};
+use alloy_primitives::{Address, BlockHash, BlockNumber, TxHash, TxNumber, B256};
 use alloy_rpc_types_engine::ForkchoiceState;
 use reth_chain_state::{
     BlockState, CanonicalInMemoryState, ForkChoiceNotifications, ForkChoiceSubscriptions,
@@ -23,14 +23,16 @@ use reth_chainspec::ChainInfo;
 use reth_db_api::models::{AccountBeforeTx, BlockNumberAddress, StoredBlockBodyIndices};
 use reth_execution_types::ExecutionOutcome;
 use reth_node_types::{BlockTy, HeaderTy, NodeTypesWithDB, ReceiptTy, TxTy};
-use reth_primitives_traits::{Account, RecoveredBlock, SealedHeader, StorageEntry};
+use reth_primitives_traits::{
+    Account, RecoveredBlock, SealedHeader, SealedOrRecoveredBlock, StorageEntry,
+};
 use reth_prune_types::{PruneCheckpoint, PruneSegment};
 use reth_stages_types::{StageCheckpoint, StageId};
 use reth_static_file_types::StaticFileSegment;
 use reth_storage_api::{BlockBodyIndicesProvider, NodePrimitivesProvider, StorageChangeSetReader};
 use reth_storage_errors::provider::ProviderResult;
 use reth_trie::{HashedPostState, KeccakKeyHasher};
-use revm_database::BundleState;
+use revm::database::BundleState;
 use std::{
     ops::{RangeBounds, RangeInclusive},
     sync::Arc,
@@ -104,6 +106,8 @@ impl<N: ProviderNodeTypes> BlockchainProvider<N> {
             .map(|num| provider.sealed_header(num))
             .transpose()?
             .flatten();
+        let bal_store = storage.bal_store().clone();
+
         Ok(Self {
             database: storage,
             canonical_in_memory_state: CanonicalInMemoryState::with_head(
@@ -111,7 +115,7 @@ impl<N: ProviderNodeTypes> BlockchainProvider<N> {
                 finalized_header,
                 safe_header,
             ),
-            bal_store: BalStoreHandle::new(InMemoryBalStore::default()),
+            bal_store,
         })
     }
 
@@ -125,11 +129,7 @@ impl<N: ProviderNodeTypes> BlockchainProvider<N> {
     /// [`BlockHashReader`]. This may fail if the inner read database transaction fails to open.
     #[track_caller]
     pub fn consistent_provider(&self) -> ProviderResult<ConsistentProvider<N>> {
-        ConsistentProvider::new(
-            self.chain_spec(),
-            self.database.clone(),
-            self.canonical_in_memory_state(),
-        )
+        ConsistentProvider::new(self.database.clone(), self.canonical_in_memory_state())
     }
 
     /// This uses a given [`BlockState`] to initialize a state provider for that block.
@@ -206,11 +206,14 @@ impl<N: ProviderNodeTypes> HeaderProvider for BlockchainProvider<N> {
         self.consistent_provider()?.header_by_number(num)
     }
 
-    fn header_td(&self, hash: &BlockHash) -> ProviderResult<Option<U256>> {
+    fn header_td(&self, hash: &BlockHash) -> ProviderResult<Option<alloy_primitives::U256>> {
         self.consistent_provider()?.header_td(hash)
     }
 
-    fn header_td_by_number(&self, number: BlockNumber) -> ProviderResult<Option<U256>> {
+    fn header_td_by_number(
+        &self,
+        number: BlockNumber,
+    ) -> ProviderResult<Option<alloy_primitives::U256>> {
         self.consistent_provider()?.header_td_by_number(number)
     }
 
@@ -303,6 +306,14 @@ impl<N: ProviderNodeTypes> BlockReader for BlockchainProvider<N> {
         source: BlockSource,
     ) -> ProviderResult<Option<Self::Block>> {
         self.consistent_provider()?.find_block_by_hash(hash, source)
+    }
+
+    fn find_sealed_or_recovered_block(
+        &self,
+        hash: B256,
+        source: BlockSource,
+    ) -> ProviderResult<Option<SealedOrRecoveredBlock<Self::Block>>> {
+        self.consistent_provider()?.find_sealed_or_recovered_block(hash, source)
     }
 
     fn block(&self, id: BlockHashOrNumber) -> ProviderResult<Option<Self::Block>> {
@@ -575,12 +586,7 @@ impl<N: ProviderNodeTypes> StateProviderFactory for BlockchainProvider<N> {
 
     fn history_by_block_hash(&self, block_hash: BlockHash) -> ProviderResult<StateProviderBox> {
         trace!(target: "providers::blockchain", ?block_hash, "Getting history by block hash");
-        let provider = self.consistent_provider()?;
-        let block_number = provider
-            .block_number(block_hash)?
-            .ok_or(ProviderError::BlockHashNotFound(block_hash))?;
-        provider.ensure_canonical_block(block_number)?;
-        provider.into_state_provider_at_block_hash(block_hash)
+        self.consistent_provider()?.into_state_provider_at_block_hash(block_hash)
     }
 
     fn state_by_block_hash(&self, hash: BlockHash) -> ProviderResult<StateProviderBox> {
@@ -835,7 +841,7 @@ mod tests {
         self, random_block, random_block_range, random_changeset_range, random_eoa_accounts,
         random_receipt, BlockParams, BlockRangeParams,
     };
-    use revm_database::{BundleState, OriginalValuesKnown};
+    use revm::database::{BundleState, OriginalValuesKnown};
     use std::{
         collections::BTreeMap,
         ops::{Bound, Range, RangeBounds},
@@ -1022,14 +1028,10 @@ mod tests {
                 let execution_output = (*lowest_memory_block.execution_output).clone();
                 lowest_memory_block.execution_output = Arc::new(execution_output);
 
-                // Push to disk. MockNodeTypesWithDB does not activate TrieDB so
-                // save_blocks never produces pending flushes.
+                // Push to disk
                 let provider_rw = hook_provider.database_provider_rw().unwrap();
-                let pending = provider_rw
-                    .save_blocks(vec![lowest_memory_block], SaveBlocksMode::Full)
-                    .unwrap();
+                provider_rw.save_blocks(vec![lowest_memory_block], SaveBlocksMode::Full).unwrap();
                 provider_rw.commit().unwrap();
-                debug_assert!(pending.is_empty());
 
                 // Remove from memory
                 hook_provider.canonical_in_memory_state.remove_persisted_blocks(num_hash);
@@ -2620,79 +2622,6 @@ mod tests {
                 )
                 .unwrap(),
                 Some(to_be_persisted_tx)
-            );
-        }
-
-        Ok(())
-    }
-
-    /// Tests that during staged sync, querying state for blocks whose headers exist
-    /// but haven't been executed yet returns an error instead of stale data.
-    ///
-    /// This reproduces the scenario from bnb-chain/reth-bsc#273 where:
-    /// - Headers are downloaded up to block N (e.g., 83,599,716)
-    /// - Execution has only completed up to block M < N (e.g., 82,757,511)
-    /// - Querying state at block N should fail, not return stale data from block M
-    #[test]
-    fn test_staged_sync_state_query_rejects_unexecuted_blocks() -> eyre::Result<()> {
-        use reth_stages_types::{StageCheckpoint, StageId};
-        use reth_storage_api::StageCheckpointWriter;
-
-        let mut rng = generators::rng();
-        let total_blocks: usize = 10;
-        let executed_blocks: u64 = 5;
-
-        // Create provider with all blocks in database (no in-memory blocks = staged sync)
-        let (provider, database_blocks, _, _) = provider_with_random_blocks(
-            &mut rng,
-            total_blocks,
-            0, // no in-memory blocks, simulating staged sync
-            BlockRangeParams::default(),
-        )?;
-
-        // Set the Finish checkpoint to only cover the first `executed_blocks` blocks.
-        // This simulates the state where headers are downloaded for all blocks but
-        // execution has only completed up to `executed_blocks`.
-        {
-            let provider_rw = provider.database.database_provider_rw()?;
-            provider_rw
-                .save_stage_checkpoint(StageId::Finish, StageCheckpoint::new(executed_blocks))?;
-            provider_rw.commit()?;
-        }
-
-        // Verify: querying executed blocks should succeed
-        for block in &database_blocks[..=executed_blocks as usize] {
-            assert!(
-                provider.history_by_block_number(block.number).is_ok(),
-                "history_by_block_number should succeed for executed block {}",
-                block.number
-            );
-            assert!(
-                provider.history_by_block_hash(block.hash()).is_ok(),
-                "history_by_block_hash should succeed for executed block {}",
-                block.number
-            );
-        }
-
-        // Verify: querying unexecuted blocks should fail
-        for block in &database_blocks[(executed_blocks + 1) as usize..] {
-            assert!(
-                provider.history_by_block_number(block.number).is_err(),
-                "history_by_block_number should fail for unexecuted block {}",
-                block.number
-            );
-            assert!(
-                provider.history_by_block_hash(block.hash()).is_err(),
-                "history_by_block_hash should fail for unexecuted block {}",
-                block.number
-            );
-            // Also test the RPC entry point
-            assert!(
-                provider
-                    .state_by_block_number_or_tag(BlockNumberOrTag::Number(block.number))
-                    .is_err(),
-                "state_by_block_number_or_tag should fail for unexecuted block {}",
-                block.number
             );
         }
 

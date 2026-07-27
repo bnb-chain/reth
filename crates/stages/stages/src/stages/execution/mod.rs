@@ -6,7 +6,6 @@ use reth_chainspec::{ChainSpecProvider, EthereumHardforks};
 use reth_config::config::ExecutionConfig;
 use reth_consensus::FullConsensus;
 use reth_db::{static_file::HeaderMask, tables};
-use reth_db_api::DatabaseError;
 use reth_evm::{execute::Executor, metrics::ExecutorMetrics, ConfigureEvm};
 use reth_execution_types::Chain;
 use reth_exex::{ExExManagerHandle, ExExNotification, ExExNotificationSource};
@@ -24,8 +23,7 @@ use reth_stages_api::{
     UnwindInput, UnwindOutput,
 };
 use reth_static_file_types::StaticFileSegment;
-use reth_trie_common::{HashedPostState, KeccakKeyHasher};
-use rust_eth_triedb::{get_global_triedb, triedb_manager::is_triedb_active};
+use reth_trie::KeccakKeyHasher;
 use std::{
     cmp::{max, Ordering},
     collections::BTreeMap,
@@ -38,7 +36,9 @@ use tracing::*;
 
 use super::missing_static_data_error;
 
-mod slot_preimages;
+/// Slot-preimage database for recovering plain storage keys from hashed keys during
+/// pre-Cancun `SELFDESTRUCT` handling.
+pub mod slot_preimages;
 
 /// The execution stage executes all transactions and
 /// update history indexes.
@@ -359,7 +359,9 @@ where
                 })
             })?;
 
-            if let Err(err) = self.consensus.validate_block_post_execution(&block, &result, None) {
+            if let Err(err) =
+                self.consensus.validate_block_post_execution(&block, &result, None, None)
+            {
                 return Err(StageError::Block {
                     block: Box::new(block.block_with_parent()),
                     error: BlockErrorKind::Validation(err),
@@ -509,88 +511,6 @@ where
             "Execution time"
         );
 
-        if is_triedb_active() {
-            let merkle_time = Instant::now();
-
-            let mut triedb = get_global_triedb();
-            let (latest_block_number, latest_state_root) =
-                triedb.latest_persist_state().map_err(|e| StageError::Fatal(Box::new(e)))?;
-
-            // Check for gap between triedb checkpoint and execution start block.
-            // If triedb is behind where we're starting execution, we can't compute
-            // correct state roots. Trigger an unwind to the triedb checkpoint.
-            if start_block > 0 && latest_block_number < start_block - 1 {
-                warn!(target: "sync::stages::execution",
-                    "TrieDB is behind execution stage: triedb_block={}, execution_start_block={}. \
-                    This indicates a gap that requires unwinding to triedb checkpoint.",
-                    latest_block_number, start_block);
-                return Err(StageError::TrieDBBehind {
-                    triedb_block: latest_block_number,
-                    execution_start_block: start_block,
-                });
-            }
-
-            if latest_block_number < stage_progress {
-                let root_hash = if start_block == 0 {
-                    alloy_trie::EMPTY_ROOT_HASH
-                } else {
-                    // latest_block_number == start_block - 1 (guaranteed by check above)
-                    // use the latest state root as parent for computing new states
-                    latest_state_root
-                };
-
-                let validate_root = if stage_progress == 0 {
-                    alloy_trie::EMPTY_ROOT_HASH
-                } else {
-                    let block_number = stage_progress;
-                    let block = provider
-                        .recovered_block(block_number.into(), TransactionVariant::NoHash)?
-                        .ok_or_else(|| ProviderError::HeaderNotFound(block_number.into()))?;
-                    block.header().state_root()
-                };
-
-                let hashed_post_state =
-                    HashedPostState::from_bundle_state::<KeccakKeyHasher>(state.bundle.state());
-                let triedb_hashed_post_state = hashed_post_state.to_triedb_hashed_post_state();
-
-                info!(target: "sync::stages::execution",
-                    "Begin update triedb, start={}, end={}, parent_root={:?}, target_root={:?}, accounts={}, storages={}",
-                    start_block,
-                    stage_progress,
-                    root_hash,
-                    validate_root,
-                    hashed_post_state.accounts.len(),
-                    hashed_post_state.storages.len(),
-                );
-
-                let (new_root, difflayer) = triedb
-                    .intermediate_and_commit_hashed_post_state(
-                        root_hash,
-                        None,
-                        &triedb_hashed_post_state,
-                        None,
-                    )
-                    .map_err(|e| StageError::Fatal(Box::new(e)))?;
-
-                if new_root != validate_root {
-                    return Err(StageError::Fatal(Box::new(ProviderError::Database(DatabaseError::Other(format!("execution update triedb, start={}, end={}, new_root({:?}) != validate_root({:?})", start_block, stage_progress, new_root, validate_root))))));
-                }
-                triedb
-                    .flush(stage_progress, new_root, &Some(difflayer))
-                    .map_err(|e| StageError::Fatal(Box::new(e)))?;
-
-                info!(target: "sync::stages::execution",
-                    "End update triedb, start={}, end={}, parent_root={:?}, validate_root={:?}, update_triedb_time={:?}",
-                    start_block,
-                    stage_progress,
-                    root_hash,
-                    validate_root,
-                    merkle_time.elapsed());
-            } else {
-                info!(target: "sync::stages::execution", "latest_block_number >= stage_progress skip update triedb, latest_block_number={}, stage_progress={}", latest_block_number, stage_progress);
-            }
-        }
-
         let done = stage_progress == max_block;
         Ok(ExecOutput {
             checkpoint: StageCheckpoint::new(stage_progress)
@@ -634,53 +554,6 @@ where
         //
         // This also updates `PlainStorageState` and `PlainAccountState`.
         let bundle_state_with_receipts = provider.take_state_above(unwind_to)?;
-
-        if is_triedb_active() {
-            let mut triedb = get_global_triedb();
-            let (latest_block_number, latest_state_root) =
-                triedb.latest_persist_state().map_err(|e| StageError::Fatal(Box::new(e)))?;
-
-            if latest_block_number > unwind_to {
-                let hashed_post_state = HashedPostState::from_bundle_state_to_unwind::<
-                    KeccakKeyHasher,
-                >(bundle_state_with_receipts.bundle.state());
-
-                let triedb_hashed_post_state = hashed_post_state.to_triedb_hashed_post_state();
-                let validate_root = if unwind_to == 0 {
-                    alloy_trie::EMPTY_ROOT_HASH
-                } else {
-                    let block_number = unwind_to;
-                    let block = provider
-                        .recovered_block(block_number.into(), TransactionVariant::NoHash)?
-                        .ok_or_else(|| ProviderError::HeaderNotFound(block_number.into()))?;
-                    block.header().state_root()
-                };
-
-                info!(target: "sync::stages::execution", "Begin unwind execution update triedb, latest_block_number={}, unwind_to={}, latest_state_root={:?}, target_root={:?}, accounts={}, storages={}", latest_block_number, unwind_to, latest_state_root, validate_root, hashed_post_state.accounts.len(), hashed_post_state.storages.len());
-                let (new_root, difflayer) = triedb
-                    .intermediate_and_commit_hashed_post_state(
-                        latest_state_root,
-                        None,
-                        &triedb_hashed_post_state,
-                        None,
-                    )
-                    .map_err(|e| StageError::Fatal(Box::new(e)))?;
-                info!(target: "sync::stages::execution", "End unwind execution update triedb, new_root={:?}, target_root={:?}", new_root, validate_root);
-
-                if new_root != validate_root {
-                    return Err(StageError::Fatal(Box::new(ProviderError::Database(DatabaseError::Other(format!("unwind execution update triedb, unwind_to={}, new_root({:?}) != validate_root({:?}), hashed_post_state={:?}", unwind_to, new_root, validate_root, hashed_post_state))))));
-                }
-
-                triedb
-                    .flush(latest_block_number, new_root, &Some(difflayer))
-                    .map_err(|e| StageError::Fatal(Box::new(e)))?;
-            } else {
-                warn!(
-                    "latest_block_number <= unwind_to, latest_triedb_block_number={}, unwind_to={}",
-                    latest_block_number, unwind_to
-                );
-            }
-        }
 
         // Prepare the input for post unwind commit hook, where an `ExExNotification` will be sent.
         if self.exex_manager_handle.has_exexs() {

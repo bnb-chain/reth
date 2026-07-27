@@ -136,10 +136,6 @@ pub struct HistoricalStateProviderRef<
     block_number: BlockNumber,
     /// Lowest blocks at which different parts of the state are available.
     lowest_available_blocks: LowestAvailableBlocks,
-    /// Cached pipeline consistency info. When the Execution stage checkpoint is ahead of the
-    /// history index checkpoint, `PlainState` has been advanced beyond history coverage and the
-    /// `InPlainState` fallback would return data from a future block.
-    pipeline_consistency: PipelineConsistency,
     /// Marker for the provider's node primitives.
     _primitives: PhantomData<N>,
 }
@@ -164,7 +160,6 @@ where
             changeset_cache,
             block_number,
             lowest_available_blocks: Default::default(),
-            pipeline_consistency: Default::default(),
             _primitives: PhantomData,
         }
     }
@@ -182,23 +177,8 @@ where
             changeset_cache,
             block_number,
             lowest_available_blocks,
-            pipeline_consistency: PipelineConsistency {
-                execution_tip: None,
-                account_history_tip: None,
-                storage_history_tip: None,
-            },
             _primitives: PhantomData,
         }
-    }
-
-    /// Set the pipeline consistency info for detecting stale `InPlainState` reads during
-    /// pipeline sync.
-    pub const fn with_pipeline_consistency(
-        mut self,
-        pipeline_consistency: PipelineConsistency,
-    ) -> Self {
-        self.pipeline_consistency = pipeline_consistency;
-        self
     }
 
     /// Lookup an account in the `AccountsHistory` table using `EitherReader`.
@@ -277,15 +257,6 @@ where
                 .map(|entry| entry.value)
                 .map(Some),
             HistoryInfo::InPlainState | HistoryInfo::MaybeInPlainState => {
-                if let Some((exec_tip, hist_tip)) =
-                    self.pipeline_consistency.storage_inconsistency()
-                {
-                    return Err(ProviderError::HistoryStateInconsistent {
-                        block: self.block_number,
-                        execution_tip: exec_tip,
-                        history_tip: hist_tip,
-                    })
-                }
                 if self.provider.cached_storage_settings().use_hashed_state() {
                     let hashed_address = alloy_primitives::keccak256(address);
                     let hashed_slot = alloy_primitives::keccak256(lookup_key);
@@ -401,15 +372,6 @@ where
                     .map(|account_before| account_before.info)
             }
             HistoryInfo::InPlainState | HistoryInfo::MaybeInPlainState => {
-                if let Some((exec_tip, hist_tip)) =
-                    self.pipeline_consistency.account_inconsistency()
-                {
-                    return Err(ProviderError::HistoryStateInconsistent {
-                        block: self.block_number,
-                        execution_tip: exec_tip,
-                        history_tip: hist_tip,
-                    })
-                }
                 if self.provider.cached_storage_settings().use_hashed_state() {
                     let hashed_address = alloy_primitives::keccak256(address);
                     Ok(self.tx().get_by_encoded_key::<tables::HashedAccounts>(&hashed_address)?)
@@ -681,7 +643,7 @@ where
     Provider: NodePrimitivesProvider<Primitives = N>,
     N: NodePrimitives,
 {
-    fn hashed_post_state(&self, bundle_state: &revm_database::BundleState) -> HashedPostState {
+    fn hashed_post_state(&self, bundle_state: &revm::database::BundleState) -> HashedPostState {
         HashedPostState::from_bundle_state::<KeccakKeyHasher>(bundle_state.state())
     }
 }
@@ -733,21 +695,22 @@ pub struct HistoricalStateProvider<Provider> {
     block_number: BlockNumber,
     /// Lowest blocks at which different parts of the state are available.
     lowest_available_blocks: LowestAvailableBlocks,
-    /// Cached pipeline consistency info.
-    pipeline_consistency: PipelineConsistency,
 }
 
 impl<Provider: DBProvider + ChangeSetReader + StorageChangeSetReader + BlockNumReader>
     HistoricalStateProvider<Provider>
 {
     /// Create new `StateProvider` for historical block number
-    pub fn new(provider: Provider, block_number: BlockNumber) -> Self {
+    pub fn new(
+        provider: Provider,
+        block_number: BlockNumber,
+        changeset_cache: ChangesetCache,
+    ) -> Self {
         Self {
             provider,
-            changeset_cache: ChangesetCache::default(),
+            changeset_cache,
             block_number,
             lowest_available_blocks: Default::default(),
-            pipeline_consistency: Default::default(),
         }
     }
 
@@ -766,16 +729,6 @@ impl<Provider: DBProvider + ChangeSetReader + StorageChangeSetReader + BlockNumR
         block_number: BlockNumber,
     ) -> Self {
         self.lowest_available_blocks.storage_history_block_number = Some(block_number);
-        self
-    }
-
-    /// Set the pipeline consistency info for detecting stale `InPlainState` reads during
-    /// pipeline sync.
-    pub const fn with_pipeline_consistency(
-        mut self,
-        pipeline_consistency: PipelineConsistency,
-    ) -> Self {
-        self.pipeline_consistency = pipeline_consistency;
         self
     }
 }
@@ -797,57 +750,11 @@ impl<
             self.lowest_available_blocks,
             self.changeset_cache.clone(),
         )
-        .with_pipeline_consistency(self.pipeline_consistency)
     }
 }
 
 // Delegates all provider impls to [HistoricalStateProviderRef]
 reth_storage_api::macros::delegate_provider_impls!(HistoricalStateProvider<Provider> where [Provider: DBProvider + BlockNumReader + BlockHashReader + ChangeSetReader + StorageChangeSetReader + PruneCheckpointReader + StageCheckpointReader + StorageSettingsCache + RocksDBProviderFactory + NodePrimitivesProvider]);
-
-/// Cached pipeline stage checkpoint info used to detect inconsistent `InPlainState` reads.
-///
-/// During pipeline sync, the `ExecutionStage` commits `PlainAccountState` / `PlainStorageState`
-/// in its own MDBX write transaction **before** the `IndexAccountHistoryStage` and
-/// `IndexStorageHistoryStage` commit the corresponding history indices. This creates a window
-/// where `HistoricalStateProvider` would incorrectly fall back to `InPlainState` and return
-/// data from a future block.
-///
-/// When the Execution checkpoint is ahead of the history index checkpoint, we know `PlainState`
-/// has been silently advanced and the `InPlainState` path must not be used.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct PipelineConsistency {
-    /// Block number up to which the Execution stage has committed `PlainState`.
-    pub execution_tip: Option<BlockNumber>,
-    /// Block number up to which the account history index has been built.
-    pub account_history_tip: Option<BlockNumber>,
-    /// Block number up to which the storage history index has been built.
-    pub storage_history_tip: Option<BlockNumber>,
-}
-
-impl PipelineConsistency {
-    /// Returns `Some((exec_tip, hist_tip))` if account history is inconsistent with `PlainState`,
-    /// meaning the `InPlainState` fallback would return wrong data.
-    ///
-    /// A `None` history tip means the index stage has never run, which is equivalent to block 0.
-    pub const fn account_inconsistency(&self) -> Option<(BlockNumber, BlockNumber)> {
-        match (self.execution_tip, self.account_history_tip) {
-            (Some(exec), Some(hist)) if exec > hist => Some((exec, hist)),
-            (Some(exec), None) => Some((exec, 0)),
-            _ => None,
-        }
-    }
-
-    /// Returns `Some((exec_tip, hist_tip))` if storage history is inconsistent with `PlainState`.
-    ///
-    /// A `None` history tip means the index stage has never run, which is equivalent to block 0.
-    pub const fn storage_inconsistency(&self) -> Option<(BlockNumber, BlockNumber)> {
-        match (self.execution_tip, self.storage_history_tip) {
-            (Some(exec), Some(hist)) if exec > hist => Some((exec, hist)),
-            (Some(exec), None) => Some((exec, 0)),
-            _ => None,
-        }
-    }
-}
 
 /// Lowest blocks at which different parts of the state are available.
 /// They may be [Some] if pruning is enabled.
@@ -965,7 +872,7 @@ where
 mod tests {
     use super::needs_prev_shard_check;
     use crate::{
-        providers::state::historical::{HistoryInfo, LowestAvailableBlocks, PipelineConsistency},
+        providers::state::historical::{HistoryInfo, LowestAvailableBlocks},
         test_utils::create_test_provider_factory,
         AccountReader, HistoricalStateProvider, HistoricalStateProviderRef, RocksDBProviderFactory,
         StateProvider,
@@ -1406,16 +1313,16 @@ mod tests {
         use reth_db_api::models::StorageSettings;
         use reth_execution_types::ExecutionOutcome;
         use reth_testing_utils::generators::{self, random_block_range, BlockRangeParams};
-        use revm_database::BundleState;
+        use revm::database::BundleState;
         use std::collections::HashMap;
 
         let factory = create_test_provider_factory();
         factory.set_storage_settings_cache(StorageSettings::v2());
 
         let slot = U256::from_be_bytes(*STORAGE);
-        let account: revm_state::AccountInfo =
+        let account: revm::state::AccountInfo =
             Account { nonce: 1, balance: U256::from(1000), bytecode_hash: None }.into();
-        let higher_account: revm_state::AccountInfo =
+        let higher_account: revm::state::AccountInfo =
             Account { nonce: 1, balance: U256::from(2000), bytecode_hash: None }.into();
 
         let mut rng = generators::rng();
@@ -1430,7 +1337,7 @@ mod tests {
         let mut higher_storage = HashMap::default();
         higher_storage.insert(slot, (U256::ZERO, U256::from(1000)));
 
-        type Revert = Vec<(Address, Option<Option<revm_state::AccountInfo>>, Vec<(U256, U256)>)>;
+        type Revert = Vec<(Address, Option<Option<revm::state::AccountInfo>>, Vec<(U256, U256)>)>;
         let mut reverts: Vec<Revert> = vec![Vec::new(); 16];
 
         reverts[3] = vec![(ADDRESS, Some(Some(account.clone())), vec![(slot, U256::ZERO)])];
@@ -1549,139 +1456,5 @@ mod tests {
         assert!(needs_prev_shard_check(0, None, 5));
         assert!(!needs_prev_shard_check(0, Some(5), 5)); // found_block == block_number
         assert!(!needs_prev_shard_check(1, Some(10), 5)); // rank > 0
-    }
-
-    #[test]
-    fn pipeline_consistency_unit_logic() {
-        // Consistent: execution == history
-        let pc = PipelineConsistency {
-            execution_tip: Some(100),
-            account_history_tip: Some(100),
-            storage_history_tip: Some(100),
-        };
-        assert!(pc.account_inconsistency().is_none());
-        assert!(pc.storage_inconsistency().is_none());
-
-        // Inconsistent: execution ahead of history
-        let pc = PipelineConsistency {
-            execution_tip: Some(200),
-            account_history_tip: Some(100),
-            storage_history_tip: Some(150),
-        };
-        assert_eq!(pc.account_inconsistency(), Some((200, 100)));
-        assert_eq!(pc.storage_inconsistency(), Some((200, 150)));
-
-        // History never ran (None) → treated as block 0
-        let pc = PipelineConsistency {
-            execution_tip: Some(50),
-            account_history_tip: None,
-            storage_history_tip: None,
-        };
-        assert_eq!(pc.account_inconsistency(), Some((50, 0)));
-        assert_eq!(pc.storage_inconsistency(), Some((50, 0)));
-
-        // Execution not run yet → consistent
-        let pc = PipelineConsistency {
-            execution_tip: None,
-            account_history_tip: None,
-            storage_history_tip: None,
-        };
-        assert!(pc.account_inconsistency().is_none());
-        assert!(pc.storage_inconsistency().is_none());
-    }
-
-    /// Verifies selective rejection during pipeline inconsistency:
-    /// - Accounts resolving via changeset path → return correct data (not blocked)
-    /// - Accounts resolving via `InPlainState` path → return `HistoryStateInconsistent` error
-    #[test]
-    fn pipeline_consistency_selective_rejection() {
-        let factory = create_test_provider_factory();
-        let tx = factory.provider_rw().unwrap().into_tx();
-
-        let no_history_addr = address!("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
-
-        // History index for ADDRESS: modified at blocks 3, 7, 10, 15
-        tx.put::<tables::AccountsHistory>(
-            ShardedKey { key: ADDRESS, highest_block_number: 7 },
-            BlockNumberList::new([3, 7]).unwrap(),
-        )
-        .unwrap();
-        tx.put::<tables::AccountsHistory>(
-            ShardedKey { key: ADDRESS, highest_block_number: u64::MAX },
-            BlockNumberList::new([10, 15]).unwrap(),
-        )
-        .unwrap();
-
-        // Changesets for ADDRESS
-        let acc_at7 = Account { nonce: 7, balance: U256::ZERO, bytecode_hash: None };
-        let acc_at10 = Account { nonce: 10, balance: U256::ZERO, bytecode_hash: None };
-        tx.put::<tables::AccountChangeSets>(
-            7,
-            AccountBeforeTx { address: ADDRESS, info: Some(acc_at7) },
-        )
-        .unwrap();
-        tx.put::<tables::AccountChangeSets>(
-            10,
-            AccountBeforeTx { address: ADDRESS, info: Some(acc_at10) },
-        )
-        .unwrap();
-
-        // PlainState
-        let acc_plain = Account { nonce: 100, balance: U256::ZERO, bytecode_hash: None };
-        let no_hist_plain = Account { nonce: 999, balance: U256::from(999), bytecode_hash: None };
-        tx.put::<tables::PlainAccountState>(ADDRESS, acc_plain).unwrap();
-        tx.put::<tables::PlainAccountState>(no_history_addr, no_hist_plain).unwrap();
-        tx.commit().unwrap();
-
-        let db = factory.provider().unwrap();
-
-        // Simulate inconsistency: Execution=200, HistoryIndex=15
-        let inconsistent = PipelineConsistency {
-            execution_tip: Some(200),
-            account_history_tip: Some(15),
-            storage_history_tip: Some(15),
-        };
-
-        // Test 1: ADDRESS at block 5 → history index finds block 7 → InChangeset → correct
-        let provider = HistoricalStateProviderRef::new(&db, 5, ChangesetCache::new())
-            .with_pipeline_consistency(inconsistent);
-        let result = provider.basic_account(&ADDRESS);
-        assert!(result.is_ok(), "Changeset path should work during inconsistency: {result:?}");
-        assert_eq!(result.unwrap().unwrap().nonce, 7);
-
-        // Test 2: ADDRESS at block 16 → no entry after 16 → InPlainState → BLOCKED
-        let provider = HistoricalStateProviderRef::new(&db, 16, ChangesetCache::new())
-            .with_pipeline_consistency(inconsistent);
-        let result = provider.basic_account(&ADDRESS);
-        assert!(
-            matches!(result, Err(ProviderError::HistoryStateInconsistent { .. })),
-            "InPlainState should be blocked: {result:?}"
-        );
-
-        // Test 3: no_history_addr at block 5 → never written to history → NotYetWritten → Ok(None)
-        // This is correct: accounts that never existed in history return None regardless of
-        // pipeline consistency, because they were never modified by any block.
-        let provider = HistoricalStateProviderRef::new(&db, 5, ChangesetCache::new())
-            .with_pipeline_consistency(inconsistent);
-        let result = provider.basic_account(&no_history_addr);
-        assert!(matches!(result, Ok(None)), "Never-written account should return None: {result:?}");
-
-        // Test 4: Same queries with consistent pipeline → all succeed
-        let consistent = PipelineConsistency {
-            execution_tip: Some(200),
-            account_history_tip: Some(200),
-            storage_history_tip: Some(200),
-        };
-
-        let provider = HistoricalStateProviderRef::new(&db, 16, ChangesetCache::new())
-            .with_pipeline_consistency(consistent);
-        let result = provider.basic_account(&ADDRESS);
-        assert!(result.is_ok(), "Should succeed when consistent: {result:?}");
-        assert_eq!(result.unwrap().unwrap().nonce, acc_plain.nonce);
-
-        let provider = HistoricalStateProviderRef::new(&db, 5, ChangesetCache::new())
-            .with_pipeline_consistency(consistent);
-        let result = provider.basic_account(&no_history_addr);
-        assert!(result.is_ok(), "Should succeed when consistent: {result:?}");
     }
 }

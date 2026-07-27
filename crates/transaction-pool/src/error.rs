@@ -9,6 +9,30 @@ use reth_primitives_traits::transaction::error::InvalidTransactionError;
 /// Transaction pool result type.
 pub type PoolResult<T> = Result<T, PoolError>;
 
+/// Errors that can happen while recovering a raw transaction into a pool transaction.
+#[derive(Debug, thiserror::Error)]
+pub enum RawPoolTransactionError {
+    /// The raw transaction data is empty.
+    #[error("empty transaction data")]
+    EmptyRawTransactionData,
+    /// Decoding the signed transaction failed.
+    #[error("failed to decode signed transaction")]
+    FailedToDecodeSignedTransaction,
+    /// The transaction signature is invalid.
+    #[error("invalid transaction signature")]
+    InvalidTransactionSignature,
+    /// Any other error that occurred while recovering the raw pool transaction.
+    #[error(transparent)]
+    Other(#[from] Box<dyn core::error::Error + Send + Sync>),
+}
+
+impl RawPoolTransactionError {
+    /// Creates a new [`RawPoolTransactionError::Other`] variant.
+    pub fn other(error: impl Into<Box<dyn core::error::Error + Send + Sync>>) -> Self {
+        Self::Other(error.into())
+    }
+}
+
 /// A trait for additional errors that can be thrown by the transaction pool.
 ///
 /// For example during validation
@@ -197,9 +221,6 @@ pub enum Eip4844PoolTransactionError {
     /// Thrown if blob transaction has an EIP-7594 style sidecar but EIP-7594 support is disabled.
     #[error("eip-7594 sidecar disallowed")]
     Eip7594SidecarDisallowed,
-    /// Thrown if blob transaction has a zero `max_fee_per_blob_gas`
-    #[error("blob transaction with zero max_fee_per_blob_gas")]
-    ZeroBlobFee,
 }
 
 /// Represents all errors that can happen when validating transactions for the pool for EIP-7702
@@ -296,9 +317,6 @@ pub enum InvalidPoolTransactionError {
         /// Minimum required priority fee.
         minimum_priority_fee: u128,
     },
-    /// Thrown if the max priority fee per gas is 0 for an EIP-1559 transaction.
-    #[error("max priority fee per gas is 0")]
-    TipZero,
 }
 
 // === impl InvalidPoolTransactionError ===
@@ -404,11 +422,6 @@ impl InvalidPoolTransactionError {
                         // sidecars
                         false
                     }
-                    Eip4844PoolTransactionError::ZeroBlobFee => {
-                        // this is a malformed transaction with zero blob fee and should not be sent
-                        // over the network
-                        true
-                    }
                 }
             }
             Self::Eip7702(eip7702_err) => match eip7702_err {
@@ -423,7 +436,6 @@ impl InvalidPoolTransactionError {
                 Eip7702PoolTransactionError::AuthorityReserved => false,
             },
             Self::PriorityFeeBelowMinimum { .. } => false,
-            Self::TipZero => false,
         }
     }
 

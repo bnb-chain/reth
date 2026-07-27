@@ -45,11 +45,9 @@ reth-trie-db = { workspace = true, features = ["metrics"] }
 reth-trie-common.workspace = true
 
 # triedb
-rust-eth-triedb.workspace = true
 
 reth-testing-utils = { workspace = true, optional = true }
 
-alloy-eips.workspace = true
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
 alloy-consensus.workspace = true
@@ -91,6 +89,7 @@ reth-provider = { workspace = true, features = ["test-utils"] }
 reth-network-peers.workspace = true
 
 alloy-genesis.workspace = true
+alloy-eips.workspace = true
 alloy-primitives = { workspace = true, features = ["getrandom", "rand"] }
 reth-db-common.workspace = true
 reth-tracing.workspace = true
@@ -102,16 +101,13 @@ paste.workspace = true
 tempfile.workspace = true
 
 [features]
-io-uring = ["rust-eth-triedb/io-uring"]
 jemalloc = [
-    "rust-eth-triedb/jemalloc",
     "reth-db-common/jemalloc",
     "reth-provider/jemalloc",
     "reth-trie-common/jemalloc",
     "reth-trie-db/jemalloc",
 ]
 asm-keccak = [
-    "rust-eth-triedb/asm-keccak",
     "alloy-primitives/asm-keccak",
     "reth-db-common/asm-keccak",
     "reth-provider/asm-keccak",

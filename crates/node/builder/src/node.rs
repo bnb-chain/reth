@@ -44,6 +44,11 @@ pub trait Node<N: FullNodeTypes>: NodeTypes + Clone {
 
     /// Returns the node add-ons.
     fn add_ons(&self) -> Self::AddOns;
+
+    /// Returns the stages that should be disabled for this node.
+    fn disabled_stages() -> &'static [reth_stages::StageId] {
+        &[]
+    }
 }
 
 /// A [`Node`] type builder
@@ -123,6 +128,21 @@ pub struct FullNode<Node: FullNodeComponents, AddOns: NodeAddOns<Node>> {
     pub data_dir: ChainPath<DataDirPath>,
     /// The handle to launched add-ons
     pub add_ons_handle: AddOns::Handle,
+    /// Sender for injecting [`EngineApiRequest`](reth_engine_tree::engine::EngineApiRequest)s
+    /// (e.g. `InsertExecutedBlock`) directly into the running engine tree.
+    ///
+    /// BSC extension: the parlia block-import path executes blocks itself and inserts the
+    /// already-executed result into the engine tree without a `newPayload` round-trip. `None`
+    /// when the launcher did not wire the channel.
+    #[allow(clippy::type_complexity)]
+    pub engine_api_tx: Option<
+        tokio::sync::mpsc::UnboundedSender<
+            reth_engine_tree::engine::EngineApiRequest<
+                <Node::Types as NodeTypes>::Payload,
+                <Node::Types as NodeTypes>::Primitives,
+            >,
+        >,
+    >,
 }
 
 impl<Node: FullNodeComponents, AddOns: NodeAddOns<Node>> Clone for FullNode<Node, AddOns> {
@@ -137,6 +157,7 @@ impl<Node: FullNodeComponents, AddOns: NodeAddOns<Node>> Clone for FullNode<Node
             config: self.config.clone(),
             data_dir: self.data_dir.clone(),
             add_ons_handle: self.add_ons_handle.clone(),
+            engine_api_tx: self.engine_api_tx.clone(),
         }
     }
 }

@@ -12,11 +12,7 @@ use reth_trie::{
     BranchNodeCompact, Nibbles, PackedStorageTrieEntry, PackedStoredNibbles,
     PackedStoredNibblesSubKey, StorageTrieEntry, StoredNibbles, StoredNibblesSubKey,
 };
-use std::{
-    backtrace::Backtrace,
-    marker::PhantomData,
-    sync::atomic::{AtomicBool, Ordering},
-};
+use std::marker::PhantomData;
 
 /// Trait abstracting nibble encoding for trie keys.
 ///
@@ -185,22 +181,13 @@ where
         = DatabaseAccountTrieCursor<<TX as DbTx>::Cursor<A::AccountTrieTable>, A>
     where
         Self: 'a;
+
     type StorageTrieCursor<'a>
         = DatabaseStorageTrieCursor<<TX as DbTx>::DupCursor<A::StorageTrieTable>, A>
     where
         Self: 'a;
 
     fn account_trie_cursor(&self) -> Result<Self::AccountTrieCursor<'_>, DatabaseError> {
-        static WARNED_ACCOUNT_CURSOR: AtomicBool = AtomicBool::new(false);
-        if rust_eth_triedb::triedb_manager::is_triedb_active() &&
-            !WARNED_ACCOUNT_CURSOR.swap(true, Ordering::Relaxed)
-        {
-            tracing::warn!(
-                target: "reth_trie_db::trie_cursor",
-                backtrace = ?Backtrace::force_capture(),
-                "account_trie_cursor called while triedb is active"
-            );
-        }
         Ok(DatabaseAccountTrieCursor::new(self.tx.cursor_read::<A::AccountTrieTable>()?))
     }
 
@@ -208,17 +195,6 @@ where
         &self,
         hashed_address: B256,
     ) -> Result<Self::StorageTrieCursor<'_>, DatabaseError> {
-        static WARNED_STORAGE_CURSOR: AtomicBool = AtomicBool::new(false);
-        if rust_eth_triedb::triedb_manager::is_triedb_active() &&
-            !WARNED_STORAGE_CURSOR.swap(true, Ordering::Relaxed)
-        {
-            tracing::warn!(
-                target: "reth_trie_db::trie_cursor",
-                backtrace = ?Backtrace::force_capture(),
-                hashed_address = ?hashed_address,
-                "storage_trie_cursor called while triedb is active"
-            );
-        }
         Ok(DatabaseStorageTrieCursor::new(
             self.tx.cursor_dup_read::<A::StorageTrieTable>()?,
             hashed_address,

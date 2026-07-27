@@ -1,4 +1,4 @@
-import { SidebarItem } from "vocs";
+import type { SidebarItem } from "./types";
 
 export const rethCliSidebar: SidebarItem = {
     text: "reth",
@@ -110,10 +110,6 @@ export const rethCliSidebar: SidebarItem = {
                             link: "/cli/reth/db/clear/static-file"
                         }
                     ]
-                },
-                {
-                    text: "reth db migrate",
-                    link: "/cli/reth/db/migrate"
                 },
                 {
                     text: "reth db repair-trie",

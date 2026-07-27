@@ -7,16 +7,12 @@
 use crate::{
     errors::{EthHandshakeError, EthStreamError},
     handshake::EthereumEthHandshake,
-    message::{
-        EthBroadcastMessage, ProtocolBroadcastMessage, MAX_MESSAGE_SIZE,
-        TX_MEMORY_BUDGET_MULTIPLIER,
-    },
+    message::{EthBroadcastMessage, MAX_MESSAGE_SIZE, TX_MEMORY_BUDGET_MULTIPLIER},
     p2pstream::HANDSHAKE_TIMEOUT,
     CanDisconnect, DisconnectReason, EthMessage, EthNetworkPrimitives, EthVersion, ProtocolMessage,
     UnifiedStatus,
 };
 use alloy_primitives::bytes::{Bytes, BytesMut};
-use alloy_rlp::Encodable;
 use futures::{ready, Sink, SinkExt};
 use pin_project::pin_project;
 use reth_eth_wire_types::{EthMessageID, NetworkPrimitives, RawCapabilityMessage};
@@ -30,16 +26,6 @@ use std::{
 use tokio::time::timeout;
 use tokio_stream::Stream;
 use tracing::{debug, trace};
-
-/// Record per-protocol message metrics matching geth's `p2p/{direction}/eth/{version}/0x{code}`
-/// format. Also records packet counts as `p2p/{direction}/eth/{version}/0x{code}/packets`.
-fn record_eth_message_metric(direction: &str, version: EthVersion, msg_id: u8, bytes: usize) {
-    let version_num = version as u8;
-    let name = format!("p2p.{direction}.eth.{version_num}.0x{msg_id:02x}");
-    let packets_name = format!("p2p.{direction}.eth.{version_num}.0x{msg_id:02x}.packets");
-    reth_metrics::metrics::counter!(name).increment(bytes as u64);
-    reth_metrics::metrics::counter!(packets_name).increment(1);
-}
 
 /// An un-authenticated [`EthStream`]. This is consumed and returns a [`EthStream`] after the
 /// `Status` handshake is completed.
@@ -282,20 +268,13 @@ where
         &mut self,
         item: EthBroadcastMessage<N>,
     ) -> Result<(), EthStreamError> {
-        self.inner.start_send_unpin(Bytes::from(alloy_rlp::encode(
-            ProtocolBroadcastMessage::from(item),
-        )))?;
-
+        self.inner.start_send_unpin(item.encoded())?;
         Ok(())
     }
 
     /// Sends a raw capability message directly over the stream
     pub fn start_send_raw(&mut self, msg: RawCapabilityMessage) -> Result<(), EthStreamError> {
-        let mut bytes = Vec::with_capacity(msg.payload.len() + 1);
-        msg.id.encode(&mut bytes);
-        bytes.extend_from_slice(&msg.payload);
-
-        self.inner.start_send_unpin(bytes.into())?;
+        self.inner.start_send_unpin(msg.encoded())?;
         Ok(())
     }
 }
@@ -313,16 +292,7 @@ where
         let res = ready!(this.inner.poll_next(cx));
 
         match res {
-            Some(Ok(bytes)) => {
-                // Record per-message ingress metrics before decoding
-                let byte_len = bytes.len();
-                let msg_code = if bytes.is_empty() { 0 } else { bytes[0] };
-                let result = this.eth.decode_message(bytes);
-                if result.is_ok() {
-                    record_eth_message_metric("ingress", this.eth.version(), msg_code, byte_len);
-                }
-                Poll::Ready(Some(result))
-            }
+            Some(Ok(bytes)) => Poll::Ready(Some(this.eth.decode_message(bytes))),
             Some(Err(err)) => Poll::Ready(Some(Err(err.into()))),
             None => Poll::Ready(None),
         }
@@ -346,17 +316,16 @@ where
             // Attempt to disconnect the peer for protocol breach when trying to send Status
             // message after handshake is complete
             let mut this = self.project();
+            // We can't await the disconnect future here since this is a synchronous method,
+            // but we can start the disconnect process. The actual disconnect will be handled
+            // asynchronously by the caller or the stream's poll methods.
             let _disconnect_future = this.inner.disconnect(DisconnectReason::ProtocolBreach);
             return Err(EthStreamError::EthHandshakeError(EthHandshakeError::StatusNotInHandshake))
         }
 
-        // Record per-message egress metrics
-        let msg_id = item.message_id().to_u8();
-        let this = self.project();
-        let encoded = Bytes::from(alloy_rlp::encode(ProtocolMessage::from(item)));
-        record_eth_message_metric("egress", this.eth.version(), msg_id, encoded.len());
-
-        this.inner.start_send(encoded)?;
+        self.project()
+            .inner
+            .start_send(Bytes::from(alloy_rlp::encode(ProtocolMessage::from(item))))?;
 
         Ok(())
     }

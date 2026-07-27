@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 use alloy_eips::BlockHashOrNumber;
-use alloy_primitives::{BlockHash, BlockNumber, U256};
+use alloy_primitives::{BlockHash, BlockNumber};
 use core::ops::RangeBounds;
 use reth_primitives_traits::{BlockHeader, SealedHeader};
 use reth_storage_errors::provider::ProviderResult;
@@ -33,13 +33,21 @@ pub trait HeaderProvider: Send {
     /// Get header by block number
     fn header_by_number(&self, num: u64) -> ProviderResult<Option<Self::Header>>;
 
-    /// Get total difficulty by block hash.
-    fn header_td(&self, _hash: &BlockHash) -> ProviderResult<Option<U256>> {
+    /// Get the total difficulty for the block with the given hash (BSC parlia fork choice).
+    ///
+    /// Default returns `None`; providers that track total difficulty override this. Hash-keyed
+    /// so it resolves the TD of a specific (possibly non-canonical) block during reorg handling.
+    fn header_td(&self, _hash: &BlockHash) -> ProviderResult<Option<alloy_primitives::U256>> {
         Ok(None)
     }
 
-    /// Get total difficulty by block number.
-    fn header_td_by_number(&self, _number: BlockNumber) -> ProviderResult<Option<U256>> {
+    /// Get the total difficulty at the given block number (BSC parlia fork choice).
+    ///
+    /// Default returns `None`; providers that track total difficulty override this.
+    fn header_td_by_number(
+        &self,
+        _number: BlockNumber,
+    ) -> ProviderResult<Option<alloy_primitives::U256>> {
         Ok(None)
     }
 
