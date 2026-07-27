@@ -31,10 +31,7 @@ use reth_rpc_eth_api::{
     FromEthApiError, FromEvmError, RpcConvert, RpcNodeCore,
 };
 use reth_rpc_eth_types::{EthApiError, StateCacheDb};
-use reth_rpc_server_types::{
-    result::{internal_rpc_err, rpc_error_with_code},
-    ToRpcResult,
-};
+use reth_rpc_server_types::{result::internal_rpc_err, ToRpcResult};
 use reth_storage_api::{
     BlockIdReader, BlockReaderIdExt, HashedPostStateProvider, HeaderProvider, ProviderBlock,
     ReceiptProviderIdExt, StateProviderFactory, StateRootProvider, TransactionVariant,
@@ -49,7 +46,7 @@ use revm_inspectors::tracing::{
     DebugInspector, FourByteInspector, MuxInspector, TracingInspector, TracingInspectorConfig,
     TransactionContext,
 };
-use rust_eth_triedb::triedb_manager::is_triedb_active;
+
 use serde::{Deserialize, Serialize};
 use std::{collections::VecDeque, sync::Arc};
 use tokio::sync::{AcquireError, OwnedSemaphorePermit};
@@ -741,13 +738,6 @@ where
         hash: B256,
         mode: Option<ExecutionWitnessMode>,
     ) -> Result<ExecutionWitness, Eth::Error> {
-        if is_triedb_active() {
-            return Err(EthApiError::MethodNotAvailable(
-                "debug_executionWitnessByBlockHash".to_string(),
-            )
-            .into());
-        }
-
         let this = self.clone();
         let block = this
             .eth_api()
@@ -767,10 +757,6 @@ where
         block_id: BlockNumberOrTag,
         mode: Option<ExecutionWitnessMode>,
     ) -> Result<ExecutionWitness, Eth::Error> {
-        if is_triedb_active() {
-            return Err(EthApiError::MethodNotAvailable("debug_executionWitness".to_string()).into());
-        }
-
         let this = self.clone();
         let block = this
             .eth_api()
@@ -787,13 +773,6 @@ where
         block: Arc<RecoveredBlock<ProviderBlock<Eth::Provider>>>,
         mode: ExecutionWitnessMode,
     ) -> Result<ExecutionWitness, Eth::Error> {
-        if is_triedb_active() {
-            return Err(EthApiError::MethodNotAvailable(
-                "debug_executionWitnessForBlock".to_string(),
-            )
-            .into());
-        }
-
         let block_number = block.header().number();
         self.eth_api()
             .spawn_with_state_at_block(block.parent_hash(), move |eth_api, mut db| {
@@ -1033,12 +1012,6 @@ where
         hashed_state: HashedPostState,
         block_id: Option<BlockId>,
     ) -> Result<(B256, TrieUpdates), Eth::Error> {
-        if is_triedb_active() {
-            return Err(
-                EthApiError::MethodNotAvailable("debug_stateRootWithUpdates".to_string()).into()
-            );
-        }
-
         self.inner
             .eth_api
             .spawn_blocking_io(move |this| {
@@ -1277,12 +1250,6 @@ where
         block: BlockNumberOrTag,
         mode: Option<ExecutionWitnessMode>,
     ) -> RpcResult<ExecutionWitness> {
-        if is_triedb_active() {
-            return Err(rpc_error_with_code(
-                -32601,
-                "The method debug_executionWitness does not exist/is not available",
-            ));
-        }
         let _permit = self.acquire_trace_permit().await;
         Self::debug_execution_witness(self, block, mode).await.map_err(Into::into)
     }
@@ -1293,12 +1260,6 @@ where
         hash: B256,
         mode: Option<ExecutionWitnessMode>,
     ) -> RpcResult<ExecutionWitness> {
-        if is_triedb_active() {
-            return Err(rpc_error_with_code(
-                -32601,
-                "The method debug_executionWitnessByBlockHash does not exist/is not available",
-            ));
-        }
         let _permit = self.acquire_trace_permit().await;
         Self::debug_execution_witness_by_block_hash(self, hash, mode).await.map_err(Into::into)
     }
@@ -1515,12 +1476,6 @@ where
         hashed_state: HashedPostState,
         block_id: Option<BlockId>,
     ) -> RpcResult<(B256, TrieUpdates)> {
-        if is_triedb_active() {
-            return Err(rpc_error_with_code(
-                -32601,
-                "The method debug_stateRootWithUpdates does not exist/is not available",
-            ));
-        }
         Self::debug_state_root_with_updates(self, hashed_state, block_id).await.map_err(Into::into)
     }
 

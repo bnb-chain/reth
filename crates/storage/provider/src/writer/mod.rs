@@ -7,9 +7,6 @@ use reth_chain_state::ExecutedBlock;
 use reth_db_api::transaction::{DbTx, DbTxMut};
 use reth_errors::{ProviderError, ProviderResult};
 use reth_primitives_traits::AlloyBlockHeader;
-use reth_storage_errors::db::DatabaseError;
-use rust_eth_triedb::get_global_triedb;
-use rust_eth_triedb::triedb_manager::is_triedb_active;
 use reth_primitives_traits::{NodePrimitives, SignedTransaction};
 use reth_static_file_types::StaticFileSegment;
 use reth_storage_api::{DBProvider, StageCheckpointWriter, TransactionsProviderExt};
@@ -141,13 +138,6 @@ where
 
         debug!(target: "provider::storage_writer", block_count = %blocks.len(), "Writing blocks and execution data to storage");
 
-        // Only get TrieDB instance if TrieDB is active
-        let mut triedb_opt = if is_triedb_active() {
-            Some(get_global_triedb())
-        } else {
-            None
-        };
-
         // TODO: Do performant / batched writes for each type of object
         // instead of a loop over all blocks,
         // meaning:
@@ -161,26 +151,6 @@ where
             blocks
         {
             let block_number = recovered_block.number();
-            let state_root = recovered_block.state_root();
-            let hashed_state_clone = hashed_state.clone();
-
-            if triedb_opt.is_none() && is_triedb_active() {
-                // TrieDB became active mid-call; switch to TrieDB path for remaining blocks.
-                triedb_opt = Some(get_global_triedb());
-            }
-
-            // Only check latest_persist_state if TrieDB is active
-            let latest_state_root_opt = if let Some(ref mut triedb) = triedb_opt {
-                let (latest_block_number, latest_state_root) = triedb.latest_persist_state()
-                    .map_err(|e| ProviderError::other(e))?;
-
-                if latest_block_number != block_number - 1 {
-                    return Err(ProviderError::Database(DatabaseError::Other(format!("latest_block_number != block_number - 1, latest_block_number={}, block_number={}", latest_block_number, block_number))));
-                }
-                Some(latest_state_root)
-            } else {
-                None
-            };
 
             self.database().insert_block(Arc::unwrap_or_clone(recovered_block))?;
 
@@ -191,23 +161,12 @@ where
                 OriginalValuesKnown::No,
             )?;
 
-            if let (Some(ref mut triedb), Some(latest_state_root)) = (triedb_opt.as_mut(), latest_state_root_opt) {
-                let triedb_hashed_post_state = hashed_state_clone.as_ref().to_triedb_hashed_post_state();
-                let (new_root, difflayer) = triedb.commit_hashed_post_state(latest_state_root, None, &triedb_hashed_post_state)
-                    .map_err(|e| ProviderError::other(e))?;
-                if new_root != state_root {
-                    return Err(ProviderError::Database(DatabaseError::Other(format!("write hashed state to triedb, block_number={}, new_root({:?}) != state_root({:?})", block_number, new_root, state_root))));
-                }
-                triedb.flush(block_number, new_root, &difflayer)
-                    .map_err(|e| ProviderError::other(e))?;
-            } else {
-                // insert hashes and intermediate merkle nodes
-                self.database()
-                    .write_hashed_state(&Arc::unwrap_or_clone(hashed_state).into_sorted())?;
-                let trie_updates_sorted = (*trie_updates).clone().into_sorted();
-                self.database().write_trie_changesets(block_number, &trie_updates_sorted, None)?;
-                self.database().write_trie_updates_sorted(&trie_updates_sorted)?;
-            }
+            // insert hashes and intermediate merkle nodes
+            self.database()
+                .write_hashed_state(&Arc::unwrap_or_clone(hashed_state).into_sorted())?;
+            let trie_updates_sorted = (*trie_updates).clone().into_sorted();
+            self.database().write_trie_changesets(block_number, &trie_updates_sorted, None)?;
+            self.database().write_trie_updates_sorted(&trie_updates_sorted)?;
         }
 
         // update history indices

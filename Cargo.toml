@@ -432,14 +432,6 @@ reth-trie-parallel = { path = "crates/trie/parallel" }
 reth-trie-sparse = { path = "crates/trie/sparse", default-features = false }
 reth-zstd-compressors = { git = "https://github.com/bnb-chain/reth-core.git", branch = "v0.3.1-v2", default-features = false }
 
-# triedb
-# Note: To enable io-uring support, add `io-uring = ["rust-eth-triedb/io-uring"]` to the [features] section
-# of any crate that depends on rust-eth-triedb. Then enable the io-uring feature at the root (bin/reth).
-rust-eth-triedb = { git = "https://github.com/bnb-chain/reth-bsc-triedb.git", branch = "develop" }
-rust-eth-triedb-common = { git = "https://github.com/bnb-chain/reth-bsc-triedb.git", branch = "develop", package = "rust-eth-triedb-common" }
-rust-eth-triedb-pathdb = { git = "https://github.com/bnb-chain/reth-bsc-triedb.git", branch = "develop", package = "rust-eth-triedb-pathdb" }
-rust-eth-triedb-state-trie = { git = "https://github.com/bnb-chain/reth-bsc-triedb.git", branch = "develop", package = "rust-eth-triedb-state-trie" }
-
 # revm
 revm = { version = "38.0.0", default-features = false }
 revm-bytecode = { version = "10.0.0", default-features = false }
@@ -619,7 +611,7 @@ c-kzg = "2.1.5"
 toml = "0.9"
 
 # rocksdb
-rocksdb = { version = "0.24" }
+rocksdb = { version = "0.24", features = ["multi-threaded-cf"] }
 
 # otlp obs
 opentelemetry_sdk = "0.31"
@@ -708,9 +700,6 @@ vergen-git2 = "9.1.0"
 
 # networking
 ipnet = "2.11"
-
-[patch."https://github.com/bnb-chain/reth-bsc-triedb.git"]
-reth-metrics = { path = "crates/metrics" }
 
 [patch."https://github.com/bnb-chain/reth.git"]
 reth-metrics = { path = "crates/metrics" }

@@ -3,7 +3,7 @@
 use crate::{
     args::{
         DatabaseArgs, DatadirArgs, DebugArgs, DevArgs, EngineArgs, NetworkArgs, PayloadBuilderArgs,
-        PruningArgs, RpcServerArgs, StateDbArgs, StaticFilesArgs, StorageArgs, TxPoolArgs,
+        PruningArgs, RpcServerArgs, StaticFilesArgs, StorageArgs, TxPoolArgs,
     },
     dirs::{ChainPath, DataDirPath},
     utils::get_single_header,
@@ -152,9 +152,6 @@ pub struct NodeConfig<ChainSpec> {
     /// All static files related arguments
     pub static_files: StaticFilesArgs,
 
-    /// All state database related arguments
-    pub statedb: StateDbArgs,
-
     /// Storage layout configuration (v1/v2)
     pub storage: StorageArgs,
 }
@@ -188,7 +185,6 @@ impl<ChainSpec> NodeConfig<ChainSpec> {
             engine: EngineArgs::default(),
             era: EraArgs::default(),
             static_files: StaticFilesArgs::default(),
-            statedb: StateDbArgs::default(),
             storage: StorageArgs::default(),
         }
     }
@@ -264,7 +260,6 @@ impl<ChainSpec> NodeConfig<ChainSpec> {
             engine,
             era,
             static_files,
-            statedb,
             storage,
             ..
         } = self;
@@ -285,7 +280,6 @@ impl<ChainSpec> NodeConfig<ChainSpec> {
             engine,
             era,
             static_files,
-            statedb,
             storage,
         }
     }
@@ -583,7 +577,6 @@ impl<ChainSpec> NodeConfig<ChainSpec> {
             pruning: self.pruning,
             engine: self.engine,
             era: self.era,
-            statedb: self.statedb,
             static_files: self.static_files,
             storage: self.storage,
         }
@@ -626,7 +619,6 @@ impl<ChainSpec> Clone for NodeConfig<ChainSpec> {
             datadir: self.datadir.clone(),
             engine: self.engine.clone(),
             era: self.era.clone(),
-            statedb: self.statedb.clone(),
             static_files: self.static_files,
             storage: self.storage,
         }

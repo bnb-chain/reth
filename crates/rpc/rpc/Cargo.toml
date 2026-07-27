@@ -43,7 +43,6 @@ reth-ethereum-primitives.workspace = true
 reth-ethereum-engine-primitives.workspace = true
 reth-node-api.workspace = true
 reth-trie-common.workspace = true
-rust-eth-triedb.workspace = true
 
 # ethereum
 alloy-evm = { workspace = true, features = ["overrides"] }
@@ -104,15 +103,13 @@ rand.workspace = true
 jsonrpsee = { workspace = true, features = ["client"] }
 
 [features]
-io-uring = ["rust-eth-triedb/io-uring"]
+io-uring = []
 jemalloc = [
-    "rust-eth-triedb/jemalloc",
     "reth-provider/jemalloc",
     "reth-rpc-eth-api/jemalloc",
     "reth-trie-common/jemalloc",
 ]
 asm-keccak = [
-    "rust-eth-triedb/asm-keccak",
     "alloy-evm/asm-keccak",
     "alloy-primitives/asm-keccak",
     "reth-provider/asm-keccak",

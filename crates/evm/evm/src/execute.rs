@@ -22,9 +22,6 @@ use reth_storage_api::StateProvider;
 pub use reth_storage_errors::provider::ProviderError;
 use reth_trie_common::{updates::TrieUpdates, HashedPostState};
 use revm::database::{states::bundle_state::BundleRetention, BundleState, State};
-#[cfg(feature = "std")]
-use rust_eth_triedb_common::DiffLayer;
-
 /// A type that knows how to execute a block. It is assumed to operate on a
 /// [`crate::Evm`] internally and use [`State`] as database.
 pub trait Executor<DB: Database>: Sized {
@@ -305,15 +302,12 @@ pub struct BlockBuilderOutcome<N: NodePrimitives> {
     pub block: RecoveredBlock<N::Block>,
 }
 
-/// Extended output of block building that can carry a triedb difflayer (if produced by the
-/// block builder).
+/// Extended output of block building.
 #[cfg(feature = "std")]
 #[derive(Debug, Clone)]
 pub struct BlockBuilderOutcomeWithDiffLayer<N: NodePrimitives> {
     /// The standard block builder outcome.
     pub inner: BlockBuilderOutcome<N>,
-    /// Triedb difflayer produced during state root computation (if any).
-    pub difflayer: Option<Arc<DiffLayer>>,
 }
 
 /// A type that knows how to execute and build a block.
@@ -376,10 +370,9 @@ pub trait BlockBuilder {
         state_root_precomputed: Option<(B256, TrieUpdates)>,
     ) -> Result<BlockBuilderOutcome<Self::Primitives>, BlockExecutionError>;
 
-    /// Completes the block building process and also returns an optional triedb difflayer if the
-    /// builder produced one.
+    /// Completes the block building process.
     ///
-    /// Default implementation returns no difflayer.
+    /// Default implementation delegates to [`BlockBuilder::finish`].
     #[cfg(feature = "std")]
     fn finish_with_difflayer(
         self,
@@ -388,10 +381,7 @@ pub trait BlockBuilder {
     where
         Self: Sized,
     {
-        Ok(BlockBuilderOutcomeWithDiffLayer {
-            inner: self.finish(state_provider, None)?,
-            difflayer: None,
-        })
+        Ok(BlockBuilderOutcomeWithDiffLayer { inner: self.finish(state_provider, None)? })
     }
 
     /// Provides mutable access to the inner [`BlockExecutor`].

@@ -520,7 +520,7 @@ dependencies = [
  "async-stream",
  "async-trait",
  "auto_impl",
- "dashmap 6.1.0",
+ "dashmap",
  "either",
  "futures",
  "futures-utils-wasm",
@@ -1807,7 +1807,7 @@ dependencies = [
  "bytemuck",
  "cfg-if",
  "cow-utils",
- "dashmap 6.1.0",
+ "dashmap",
  "dynify",
  "fast-float2",
  "float16",
@@ -2003,12 +2003,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7575182f7272186991736b70173b0ea045398f984bf5ebbb3804736ce1330c9d"
 
 [[package]]
-name = "bytecount"
-version = "0.6.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "175812e0be2bccb6abe50bb8d566126198344f707e304f45c648fd8f2cc0365e"
-
-[[package]]
 name = "bytemuck"
 version = "1.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2095,19 +2089,6 @@ checksum = "dd0061da739915fae12ea00e16397555ed4371a6bb285431aab930f61b0aa4ba"
 dependencies = [
  "serde",
  "serde_core",
-]
-
-[[package]]
-name = "cargo_metadata"
-version = "0.14.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4acbb09d9ee8e23699b9634375c72795d095bf268439da88562cf9b501f181fa"
-dependencies = [
- "camino",
- "cargo-platform 0.1.9",
- "semver 1.0.28",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -2932,19 +2913,6 @@ dependencies = [
 
 [[package]]
 name = "dashmap"
-version = "5.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "978747c1d849a7d2ee5e8adc0159961c48fb7e5db2f06af6723b80123bb53856"
-dependencies = [
- "cfg-if",
- "hashbrown 0.14.5",
- "lock_api",
- "once_cell",
- "parking_lot_core",
-]
-
-[[package]]
-name = "dashmap"
 version = "6.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5041cc499144891f3790297212f32a74fb938e5136a14943f338ef9e0ae276cf"
@@ -3471,15 +3439,6 @@ checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
  "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "error-chain"
-version = "0.12.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d2f06b9cac1506ece98fe3231e3cc9c4410ec3d5b1f24ae1c8946f0742cdefc"
-dependencies = [
- "version_check",
 ]
 
 [[package]]
@@ -5627,7 +5586,6 @@ dependencies = [
  "libc",
  "libz-sys",
  "lz4-sys",
- "pkg-config",
  "tikv-jemalloc-sys",
  "zstd-sys",
 ]
@@ -5922,21 +5880,6 @@ checksum = "f7c44f8e672c00fe5308fa235f821cb4198414e1c77935c1ab6948d3fd78550e"
 dependencies = [
  "mime",
  "unicase",
-]
-
-[[package]]
-name = "mini-moka"
-version = "0.10.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c325dfab65f261f386debee8b0969da215b3fa0037e74c8a1234db7ba986d803"
-dependencies = [
- "crossbeam-channel",
- "crossbeam-utils",
- "dashmap 5.5.3",
- "skeptic",
- "smallvec",
- "tagptr",
- "triomphe",
 ]
 
 [[package]]
@@ -6937,17 +6880,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pulldown-cmark"
-version = "0.9.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "57206b407293d2bcd3af849ce869d52068623f19e1b5ff8e8778e3309439682b"
-dependencies = [
- "bitflags 2.11.1",
- "memchr",
- "unicase",
-]
-
-[[package]]
 name = "quanta"
 version = "0.12.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7620,7 +7552,6 @@ dependencies = [
  "reth-trie",
  "revm-database",
  "revm-state",
- "rust-eth-triedb-common",
  "serde",
  "tokio",
  "tokio-stream",
@@ -7736,7 +7667,6 @@ dependencies = [
  "reth-trie",
  "reth-trie-common",
  "reth-trie-db",
- "rust-eth-triedb",
  "secp256k1 0.30.0",
  "serde",
  "serde_json",
@@ -7951,7 +7881,6 @@ dependencies = [
  "alloy-consensus",
  "alloy-genesis",
  "alloy-primitives",
- "alloy-trie",
  "boyer-moore-magiclen",
  "eyre",
  "reth-chainspec",
@@ -7970,9 +7899,6 @@ dependencies = [
  "reth-tasks",
  "reth-trie",
  "reth-trie-db",
- "rust-eth-triedb",
- "rust-eth-triedb-common",
- "rust-eth-triedb-state-trie",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -8053,7 +7979,7 @@ dependencies = [
  "alloy-chains",
  "alloy-primitives",
  "alloy-rlp",
- "dashmap 6.1.0",
+ "dashmap",
  "data-encoding",
  "enr",
  "hickory-resolver",
@@ -8306,10 +8232,6 @@ dependencies = [
  "revm",
  "revm-primitives",
  "revm-state",
- "rust-eth-triedb",
- "rust-eth-triedb-common",
- "rust-eth-triedb-pathdb",
- "rust-eth-triedb-state-trie",
  "schnellru",
  "serde_json",
  "thiserror 2.0.18",
@@ -8675,7 +8597,6 @@ dependencies = [
  "reth-storage-errors",
  "reth-trie-common",
  "revm",
- "rust-eth-triedb-common",
 ]
 
 [[package]]
@@ -8915,7 +8836,7 @@ dependencies = [
  "bitflags 2.11.1",
  "byteorder",
  "crossbeam-queue",
- "dashmap 6.1.0",
+ "dashmap",
  "derive_more",
  "parking_lot",
  "reth-mdbx-sys",
@@ -9161,7 +9082,6 @@ dependencies = [
  "fdlimit",
  "futures",
  "jsonrpsee",
- "metrics",
  "parking_lot",
  "rayon",
  "reth-basic-payload-builder",
@@ -9210,7 +9130,6 @@ dependencies = [
  "reth-tracing",
  "reth-transaction-pool",
  "reth-trie-db",
- "rust-eth-triedb",
  "secp256k1 0.30.0",
  "serde_json",
  "tempfile",
@@ -9513,7 +9432,7 @@ dependencies = [
  "arbitrary",
  "byteorder",
  "bytes",
- "dashmap 6.1.0",
+ "dashmap",
  "derive_more",
  "modular-bitfield",
  "once_cell",
@@ -9575,8 +9494,6 @@ dependencies = [
  "revm-database-interface",
  "revm-state",
  "rocksdb",
- "rust-eth-triedb",
- "rust-eth-triedb-common",
  "strum",
  "tempfile",
  "tokio",
@@ -9726,7 +9643,6 @@ dependencies = [
  "revm",
  "revm-inspectors",
  "revm-primitives",
- "rust-eth-triedb",
  "serde",
  "serde_json",
  "sha2",
@@ -9962,7 +9878,6 @@ dependencies = [
  "reth-trie-common",
  "revm",
  "revm-inspectors",
- "rust-eth-triedb",
  "serde_json",
  "tokio",
  "tracing",
@@ -10071,7 +9986,6 @@ dependencies = [
  "alloy-genesis",
  "alloy-primitives",
  "alloy-rlp",
- "alloy-trie",
  "assert_matches",
  "eyre",
  "futures-util",
@@ -10120,7 +10034,6 @@ dependencies = [
  "reth-trie",
  "reth-trie-common",
  "reth-trie-db",
- "rust-eth-triedb",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -10269,7 +10182,7 @@ dependencies = [
  "alloy-provider",
  "alloy-rpc-types",
  "alloy-rpc-types-engine",
- "dashmap 6.1.0",
+ "dashmap",
  "reth-chainspec",
  "reth-db-api",
  "reth-errors",
@@ -10292,7 +10205,7 @@ name = "reth-tasks"
 version = "2.2.0"
 dependencies = [
  "crossbeam-utils",
- "dashmap 6.1.0",
+ "dashmap",
  "futures-util",
  "libc",
  "metrics",
@@ -10478,8 +10391,6 @@ dependencies = [
  "reth-primitives-traits",
  "revm-database",
  "revm-state",
- "rust-eth-triedb",
- "rust-eth-triedb-state-trie",
  "serde",
  "serde_json",
  "serde_with",
@@ -10510,7 +10421,6 @@ dependencies = [
  "reth-trie-common",
  "revm",
  "revm-database",
- "rust-eth-triedb",
  "serde_json",
  "similar-asserts",
  "tracing",
@@ -10951,77 +10861,6 @@ name = "ruint-macro"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48fd7bd8a6377e15ad9d42a8ec25371b94ddc67abe7c8b9127bec79bebaaae18"
-
-[[package]]
-name = "rust-eth-triedb"
-version = "0.1.0"
-source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?branch=develop#e235d46535c316c22ce6ee7b54a16597b92098ee"
-dependencies = [
- "alloy-primitives",
- "alloy-trie",
- "metrics",
- "once_cell",
- "rayon",
- "reth-metrics",
- "rust-eth-triedb-common",
- "rust-eth-triedb-pathdb",
- "rust-eth-triedb-state-trie",
- "schnellru",
- "serde",
- "thiserror 1.0.69",
- "tikv-jemallocator",
- "tracing",
-]
-
-[[package]]
-name = "rust-eth-triedb-common"
-version = "0.1.0"
-source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?branch=develop#e235d46535c316c22ce6ee7b54a16597b92098ee"
-dependencies = [
- "alloy-primitives",
- "auto_impl",
- "thiserror 1.0.69",
- "tikv-jemallocator",
-]
-
-[[package]]
-name = "rust-eth-triedb-pathdb"
-version = "0.1.0"
-source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?branch=develop#e235d46535c316c22ce6ee7b54a16597b92098ee"
-dependencies = [
- "alloy-primitives",
- "alloy-trie",
- "metrics",
- "mini-moka",
- "reth-metrics",
- "rocksdb",
- "rust-eth-triedb-common",
- "schnellru",
- "tempfile",
- "thiserror 1.0.69",
- "tikv-jemallocator",
- "tracing",
-]
-
-[[package]]
-name = "rust-eth-triedb-state-trie"
-version = "0.1.0"
-source = "git+https://github.com/bnb-chain/reth-bsc-triedb.git?branch=develop#e235d46535c316c22ce6ee7b54a16597b92098ee"
-dependencies = [
- "alloy-primitives",
- "alloy-rlp",
- "alloy-trie",
- "arbitrary",
- "auto_impl",
- "hex",
- "rand 0.8.6",
- "rayon",
- "rust-eth-triedb-common",
- "rust-eth-triedb-pathdb",
- "thiserror 1.0.69",
- "tikv-jemallocator",
- "tracing",
-]
 
 [[package]]
 name = "rustc-demangle"
@@ -11677,21 +11516,6 @@ name = "siphasher"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b2aa850e253778c88a04c3d7323b043aeda9d3e30d5971937c1855769763678e"
-
-[[package]]
-name = "skeptic"
-version = "0.13.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "16d23b015676c90a0f01c197bfdc786c20342c73a0afdda9025adb0bc42940a8"
-dependencies = [
- "bytecount",
- "cargo_metadata 0.14.2",
- "error-chain",
- "glob",
- "pulldown-cmark",
- "tempfile",
- "walkdir",
-]
 
 [[package]]
 name = "sketches-ddsketch"
@@ -12711,12 +12535,6 @@ dependencies = [
  "hash-db",
  "rlp",
 ]
-
-[[package]]
-name = "triomphe"
-version = "0.1.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dd69c5aa8f924c7519d6372789a74eac5b94fb0f8fcf0d4a97eb0bfc3e785f39"
 
 [[package]]
 name = "try-lock"

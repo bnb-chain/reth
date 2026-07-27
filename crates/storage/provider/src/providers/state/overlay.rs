@@ -32,7 +32,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tracing::{debug, debug_span, instrument};
+use tracing::{debug, debug_span, instrument, warn};
 
 /// Metrics for overlay state provider operations.
 #[derive(Clone, Metrics)]
@@ -294,7 +294,7 @@ impl<N: NodePrimitives> OverlayBuilder<N> {
         &self,
         provider: &Provider,
         db_tip_block: BlockNumHash,
-    ) -> ProviderResult<Overlay>
+    ) -> ProviderResult<(Overlay, bool)>
     where
         Provider: ChangeSetReader
             + StorageChangeSetReader
@@ -311,6 +311,11 @@ impl<N: NodePrimitives> OverlayBuilder<N> {
         let retrieve_hashed_state_reverts_duration;
         let trie_updates_total_len;
         let hashed_state_updates_total_len;
+
+        // Whether any trie reverts had to be recomputed from the database (changeset cache
+        // miss). That fallback reads data a concurrent persistence run may be rewriting, so
+        // the caller must revalidate the db tip before trusting the resulting overlay.
+        let mut used_db_fallback = false;
 
         // Collect any reverts which are required to bring the DB view back to the anchor hash.
         let (trie_updates, hashed_post_state) = if let Some(revert_blocks) =
@@ -332,8 +337,10 @@ impl<N: NodePrimitives> OverlayBuilder<N> {
 
                 // Use changeset cache to retrieve and accumulate reverts to restore state after
                 // from_block
-                let accumulated_reverts =
-                    self.changeset_cache.get_or_compute_range(provider, revert_blocks.clone())?;
+                let (accumulated_reverts, from_db) = self
+                    .changeset_cache
+                    .get_or_compute_range_tracked(provider, revert_blocks.clone())?;
+                used_db_fallback = from_db;
 
                 retrieve_trie_reverts_duration = start.elapsed();
                 accumulated_reverts
@@ -405,12 +412,19 @@ impl<N: NodePrimitives> OverlayBuilder<N> {
         self.metrics.trie_updates_size.record(trie_updates_total_len as f64);
         self.metrics.hashed_state_size.record(hashed_state_updates_total_len as f64);
 
-        Ok(Overlay { trie_updates, hashed_post_state })
+        Ok((Overlay { trie_updates, hashed_post_state }, used_db_fallback))
     }
 
-    /// Builds the effective overlay for the given provider.
+    /// Builds the effective overlay for the given provider, additionally reporting whether any
+    /// trie reverts were recomputed from the database (changeset cache miss fallback). When that
+    /// flag is `true`, callers feeding the overlay into consensus-critical computations must
+    /// revalidate that the db tip has not moved (see
+    /// [`OverlayStateProviderFactory::get_overlay`]).
     #[instrument(level = "debug", target = "providers::state::overlay", skip_all)]
-    pub(super) fn build_overlay<Provider>(&self, provider: &Provider) -> ProviderResult<Overlay>
+    pub(super) fn build_overlay_tracked<Provider>(
+        &self,
+        provider: &Provider,
+    ) -> ProviderResult<(Overlay, bool)>
     where
         Provider: StageCheckpointReader
             + PruneCheckpointReader
@@ -422,6 +436,20 @@ impl<N: NodePrimitives> OverlayBuilder<N> {
     {
         let db_tip_block = self.get_db_tip_block(provider)?;
         self.calculate_overlay(provider, db_tip_block)
+    }
+
+    /// Builds the effective overlay for the given provider.
+    pub(super) fn build_overlay<Provider>(&self, provider: &Provider) -> ProviderResult<Overlay>
+    where
+        Provider: StageCheckpointReader
+            + PruneCheckpointReader
+            + ChangeSetReader
+            + StorageChangeSetReader
+            + DBProvider
+            + BlockNumReader
+            + StorageSettingsCache,
+    {
+        Ok(self.build_overlay_tracked(provider)?.0)
     }
 }
 
@@ -472,9 +500,19 @@ impl<F, N: NodePrimitives> OverlayStateProviderFactory<F, N> {
 
     /// Fetches an [`Overlay`] from the cache based on the current db tip block. If there is no
     /// cached value then this calculates the [`Overlay`] and populates the cache.
+    ///
+    /// If the calculation had to recompute trie reverts from the database (changeset cache miss
+    /// fallback), the db tip is re-read through a fresh transaction afterwards: a concurrent
+    /// persistence run rewrites the very data the fallback reads (changesets live in static
+    /// files, outside the MDBX snapshot), so a moved tip means the overlay cannot be trusted.
+    /// In that case the overlay is NOT cached and an [`ProviderError::InsufficientChangesets`]
+    /// error is returned — failing the consumer (e.g. block validation, which will be retried)
+    /// instead of risking an incorrect state root.
     #[instrument(level = "debug", target = "providers::state::overlay", skip_all)]
     fn get_overlay<Provider>(&self, provider: &Provider) -> ProviderResult<Overlay>
     where
+        F: DatabaseProviderFactory,
+        F::Provider: StageCheckpointReader + BlockNumReader,
         Provider: StageCheckpointReader
             + PruneCheckpointReader
             + ChangeSetReader
@@ -489,7 +527,27 @@ impl<F, N: NodePrimitives> OverlayStateProviderFactory<F, N> {
             dashmap::Entry::Occupied(entry) => entry.get().clone(),
             dashmap::Entry::Vacant(entry) => {
                 self.overlay_builder.metrics.overlay_cache_misses.increment(1);
-                let overlay = self.overlay_builder.build_overlay(provider)?;
+                let (overlay, used_db_fallback) =
+                    self.overlay_builder.build_overlay_tracked(provider)?;
+
+                if used_db_fallback {
+                    let current_tip = self
+                        .overlay_builder
+                        .get_db_tip_block(&self.factory.database_provider_ro()?)?;
+                    if current_tip.hash != db_tip_block.hash {
+                        warn!(
+                            target: "providers::state::overlay",
+                            ?db_tip_block,
+                            ?current_tip,
+                            "Database tip moved during changeset fallback; discarding overlay"
+                        );
+                        return Err(ProviderError::InsufficientChangesets {
+                            requested: db_tip_block.number,
+                            available: 0..=current_tip.number,
+                        })
+                    }
+                }
+
                 entry.insert(overlay.clone());
                 overlay
             }
