@@ -39,6 +39,13 @@ pub(crate) const RPC_DEFAULT_MAX_REQUEST_SIZE_MB: u32 = 15;
 /// This is only relevant for very large trace responses.
 pub(crate) const RPC_DEFAULT_MAX_RESPONSE_SIZE_MB: u32 = 160;
 
+/// Default maximum number of calls in a single JSON-RPC batch request.
+///
+/// Matches go-ethereum / go-bsc `--rpc.batchrequestlimit`. A batch is one HTTP request carrying
+/// many calls, so without a count limit a single request performs unbounded work and any
+/// per-request rate limiting is trivially bypassed. `0` disables the limit.
+pub(crate) const RPC_DEFAULT_BATCH_REQUEST_LIMIT: u32 = 1000;
+
 /// Default number of incoming connections.
 ///
 /// This restricts how many active connections (http, ws) the server accepts.
@@ -74,6 +81,7 @@ pub struct DefaultRpcServerArgs {
     rpc_disable_metrics: bool,
     rpc_max_request_size: MaxU32,
     rpc_max_response_size: MaxU32,
+    rpc_batch_request_limit: u32,
     rpc_max_subscriptions_per_connection: MaxU32,
     rpc_max_connections: MaxU32,
     rpc_max_tracing_requests: usize,
@@ -251,6 +259,12 @@ impl DefaultRpcServerArgs {
         self
     }
 
+    /// Set the default JSON-RPC batch request limit (`0` disables the limit)
+    pub const fn with_rpc_batch_request_limit(mut self, v: u32) -> Self {
+        self.rpc_batch_request_limit = v;
+        self
+    }
+
     /// Set the default max subscriptions per connection
     pub const fn with_rpc_max_subscriptions_per_connection(mut self, v: MaxU32) -> Self {
         self.rpc_max_subscriptions_per_connection = v;
@@ -399,6 +413,7 @@ impl Default for DefaultRpcServerArgs {
             rpc_disable_metrics: false,
             rpc_max_request_size: RPC_DEFAULT_MAX_REQUEST_SIZE_MB.into(),
             rpc_max_response_size: RPC_DEFAULT_MAX_RESPONSE_SIZE_MB.into(),
+            rpc_batch_request_limit: RPC_DEFAULT_BATCH_REQUEST_LIMIT,
             rpc_max_subscriptions_per_connection: RPC_DEFAULT_MAX_SUBS_PER_CONN.into(),
             rpc_max_connections: RPC_DEFAULT_MAX_CONNECTIONS.into(),
             rpc_max_tracing_requests: constants::default_max_tracing_requests(),
@@ -538,6 +553,10 @@ pub struct RpcServerArgs {
     /// Set the maximum RPC response payload size for both HTTP and WS in megabytes.
     #[arg(long = "rpc.max-response-size", alias = "rpc-max-response-size", visible_alias = "rpc.returndata.limit", default_value_t = DefaultRpcServerArgs::get_global().rpc_max_response_size)]
     pub rpc_max_response_size: MaxU32,
+
+    /// Maximum number of calls in a single JSON-RPC batch request. Set to 0 to disable the limit.
+    #[arg(long = "rpc.batchrequestlimit", alias = "rpc-batch-request-limit", default_value_t = DefaultRpcServerArgs::get_global().rpc_batch_request_limit)]
+    pub rpc_batch_request_limit: u32,
 
     /// Set the maximum concurrent subscriptions per connection.
     #[arg(long = "rpc.max-subscriptions-per-connection", alias = "rpc-max-subscriptions-per-connection", default_value_t = DefaultRpcServerArgs::get_global().rpc_max_subscriptions_per_connection)]
@@ -859,6 +878,7 @@ impl Default for RpcServerArgs {
             rpc_disable_metrics,
             rpc_max_request_size,
             rpc_max_response_size,
+            rpc_batch_request_limit,
             rpc_max_subscriptions_per_connection,
             rpc_max_connections,
             rpc_max_tracing_requests,
@@ -905,6 +925,7 @@ impl Default for RpcServerArgs {
             rpc_disable_metrics,
             rpc_max_request_size,
             rpc_max_response_size,
+            rpc_batch_request_limit,
             rpc_max_subscriptions_per_connection,
             rpc_max_connections,
             rpc_max_tracing_requests,
@@ -971,6 +992,28 @@ mod tests {
     struct CommandParser<T: Args> {
         #[command(flatten)]
         args: T,
+    }
+
+    #[test]
+    fn test_batch_request_limit_defaults_to_geth_parity() {
+        // go-ethereum / go-bsc `--rpc.batchrequestlimit` defaults to 1000. jsonrpsee defaults to
+        // Unlimited, so this default is what closes the gap.
+        let args = CommandParser::<RpcServerArgs>::parse_from(["reth"]).args;
+        assert_eq!(args.rpc_batch_request_limit, RPC_DEFAULT_BATCH_REQUEST_LIMIT);
+        assert_eq!(args.rpc_batch_request_limit, 1000);
+    }
+
+    #[test]
+    fn test_batch_request_limit_parses_and_zero_means_unlimited() {
+        let args =
+            CommandParser::<RpcServerArgs>::parse_from(["reth", "--rpc.batchrequestlimit", "50"])
+                .args;
+        assert_eq!(args.rpc_batch_request_limit, 50);
+
+        let unlimited =
+            CommandParser::<RpcServerArgs>::parse_from(["reth", "--rpc.batchrequestlimit", "0"])
+                .args;
+        assert_eq!(unlimited.rpc_batch_request_limit, 0);
     }
 
     #[test]
@@ -1083,6 +1126,7 @@ mod tests {
             rpc_disable_metrics: false,
             rpc_max_request_size: 15u32.into(),
             rpc_max_response_size: 160u32.into(),
+            rpc_batch_request_limit: RPC_DEFAULT_BATCH_REQUEST_LIMIT,
             rpc_max_subscriptions_per_connection: 1024u32.into(),
             rpc_max_connections: 500u32.into(),
             rpc_max_tracing_requests: 16,
