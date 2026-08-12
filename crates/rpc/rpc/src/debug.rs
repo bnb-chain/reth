@@ -8,9 +8,9 @@ use alloy_rpc_types::BlockTransactionsKind;
 use alloy_rpc_types_debug::ExecutionWitness;
 use alloy_rpc_types_eth::{state::EvmOverrides, BlockError, Bundle, StateContext, TransactionInfo};
 use alloy_rpc_types_trace::geth::{
-    call::FlatCallFrame, BlockTraceResult, FourByteFrame, GethDebugBuiltInTracerType,
-    GethDebugTracerType, GethDebugTracingCallOptions, GethDebugTracingOptions, GethTrace,
-    NoopFrame, TraceResult,
+    call::FlatCallFrame, mux::MuxConfig, BlockTraceResult, FourByteFrame,
+    GethDebugBuiltInTracerType, GethDebugTracerConfig, GethDebugTracerType,
+    GethDebugTracingCallOptions, GethDebugTracingOptions, GethTrace, NoopFrame, TraceResult,
 };
 use async_trait::async_trait;
 use futures::Stream;
@@ -111,6 +111,41 @@ impl<Eth> DebugApi<Eth>
 where
     Eth: TraceExt,
 {
+    /// Treat a `null` sub-tracer config in a `muxTracer` request as "use that tracer's defaults",
+    /// matching go-ethereum.
+    ///
+    /// `{"tracer":"muxTracer","tracerConfig":{"4byteTracer":null,"callTracer":null}}` is accepted
+    /// by geth — a nil sub-config means defaults — and returns both traces. Here it failed with
+    /// `expected config is missing for tracer 'CallTracer'`: `MuxConfig` deserializes the `null` to
+    /// `None`, and `MuxInspector::try_from_config` requires `Some` for the tracers that take a
+    /// config (`revm-inspectors`, `tracing/mux.rs`).
+    ///
+    /// Everything downstream already handles it — `GethDebugTracerConfig::into_call_config`, and
+    /// the prestate/flatcall equivalents, return `Default::default()` for a null inner value.
+    /// So turning `None` into `Some(null)` for exactly those tracers is sufficient.
+    ///
+    /// Deliberately not applied to `4byteTracer`/`noopTracer`/`muxTracer`, which reject a config
+    /// that is present with `UnexpectedConfig`; for those `None` is already correct.
+    ///
+    /// The tracer list mirrors `try_from_config` and exists only because that function treats a
+    /// missing config as an error rather than as defaults. If `revm-inspectors` changes those
+    /// `ok_or(MissingConfig)?` calls to `unwrap_or_default()`, this can be deleted.
+    fn default_null_mux_sub_configs(mut config: MuxConfig) -> MuxConfig {
+        use GethDebugBuiltInTracerType::{CallTracer, FlatCallTracer, PreStateTracer};
+
+        for (tracer, sub_config) in &mut config.0 {
+            let takes_config = matches!(
+                tracer,
+                GethDebugTracerType::BuiltInTracer(CallTracer | PreStateTracer | FlatCallTracer)
+            );
+            if takes_config && sub_config.is_none() {
+                *sub_config = Some(GethDebugTracerConfig(serde_json::Value::Null));
+            }
+        }
+
+        config
+    }
+
     /// Handles BSC system transactions by disabling block gas limit validation.
     ///
     /// BSC system transactions are identified by:
@@ -442,6 +477,7 @@ where
                         let mux_config = tracer_config
                             .into_mux_config()
                             .map_err(|_| EthApiError::InvalidTracerConfig)?;
+                        let mux_config = Self::default_null_mux_sub_configs(mux_config);
 
                         let mut inspector = MuxInspector::try_from_config(mux_config)
                             .map_err(Eth::Error::from_eth_err)?;
@@ -964,6 +1000,7 @@ where
                             .clone()
                             .into_mux_config()
                             .map_err(|_| EthApiError::InvalidTracerConfig)?;
+                        let mux_config = Self::default_null_mux_sub_configs(mux_config);
 
                         let mut inspector = MuxInspector::try_from_config(mux_config)
                             .map_err(Eth::Error::from_eth_err)?;
