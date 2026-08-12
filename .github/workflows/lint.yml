@@ -9,6 +9,12 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTC_WRAPPER: "sccache"
+  # Pinned so a new nightly cannot turn CI red without a code change. The 2026-08-11 nightly began
+  # linting inside external macro expansions, firing `redundant_field_names` on every
+  # `derive_more::Constructor` struct and `double_must_use` on every jsonrpsee `rpc()` trait — code
+  # that cannot be fixed at the call site. Bump deliberately, fixing the new findings in the same
+  # change. `book.yml` pins its nightly the same way.
+  PINNED_NIGHTLY: nightly-2026-07-23
 
 permissions: {}
 
@@ -30,8 +36,9 @@ jobs:
         with:
           persist-credentials: false
       - uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
-      - uses: dtolnay/rust-toolchain@clippy
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.PINNED_NIGHTLY }}
           components: clippy
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
@@ -57,8 +64,9 @@ jobs:
         with:
           persist-credentials: false
       - uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.PINNED_NIGHTLY }}
           components: clippy, rustfmt
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
