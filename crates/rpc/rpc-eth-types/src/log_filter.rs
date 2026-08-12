@@ -44,7 +44,8 @@ pub struct LogFilter {
 impl LogFilter {
     /// Creates a new [`LogFilter`] from a [`Filter`] and an explicit topic-position count.
     ///
-    /// The count is clamped to [`MAX_TOPICS`], matching the limit [`Filter`] itself enforces.
+    /// The count is clamped to four, the width of [`Filter`]'s topics array and the most positions
+    /// a log can carry.
     pub fn new(filter: Filter, topic_positions: usize) -> Self {
         Self { filter, topic_positions: topic_positions.min(MAX_TOPICS) }
     }
