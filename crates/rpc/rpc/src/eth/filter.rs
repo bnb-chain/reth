@@ -24,7 +24,7 @@ use reth_rpc_eth_api::{
 };
 use reth_rpc_eth_types::{
     logs_utils::{self, append_matching_block_logs, ProviderOrBlock},
-    EthApiError, EthFilterConfig, EthStateCache, EthSubscriptionIdProvider,
+    EthApiError, EthFilterConfig, EthStateCache, EthSubscriptionIdProvider, LogFilter,
 };
 use reth_rpc_server_types::{result::rpc_error_with_code, ToRpcResult};
 use reth_storage_api::{
@@ -59,7 +59,7 @@ where
     /// Returns logs matching given filter object, no query limits
     fn logs(
         &self,
-        filter: Filter,
+        filter: LogFilter,
         limits: QueryLimits,
     ) -> impl Future<Output = RpcResult<Vec<Log>>> + Send {
         trace!(target: "rpc::eth", "Serving eth_getLogs");
@@ -282,16 +282,22 @@ where
                         (block_number, block_number)
                     }
                 };
-                let logs = self
+                let topic_positions = filter.topic_positions();
+                let mut logs = self
                     .inner
                     .clone()
                     .get_logs_in_block_range(
-                        *filter,
+                        filter.into_filter(),
                         from_block_number,
                         to_block_number,
                         self.inner.query_limits,
                     )
                     .await?;
+                // Installed filters must apply the topic-position count on every poll, exactly as
+                // `eth_getLogs` does. See `LogFilter`.
+                if topic_positions > 0 {
+                    logs.retain(|log| log.topics().len() >= topic_positions);
+                }
                 Ok(FilterChanges::Logs(logs))
             }
         }
@@ -322,7 +328,7 @@ where
     /// Returns logs matching given filter object.
     async fn logs_for_filter(
         &self,
-        filter: Filter,
+        filter: LogFilter,
         limits: QueryLimits,
     ) -> Result<Vec<Log>, EthFilterError> {
         self.inner.clone().logs_for_filter(filter, limits).await
@@ -335,7 +341,7 @@ where
     Eth: FullEthApiTypes + RpcNodeCoreExt + LoadReceipt + EthBlocks + 'static,
 {
     /// Handler for `eth_newFilter`
-    async fn new_filter(&self, filter: Filter) -> RpcResult<FilterId> {
+    async fn new_filter(&self, filter: LogFilter) -> RpcResult<FilterId> {
         trace!(target: "rpc::eth", "Serving eth_newFilter");
         self.inner
             .install_filter(FilterKind::<RpcTransaction<Eth::NetworkTypes>>::Log(Box::new(filter)))
@@ -411,7 +417,7 @@ where
     /// Returns logs matching given filter object.
     ///
     /// Handler for `eth_getLogs`
-    async fn logs(&self, filter: Filter) -> RpcResult<Vec<Log>> {
+    async fn logs(&self, filter: LogFilter) -> RpcResult<Vec<Log>> {
         trace!(target: "rpc::eth", "Serving eth_getLogs");
         Ok(self.logs_for_filter(filter, self.inner.query_limits).await?)
     }
@@ -464,7 +470,31 @@ where
     }
 
     /// Returns logs matching given filter object.
+    /// Returns logs matching the filter, enforcing the topic-position count.
+    ///
+    /// [`Filter`] cannot express "the request named N topic positions" (see [`LogFilter`]), so the
+    /// count is applied here, on top of the per-position matching that `Filter::matches` performs
+    /// during collection. go-ethereum applies the equivalent length check before comparing
+    /// positions, which is why a filter such as `topics: [[], [], []]` must not match a two-topic
+    /// log even though every position is a wildcard.
     async fn logs_for_filter(
+        self: Arc<Self>,
+        filter: LogFilter,
+        limits: QueryLimits,
+    ) -> Result<Vec<Log>, EthFilterError> {
+        let topic_positions = filter.topic_positions();
+        let mut logs = self.logs_for_filter_unchecked(filter.into_filter(), limits).await?;
+        if topic_positions > 0 {
+            logs.retain(|log| log.topics().len() >= topic_positions);
+        }
+        Ok(logs)
+    }
+
+    /// Collects logs matching the filter's addresses, block range and individual topic positions.
+    ///
+    /// Does **not** apply the topic-position count rule; call [`Self::logs_for_filter`] instead
+    /// unless you have already applied it.
+    async fn logs_for_filter_unchecked(
         self: Arc<Self>,
         filter: Filter,
         limits: QueryLimits,
@@ -906,7 +936,7 @@ impl<T: 'static> PendingTransactionKind<T> {
 
 #[derive(Clone, Debug)]
 enum FilterKind<T> {
-    Log(Box<Filter>),
+    Log(Box<LogFilter>),
     Block,
     PendingTransaction(PendingTransactionKind<T>),
 }
