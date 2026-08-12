@@ -472,7 +472,22 @@ pub trait EthTransactions: LoadTransaction<Provider: BlockReaderIdExt> {
                 None => None,
             };
 
-            Ok(Some(TransactionDataAndReceipt { tx_data: data, receipt }))
+            // Absent means `null`, not an object of nulls.
+            //
+            // go-bsc returns a bare `nil` unless it finds both the mined transaction and its
+            // receipt (`internal/ethapi/api.go`, `GetTransactionDataAndReceipt`:
+            // `ReadCanonicalTransaction` returning nil, or a missing receipt at that
+            // index, both yield `nil, nil`). Wrapping unconditionally in `Some`
+            // produced `{"txData":null,"receipt":null}` for an unknown hash, which
+            // breaks callers that null-check the result rather than each field.
+            //
+            // Requiring both also aligns the pending-transaction case: geth looks only at canonical
+            // transactions, so a pool transaction yields `null` there, whereas
+            // `LoadTransaction::transaction_by_hash` also searches the pool and would otherwise
+            // return data with a null receipt.
+            let (Some(tx_data), Some(receipt)) = (data, receipt) else { return Ok(None) };
+
+            Ok(Some(TransactionDataAndReceipt { tx_data: Some(tx_data), receipt: Some(receipt) }))
         }
     }
 
