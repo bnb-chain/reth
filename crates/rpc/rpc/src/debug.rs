@@ -43,7 +43,7 @@ use reth_tasks::{pool::BlockingTaskGuard, Runtime};
 use reth_trie_common::{updates::TrieUpdates, ExecutionWitnessMode, HashedPostState};
 use revm::{
     context_interface::Block as BlockEnvTrait, database::states::bundle_state::BundleRetention,
-    state::EvmState, DatabaseCommit,
+    inspector::NoOpInspector, state::EvmState, DatabaseCommit,
 };
 use revm_inspectors::tracing::{
     DebugInspector, FourByteInspector, MuxInspector, TracingInspector, TracingInspectorConfig,
@@ -409,7 +409,35 @@ where
                             .await?;
                         Ok(frame.into())
                     }
-                    GethDebugBuiltInTracerType::NoopTracer => Ok(NoopFrame::default().into()),
+                    GethDebugBuiltInTracerType::NoopTracer => {
+                        // Run the call like every other tracer instead of short-circuiting.
+                        //
+                        // go-ethereum resolves the block and its state *before* dispatching on the
+                        // tracer (`eth/tracers/api.go`, `TraceCall`), so `noopTracer` against a
+                        // non-existent block reports "block not found" there. Returning the empty
+                        // frame without touching `at` made reth answer `{"result":{}}` instead,
+                        // leaving the caller unable to tell that the query had failed at all —
+                        // and it diverged from reth's own other tracers, which do error.
+                        //
+                        // The inspector records nothing, so the only observable effect is that the
+                        // same errors every other tracer surfaces (missing block, unavailable
+                        // state, invalid call) now surface here too. geth pays the same execution
+                        // cost for `noopTracer`.
+                        self.eth_api()
+                            .spawn_with_call_at(
+                                call,
+                                at,
+                                overrides,
+                                move |db, mut evm_env, tx_env| {
+                                    Self::handle_bsc_system_transaction(&mut evm_env, &tx_env);
+                                    let mut inspector = NoOpInspector;
+                                    this.eth_api().inspect(db, evm_env, tx_env, &mut inspector)?;
+                                    Ok(())
+                                },
+                            )
+                            .await?;
+                        Ok(NoopFrame::default().into())
+                    }
                     GethDebugBuiltInTracerType::MuxTracer => {
                         let mux_config = tracer_config
                             .into_mux_config()
