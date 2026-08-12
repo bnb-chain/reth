@@ -465,8 +465,7 @@ where
                                 overrides,
                                 move |db, mut evm_env, tx_env| {
                                     Self::handle_bsc_system_transaction(&mut evm_env, &tx_env);
-                                    let mut inspector = NoOpInspector;
-                                    this.eth_api().inspect(db, evm_env, tx_env, &mut inspector)?;
+                                    this.eth_api().inspect(db, evm_env, tx_env, NoOpInspector)?;
                                     Ok(())
                                 },
                             )
