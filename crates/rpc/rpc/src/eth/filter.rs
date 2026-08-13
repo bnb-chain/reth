@@ -4,7 +4,8 @@ use alloy_consensus::BlockHeader;
 use alloy_eips::BlockNumberOrTag;
 use alloy_primitives::{Sealable, TxHash};
 use alloy_rpc_types_eth::{
-    BlockNumHash, FilterBlockOption, FilterChanges, FilterId, Log, PendingTransactionFilterKind,
+    BlockNumHash, Filter, FilterBlockOption, FilterChanges, FilterId, Log,
+    PendingTransactionFilterKind,
 };
 use async_trait::async_trait;
 use futures::{
@@ -336,6 +337,8 @@ where
     /// Handler for `eth_newFilter`
     async fn new_filter(&self, filter: LogFilter) -> RpcResult<FilterId> {
         trace!(target: "rpc::eth", "Serving eth_newFilter");
+        // geth rejects the filter here rather than at poll time, so no id is handed out.
+        ensure_no_pending_bound(&filter)?;
         self.inner
             .install_filter(FilterKind::<RpcTransaction<Eth::NetworkTypes>>::Log(Box::new(filter)))
             .await
@@ -472,6 +475,7 @@ where
         filter: LogFilter,
         limits: QueryLimits,
     ) -> Result<Vec<Log>, EthFilterError> {
+        ensure_no_pending_bound(&filter)?;
         match filter.block_option {
             FilterBlockOption::AtBlockHash(block_hash) => {
                 // First try to get cached block and receipts, as it's likely they're already cached
@@ -950,6 +954,13 @@ pub enum EthFilterError {
     /// Invalid block range.
     #[error("invalid block range params")]
     InvalidBlockRangeParams,
+    /// A log filter named the `pending` block.
+    ///
+    /// go-ethereum dropped pending-log support and rejects the request outright
+    /// (`errPendingLogsUnsupported` in `eth/filters/filter_system.go`); this matches it rather
+    /// than silently answering from the pending block.
+    #[error("pending logs are not supported")]
+    PendingLogsUnsupported,
     /// Block range extends beyond current head.
     #[error("block range extends beyond current head block: requested {requested}, head {head}")]
     BlockRangeExceedsHead {
@@ -979,6 +990,20 @@ pub enum EthFilterError {
     InternalError,
 }
 
+/// Rejects a log filter that names the `pending` block in either bound.
+///
+/// go-ethereum removed pending-log support and fails such requests in `SubscribeLogs`, so
+/// `eth_getLogs`, `eth_newFilter` and `eth_subscribe("logs")` all error there. reth still has a
+/// pending-block log path, which would otherwise answer these queries and diverge.
+fn ensure_no_pending_bound(filter: &Filter) -> Result<(), EthFilterError> {
+    if let FilterBlockOption::Range { from_block, to_block } = &filter.block_option &&
+        [from_block, to_block].into_iter().flatten().any(|b| b.is_pending())
+    {
+        return Err(EthFilterError::PendingLogsUnsupported)
+    }
+    Ok(())
+}
+
 impl From<EthFilterError> for jsonrpsee::types::error::ErrorObject<'static> {
     fn from(err: EthFilterError) -> Self {
         match err {
@@ -991,6 +1016,7 @@ impl From<EthFilterError> for jsonrpsee::types::error::ErrorObject<'static> {
             }
             EthFilterError::EthAPIError(err) => err.into(),
             err @ (EthFilterError::InvalidBlockRangeParams |
+            EthFilterError::PendingLogsUnsupported |
             EthFilterError::QueryExceedsMaxBlocks(_) |
             EthFilterError::QueryExceedsMaxResults { .. } |
             EthFilterError::BlockRangeExceedsHead { .. }) => {
@@ -1888,6 +1914,54 @@ mod tests {
         }
 
         provider
+    }
+
+    /// `pending` in either bound must be rejected, as go-ethereum does.
+    #[test]
+    fn test_pending_log_filters_are_rejected() {
+        use alloy_eips::BlockNumberOrTag;
+
+        let range = |from, to| Filter {
+            block_option: FilterBlockOption::Range { from_block: from, to_block: to },
+            ..Default::default()
+        };
+
+        // Every combination touching `pending` is refused.
+        for (from, to) in [
+            (Some(BlockNumberOrTag::Pending), Some(BlockNumberOrTag::Pending)),
+            (Some(BlockNumberOrTag::Pending), Some(BlockNumberOrTag::Latest)),
+            (Some(BlockNumberOrTag::Latest), Some(BlockNumberOrTag::Pending)),
+            (Some(BlockNumberOrTag::Pending), None),
+            (None, Some(BlockNumberOrTag::Pending)),
+        ] {
+            let err = ensure_no_pending_bound(&range(from, to))
+                .expect_err("pending bound must be rejected: {from:?}..{to:?}");
+            assert!(matches!(err, EthFilterError::PendingLogsUnsupported), "{err:?}");
+            // Same wording and code class as geth's `errPendingLogsUnsupported`.
+            assert_eq!(err.to_string(), "pending logs are not supported");
+            let obj: jsonrpsee::types::error::ErrorObject<'static> = err.into();
+            assert_eq!(obj.code(), jsonrpsee::types::error::INVALID_PARAMS_CODE);
+        }
+
+        // Everything else is untouched, including `earliest`, which reth answers correctly even
+        // though geth rejects it (it normalises the sentinel for `from` but not `to`).
+        for (from, to) in [
+            (None, None),
+            (Some(BlockNumberOrTag::Latest), Some(BlockNumberOrTag::Latest)),
+            (Some(BlockNumberOrTag::Earliest), Some(BlockNumberOrTag::Earliest)),
+            (Some(BlockNumberOrTag::Number(1)), Some(BlockNumberOrTag::Number(2))),
+            (Some(BlockNumberOrTag::Finalized), Some(BlockNumberOrTag::Safe)),
+        ] {
+            ensure_no_pending_bound(&range(from, to))
+                .unwrap_or_else(|e| panic!("{from:?}..{to:?} must be accepted, got {e:?}"));
+        }
+
+        // A `blockHash` filter has no range bounds at all.
+        let by_hash = Filter {
+            block_option: FilterBlockOption::AtBlockHash(Default::default()),
+            ..Default::default()
+        };
+        ensure_no_pending_bound(&by_hash).expect("blockHash filters carry no pending bound");
     }
 
     /// The topic-position count must also hold on ranges wide enough to leave cached mode.
