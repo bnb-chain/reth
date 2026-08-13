@@ -4,8 +4,7 @@ use alloy_consensus::BlockHeader;
 use alloy_eips::BlockNumberOrTag;
 use alloy_primitives::{Sealable, TxHash};
 use alloy_rpc_types_eth::{
-    BlockNumHash, Filter, FilterBlockOption, FilterChanges, FilterId, Log,
-    PendingTransactionFilterKind,
+    BlockNumHash, FilterBlockOption, FilterChanges, FilterId, Log, PendingTransactionFilterKind,
 };
 use async_trait::async_trait;
 use futures::{
@@ -282,22 +281,16 @@ where
                         (block_number, block_number)
                     }
                 };
-                let topic_positions = filter.topic_positions();
-                let mut logs = self
+                let logs = self
                     .inner
                     .clone()
                     .get_logs_in_block_range(
-                        filter.into_filter(),
+                        *filter,
                         from_block_number,
                         to_block_number,
                         self.inner.query_limits,
                     )
                     .await?;
-                // Installed filters must apply the topic-position count on every poll, exactly as
-                // `eth_getLogs` does. See `LogFilter`.
-                if topic_positions > 0 {
-                    logs.retain(|log| log.topics().len() >= topic_positions);
-                }
                 Ok(FilterChanges::Logs(logs))
             }
         }
@@ -470,33 +463,13 @@ where
     }
 
     /// Returns logs matching given filter object.
-    /// Returns logs matching the filter, enforcing the topic-position count.
+    /// Returns logs matching the filter.
     ///
-    /// [`Filter`] cannot express "the request named N topic positions" (see [`LogFilter`]), so the
-    /// count is applied here, on top of the per-position matching that `Filter::matches` performs
-    /// during collection. go-ethereum applies the equivalent length check before comparing
-    /// positions, which is why a filter such as `topics: [[], [], []]` must not match a two-topic
-    /// log even though every position is a wildcard.
+    /// The topic-position count is enforced by [`append_matching_block_logs`], i.e. while logs are
+    /// selected, so that `max_logs_per_response` counts only logs that actually match.
     async fn logs_for_filter(
         self: Arc<Self>,
         filter: LogFilter,
-        limits: QueryLimits,
-    ) -> Result<Vec<Log>, EthFilterError> {
-        let topic_positions = filter.topic_positions();
-        let mut logs = self.logs_for_filter_unchecked(filter.into_filter(), limits).await?;
-        if topic_positions > 0 {
-            logs.retain(|log| log.topics().len() >= topic_positions);
-        }
-        Ok(logs)
-    }
-
-    /// Collects logs matching the filter's addresses, block range and individual topic positions.
-    ///
-    /// Does **not** apply the topic-position count rule; call [`Self::logs_for_filter`] instead
-    /// unless you have already applied it.
-    async fn logs_for_filter_unchecked(
-        self: Arc<Self>,
-        filter: Filter,
         limits: QueryLimits,
     ) -> Result<Vec<Log>, EthFilterError> {
         match filter.block_option {
@@ -653,7 +626,7 @@ where
     ///  - amount of matches exceeds configured limit
     async fn get_logs_in_block_range(
         self: Arc<Self>,
-        filter: Filter,
+        filter: LogFilter,
         from_block: u64,
         to_block: u64,
         limits: QueryLimits,
@@ -692,7 +665,7 @@ where
     ///  - underlying database error
     async fn get_logs_in_block_range_inner(
         self: Arc<Self>,
-        filter: &Filter,
+        filter: &LogFilter,
         from_block: u64,
         to_block: u64,
         limits: QueryLimits,
@@ -1380,6 +1353,7 @@ mod tests {
     use crate::{eth::EthApi, EthApiBuilder};
     use alloy_network::Ethereum;
     use alloy_primitives::FixedBytes;
+    use alloy_rpc_types_eth::Filter;
     use rand::Rng;
     use reth_chainspec::{ChainSpec, ChainSpecProvider};
     use reth_ethereum_primitives::TxType;
@@ -1849,6 +1823,114 @@ mod tests {
         assert!(result.is_none());
     }
 
+    /// Seeds a provider with one bloom-matching block per number, each carrying a single log with
+    /// **zero topics**, so any filter naming a topic position must exclude every one of them.
+    fn seed_blocks_with_topicless_logs(blocks: std::ops::RangeInclusive<u64>) -> MockEthProvider {
+        use alloy_consensus::TxLegacy;
+        use reth_db_api::models::StoredBlockBodyIndices;
+        use reth_ethereum_primitives::{TransactionSigned, TxType};
+
+        let provider = MockEthProvider::default();
+
+        let tx_inner = TxLegacy {
+            chain_id: Some(1),
+            nonce: 0,
+            gas_price: 21_000,
+            gas_limit: 21_000,
+            to: alloy_primitives::TxKind::Call(alloy_primitives::Address::ZERO),
+            value: alloy_primitives::U256::ZERO,
+            input: alloy_primitives::Bytes::new(),
+        };
+        let tx = TransactionSigned::new_unhashed(
+            tx_inner.into(),
+            alloy_primitives::Signature::test_signature(),
+        );
+
+        let receipt = reth_ethereum_primitives::Receipt {
+            tx_type: TxType::Legacy,
+            cumulative_gas_used: 21_000,
+            logs: vec![alloy_primitives::Log {
+                address: alloy_primitives::Address::ZERO,
+                data: alloy_primitives::LogData::new_unchecked(
+                    vec![],
+                    alloy_primitives::Bytes::new(),
+                ),
+            }],
+            success: true,
+        };
+
+        let mut prev_hash = alloy_primitives::B256::default();
+        for (idx, block_number) in blocks.enumerate() {
+            let header = alloy_consensus::Header {
+                number: block_number,
+                parent_hash: prev_hash,
+                logs_bloom: alloy_primitives::Bloom::from([1u8; 256]),
+                ..Default::default()
+            };
+            let hash = header.hash_slow();
+            prev_hash = hash;
+
+            provider.add_block(
+                hash,
+                reth_ethereum_primitives::Block {
+                    header,
+                    body: reth_ethereum_primitives::BlockBody {
+                        transactions: vec![tx.clone()],
+                        ..Default::default()
+                    },
+                },
+            );
+            provider.add_receipts(block_number, vec![receipt.clone()]);
+            provider.add_block_body_indices(
+                block_number,
+                StoredBlockBodyIndices { first_tx_num: idx as u64, tx_count: 1 },
+            );
+        }
+
+        provider
+    }
+
+    /// The topic-position count must also hold on ranges wide enough to leave cached mode.
+    ///
+    /// `should_use_cached_mode` drops to `RangeMode::Range` past `CACHED_MODE_BLOCK_THRESHOLD`
+    /// (250, halved to 125 once bloom matches exceed 20), so a several-hundred-block query takes a
+    /// different path than the ~100-block one. Both feed the same `append_matching_block_logs`
+    /// call, and this pins that.
+    #[tokio::test]
+    async fn test_topic_position_count_holds_in_range_mode() {
+        let provider = seed_blocks_with_topicless_logs(100..=500);
+        let eth_api = build_test_eth_api(provider);
+        let eth_filter = EthFilter::new(eth_api, EthFilterConfig::default(), Runtime::test());
+        let limits = QueryLimits::no_limits();
+
+        // 401 blocks, every one bloom-matching, so this is well past the adjusted threshold.
+        let unconstrained = eth_filter
+            .inner
+            .clone()
+            .get_logs_in_block_range(Filter::default().into(), 100, 500, limits)
+            .await
+            .expect("unconstrained query should succeed");
+        assert_eq!(unconstrained.len(), 401, "each block contributes one zero-topic log");
+
+        for positions in 1..=4 {
+            let logs = eth_filter
+                .inner
+                .clone()
+                .get_logs_in_block_range(
+                    LogFilter::new(Filter::default(), positions),
+                    100,
+                    500,
+                    limits,
+                )
+                .await
+                .expect("constrained query should succeed");
+            assert!(
+                logs.is_empty(),
+                "zero-topic logs cannot match a {positions}-position filter: {logs:?}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn test_log_limit_retry_range_excludes_overflow_block() {
         let provider = MockEthProvider::default();
@@ -1913,7 +1995,7 @@ mod tests {
             .inner
             .clone()
             .get_logs_in_block_range(
-                Filter::default(),
+                Filter::default().into(),
                 100,
                 102,
                 QueryLimits { max_blocks_per_filter: None, max_logs_per_response: Some(2) },
@@ -1928,6 +2010,43 @@ mod tests {
         assert_eq!(max_logs, 2);
         assert_eq!(from_block, 100);
         assert_eq!(to_block, 101);
+    }
+
+    /// Logs excluded by the topic-position count must not count toward
+    /// `max_logs_per_response`.
+    ///
+    /// The count is enforced while logs are selected, not afterwards. If it were applied to the
+    /// finished vector, the limit check would already have tripped on logs that do not match, and
+    /// this query would fail where go-ethereum answers it.
+    #[tokio::test]
+    async fn test_topic_position_count_applies_before_the_log_limit() {
+        let provider = seed_blocks_with_topicless_logs(100..=102);
+        let eth_api = build_test_eth_api(provider);
+        let eth_filter = EthFilter::new(eth_api, EthFilterConfig::default(), Runtime::test());
+        let limits = QueryLimits { max_blocks_per_filter: None, max_logs_per_response: Some(2) };
+
+        // Control: with no topic positions named, the three logs exceed the limit of two. This is
+        // the behaviour `test_log_limit_retry_range_excludes_overflow_block` pins.
+        let err = eth_filter
+            .inner
+            .clone()
+            .get_logs_in_block_range(Filter::default().into(), 100, 102, limits)
+            .await
+            .expect_err("without a topic-position constraint the limit should trip");
+        assert!(
+            matches!(err, EthFilterError::QueryExceedsMaxResults { .. }),
+            "unexpected error: {err:?}"
+        );
+
+        // Naming three positions excludes every zero-topic log, so nothing is left to exceed the
+        // limit and the query succeeds with an empty result.
+        let logs = eth_filter
+            .inner
+            .clone()
+            .get_logs_in_block_range(LogFilter::new(Filter::default(), 3), 100, 102, limits)
+            .await
+            .expect("excluded logs must not count toward the limit");
+        assert!(logs.is_empty(), "zero-topic logs cannot match a three-position filter: {logs:?}");
     }
 
     #[tokio::test]
@@ -2020,7 +2139,7 @@ mod tests {
         let logs = eth_filter
             .inner
             .clone()
-            .get_logs_in_block_range(filter, 100, 103, QueryLimits::default())
+            .get_logs_in_block_range(filter.into(), 100, 103, QueryLimits::default())
             .await
             .expect("should succeed");
 
