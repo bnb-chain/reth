@@ -30,14 +30,17 @@ use reth_rpc_eth_api::{
     helpers::{EthTransactions, TraceExt},
     FromEthApiError, FromEvmError, RpcConvert, RpcNodeCore,
 };
-use reth_rpc_eth_types::{EthApiError, StateCacheDb};
+use reth_rpc_eth_types::{
+    log_block_storage_timings, storage_timings_enabled, EthApiError, StateCacheDb,
+};
 use reth_rpc_server_types::{
     result::{internal_rpc_err, rpc_error_with_code},
     ToRpcResult,
 };
 use reth_storage_api::{
     BlockIdReader, BlockReaderIdExt, HashedPostStateProvider, HeaderProvider, ProviderBlock,
-    ReceiptProviderIdExt, StateProviderFactory, StateRootProvider, TransactionVariant,
+    ReceiptProviderIdExt, StateProviderFactory, StateRootProvider, StorageTimingsScope,
+    TransactionVariant,
 };
 use reth_tasks::{pool::BlockingTaskGuard, Runtime};
 use reth_trie_common::{updates::TrieUpdates, ExecutionWitnessMode, HashedPostState};
@@ -51,7 +54,7 @@ use revm_inspectors::tracing::{
 };
 use rust_eth_triedb::triedb_manager::is_triedb_active;
 use serde::{Deserialize, Serialize};
-use std::{collections::VecDeque, sync::Arc};
+use std::{collections::VecDeque, sync::Arc, time::Instant};
 use tokio::sync::{AcquireError, OwnedSemaphorePermit};
 use tokio_stream::StreamExt;
 
@@ -143,6 +146,9 @@ where
             .spawn_with_state_at_block(block.parent_hash(), move |eth_api, mut db| {
                 let mut results = Vec::with_capacity(block.body().transactions().len());
 
+                let started_at = Instant::now();
+                let storage_timings = StorageTimingsScope::new(storage_timings_enabled());
+
                 eth_api.apply_pre_execution_changes(&block, &mut db, evm_env.clone())?;
 
                 let mut transactions = block.transactions_recovered().enumerate().peekable();
@@ -172,6 +178,16 @@ where
                         // next transaction
                         db.commit(state_changes)
                     }
+                }
+
+                if let Some(timings) = storage_timings.timings() {
+                    log_block_storage_timings(
+                        "debug_traceBlock",
+                        block.number(),
+                        results.len(),
+                        started_at.elapsed(),
+                        &timings,
+                    );
                 }
 
                 Ok(results)

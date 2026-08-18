@@ -96,6 +96,11 @@ pub use block_writer::*;
 mod state_writer;
 pub use state_writer::*;
 
+#[cfg(feature = "std")]
+mod storage_timings;
+#[cfg(feature = "std")]
+pub use storage_timings::*;
+
 mod header_sync_gap;
 pub use header_sync_gap::HeaderSyncGapProvider;
 
