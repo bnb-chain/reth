@@ -117,7 +117,7 @@ async fn test_filter_calls<C>(client: &C)
 where
     C: ClientT + SubscriptionClientT + Sync,
 {
-    EthFilterApiClient::<Transaction>::new_filter(client, Filter::default()).await.unwrap();
+    EthFilterApiClient::<Transaction>::new_filter(client, Filter::default().into()).await.unwrap();
     EthFilterApiClient::<Transaction>::new_pending_transaction_filter(client, None).await.unwrap();
     EthFilterApiClient::<Transaction>::new_pending_transaction_filter(
         client,
@@ -127,9 +127,10 @@ where
     .unwrap();
     let id = EthFilterApiClient::<Transaction>::new_block_filter(client).await.unwrap();
     EthFilterApiClient::<Transaction>::filter_changes(client, id.clone()).await.unwrap();
-    EthFilterApiClient::<Transaction>::logs(client, Filter::default()).await.unwrap();
-    let id =
-        EthFilterApiClient::<Transaction>::new_filter(client, Filter::default()).await.unwrap();
+    EthFilterApiClient::<Transaction>::logs(client, Filter::default().into()).await.unwrap();
+    let id = EthFilterApiClient::<Transaction>::new_filter(client, Filter::default().into())
+        .await
+        .unwrap();
     EthFilterApiClient::<Transaction>::filter_logs(client, id.clone()).await.unwrap();
     EthFilterApiClient::<Transaction>::uninstall_filter(client, id).await.unwrap();
 }
