@@ -416,6 +416,11 @@ RPC:
           [default: 160]
           [aliases: --rpc.returndata.limit]
 
+      --rpc.batchrequestlimit <RPC_BATCH_REQUEST_LIMIT>
+          Maximum number of calls in a single JSON-RPC batch request. Set to 0 to disable the limit
+
+          [default: 1000]
+
       --rpc.max-subscriptions-per-connection <RPC_MAX_SUBSCRIPTIONS_PER_CONNECTION>
           Set the maximum concurrent subscriptions per connection
 

@@ -2,6 +2,7 @@
 //!
 //! Log parsing for building filter.
 
+use crate::LogFilter;
 use alloy_consensus::TxReceipt;
 use alloy_eips::{eip2718::Encodable2718, BlockNumHash};
 use alloy_primitives::TxHash;
@@ -67,10 +68,14 @@ pub enum ProviderOrBlock<'a, P: BlockReader> {
 
 /// Appends all matching logs of a block's receipts.
 /// If the log matches, look up the corresponding transaction hash.
+///
+/// Takes a [`LogFilter`] rather than a [`Filter`] so the topic-position count is enforced here,
+/// where logs are selected. Applying it afterwards would let the caller's `max_logs_per_response`
+/// check count logs that do not actually match, and reject a query go-ethereum answers.
 pub fn append_matching_block_logs<P>(
     all_logs: &mut Vec<Log>,
     provider_or_block: ProviderOrBlock<'_, P>,
-    filter: &Filter,
+    filter: &LogFilter,
     block_num_hash: BlockNumHash,
     receipts: &[P::Receipt],
     removed: bool,
@@ -97,7 +102,7 @@ where
         let mut transaction_hash = None;
 
         for log in receipt.logs() {
-            if filter.matches(log) {
+            if filter.matches(log) && filter.matches_topic_count(log.topics()) {
                 // if this is the first match in the receipt's logs, look up the transaction hash
                 if transaction_hash.is_none() {
                     transaction_hash = match &provider_or_block {

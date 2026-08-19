@@ -8,7 +8,7 @@ use alloy_rpc_types_eth::{
     pubsub::{
         Params, PubSubSyncStatus, SubscriptionKind, SyncStatusMetadata, TransactionReceiptsParams,
     },
-    Filter, Log,
+    Filter, FilterBlockOption, Log,
 };
 use futures::StreamExt;
 use jsonrpsee::{
@@ -104,6 +104,13 @@ where
                     }
                     _ => Default::default(),
                 };
+                // go-ethereum removed pending-log support and rejects such a subscription in
+                // `SubscribeLogs`; match it rather than streaming from the pending block.
+                if let FilterBlockOption::Range { from_block, to_block } = &filter.block_option &&
+                    [from_block, to_block].into_iter().flatten().any(|b| b.is_pending())
+                {
+                    return Err(invalid_params_rpc_err("pending logs are not supported"))
+                }
                 pipe_from_stream(accepted_sink, self.log_stream(filter)).await
             }
             SubscriptionKind::NewPendingTransactions => {

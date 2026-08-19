@@ -1,4 +1,4 @@
-use jsonrpsee::server::ServerConfigBuilder;
+use jsonrpsee::server::{BatchRequestConfig, ServerConfigBuilder};
 use reth_node_core::{args::RpcServerArgs, utils::get_or_create_jwt_secret_from_path};
 use reth_rpc::ValidationApiConfig;
 use reth_rpc_eth_types::{EthConfig, EthStateCacheConfig, GasPriceOracleConfig};
@@ -79,6 +79,18 @@ pub trait RethRpcServerConfig {
     ///
     /// Note: this is not used for the auth server (engine API).
     fn rpc_secret_key(&self) -> Option<JwtSecret>;
+}
+
+/// Maps the `--rpc.batchrequestlimit` value onto jsonrpsee's batch policy.
+///
+/// jsonrpsee defaults to [`BatchRequestConfig::Unlimited`], so without this a single HTTP request
+/// can carry an arbitrary number of calls — bounded only by `--rpc.max-request-size` — which makes
+/// per-request rate limiting ineffective. `0` preserves the previous unlimited behaviour.
+const fn batch_request_config(limit: u32) -> BatchRequestConfig {
+    match limit {
+        0 => BatchRequestConfig::Unlimited,
+        n => BatchRequestConfig::Limit(n),
+    }
 }
 
 impl RethRpcServerConfig for RpcServerArgs {
@@ -172,8 +184,12 @@ impl RethRpcServerConfig for RpcServerArgs {
             .max_request_body_size(self.rpc_max_request_size_bytes())
             .max_response_body_size(self.rpc_max_response_size_bytes())
             .max_subscriptions_per_connection(self.rpc_max_subscriptions_per_connection.get())
+            .set_batch_request_config(batch_request_config(self.rpc_batch_request_limit))
     }
 
+    // NOTE: no batch limit on IPC — `reth_ipc::server::Builder` has no batch configuration, and the
+    // threat this guards against (one request carrying unbounded work, defeating per-request rate
+    // limiting) is a remote concern. IPC is a local unix socket.
     fn ipc_server_builder(&self) -> IpcServerBuilder<Identity, Identity> {
         IpcServerBuilder::default()
             .max_subscriptions_per_connection(self.rpc_max_subscriptions_per_connection.get())
@@ -268,6 +284,28 @@ mod tests {
     struct CommandParser<T: Args> {
         #[command(flatten)]
         args: T,
+    }
+
+    #[test]
+    fn batch_request_limit_reaches_the_server_config() {
+        // jsonrpsee keeps `batch_requests_config` private with no getter, so assert through the
+        // derived Debug of the *built* ServerConfig. This checks the wiring in
+        // `http_ws_server_builder`, not merely that the flag parses — jsonrpsee's own default is
+        // Unlimited, so a missing `set_batch_request_config` call would show up here.
+        let built = |argv: &[&str]| {
+            format!(
+                "{:?}",
+                CommandParser::<RpcServerArgs>::parse_from(argv)
+                    .args
+                    .http_ws_server_builder()
+                    .build()
+            )
+        };
+
+        assert!(built(&["reth"]).contains("Limit(1000)"), "default must be geth-parity 1000");
+        assert!(built(&["reth", "--rpc.batchrequestlimit", "50"]).contains("Limit(50)"));
+        // 0 preserves the pre-existing unlimited behaviour for anyone relying on it.
+        assert!(built(&["reth", "--rpc.batchrequestlimit", "0"]).contains("Unlimited"));
     }
 
     #[test]

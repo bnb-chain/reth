@@ -16,11 +16,12 @@ use alloy_rpc_types_engine::{
     PayloadId, PayloadStatus,
 };
 use alloy_rpc_types_eth::{
-    state::StateOverride, BlockOverrides, EIP1186AccountProofResponse, Filter, Log, SyncStatus,
+    state::StateOverride, BlockOverrides, EIP1186AccountProofResponse, Log, SyncStatus,
 };
 use alloy_serde::JsonStorageKey;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc, RpcModule};
 use reth_engine_primitives::EngineTypes;
+use reth_rpc_eth_api::LogFilter;
 use serde_json::Value;
 
 /// Helper trait for the engine api server.
@@ -396,7 +397,7 @@ pub trait EngineEthApi<TxReq: RpcObject, B: RpcObject, R: RpcObject> {
 
     /// Returns logs matching given filter object.
     #[method(name = "getLogs")]
-    async fn logs(&self, filter: Filter) -> RpcResult<Vec<Log>>;
+    async fn logs(&self, filter: LogFilter) -> RpcResult<Vec<Log>>;
 
     /// Returns the account and storage values of the specified account including the Merkle-proof.
     /// This call can be used to verify that the data you are pulling from is not tampered with.
