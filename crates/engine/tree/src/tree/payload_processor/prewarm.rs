@@ -27,7 +27,9 @@ use reth_evm::{execute::ExecutableTxFor, ConfigureEvm, Evm, EvmFor, RecoveredTx,
 use reth_metrics::Metrics;
 use reth_primitives_traits::{Account, FastInstant as Instant, NodePrimitives};
 use reth_provider::{
-    AccountReader, BlockExecutionOutput, BlockReader, StateProviderFactory, StateReader,
+    AccountReader, BlockExecutionOutput, BlockNumReader, DatabaseProviderFactory,
+    PruneCheckpointReader, StageCheckpointReader, StorageSettingsCache,
+    TryIntoHistoricalStateProvider,
 };
 use reth_revm::database::StateProviderDatabase;
 use reth_tasks::{pool::WorkerPool, Runtime};
@@ -90,7 +92,13 @@ where
 impl<N, P, Evm> PrewarmCacheTask<N, P, Evm>
 where
     N: NodePrimitives,
-    P: BlockReader + StateProviderFactory + StateReader + Clone + 'static,
+    P: DatabaseProviderFactory + Clone + 'static,
+    P::Provider: BlockNumReader
+        + PruneCheckpointReader
+        + StageCheckpointReader
+        + StorageSettingsCache
+        + TryIntoHistoricalStateProvider
+        + 'static,
     Evm: ConfigureEvm<Primitives = N> + 'static,
 {
     /// Initializes the task with the given transactions pending execution
@@ -413,7 +421,7 @@ where
             let provider_builder = ctx.provider.clone();
             let build = Arc::new(move || provider_builder.build());
 
-            pool.begin_block(build, caches);
+            pool.begin_block(build, caches, ctx.env.txpool_snapshot.clone());
             for account in prefetch_bal.as_bal() {
                 pool.warm_account(account.address);
                 for change in &account.storage_changes {
@@ -561,7 +569,13 @@ type PrewarmEvmState<Evm> =
 impl<N, P, Evm> PrewarmContext<N, P, Evm>
 where
     N: NodePrimitives,
-    P: BlockReader + StateProviderFactory + StateReader + Clone + 'static,
+    P: DatabaseProviderFactory,
+    P::Provider: BlockNumReader
+        + PruneCheckpointReader
+        + StageCheckpointReader
+        + StorageSettingsCache
+        + TryIntoHistoricalStateProvider
+        + 'static,
     Evm: ConfigureEvm<Primitives = N> + 'static,
 {
     /// Creates a per-thread EVM for prewarming.
@@ -582,7 +596,10 @@ where
         // Use the caches to create a new provider with caching
         if let Some(saved_cache) = &self.saved_cache {
             let caches = saved_cache.cache().clone();
-            state_provider = Box::new(CachedStateProvider::new_prewarm(state_provider, caches));
+            state_provider = Box::new(
+                CachedStateProvider::new_prewarm(state_provider, caches)
+                    .with_txpool_snapshot(self.env.txpool_snapshot.clone()),
+            );
         }
 
         let state_provider = StateProviderDatabase::new(state_provider);
@@ -699,7 +716,10 @@ where
                     match (self.disable_bal_batch_io, &self.saved_cache) {
                         (false, Some(saved)) => {
                             let caches = saved.cache().clone();
-                            Box::new(CachedStateProvider::new_prewarm(inner, caches))
+                            Box::new(
+                                CachedStateProvider::new_prewarm(inner, caches)
+                                    .with_txpool_snapshot(self.env.txpool_snapshot.clone()),
+                            )
                         }
                         _ => Box::new(inner),
                     };

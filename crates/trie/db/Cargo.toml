@@ -20,18 +20,11 @@ reth-trie.workspace = true
 reth-trie-common.workspace = true
 reth-storage-api = { workspace = true, features = ["db-api"] }
 reth-storage-errors.workspace = true
-reth-metrics = { workspace = true, optional = true }
 
 # triedb
 
 # alloy
 alloy-primitives.workspace = true
-
-# misc
-parking_lot.workspace = true
-
-# metrics
-metrics = { workspace = true, optional = true }
 
 # tracing
 tracing.workspace = true
@@ -75,7 +68,6 @@ serde = [
     "similar-asserts/serde",
     "alloy-consensus/serde",
     "alloy-primitives/serde",
-    "parking_lot/serde",
     "reth-storage-api/serde",
     "reth-trie/serde",
     "reth-trie-common/serde",

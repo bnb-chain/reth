@@ -16,6 +16,8 @@ ignore = [
     "RUSTSEC-2026-0119",
     # https://rustsec.org/advisories/RUSTSEC-2026-0173 proc-macro-error2 unmaintained, transitive dep via aquamarine (build-time only)
     "RUSTSEC-2026-0173",
+    # https://rustsec.org/advisories/RUSTSEC-2026-0247 bitmaps is unmaintained, transitive dep via imbl
+    "RUSTSEC-2026-0247",
 ]
 
 # This section is considered when running `cargo deny check bans`.

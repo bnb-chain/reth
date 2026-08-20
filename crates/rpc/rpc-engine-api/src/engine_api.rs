@@ -650,6 +650,10 @@ where
             // Check if the requested range starts before the earliest available block due to pruning/expiry
             let earliest_block = inner.provider.earliest_block_number().unwrap_or(0);
             for num in start..=end {
+                if tx.is_closed() {
+                    return;
+                }
+
                 if num < earliest_block {
                     result.push(None);
                     continue;
@@ -782,6 +786,10 @@ where
         self.inner.task_spawner.spawn_blocking_task(async move {
             let mut result = Vec::with_capacity(hashes.len());
             for hash in hashes {
+                if tx.is_closed() {
+                    return;
+                }
+
                 let block_result = inner.provider.block(BlockHashOrNumber::Hash(hash));
                 match block_result {
                     Ok(block) => {
@@ -809,12 +817,17 @@ where
         }
 
         let (tx, rx) = oneshot::channel();
-        let bal_store = self.inner.provider.bal_store().clone();
+        let inner = self.inner.clone();
 
         self.inner.task_spawner.spawn_blocking_task(async move {
+            if tx.is_closed() {
+                return;
+            }
+
             tx.send(
-                bal_store
-                    .get_by_hashes(&hashes)
+                inner
+                    .provider
+                    .get_bals_by_hashes(&hashes)
                     .map_err(|err| EngineApiError::Internal(Box::new(err))),
             )
             .ok();
