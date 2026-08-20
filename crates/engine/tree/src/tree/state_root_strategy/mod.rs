@@ -761,6 +761,54 @@ impl DefaultStateRootStrategy {
     }
 }
 
+/// Spawns a state-root task for a payload builder that runs outside the engine's own payload path
+/// (e.g. a chain-specific block producer such as the BSC parlia miner).
+///
+/// This is a thin public wrapper over the same [`DefaultStateRootStrategy::spawn_state_root`] the
+/// engine uses, so the caller gets the current overlay-manager / sparse-trie machinery rather than
+/// a bespoke re-implementation. The engine's own builder path goes through
+/// [`StateRootStrategy::prepare_payload_builder`], which needs the engine's `EngineApiTreeState`;
+/// external producers that don't hold that state use this entry point instead.
+///
+/// The caller owns the returned [`StateRootHandle`]: take its execution hook and install it on the
+/// building EVM's DB before execution, then read the root via [`StateRootHandle::state_root`] once
+/// the hook has been dropped.
+///
+/// `multiproof_provider_factory` should be an [`OverlayStateProviderFactory`] anchored at the
+/// parent and built from the same `overlay_manager` so the proof workers can resolve a
+/// not-yet-persisted parent. `preserved_sparse_trie` is `None`: an external builder spawns a fresh
+/// sparse trie per call rather than reusing the engine's preserved one.
+pub fn spawn_payload_builder_state_root<N, F>(
+    executor: &reth_tasks::Runtime,
+    overlay_manager: &OverlayManager<N>,
+    multiproof_provider_factory: F,
+    parent_header: SealedHeader<N::BlockHeader>,
+    transaction_count: Option<usize>,
+    config: &TreeConfig,
+    pending_sparse_trie_prune_blocks: Option<Vec<ExecutedBlock<N>>>,
+) -> StateRootHandle
+where
+    N: NodePrimitives,
+    F: DatabaseProviderROFactory<Provider: TrieCursorFactory + HashedCursorFactory>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+{
+    DefaultStateRootStrategy::default().spawn_state_root(
+        executor,
+        overlay_manager,
+        multiproof_provider_factory,
+        StateRootTaskOptions {
+            parent_header,
+            preserved_sparse_trie: None,
+            transaction_count,
+            config,
+            pending_sparse_trie_prune_blocks,
+        },
+    )
+}
+
 struct SparseTrieTaskOptions<N: NodePrimitives> {
     parent_header: SealedHeader<N::BlockHeader>,
     preserved_sparse_trie: Option<PreservedSparseTrie>,
