@@ -105,7 +105,6 @@ jemalloc = [
     "reth-provider/jemalloc",
     "reth-rpc/jemalloc",
     "reth-stages/jemalloc",
-    "reth-trie-db/jemalloc",
 ]
 asm-keccak = [
     "alloy-primitives/asm-keccak",
@@ -116,7 +115,6 @@ asm-keccak = [
     "reth-provider/asm-keccak",
     "reth-rpc/asm-keccak",
     "reth-stages/asm-keccak",
-    "reth-trie-db/asm-keccak",
 ]
 js-tracer = [
     "reth-rpc/js-tracer",

@@ -110,7 +110,6 @@ jemalloc = [
     "reth-provider/jemalloc",
     "reth-stages?/jemalloc",
     "reth-trie-common/jemalloc",
-    "reth-trie-db/jemalloc",
 ]
 asm-keccak = [
     "alloy-evm/asm-keccak",
@@ -120,7 +119,6 @@ asm-keccak = [
     "reth-provider/asm-keccak",
     "reth-stages?/asm-keccak",
     "reth-trie-common/asm-keccak",
-    "reth-trie-db/asm-keccak",
     "revm/asm-keccak",
 ]
 test-utils = [

@@ -1165,7 +1165,7 @@ impl RocksDBProvider {
     ) -> ProviderResult<RocksDBRawKeyIter<'_>> {
         let cf = self.get_cf_handle::<T>()?;
         let encoded_key = key.encode();
-        let mut iter = self.0.raw_iterator_cf(cf);
+        let mut iter = self.0.raw_iterator_cf(&cf);
         iter.seek(encoded_key.as_ref());
         Ok(RocksDBRawKeyIter { inner: iter })
     }

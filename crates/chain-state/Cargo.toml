@@ -77,7 +77,6 @@ test-utils = [
     "alloy-signer",
     "alloy-signer-local",
     "rand",
-    "rayon",
     "reth-chainspec/test-utils",
     "reth-primitives-traits/test-utils",
     "reth-trie/test-utils",

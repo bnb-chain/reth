@@ -53,7 +53,7 @@ serde_json.workspace = true
 similar-asserts.workspace = true
 
 [features]
-metrics = ["reth-trie/metrics", "dep:reth-metrics", "dep:metrics"]
+metrics = ["reth-trie/metrics"]
 jemalloc = [
     "reth-provider/jemalloc",
     "reth-trie-common/jemalloc",
