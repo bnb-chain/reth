@@ -152,14 +152,11 @@ pub trait SpawnBlocking: EthApiTypes + Clone + Send + Sync + 'static {
         guard.clone().acquire_many_owned(permits_to_acquire)
     }
 
-    /// Executes the closure on a new blocking task.
+    /// Executes `f` on the blocking pool.
     ///
-    /// `f` must be self-contained: it runs on a thread from the blocking pool and must not wait
-    /// for another task, or the pool can deadlock with every thread parked on work that needs a
-    /// thread. Resolve anything that needs awaiting before calling this.
+    /// `f` must be self-contained and must not depend on other queued work.
     ///
-    /// Note: This is expected for operations that are dominated by blocking IO, for tracing or
-    /// CPU bound operations in general use [`spawn_tracing`](Self::spawn_tracing).
+    /// For CPU-bound work use [`spawn_tracing`](Self::spawn_tracing).
     fn spawn_blocking_io<F, R>(&self, f: F) -> impl Future<Output = Result<R, Self::Error>> + Send
     where
         F: FnOnce(Self) -> Result<R, Self::Error> + Send + 'static,
@@ -168,9 +165,7 @@ pub trait SpawnBlocking: EthApiTypes + Clone + Send + Sync + 'static {
         let (tx, rx) = oneshot::channel();
         let this = self.clone();
         self.io_task_spawner().spawn_blocking_task(async move {
-            // This task only starts once it is assigned a blocking thread, which can be long
-            // after it was queued. If the caller gave up in the meantime, running `f` would
-            // hold that thread for a result nobody can receive.
+            // Skip work if the caller already went away.
             if tx.is_closed() {
                 return
             }

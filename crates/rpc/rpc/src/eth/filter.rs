@@ -694,10 +694,9 @@ where
         Ok(matching_headers)
     }
 
-    /// Collects the logs matching `filter` in the given _inclusive_ range.
+    /// Collects logs for `filter` over the inclusive range.
     ///
-    /// Drives the rpc cache to fetch receipts and blocks, so it must run on the async runtime;
-    /// the synchronous parts are offloaded via [`offload`].
+    /// Cache orchestration stays async; synchronous scans are offloaded via [`offload`].
     async fn collect_logs_in_block_range(
         self: Arc<Self>,
         filter: Arc<LogFilter>,
@@ -710,7 +709,7 @@ where
         // get current chain tip to determine processing mode
         let chain_tip = self.provider().best_block_number()?;
 
-        // the bloom scan is synchronous, so it is offloaded
+        // Bloom scan is synchronous, so offload it.
         let matching_headers = {
             let (this, filter) = (self.clone(), filter.clone());
             offload(&self.task_spawner, move || {
@@ -1206,8 +1205,7 @@ impl<
 
 /// Runs `f` on the blocking pool.
 ///
-/// `f` must be self-contained: a task that holds a blocking thread must never wait for another
-/// task, or the pool can deadlock with every thread parked on work that needs a thread.
+/// `f` must be self-contained and must not depend on other queued work.
 async fn offload<F, R>(spawner: &Runtime, f: F) -> Result<R, EthFilterError>
 where
     F: FnOnce() -> Result<R, EthFilterError> + Send + 'static,
@@ -1332,7 +1330,7 @@ impl<
             let receipts = match maybe_receipts {
                 Some(receipts) => receipts,
                 None => {
-                    // not cached - the provider read is synchronous, so it is offloaded
+                    // Cache miss: offload the synchronous provider read.
                     let (this, hash) = (self.filter_inner.clone(), header.hash());
                     let receipts = offload(&self.filter_inner.task_spawner, move || {
                         Ok(this.provider().receipts_by_block(hash.into())?)

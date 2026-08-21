@@ -335,15 +335,10 @@ impl<Provider> EthStateCacheService<Provider, Runtime>
 where
     Provider: BlockReader + Clone + Unpin + 'static,
 {
-    /// Runs a database read on the blocking pool once a rate limiter permit is available.
+    /// Waits for a rate-limit permit on the async runtime, then runs the read on the blocking
+    /// pool.
     ///
-    /// The permit is awaited on the async runtime and only handed over once held, so a queued
-    /// read never occupies a blocking thread while it waits for one.
-    ///
-    /// Note the read itself is dispatched as a plain closure rather than a task, so it is not
-    /// counted by the `executor.spawn.*_blocking_tasks_*` metrics. That is deliberate: handing
-    /// a future to the blocking pool is what allowed a waiter to hold a thread in the first
-    /// place, and only the permit wait is a task here.
+    /// This avoids holding a blocking thread while queued on the limiter.
     fn spawn_rate_limited(&self, f: impl FnOnce() + Send + 'static) {
         let executor = self.action_task_spawner.clone();
         let rate_limiter = self.rate_limiter.clone();

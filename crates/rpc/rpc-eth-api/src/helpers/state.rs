@@ -319,12 +319,9 @@ pub trait LoadState:
         }
     }
 
-    /// Resolves the state for `block_id` (`None` meaning latest) and runs `f` with it on a
-    /// blocking task.
+    /// Resolves `block_id` state on the async runtime, then runs `f` on the blocking pool.
     ///
-    /// Resolving the state stays on the calling async task on purpose: a `pending` block id
-    /// awaits, and a task that occupies a blocking thread while it awaits can exhaust the
-    /// blocking pool. Only `f`, which is synchronous, is offloaded.
+    /// This avoids holding a blocking thread across state resolution.
     fn spawn_with_state<F, R>(
         &self,
         block_id: Option<BlockId>,
