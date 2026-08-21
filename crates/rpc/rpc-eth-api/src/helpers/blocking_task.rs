@@ -168,6 +168,12 @@ pub trait SpawnBlocking: EthApiTypes + Clone + Send + Sync + 'static {
         let (tx, rx) = oneshot::channel();
         let this = self.clone();
         self.io_task_spawner().spawn_blocking_task(async move {
+            // This task only starts once it is assigned a blocking thread, which can be long
+            // after it was queued. If the caller gave up in the meantime, running `f` would
+            // hold that thread for a result nobody can receive.
+            if tx.is_closed() {
+                return
+            }
             let res = f(this);
             let _ = tx.send(res);
         });
