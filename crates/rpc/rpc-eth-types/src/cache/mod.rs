@@ -335,6 +335,27 @@ impl<Provider> EthStateCacheService<Provider, Runtime>
 where
     Provider: BlockReader + Clone + Unpin + 'static,
 {
+    /// Runs a database read on the blocking pool once a rate limiter permit is available.
+    ///
+    /// The permit is awaited on the async runtime and only handed over once held, so a queued
+    /// read never occupies a blocking thread while it waits for one.
+    ///
+    /// Note the read itself is dispatched as a plain closure rather than a task, so it is not
+    /// counted by the `executor.spawn.*_blocking_tasks_*` metrics. That is deliberate: handing
+    /// a future to the blocking pool is what allowed a waiter to hold a thread in the first
+    /// place, and only the permit wait is a task here.
+    fn spawn_rate_limited(&self, f: impl FnOnce() + Send + 'static) {
+        let executor = self.action_task_spawner.clone();
+        let rate_limiter = self.rate_limiter.clone();
+        self.action_task_spawner.spawn_task(async move {
+            let permit = rate_limiter.acquire_owned().await;
+            executor.spawn_blocking(move || {
+                let _permit = permit;
+                f();
+            });
+        });
+    }
+
     /// Indexes all transactions in a block by transaction hash.
     fn index_block_transactions(&mut self, block: &RecoveredBlock<Provider::Block>) {
         let block_hash = block.hash();
@@ -478,12 +499,9 @@ where
                             if this.full_block_cache.queue(block_hash, response_tx) {
                                 let provider = this.provider.clone();
                                 let action_tx = this.action_tx.clone();
-                                let rate_limiter = this.rate_limiter.clone();
                                 let mut action_sender =
                                     ActionSender::new(CacheKind::Block, block_hash, action_tx);
-                                this.action_task_spawner.spawn_blocking_task(async move {
-                                    // Acquire permit
-                                    let _permit = rate_limiter.acquire().await;
+                                this.spawn_rate_limited(move || {
                                     // Only look in the database to prevent situations where we
                                     // looking up the tree is blocking
                                     let block_sender = provider
@@ -507,12 +525,9 @@ where
                             if this.receipts_cache.queue(block_hash, response_tx) {
                                 let provider = this.provider.clone();
                                 let action_tx = this.action_tx.clone();
-                                let rate_limiter = this.rate_limiter.clone();
                                 let mut action_sender =
                                     ActionSender::new(CacheKind::Receipt, block_hash, action_tx);
-                                this.action_task_spawner.spawn_blocking_task(async move {
-                                    // Acquire permit
-                                    let _permit = rate_limiter.acquire().await;
+                                this.spawn_rate_limited(move || {
                                     let res = provider
                                         .receipts_by_block(block_hash.into())
                                         .map(|maybe_receipts| maybe_receipts.map(Arc::new));
@@ -539,12 +554,9 @@ where
                             if this.headers_cache.queue(block_hash, response_tx) {
                                 let provider = this.provider.clone();
                                 let action_tx = this.action_tx.clone();
-                                let rate_limiter = this.rate_limiter.clone();
                                 let mut action_sender =
                                     ActionSender::new(CacheKind::Header, block_hash, action_tx);
-                                this.action_task_spawner.spawn_blocking_task(async move {
-                                    // Acquire permit
-                                    let _permit = rate_limiter.acquire().await;
+                                this.spawn_rate_limited(move || {
                                     let header = provider.header(block_hash).and_then(|header| {
                                         header.ok_or_else(|| {
                                             ProviderError::HeaderNotFound(block_hash.into())

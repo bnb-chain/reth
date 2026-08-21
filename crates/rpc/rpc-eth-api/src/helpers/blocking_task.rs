@@ -152,10 +152,14 @@ pub trait SpawnBlocking: EthApiTypes + Clone + Send + Sync + 'static {
         guard.clone().acquire_many_owned(permits_to_acquire)
     }
 
-    /// Executes the future on a new blocking task.
+    /// Executes the closure on a new blocking task.
     ///
-    /// Note: This is expected for futures that are dominated by blocking IO operations, for tracing
-    /// or CPU bound operations in general use [`spawn_tracing`](Self::spawn_tracing).
+    /// `f` must be self-contained: it runs on a thread from the blocking pool and must not wait
+    /// for another task, or the pool can deadlock with every thread parked on work that needs a
+    /// thread. Resolve anything that needs awaiting before calling this.
+    ///
+    /// Note: This is expected for operations that are dominated by blocking IO, for tracing or
+    /// CPU bound operations in general use [`spawn_tracing`](Self::spawn_tracing).
     fn spawn_blocking_io<F, R>(&self, f: F) -> impl Future<Output = Result<R, Self::Error>> + Send
     where
         F: FnOnce(Self) -> Result<R, Self::Error> + Send + 'static,
@@ -165,29 +169,6 @@ pub trait SpawnBlocking: EthApiTypes + Clone + Send + Sync + 'static {
         let this = self.clone();
         self.io_task_spawner().spawn_blocking_task(async move {
             let res = f(this);
-            let _ = tx.send(res);
-        });
-
-        async move { rx.await.map_err(|_| EthApiError::InternalEthError)? }
-    }
-
-    /// Executes the future on a new blocking task.
-    ///
-    /// Note: This is expected for futures that are dominated by blocking IO operations, for tracing
-    /// or CPU bound operations in general use [`spawn_tracing`](Self::spawn_tracing).
-    fn spawn_blocking_io_fut<F, R, Fut>(
-        &self,
-        f: F,
-    ) -> impl Future<Output = Result<R, Self::Error>> + Send
-    where
-        Fut: Future<Output = Result<R, Self::Error>> + Send + 'static,
-        F: FnOnce(Self) -> Fut + Send + 'static,
-        R: Send + 'static,
-    {
-        let (tx, rx) = oneshot::channel();
-        let this = self.clone();
-        self.io_task_spawner().spawn_blocking_task(async move {
-            let res = f(this).await;
             let _ = tx.send(res);
         });
 
