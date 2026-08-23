@@ -7,6 +7,7 @@ use crate::{
 };
 use alloy_consensus::{transaction::TxHashRef, TxReceipt};
 use alloy_eips::{BlockId, BlockNumberOrTag};
+use alloy_primitives::U256;
 use alloy_rlp::Encodable;
 use alloy_rpc_types_eth::{Block, BlockTransactions, Index};
 use futures::Future;
@@ -88,9 +89,27 @@ pub trait EthBlocks: LoadBlock<RpcConvert: RpcConvert<Primitives = Self::Primiti
     {
         async move {
             let Some(block) = self.recovered_block(block_id).await? else { return Ok(None) };
-            let header =
-                self.converter().convert_header(block.clone_sealed_header(), block.rlp_length())?;
+            let sealed_header = block.clone_sealed_header();
+            let td = self.total_difficulty_for(&sealed_header);
+            let header = self.converter().convert_header(sealed_header, block.rlp_length(), td)?;
             Ok(Some(header))
+        }
+    }
+
+    /// Returns the total difficulty at `header`'s height (go-bsc attaches it to block/header
+    /// responses). Falls back to `parent_td + difficulty` for blocks not yet in the DB (pending).
+    fn total_difficulty_for(
+        &self,
+        header: &SealedHeader<ProviderHeader<Self::Provider>>,
+    ) -> Option<U256> {
+        let block_number = header.number();
+        match self.provider().header_td_by_number(block_number) {
+            Ok(Some(td)) => Some(td),
+            _ => {
+                let parent_td =
+                    self.provider().header_td_by_number(block_number.saturating_sub(1)).ok()??;
+                Some(parent_td.saturating_add(header.difficulty()))
+            }
         }
     }
 
@@ -112,7 +131,10 @@ pub trait EthBlocks: LoadBlock<RpcConvert: RpcConvert<Primitives = Self::Primiti
             let block = block.clone_into_rpc_block(
                 full.into(),
                 |tx, tx_info| self.converter().fill(tx, tx_info),
-                |header, size| self.converter().convert_header(header, size),
+                |header, size| {
+                    let td = self.total_difficulty_for(&header);
+                    self.converter().convert_header(header, size, td)
+                },
             )?;
             Ok(Some(block))
         }
@@ -394,9 +416,11 @@ pub trait EthBlocks: LoadBlock<RpcConvert: RpcConvert<Primitives = Self::Primiti
                     let block =
                         alloy_consensus::Block::<alloy_consensus::TxEnvelope, _>::uncle(header);
                     let size = block.length();
-                    let header = self
-                        .converter()
-                        .convert_header(SealedHeader::new_unhashed(block.header), size)?;
+                    let header = self.converter().convert_header(
+                        SealedHeader::new_unhashed(block.header),
+                        size,
+                        None,
+                    )?;
                     Ok(Block {
                         uncles: vec![],
                         header,

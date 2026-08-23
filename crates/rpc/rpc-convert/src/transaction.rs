@@ -4,7 +4,7 @@ use crate::{
     TryIntoTxEnv,
 };
 use alloy_consensus::{error::ValueError, transaction::Recovered};
-use alloy_primitives::Address;
+use alloy_primitives::{Address, U256};
 use alloy_rpc_types_eth::{Log, TransactionInfo};
 use core::error;
 use dyn_clone::DynClone;
@@ -72,11 +72,12 @@ pub trait HeaderConverter<Consensus, Rpc>: Send + Sync + Unpin + Clone + 'static
     /// An associated RPC conversion error.
     type Err: error::Error;
 
-    /// Converts a consensus header into an RPC header.
+    /// Converts a consensus header into an RPC header, attaching `total_difficulty` to the result.
     fn convert_header(
         &self,
         header: SealedHeader<Consensus>,
         block_size: usize,
+        total_difficulty: Option<U256>,
     ) -> Result<Rpc, Self::Err>;
 }
 
@@ -92,8 +93,9 @@ where
         &self,
         header: SealedHeader<Consensus>,
         block_size: usize,
+        total_difficulty: Option<U256>,
     ) -> Result<Rpc, Self::Err> {
-        Ok(Rpc::from_consensus_header(header, block_size))
+        Ok(Rpc::from_consensus_header_with_td(header, block_size, total_difficulty))
     }
 }
 
@@ -107,7 +109,10 @@ where
         &self,
         header: SealedHeader<Consensus>,
         block_size: usize,
+        total_difficulty: Option<U256>,
     ) -> Result<Rpc, Self::Err> {
+        // Closure-based converters don't carry total difficulty.
+        let _ = total_difficulty;
         Ok(self(header, block_size))
     }
 }
@@ -193,11 +198,12 @@ pub trait RpcConvert: Send + Sync + Unpin + Debug + DynClone + 'static {
         block: &SealedBlock<BlockTy<Self::Primitives>>,
     ) -> Result<Vec<RpcReceipt<Self::Network>>, Self::Error>;
 
-    /// Converts a primitive header to an RPC header.
+    /// Converts a primitive header to an RPC header, attaching `total_difficulty` to the result.
     fn convert_header(
         &self,
         header: SealedHeaderFor<Self::Primitives>,
         block_size: usize,
+        total_difficulty: Option<U256>,
     ) -> Result<RpcHeader<Self::Network>, Self::Error>;
 }
 
@@ -778,7 +784,8 @@ where
         &self,
         header: SealedHeaderFor<Self::Primitives>,
         block_size: usize,
+        total_difficulty: Option<U256>,
     ) -> Result<RpcHeader<Self::Network>, Self::Error> {
-        Ok(self.header_converter.convert_header(header, block_size)?)
+        Ok(self.header_converter.convert_header(header, block_size, total_difficulty)?)
     }
 }
