@@ -7,7 +7,7 @@ use futures::StreamExt;
 use reth_chain_state::CanonStateSubscriptions;
 use reth_primitives_traits::TransactionMeta;
 use reth_rpc_convert::{transaction::ConvertReceiptInput, RpcHeader};
-use reth_rpc_eth_types::logs_utils;
+use reth_rpc_eth_types::{logs_utils, LogFilter};
 use tracing::error;
 
 /// Provides streams subscriptions for `eth_subscribe`.
@@ -22,6 +22,9 @@ pub trait EthSubscriptions:
         filter: Filter,
     ) -> impl futures::Stream<Item = RpcLog<Self::NetworkTypes>> + Send + Unpin {
         let converter = self.converter();
+        // Subscriptions don't carry the request's topic-position count, so impose no extra
+        // constraint (count 0); the topic-count rule applies to eth_getLogs.
+        let filter = LogFilter::from(filter);
         self.provider().canonical_state_stream().flat_map(move |canon_state| {
             let reverted_chains = canon_state.reverted();
             let committed_chain = canon_state.committed();

@@ -2,6 +2,7 @@
 
 use alloy_json_rpc::RpcObject;
 use alloy_rpc_types_eth::{Filter, FilterChanges, FilterId, PendingTransactionFilterKind};
+use reth_rpc_eth_types::LogFilter;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use std::future::Future;
 
@@ -37,8 +38,12 @@ pub trait EthFilterApi<T: RpcObject, L: RpcObject> {
     async fn uninstall_filter(&self, id: FilterId) -> RpcResult<bool>;
 
     /// Returns logs matching given filter object.
+    ///
+    /// Takes a [`LogFilter`] so the number of topic positions in the request is preserved and the
+    /// geth topic-position rule can be enforced during selection (a filter naming N positions only
+    /// matches logs carrying >= N topics).
     #[method(name = "getLogs")]
-    async fn logs(&self, filter: Filter) -> RpcResult<Vec<L>>;
+    async fn logs(&self, filter: LogFilter) -> RpcResult<Vec<L>>;
 }
 
 /// Limits for logs queries
