@@ -500,9 +500,16 @@ pub fn evm_state_to_hashed_post_state(update: EvmState) -> HashedPostState {
             let hashed_address = keccak256(address);
             trace!(target: "trie::parallel::sparse", ?address, ?hashed_address, "Adding account to state update");
 
-            let destroyed = account.is_selfdestructed();
+            // EIP-158/161: an account emptied to (nonce 0, balance 0, no code) is removed from the
+            // trie, even when it was not SELFDESTRUCTed (e.g. drained directly by a BSC parlia
+            // system tx). Recording it as present-but-empty poisons the overlay hashed cursor for
+            // descendant blocks — that cursor does not normalize empty accounts, so on the next
+            // non-linear base rebuild (reorg, competing sibling, gap) the stale empty leaf yields a
+            // wrong state root. Mirrors HashedPostState::from_bundle_state, whose bundle nulls out
+            // emptied accounts via state-clearing.
+            let removed = account.is_selfdestructed() || account.info.is_empty();
             if account.info != account.original_info() {
-                let info = if destroyed { None } else { Some(account.info.into()) };
+                let info = if removed { None } else { Some(account.info.into()) };
                 hashed_state.accounts.insert(hashed_address, info);
             }
 
@@ -513,7 +520,7 @@ pub fn evm_state_to_hashed_post_state(update: EvmState) -> HashedPostState {
                 .map(|(slot, value)| (keccak256(B256::from(slot)), value.present_value))
                 .peekable();
 
-            if !destroyed && changed_storage_iter.peek().is_some() {
+            if !removed && changed_storage_iter.peek().is_some() {
                 hashed_state
                     .storages
                     .insert(hashed_address, HashedStorage::from_iter(changed_storage_iter));
@@ -575,6 +582,52 @@ mod tests {
 
         assert_eq!(hashed_state.accounts.get(&hashed_address), Some(&None));
         assert!(!hashed_state.storages.contains_key(&hashed_address));
+    }
+
+    #[test]
+    fn eip158_emptied_account_is_recorded_as_deleted() {
+        // An existing account drained to (nonce 0, balance 0, no code) via a non-selfdestruct path
+        // (e.g. a BSC parlia system tx) must be recorded as deleted (None), matching
+        // HashedPostState::from_bundle_state. Recording it as present-but-empty would poison the
+        // overlay hashed cursor for descendant blocks.
+        let address = Address::repeat_byte(0x03);
+        let mut account = Account::default();
+        account.info.nonce = 7;
+        account.info.balance = U256::from(1_000);
+        account.set_current_info_as_original();
+        // Drain to empty without selfdestruct.
+        account.info.nonce = 0;
+        account.info.balance = U256::ZERO;
+        account.mark_touch();
+        assert!(!account.is_selfdestructed());
+        assert!(account.info.is_empty());
+
+        let hashed_state =
+            evm_state_to_hashed_post_state(EvmState::from_iter([(address, account)]));
+        let hashed_address = keccak256(address);
+
+        assert_eq!(hashed_state.accounts.get(&hashed_address), Some(&None));
+        assert!(!hashed_state.storages.contains_key(&hashed_address));
+    }
+
+    #[test]
+    fn non_empty_changed_account_stays_present() {
+        // Guard against over-deletion: a touched account that is still non-empty after the change
+        // must be recorded as present, not deleted.
+        let address = Address::repeat_byte(0x04);
+        let mut account = Account::default();
+        account.info.nonce = 1;
+        account.info.balance = U256::from(1_000);
+        account.set_current_info_as_original();
+        account.info.balance = U256::from(2_000);
+        account.mark_touch();
+        assert!(!account.info.is_empty());
+
+        let hashed_state =
+            evm_state_to_hashed_post_state(EvmState::from_iter([(address, account)]));
+        let hashed_address = keccak256(address);
+
+        assert!(matches!(hashed_state.accounts.get(&hashed_address), Some(Some(_))));
     }
 
     #[derive(Default)]
