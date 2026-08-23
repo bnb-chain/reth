@@ -1,11 +1,11 @@
 //! Compatibility functions for rpc `Transaction` type.
 use crate::{
-    calculate_millisecond_timestamp, RpcHeader, RpcReceipt, RpcTransaction, RpcTxReq, RpcTypes,
-    SignableTxRequest, TryIntoTxEnv,
+    RpcHeader, RpcLog, RpcReceipt, RpcTransaction, RpcTxReq, RpcTypes, SignableTxRequest,
+    TryIntoTxEnv,
 };
 use alloy_consensus::{error::ValueError, transaction::Recovered};
-use alloy_primitives::{Address, U256};
-use alloy_rpc_types_eth::TransactionInfo;
+use alloy_primitives::Address;
+use alloy_rpc_types_eth::{Log, TransactionInfo};
 use core::error;
 use dyn_clone::DynClone;
 use reth_evm::{BlockEnvFor, ConfigureEvm, EvmEnvFor, SpecFor, TxEnvFor};
@@ -13,8 +13,8 @@ use reth_primitives_traits::{
     BlockTy, HeaderTy, NodePrimitives, SealedBlock, SealedHeader, SealedHeaderFor, TransactionMeta,
     TxTy,
 };
-use reth_rpc_traits::{FromConsensusTx, TryIntoSimTx, TxInfoMapper};
-use std::{error::Error, fmt, fmt::Debug, marker::PhantomData};
+use reth_rpc_traits::{FromConsensusHeader, FromConsensusTx, TryIntoSimTx, TxInfoMapper};
+use std::{convert::Infallible, error::Error, fmt, fmt::Debug, marker::PhantomData};
 
 /// Input for [`RpcConvert::convert_receipts`].
 #[derive(Debug, Clone)]
@@ -33,11 +33,22 @@ pub struct ConvertReceiptInput<'a, N: NodePrimitives> {
 
 /// A type that knows how to convert primitive receipts to RPC representations.
 pub trait ReceiptConverter<N: NodePrimitives>: Debug + 'static {
-    /// RPC representation.
+    /// RPC receipt representation.
     type RpcReceipt;
+
+    /// RPC log representation.
+    type RpcLog;
 
     /// Error that may occur during conversion.
     type Error;
+
+    /// Converts an RPC log using its primitive receipt and block header.
+    fn convert_log(
+        &self,
+        log: Log,
+        receipt: &N::Receipt,
+        header: &SealedHeaderFor<N>,
+    ) -> Result<Self::RpcLog, Self::Error>;
 
     /// Converts a set of primitive receipts to RPC representations. It is guaranteed that all
     /// receipts are from the same block.
@@ -46,8 +57,7 @@ pub trait ReceiptConverter<N: NodePrimitives>: Debug + 'static {
         receipts: Vec<ConvertReceiptInput<'_, N>>,
     ) -> Result<Vec<Self::RpcReceipt>, Self::Error>;
 
-    /// Converts a set of primitive receipts to RPC representations. It is guaranteed that all
-    /// receipts are from `block`.
+    /// Converts primitive receipts from `block` to RPC representations.
     fn convert_receipts_with_block(
         &self,
         receipts: Vec<ConvertReceiptInput<'_, N>>,
@@ -59,13 +69,15 @@ pub trait ReceiptConverter<N: NodePrimitives>: Debug + 'static {
 
 /// A type that knows how to convert a consensus header into an RPC header.
 pub trait HeaderConverter<Consensus, Rpc>: Send + Sync + Unpin + Clone + 'static {
+    /// An associated RPC conversion error.
+    type Err: error::Error;
+
     /// Converts a consensus header into an RPC header.
     fn convert_header(
         &self,
         header: SealedHeader<Consensus>,
         block_size: usize,
-        td: Option<U256>,
-    ) -> Rpc;
+    ) -> Result<Rpc, Self::Err>;
 }
 
 /// Default implementation of [`HeaderConverter`] that uses [`FromConsensusHeader`] to convert
@@ -74,41 +86,29 @@ impl<Consensus, Rpc> HeaderConverter<Consensus, Rpc> for ()
 where
     Rpc: FromConsensusHeader<Consensus>,
 {
+    type Err = Infallible;
+
     fn convert_header(
         &self,
         header: SealedHeader<Consensus>,
         block_size: usize,
-        td: Option<U256>,
-    ) -> Rpc {
-        Rpc::from_consensus_header(header, block_size, td)
+    ) -> Result<Rpc, Self::Err> {
+        Ok(Rpc::from_consensus_header(header, block_size))
     }
 }
 
-/// Conversion trait for obtaining RPC header from a consensus header.
-pub trait FromConsensusHeader<T> {
-    /// Takes a consensus header and converts it into `self`.
-    fn from_consensus_header(header: SealedHeader<T>, block_size: usize, td: Option<U256>) -> Self;
-}
-
-impl FromConsensusHeader<alloy_consensus::Header>
-    for crate::CustomRpcHeader<alloy_consensus::Header>
+impl<Consensus, Rpc, F> HeaderConverter<Consensus, Rpc> for F
+where
+    F: Fn(SealedHeader<Consensus>, usize) -> Rpc + Send + Sync + Unpin + Clone + 'static,
 {
-    fn from_consensus_header(
-        header: SealedHeader<alloy_consensus::Header>,
-        block_size: usize,
-        td: Option<U256>,
-    ) -> Self {
-        let header_hash = header.hash();
-        let consensus_header = header.into_header();
-        let milli_timestamp = Some(U256::from(calculate_millisecond_timestamp(&consensus_header)));
+    type Err = Infallible;
 
-        Self {
-            hash: header_hash,
-            inner: consensus_header,
-            total_difficulty: td,
-            size: Some(U256::from(block_size)),
-            milli_timestamp,
-        }
+    fn convert_header(
+        &self,
+        header: SealedHeader<Consensus>,
+        block_size: usize,
+    ) -> Result<Rpc, Self::Err> {
+        Ok(self(header, block_size))
     }
 }
 
@@ -171,6 +171,14 @@ pub trait RpcConvert: Send + Sync + Unpin + Debug + DynClone + 'static {
         evm_env: &EvmEnvFor<Self::Evm>,
     ) -> Result<TxEnvFor<Self::Evm>, Self::Error>;
 
+    /// Converts an RPC log using its primitive receipt and block header.
+    fn convert_log(
+        &self,
+        log: Log,
+        receipt: &<Self::Primitives as NodePrimitives>::Receipt,
+        header: &SealedHeaderFor<Self::Primitives>,
+    ) -> Result<RpcLog<Self::Network>, Self::Error>;
+
     /// Converts a set of primitive receipts to RPC representations. It is guaranteed that all
     /// receipts are from the same block.
     fn convert_receipts(
@@ -178,10 +186,7 @@ pub trait RpcConvert: Send + Sync + Unpin + Debug + DynClone + 'static {
         receipts: Vec<ConvertReceiptInput<'_, Self::Primitives>>,
     ) -> Result<Vec<RpcReceipt<Self::Network>>, Self::Error>;
 
-    /// Converts a set of primitive receipts to RPC representations. It is guaranteed that all
-    /// receipts are from the same block.
-    ///
-    /// Also accepts the corresponding block in case the receipt requires additional metadata.
+    /// Converts primitive receipts from `block` to RPC representations.
     fn convert_receipts_with_block(
         &self,
         receipts: Vec<ConvertReceiptInput<'_, Self::Primitives>>,
@@ -193,7 +198,6 @@ pub trait RpcConvert: Send + Sync + Unpin + Debug + DynClone + 'static {
         &self,
         header: SealedHeaderFor<Self::Primitives>,
         block_size: usize,
-        td: Option<U256>,
     ) -> Result<RpcHeader<Self::Network>, Self::Error>;
 }
 
@@ -689,10 +693,12 @@ where
     Receipt: ReceiptConverter<
             N,
             RpcReceipt = RpcReceipt<Network>,
+            RpcLog = RpcLog<Network>,
             Error: From<TransactionConversionError>
                        + From<TxEnv::Error>
                        + From<<Map as TxInfoMapper<TxTy<N>>>::Err>
                        + From<RpcTx::Err>
+                       + From<Header::Err>
                        + Error
                        + Unpin
                        + Sync
@@ -744,6 +750,15 @@ where
         self.tx_env_converter.convert_tx_env(request, evm_env).map_err(Into::into)
     }
 
+    fn convert_log(
+        &self,
+        log: Log,
+        receipt: &<Self::Primitives as NodePrimitives>::Receipt,
+        header: &SealedHeaderFor<Self::Primitives>,
+    ) -> Result<RpcLog<Self::Network>, Self::Error> {
+        self.receipt_converter.convert_log(log, receipt, header)
+    }
+
     fn convert_receipts(
         &self,
         receipts: Vec<ConvertReceiptInput<'_, Self::Primitives>>,
@@ -763,8 +778,7 @@ where
         &self,
         header: SealedHeaderFor<Self::Primitives>,
         block_size: usize,
-        td: Option<U256>,
     ) -> Result<RpcHeader<Self::Network>, Self::Error> {
-        Ok(self.header_converter.convert_header(header, block_size, td))
+        Ok(self.header_converter.convert_header(header, block_size)?)
     }
 }

@@ -109,6 +109,7 @@ impl<T: TransactionOrdering> PendingPool<T> {
             new_transaction_receiver: Some(self.new_transaction_notifier.subscribe()),
             last_priority: None,
             skip_blobs: false,
+            allow_updates_out_of_order: false,
         }
     }
 
@@ -187,7 +188,7 @@ impl<T: TransactionOrdering> PendingPool<T> {
                 // Remove all dependent transactions.
                 'this: while let Some((next_id, next_tx)) = transactions_iter.peek() {
                     if next_id.sender != id.sender {
-                        break 'this;
+                        break 'this
                     }
                     removed.push(Arc::clone(&next_tx.transaction));
                     transactions_iter.next();
@@ -229,7 +230,7 @@ impl<T: TransactionOrdering> PendingPool<T> {
                 // Remove all dependent transactions.
                 'this: while let Some((next_id, next_tx)) = transactions_iter.peek() {
                     if next_id.sender != id.sender {
-                        break 'this;
+                        break 'this
                     }
                     removed.push(Arc::clone(&next_tx.transaction));
                     transactions_iter.next();
@@ -425,6 +426,26 @@ impl<T: TransactionOrdering> PendingPool<T> {
 
             // we prefer removing transactions with lower ordering
             let mut worst_transactions = self.highest_nonces.values().collect::<Vec<_>>();
+
+            // Each pass removes at most one transaction per sender (its highest nonce), so only
+            // the worst few senders can be relevant in this pass. Selecting them is O(n)
+            // instead of sorting all senders. The estimate may fall short for size-based limits
+            // or skipped local senders, in which case the outer loop runs another pass.
+            let current_len = original_length - total_removed;
+            let current_size = original_size - total_size;
+            let excess_txs = current_len.saturating_sub(limit.max_txs);
+            let avg_tx_size = (current_size / current_len.max(1)).max(1);
+            let excess_size_txs = current_size.saturating_sub(limit.max_size).div_ceil(avg_tx_size);
+            // Number of worst senders to consider for removal in this pass: enough to cover the
+            // count and (estimated) size excess, widened by known local senders since those are
+            // skipped below.
+            let removal_candidates = excess_txs.max(excess_size_txs).max(1) + local_senders.len();
+
+            if removal_candidates < worst_transactions.len() {
+                // keep only the `removal_candidates` worst senders, in O(n) without a full sort
+                worst_transactions.select_nth_unstable(removal_candidates);
+                worst_transactions.truncate(removal_candidates);
+            }
             worst_transactions.sort_unstable();
 
             // loop through the highest nonces set, removing transactions until we reach the limit
@@ -440,7 +461,7 @@ impl<T: TransactionOrdering> PendingPool<T> {
                         }
                     }
 
-                    return;
+                    return
                 }
 
                 if !remove_locals && tx.transaction.is_local() {
@@ -448,7 +469,7 @@ impl<T: TransactionOrdering> PendingPool<T> {
                     if local_senders.insert(sender_id) {
                         non_local_senders -= 1;
                     }
-                    continue;
+                    continue
                 }
 
                 total_size += tx.transaction.size();
@@ -466,7 +487,7 @@ impl<T: TransactionOrdering> PendingPool<T> {
             // return if either the pool is under limits or there are no more _eligible_
             // transactions to remove
             if !self.exceeds(limit) || non_local_senders == 0 {
-                return;
+                return
             }
         }
     }
@@ -488,13 +509,13 @@ impl<T: TransactionOrdering> PendingPool<T> {
         let mut removed = Vec::new();
         // return early if the pool is already under the limits
         if !self.exceeds(&limit) {
-            return removed;
+            return removed
         }
 
         // first truncate only non-local transactions, returning if the pool end up under the limit
         self.remove_to_limit(&limit, false, &mut removed);
         if !self.exceeds(&limit) {
-            return removed;
+            return removed
         }
 
         // now repeat for local transactions, since local transactions must be removed now for the

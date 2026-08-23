@@ -66,7 +66,7 @@
 //!    category (2.) and become pending.
 
 use crate::{
-    blobstore::BlobStore,
+    blobstore::{BlobStore, PooledBlobSidecar},
     error::{PoolError, PoolErrorKind, PoolResult},
     identifier::{SenderId, SenderIdentifiers, TransactionId},
     metrics::BlobStoreMetrics,
@@ -383,8 +383,13 @@ where
         &self,
         max: usize,
     ) -> Vec<Arc<ValidPoolTransaction<T::Transaction>>> {
-        let mut out = Vec::new();
-        self.append_pooled_transactions_max(max, &mut out);
+        if max == 0 {
+            return Vec::new()
+        }
+
+        let pool = self.get_pool_data();
+        let mut out = Vec::with_capacity(max.min(pool.all().len()));
+        out.extend(pool.all().transactions_iter().filter(|tx| tx.propagate).take(max).cloned());
         out
     }
 
@@ -459,13 +464,13 @@ where
         if max == 0 {
             return Vec::new();
         }
-        self.get_pool_data()
-            .all()
-            .transactions_iter()
-            .filter(|tx| tx.propagate)
-            .take(max)
-            .map(|tx| *tx.hash())
-            .collect()
+
+        let pool = self.get_pool_data();
+        let mut out = Vec::with_capacity(max.min(pool.all().len()));
+        out.extend(
+            pool.all().transactions_iter().filter(|tx| tx.propagate).take(max).map(|tx| *tx.hash()),
+        );
+        out
     }
 
     /// Converts the internally tracked transaction to the pooled format.
@@ -506,7 +511,7 @@ where
     where
         <V as TransactionValidator>::Transaction: EthPoolTransaction,
     {
-        let mut elements = Vec::with_capacity(tx_hashes.len());
+        let mut elements = Vec::new();
         self.append_pooled_transaction_elements(&tx_hashes, limit, &mut elements);
         elements.shrink_to_fit();
         elements
@@ -526,13 +531,13 @@ where
     /// Updates the entire pool after a new block was executed.
     pub fn on_canonical_state_change(&self, update: CanonicalStateUpdate<'_, V::Block>) {
         trace!(target: "txpool", ?update, "updating pool on canonical state change");
+
         let block_info = update.block_info();
         let CanonicalStateUpdate {
             new_tip, changed_accounts, mined_transactions, update_kind, ..
         } = update;
         self.validator.on_new_head_block(new_tip);
 
-        trace!(target: "txpool", "changed_accounts: {:?} mined_transactions: {:?}", changed_accounts, mined_transactions);
         let changed_senders = self.changed_senders(changed_accounts.into_iter());
 
         // update the pool
@@ -691,7 +696,9 @@ where
 
             // Enforce the pool size limits if at least one transaction was added successfully
             let discarded = if results.iter().any(Result::is_ok) {
-                pool.discard_worst()
+                let discarded = pool.discard_worst();
+                pool.update_size_metrics();
+                discarded
             } else {
                 Default::default()
             };
@@ -708,14 +715,20 @@ where
             self.delete_discarded_blobs(discarded.iter());
             self.with_event_listener(|listener| listener.discarded_many(&discarded));
 
-            let discarded_hashes =
-                discarded.into_iter().map(|tx| *tx.hash()).collect::<HashSet<_>>();
+            // Linear search avoids allocating a hash set for small eviction batches.
+            const MAX_LINEAR_SEARCH_DISCARDS: usize = 4;
+            let discarded_hashes = (discarded.len() > MAX_LINEAR_SEARCH_DISCARDS)
+                .then(|| discarded.iter().map(|tx| *tx.hash()).collect::<HashSet<_>>());
+            let is_discarded = |hash: &TxHash| match &discarded_hashes {
+                Some(hashes) => hashes.contains(hash),
+                None => discarded.iter().any(|tx| tx.hash() == hash),
+            };
 
             // A newly added transaction may be immediately discarded, so we need to
             // adjust the result here
             for res in &mut results {
                 if let Ok(AddedTransactionOutcome { hash, .. }) = res &&
-                    discarded_hashes.contains(hash)
+                    is_discarded(hash)
                 {
                     *res = Err(PoolError::new(*hash, PoolErrorKind::DiscardedOnInsert))
                 }
@@ -769,8 +782,6 @@ where
     /// [`TransactionPool`](crate::TransactionPool) trait for a custom pool implementation
     /// [`TransactionPool::pending_transactions_listener_for`](crate::TransactionPool).
     pub fn on_new_pending_transaction(&self, pending: &AddedPendingTransaction<T::Transaction>) {
-        let start = std::time::Instant::now();
-        let listener_count_before = self.pending_transaction_listener.read().len();
         let mut needs_cleanup = false;
 
         {
@@ -782,23 +793,12 @@ where
             }
         }
 
+        // Clean up dead listeners if we detected any closed channels
         if needs_cleanup {
             self.pending_transaction_listener
                 .write()
                 .retain(|listener| !listener.sender.is_closed());
         }
-
-        let listener_count_after = self.pending_transaction_listener.read().len();
-        let elapsed = start.elapsed();
-        trace!(
-            target: "txpool",
-            tx_hash = %pending.transaction.hash(),
-            listener_count_before,
-            listener_count_after,
-            removed = listener_count_before.saturating_sub(listener_count_after),
-            elapsed_us = elapsed.as_micros(),
-            "on_new_pending_transaction completed"
-        );
     }
 
     /// Notify all listeners about a newly inserted pending transaction.
@@ -810,9 +810,6 @@ where
     /// [`TransactionPool`](crate::TransactionPool) trait for a custom pool implementation
     /// [`TransactionPool::new_transactions_listener_for`](crate::TransactionPool).
     pub fn on_new_transaction(&self, event: NewTransactionEvent<T::Transaction>) {
-        let start = std::time::Instant::now();
-        let tx_hash = *event.transaction.hash();
-        let listener_count_before = self.transaction_listener.read().len();
         let mut needs_cleanup = false;
 
         {
@@ -836,25 +833,13 @@ where
         if needs_cleanup {
             self.transaction_listener.write().retain(|listener| !listener.sender.is_closed());
         }
-
-        let listener_count_after = self.transaction_listener.read().len();
-        let elapsed = start.elapsed();
-        trace!(
-            target: "txpool",
-            tx_hash = %tx_hash,
-            listener_count_before,
-            listener_count_after,
-            removed = listener_count_before.saturating_sub(listener_count_after),
-            elapsed_us = elapsed.as_micros(),
-            "on_new_transaction completed"
-        );
     }
 
     /// Notify all listeners about a blob sidecar for a newly inserted blob (eip4844) transaction.
     fn on_new_blob_sidecar(&self, tx_hash: &TxHash, sidecar: &BlobTransactionSidecarVariant) {
         let mut sidecar_listeners = self.blob_transaction_sidecar_listener.lock();
         if sidecar_listeners.is_empty() {
-            return;
+            return
         }
         let sidecar = Arc::new(sidecar.clone());
         sidecar_listeners.retain_mut(|listener| {
@@ -1084,7 +1069,7 @@ where
         hashes: Vec<TxHash>,
     ) -> Vec<Arc<ValidPoolTransaction<T::Transaction>>> {
         if hashes.is_empty() {
-            return Vec::new();
+            return Vec::new()
         }
         let removed = self.pool.write().remove_transactions(hashes);
 
@@ -1100,7 +1085,7 @@ where
         hashes: Vec<TxHash>,
     ) -> Vec<Arc<ValidPoolTransaction<T::Transaction>>> {
         if hashes.is_empty() {
-            return Vec::new();
+            return Vec::new()
         }
         let removed = self.pool.write().remove_transactions_and_descendants(hashes);
 
@@ -1141,16 +1126,28 @@ where
         self.pool.write().prune_transactions(hashes)
     }
 
-    /// Removes and returns all transactions that are present in the pool.
+    /// Retains only transactions that are not present in the pool.
     pub fn retain_unknown<A>(&self, announcement: &mut A)
     where
         A: HandleMempoolData,
     {
         if announcement.is_empty() {
-            return;
+            return
         }
         let pool = self.get_pool_data();
         announcement.retain_by_hash(|tx| !pool.contains(tx))
+    }
+
+    /// Retains only transactions that are present in the pool.
+    pub fn retain_contains<A>(&self, announcement: &mut A)
+    where
+        A: HandleMempoolData,
+    {
+        if announcement.is_empty() {
+            return
+        }
+        let pool = self.get_pool_data();
+        announcement.retain_by_hash(|tx| pool.contains(tx))
     }
 
     /// Returns the transaction by hash.
@@ -1258,7 +1255,7 @@ where
     /// If no transaction exists, it is skipped.
     pub fn get_all(&self, txs: Vec<TxHash>) -> Vec<Arc<ValidPoolTransaction<T::Transaction>>> {
         if txs.is_empty() {
-            return Vec::new();
+            return Vec::new()
         }
         self.get_pool_data().get_all(txs).collect()
     }
@@ -1271,7 +1268,7 @@ where
         txs: &[TxHash],
     ) -> Vec<Arc<ValidPoolTransaction<T::Transaction>>> {
         if txs.is_empty() {
-            return Vec::new();
+            return Vec::new()
         }
         let pool = self.get_pool_data();
         txs.iter().filter_map(|tx| pool.get(tx).filter(|tx| tx.propagate)).collect()
@@ -1303,7 +1300,7 @@ where
     }
 
     /// Inserts a blob transaction into the blob store
-    fn insert_blob(&self, hash: TxHash, blob: BlobTransactionSidecarVariant) {
+    fn insert_blob(&self, hash: TxHash, blob: PooledBlobSidecar) {
         debug!(target: "txpool", "[{:?}] storing blob sidecar", hash);
         if let Err(err) = self.blob_store.insert(hash, blob) {
             warn!(target: "txpool", %err, "[{:?}] failed to insert blob", hash);
@@ -1330,13 +1327,9 @@ where
     }
 
     fn update_blob_store_metrics(&self) {
-        let data_size = self.blob_store.data_size_hint().unwrap_or(0);
-        self.blob_store_metrics.blobstore_byte_size.set(data_size as f64);
-        // geth-compatible blobpool metrics: dataused tracks actual blob data,
-        // datareal tracks total footprint (in reth both are the same since we don't
-        // have shelf-based storage with gaps like geth)
-        metrics::gauge!("blobpool.dataused").set(data_size as f64);
-        metrics::gauge!("blobpool.datareal").set(data_size as f64);
+        if let Some(data_size) = self.blob_store.data_size_hint() {
+            self.blob_store_metrics.blobstore_byte_size.set(data_size as f64);
+        }
         self.blob_store_metrics.blobstore_entries.set(self.blob_store.blobs_len() as f64);
     }
 
@@ -1369,7 +1362,7 @@ struct AddedTransactionMeta<T: PoolTransaction> {
     /// The transaction that was added to the pool
     added: AddedTransaction<T>,
     /// Optional blob sidecar for EIP-4844 transactions
-    blob_sidecar: Option<BlobTransactionSidecarVariant>,
+    blob_sidecar: Option<PooledBlobSidecar>,
 }
 
 /// Tracks an added transaction and all graph changes caused by adding it.
@@ -1416,9 +1409,9 @@ where
         loop {
             let next = self.iter.next()?;
             if self.kind.is_propagate_only() && !next.propagate {
-                continue;
+                continue
             }
-            return Some(*next.hash());
+            return Some(*next.hash())
         }
     }
 }
@@ -1440,12 +1433,12 @@ where
         loop {
             let next = self.iter.next()?;
             if self.kind.is_propagate_only() && !next.propagate {
-                continue;
+                continue
             }
             return Some(NewTransactionEvent {
                 subpool: SubPool::Pending,
                 transaction: next.clone(),
-            });
+            })
         }
     }
 }
@@ -1673,7 +1666,7 @@ impl<T: PoolTransaction> OnNewCanonicalStateOutcome<T> {
 #[cfg(test)]
 mod tests {
     use crate::{
-        blobstore::{BlobStore, InMemoryBlobStore},
+        blobstore::{BlobStore, InMemoryBlobStore, PooledBlobSidecar},
         identifier::SenderId,
         test_utils::{MockTransaction, TestPoolBuilder},
         validate::ValidTransaction,
@@ -1738,7 +1731,7 @@ mod tests {
 
             // Insert the sidecar into the blob store if the current index is within the blob limit.
             if n < blob_limit.max_txs {
-                blob_store.insert(*tx.get_hash(), sidecar.clone()).unwrap();
+                blob_store.insert(*tx.get_hash(), sidecar.clone().into()).unwrap();
             }
 
             // Add the transaction to the pool with external origin and valid outcome.
@@ -1750,7 +1743,7 @@ mod tests {
                     bytecode_hash: None,
                     transaction: ValidTransaction::ValidWithSidecar {
                         transaction: tx,
-                        sidecar: sidecar.clone(),
+                        sidecar: PooledBlobSidecar::from(sidecar.clone()),
                     },
                     propagate: true,
                     authorities: None,

@@ -20,20 +20,11 @@ reth-trie.workspace = true
 reth-trie-common.workspace = true
 reth-storage-api = { workspace = true, features = ["db-api"] }
 reth-storage-errors.workspace = true
-reth-stages-types.workspace = true
-reth-metrics = { workspace = true, optional = true }
 
 # triedb
-rust-eth-triedb.workspace = true
 
 # alloy
 alloy-primitives.workspace = true
-
-# misc
-parking_lot.workspace = true
-
-# metrics
-metrics = { workspace = true, optional = true }
 
 # tracing
 tracing.workspace = true
@@ -44,13 +35,13 @@ reth-chainspec.workspace = true
 reth-primitives-traits = { workspace = true, features = ["test-utils", "arbitrary"] }
 reth-db = { workspace = true, features = ["test-utils"] }
 reth-provider = { workspace = true, features = ["test-utils"] }
+reth-stages-types.workspace = true
 reth-trie-common = { workspace = true, features = ["test-utils", "arbitrary"] }
 reth-trie = { workspace = true, features = ["test-utils"] }
 
 alloy-consensus.workspace = true
 alloy-rlp.workspace = true
 revm.workspace = true
-revm-database.workspace = true
 
 # trie
 triehash.workspace = true
@@ -62,15 +53,12 @@ serde_json.workspace = true
 similar-asserts.workspace = true
 
 [features]
-io-uring = ["rust-eth-triedb/io-uring"]
-metrics = ["reth-trie/metrics", "dep:reth-metrics", "dep:metrics"]
+metrics = ["reth-trie/metrics"]
 jemalloc = [
-    "rust-eth-triedb/jemalloc",
     "reth-provider/jemalloc",
     "reth-trie-common/jemalloc",
 ]
 asm-keccak = [
-    "rust-eth-triedb/asm-keccak",
     "alloy-primitives/asm-keccak",
     "reth-provider/asm-keccak",
     "reth-trie-common/asm-keccak",
@@ -80,14 +68,12 @@ serde = [
     "similar-asserts/serde",
     "alloy-consensus/serde",
     "alloy-primitives/serde",
-    "parking_lot/serde",
-    "reth-stages-types/serde",
     "reth-storage-api/serde",
     "reth-trie/serde",
     "reth-trie-common/serde",
     "reth-primitives-traits/serde",
-    "revm-database/serde",
     "revm/serde",
+    "reth-stages-types/serde",
 ]
 test-utils = [
     "reth-trie-common/test-utils",
@@ -96,6 +82,6 @@ test-utils = [
     "reth-db/test-utils",
     "reth-db-api/test-utils",
     "reth-provider/test-utils",
-    "reth-stages-types/test-utils",
     "reth-trie/test-utils",
+    "reth-stages-types/test-utils",
 ]

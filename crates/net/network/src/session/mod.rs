@@ -4,6 +4,8 @@ mod active;
 mod conn;
 mod counter;
 mod handle;
+#[cfg(test)]
+mod tests;
 mod types;
 pub use types::BlockRangeInfo;
 
@@ -14,12 +16,13 @@ use crate::{
     session::active::ActiveSession,
 };
 use active::QueuedOutgoingMessages;
+use alloy_primitives::map::{FbBuildHasher, HashMap};
 use counter::SessionCounter;
 use futures::{future::Either, io, FutureExt, StreamExt};
 use reth_ecies::{stream::ECIESStream, ECIESError};
 use reth_eth_wire::{
     errors::EthStreamError, handshake::EthRlpxHandshake, multiplex::RlpxProtocolMultiplexer,
-    BlockRangeUpdate, Capabilities, DisconnectReason, EthStream, EthVersion,
+    BlockRangeUpdate, Capabilities, DisconnectReason, EthSnapStream, EthStream, EthVersion,
     HelloMessageWithProtocols, NetworkPrimitives, UnauthedP2PStream, UnifiedStatus,
     HANDSHAKE_TIMEOUT,
 };
@@ -28,11 +31,11 @@ use reth_metrics::common::mpsc::MeteredPollSender;
 use reth_network_api::{PeerRequest, PeerRequestSender};
 use reth_network_peers::PeerId;
 use reth_network_types::SessionsConfig;
+use reth_primitives_traits::{GotExpected, GotExpectedBoxed};
 use reth_tasks::Runtime;
 use rustc_hash::FxHashMap;
 use secp256k1::SecretKey;
 use std::{
-    collections::HashMap,
     future::Future,
     net::SocketAddr,
     sync::{atomic::AtomicU64, Arc},
@@ -48,7 +51,9 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::PollSender;
 use tracing::{instrument, trace};
 
-use crate::session::active::{BroadcastItemCounter, RANGE_UPDATE_INTERVAL};
+use crate::session::active::{
+    request_timeout_interval, BroadcastItemCounter, RANGE_UPDATE_INTERVAL,
+};
 pub use conn::EthRlpxConnection;
 use handle::SessionCommandSender;
 pub use handle::{
@@ -95,7 +100,7 @@ pub struct SessionManager<N: NetworkPrimitives> {
     /// session is authenticated, it can be moved to the `active_session` set.
     pending_sessions: FxHashMap<SessionId, PendingSessionHandle>,
     /// All active sessions that are ready to exchange messages.
-    active_sessions: HashMap<PeerId, ActiveSessionHandle<N>>,
+    active_sessions: HashMap<PeerId, ActiveSessionHandle<N>, FbBuildHasher<64>>,
     /// The original Sender half of the [`PendingSessionEvent`] channel.
     ///
     /// When a new (pending) session is created, the corresponding [`PendingSessionHandle`] will
@@ -213,7 +218,9 @@ impl<N: NetworkPrimitives> SessionManager<N> {
     }
 
     /// Returns a borrowed reference to the active sessions.
-    pub const fn active_sessions(&self) -> &HashMap<PeerId, ActiveSessionHandle<N>> {
+    pub const fn active_sessions(
+        &self,
+    ) -> &HashMap<PeerId, ActiveSessionHandle<N>, FbBuildHasher<64>> {
         &self.active_sessions
     }
 
@@ -422,7 +429,7 @@ impl<N: NetworkPrimitives> SessionManager<N> {
     ) {
         if !self.disconnections_counter.has_capacity() {
             // drop the connection if we don't have capacity for gracefully disconnecting
-            return;
+            return
         }
 
         let guard = self.disconnections_counter.clone();
@@ -505,6 +512,7 @@ impl<N: NetworkPrimitives> SessionManager<N> {
                 status,
                 direction,
                 client_id,
+                peer_listen_port,
             } => {
                 // move from pending to established.
                 self.remove_pending_session(&session_id);
@@ -530,7 +538,7 @@ impl<N: NetworkPrimitives> SessionManager<N> {
                         peer_id,
                         remote_addr,
                         direction,
-                    });
+                    })
                 }
 
                 let (commands_tx, commands_rx) = mpsc::channel(self.session_command_buffer);
@@ -591,7 +599,7 @@ impl<N: NetworkPrimitives> SessionManager<N> {
                         broadcast_items.clone(),
                     ),
                     received_requests_from_remote: Default::default(),
-                    internal_request_timeout_interval: tokio::time::interval(
+                    internal_request_timeout_interval: request_timeout_interval(
                         self.initial_internal_request_timeout,
                     ),
                     internal_request_timeout: Arc::clone(&timeout),
@@ -603,6 +611,7 @@ impl<N: NetworkPrimitives> SessionManager<N> {
                     last_sent_latest_block: None,
                 };
 
+                let supports_snap = session.conn.supports_snap();
                 self.spawn(session);
 
                 let client_version = client_id.into();
@@ -618,8 +627,7 @@ impl<N: NetworkPrimitives> SessionManager<N> {
                     client_version: Arc::clone(&client_version),
                     remote_addr,
                     local_addr,
-                    // Initialize current_td from status
-                    current_td: Arc::new(parking_lot::Mutex::new(status.total_difficulty)),
+                    peer_listen_port,
                 };
 
                 self.active_sessions.insert(peer_id, handle);
@@ -640,6 +648,7 @@ impl<N: NetworkPrimitives> SessionManager<N> {
                     direction,
                     timeout,
                     range_info: remote_range_info,
+                    supports_snap,
                 })
             }
             PendingSessionEvent::Disconnected { remote_addr, session_id, direction, error } => {
@@ -775,6 +784,8 @@ pub enum SessionEvent<N: NetworkPrimitives> {
         timeout: Arc<AtomicU64>,
         /// The range info for the peer.
         range_info: Option<BlockRangeInfo>,
+        /// Whether the connection negotiated `snap/2` and can serve [`PeerRequest::GetSnap`].
+        supports_snap: bool,
     },
     /// The peer was already connected with another session.
     AlreadyConnected {
@@ -860,13 +871,21 @@ pub enum PendingSessionHandshakeError {
     /// Thrown when the remote lacks the required capability
     #[error("Mandatory extra capability unsupported")]
     UnsupportedExtraCapability,
+    /// Thrown when the node id in the remote's `Hello` message differs from the identity that the
+    /// ECIES handshake authenticated.
+    #[error("unexpected identity in hello message: {0}")]
+    UnexpectedHandshakeIdentity(GotExpectedBoxed<PeerId>),
 }
 
 impl PendingSessionHandshakeError {
-    /// Returns the [`DisconnectReason`] if the error is a disconnect message
+    /// Returns the [`DisconnectReason`] the session was disconnected with, either because the
+    /// remote sent one or because we sent one before failing the handshake.
     pub const fn as_disconnected(&self) -> Option<DisconnectReason> {
         match self {
             Self::Eth(eth_err) => eth_err.as_disconnected(),
+            Self::UnexpectedHandshakeIdentity(_) => {
+                Some(DisconnectReason::UnexpectedHandshakeIdentity)
+            }
             _ => None,
         }
     }
@@ -970,7 +989,7 @@ async fn start_pending_outbound_session<N: NetworkPrimitives>(
                     error,
                 })
                 .await;
-            return;
+            return
         }
     };
     authenticate(
@@ -1020,7 +1039,7 @@ async fn authenticate<N: NetworkPrimitives>(
                     direction,
                 })
                 .await;
-            return;
+            return
         }
     };
 
@@ -1096,6 +1115,8 @@ async fn authenticate_stream<N: NetworkPrimitives>(
     // Add extra protocols to the hello message
     extra_handlers.retain(|handler| hello.try_add_protocol(handler.protocol()).is_ok());
 
+    let authenticated_peer_id = stream.inner().remote_id();
+
     // conduct the p2p rlpx handshake and return the rlpx authenticated stream
     let (mut p2p_stream, their_hello) = match stream.handshake(hello).await {
         Ok(stream_res) => stream_res,
@@ -1108,6 +1129,25 @@ async fn authenticate_stream<N: NetworkPrimitives>(
             }
         }
     };
+
+    // The ECIES handshake proved possession of this key, so it is the only trustworthy identity of
+    // the connection. Everything the peer states in `Hello` is unauthenticated.
+    //
+    // Bind the session to the authenticated identity before anything else observes the peer. A
+    // peer that announces a different node id could otherwise act on behalf of that node, for
+    // example by making an extra protocol report reputation changes against it.
+    if their_hello.id != authenticated_peer_id {
+        let _ = p2p_stream.disconnect(DisconnectReason::UnexpectedHandshakeIdentity).await;
+
+        return PendingSessionEvent::Disconnected {
+            remote_addr,
+            session_id,
+            direction,
+            error: Some(PendingSessionHandshakeError::UnexpectedHandshakeIdentity(
+                GotExpected { got: their_hello.id, expected: authenticated_peer_id }.into(),
+            )),
+        }
+    }
 
     // if we have extra handlers, check if it must be supported by the remote
     if !extra_handlers.is_empty() {
@@ -1122,7 +1162,7 @@ async fn authenticate_stream<N: NetworkPrimitives>(
             if handler.on_unsupported_by_peer(
                 p2p_stream.shared_capabilities(),
                 direction,
-                their_hello.id,
+                authenticated_peer_id,
             ) == OnNotSupported::Disconnect
             {
                 return PendingSessionEvent::Disconnected {
@@ -1174,6 +1214,30 @@ async fn authenticate_stream<N: NetworkPrimitives>(
                 }
             }
         }
+    } else if p2p_stream.shared_capabilities().is_exact_eth_snap_v2() {
+        // Exactly `eth` + `snap/2` (no other extras): use the dedicated stream instead of the
+        // general-purpose satellite multiplexer. If `snap/2` is negotiated alongside other extra
+        // capabilities, fall through to the satellite path — the dedicated stream only composes
+        // `eth` and `snap/2`.
+        match EthSnapStream::handshake(
+            p2p_stream,
+            status,
+            fork_filter,
+            handshake,
+            eth_max_message_size,
+        )
+        .await
+        {
+            Ok((stream, their_status)) => (stream.into(), their_status),
+            Err(err) => {
+                return PendingSessionEvent::Disconnected {
+                    remote_addr,
+                    session_id,
+                    direction,
+                    error: Some(PendingSessionHandshakeError::Eth(err)),
+                }
+            }
+        }
     } else {
         // Multiplex the stream with the extra protocols
         let mut multiplex_stream = RlpxProtocolMultiplexer::new(p2p_stream);
@@ -1181,7 +1245,7 @@ async fn authenticate_stream<N: NetworkPrimitives>(
         // install additional handlers
         for handler in extra_handlers.into_iter() {
             let cap = handler.protocol().cap;
-            let remote_peer_id = their_hello.id;
+            let remote_peer_id = authenticated_peer_id;
 
             multiplex_stream
                 .install_protocol(&cap, move |conn| {
@@ -1208,15 +1272,19 @@ async fn authenticate_stream<N: NetworkPrimitives>(
         (multiplex_stream.into(), their_status)
     };
 
+    // `port` field is effectively deprecated, so we treat 0 value as a missing port.
+    let peer_listen_port = (their_hello.port != 0).then_some(their_hello.port);
+
     PendingSessionEvent::Established {
         session_id,
         remote_addr,
         local_addr,
-        peer_id: their_hello.id,
+        peer_id: authenticated_peer_id,
         capabilities: Arc::new(Capabilities::from(their_hello.capabilities)),
         status: Arc::new(their_status),
         conn,
         direction,
         client_id: their_hello.client_version,
+        peer_listen_port,
     }
 }

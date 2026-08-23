@@ -7,8 +7,10 @@ use reth_codecs::DecompressError;
 use reth_primitives_traits::{transaction::signed::RecoveryError, GotExpected};
 use reth_prune_types::PruneSegmentError;
 use reth_static_file_types::StaticFileSegment;
-use revm_database_interface::{bal::EvmDatabaseError, DBErrorMarker};
-use revm_state::bal::BalError;
+use revm::{
+    database_interface::{bal::EvmDatabaseError, DBErrorMarker},
+    state::bal::BalError,
+};
 
 /// Provider result type.
 pub type ProviderResult<Ok> = Result<Ok, ProviderError>;
@@ -122,18 +124,6 @@ pub enum ProviderError {
         requested: BlockNumber,
         /// The earliest available block number.
         earliest_available: BlockNumber,
-    },
-    /// Historical state at the requested block may be inconsistent because pipeline sync is in
-    /// progress. The Execution stage has advanced `PlainState` beyond the history index coverage,
-    /// so the `InPlainState` fallback would return data from a future block.
-    #[error("historical state at block #{block} is inconsistent during pipeline sync: execution tip is #{execution_tip} but history index only covers up to #{history_tip}")]
-    HistoryStateInconsistent {
-        /// The block number being queried.
-        block: BlockNumber,
-        /// Block number up to which the Execution stage has committed `PlainState`.
-        execution_tip: BlockNumber,
-        /// Block number up to which the history index has been built.
-        history_tip: BlockNumber,
     },
     /// Provider does not support this particular request.
     #[error("this provider does not support this request")]

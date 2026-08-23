@@ -1,5 +1,4 @@
 use crate::{segments::SegmentSet, Pruner};
-use alloy_eips::eip2718::Encodable2718;
 use reth_config::PruneConfig;
 use reth_db_api::{table::Value, transaction::DbTxMut};
 use reth_exex_types::FinishedExExHeight;
@@ -32,9 +31,6 @@ pub struct PrunerBuilder {
 }
 
 impl PrunerBuilder {
-    /// Default timeout for a prune run.
-    pub const DEFAULT_TIMEOUT: Duration = Duration::from_millis(100);
-
     /// Creates a new [`PrunerBuilder`] from the given [`PruneConfig`].
     pub fn new(pruner_config: PruneConfig) -> Self {
         let min_distance = pruner_config.minimum_pruning_distance;
@@ -89,7 +85,7 @@ impl PrunerBuilder {
         PF: DatabaseProviderFactory<
                 ProviderRW: PruneCheckpointWriter
                                 + PruneCheckpointReader
-                                + BlockReader<Transaction: Encodable2718>
+                                + BlockReader
                                 + ChainStateBlockReader
                                 + StorageSettingsCache
                                 + StageCheckpointReader
@@ -129,7 +125,7 @@ impl PrunerBuilder {
         Provider: StaticFileProviderFactory<
                 Primitives: NodePrimitives<SignedTx: Value, Receipt: Value, BlockHeader: Value>,
             > + DBProvider<Tx: DbTxMut>
-            + BlockReader<Transaction: Encodable2718>
+            + BlockReader
             + ChainStateBlockReader
             + PruneCheckpointWriter
             + PruneCheckpointReader

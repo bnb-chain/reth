@@ -1,18 +1,17 @@
 //! Loads a pending block from database. Helper trait for `eth_` block, transaction, call and trace
 //! RPC methods.
 
-use super::{EthApiSpec, LoadPendingBlock, SpawnBlocking};
+use super::{EthApiSpec, LoadBlock, LoadPendingBlock, SpawnBlocking};
 use crate::{EthApiTypes, FromEthApiError, RpcNodeCore, RpcNodeCoreExt};
 use alloy_consensus::constants::KECCAK_EMPTY;
 use alloy_eips::BlockId;
-use alloy_primitives::{Address, Bytes, B256, U256};
+use alloy_primitives::{keccak256, Address, Bytes, B256, U256};
 use alloy_rpc_types_eth::{Account, AccountInfo, EIP1186AccountProofResponse};
 use alloy_serde::JsonStorageKey;
 use futures::Future;
-use reth_engine_primitives::is_fastnode_active;
 use reth_errors::RethError;
 use reth_evm::{ConfigureEvm, EvmEnvFor};
-use reth_primitives_traits::SealedHeaderFor;
+use reth_primitives_traits::{BlockTy, RecoveredBlock, SealedHeaderFor};
 use reth_rpc_convert::{RpcConvert, RpcTxReq};
 use reth_rpc_eth_types::{
     error::{FromEvmError, IntoEthApiError},
@@ -23,8 +22,8 @@ use reth_storage_api::{
     BlockIdReader, BlockReaderIdExt, StateProvider, StateProviderBox, StateProviderFactory,
 };
 use reth_transaction_pool::TransactionPool;
-use rust_eth_triedb::triedb_manager::is_triedb_active;
-use std::collections::HashMap;
+use reth_trie_common::MultiProofTargets;
+use std::{collections::HashMap, sync::Arc};
 
 /// Helper methods for `eth_` methods relating to state (accounts).
 pub trait EthState: LoadState + SpawnBlocking {
@@ -167,16 +166,6 @@ pub trait EthState: LoadState + SpawnBlocking {
         Self: EthApiSpec,
     {
         Ok(async move {
-            // Check if TrieDB is active, return error if so
-            if is_triedb_active() {
-                return Err(EthApiError::MethodNotAvailable("eth_getProof".to_string()).into())
-            }
-
-            // In fastnode mode, trie tables are not maintained so proofs would be invalid
-            if is_fastnode_active() {
-                return Err(EthApiError::MethodNotAvailable("eth_getProof".to_string()).into())
-            }
-
             let _permit = self
                 .acquire_owned_tracing()
                 .await
@@ -198,39 +187,90 @@ pub trait EthState: LoadState + SpawnBlocking {
         })
     }
 
+    /// Returns account and storage proofs for multiple targets at the given block number.
+    fn get_multi_proof(
+        &self,
+        targets: Vec<(Address, Vec<B256>)>,
+        block_id: Option<BlockId>,
+    ) -> Result<
+        impl Future<Output = Result<Vec<EIP1186AccountProofResponse>, Self::Error>> + Send,
+        Self::Error,
+    >
+    where
+        Self: EthApiSpec,
+    {
+        Ok(async move {
+            let _permit = self
+                .acquire_owned_tracing()
+                .await
+                .map_err(RethError::other)
+                .map_err(EthApiError::Internal)?;
+
+            let block_id = block_id.unwrap_or_default();
+            self.ensure_within_proof_window(block_id)?;
+
+            self.spawn_blocking_io_fut(async move |this| {
+                let state = this.state_at_block_id(block_id).await?;
+                let mut proof_targets = MultiProofTargets::with_capacity(targets.len());
+                for (address, slots) in &targets {
+                    proof_targets
+                        .entry(keccak256(address))
+                        .or_default()
+                        .extend(slots.iter().map(keccak256));
+                }
+
+                let multiproof = state
+                    .multiproof(Default::default(), proof_targets)
+                    .map_err(Self::Error::from_eth_err)?;
+
+                targets
+                    .into_iter()
+                    .map(|(address, slots)| {
+                        let proof = multiproof
+                            .account_proof(address, &slots)
+                            .map_err(RethError::other)
+                            .map_err(Self::Error::from_eth_err)?;
+                        let storage_keys =
+                            slots.into_iter().map(JsonStorageKey::from).collect::<Vec<_>>();
+                        Ok(proof.into_eip1186_response(storage_keys))
+                    })
+                    .collect::<Result<Vec<_>, Self::Error>>()
+            })
+            .await
+        })
+    }
+
     /// Returns the account at the given address for the provided block identifier.
     fn get_account(
         &self,
         address: Address,
         block_id: BlockId,
-    ) -> impl Future<Output = Result<Option<Account>, Self::Error>> + Send {
-        self.spawn_blocking_io_fut(move |this| async move {
-            // Check if TrieDB is active, return error if so
-            if is_triedb_active() {
-                return Err(EthApiError::MethodNotAvailable("eth_getAccount".to_string()).into())
-            }
+    ) -> impl Future<Output = Result<Option<Account>, Self::Error>> + Send
+    where
+        Self: EthApiSpec,
+    {
+        async move {
+            self.ensure_within_proof_window(block_id)?;
 
-            // In fastnode mode, trie tables are not maintained so storage root would be invalid
-            if is_fastnode_active() {
-                return Err(EthApiError::MethodNotAvailable("eth_getAccount".to_string()).into())
-            }
+            self.spawn_blocking_io_fut(async move |this| {
+                let state = this.state_at_block_id(block_id).await?;
+                let account = state.basic_account(&address).map_err(Self::Error::from_eth_err)?;
+                let Some(account) = account else { return Ok(None) };
 
-            let state = this.state_at_block_id(block_id).await?;
-            let account = state.basic_account(&address).map_err(Self::Error::from_eth_err)?;
-            let Some(account) = account else { return Ok(None) };
+                let balance = account.balance;
+                let nonce = account.nonce;
+                let code_hash = account.bytecode_hash.unwrap_or(KECCAK_EMPTY);
 
-            let balance = account.balance;
-            let nonce = account.nonce;
-            let code_hash = account.bytecode_hash.unwrap_or(KECCAK_EMPTY);
+                // Provide a default `HashedStorage` value in order to
+                // get the storage root hash of the current state.
+                let storage_root = state
+                    .storage_root(address, Default::default())
+                    .map_err(Self::Error::from_eth_err)?;
 
-            // Provide a default `HashedStorage` value in order to
-            // get the storage root hash of the current state.
-            let storage_root = state
-                .storage_root(address, Default::default())
-                .map_err(Self::Error::from_eth_err)?;
-
-            Ok(Some(Account { balance, nonce, code_hash, storage_root }))
-        })
+                Ok(Some(Account { balance, nonce, code_hash, storage_root }))
+            })
+            .await
+        }
     }
 
     /// Retrieves the account's balance, nonce, and code for a given address.
@@ -324,7 +364,7 @@ pub trait LoadState:
         }
     }
 
-    /// Returns the revm evm env for the given sealed header.
+    /// Returns the EVM environment for the given sealed header.
     fn evm_env_for_header(
         &self,
         header: &SealedHeaderFor<Self::Primitives>,
@@ -335,7 +375,7 @@ pub trait LoadState:
             .map_err(Self::Error::from_eth_err)
     }
 
-    /// Returns the revm evm env for the requested [`BlockId`]
+    /// Returns the EVM environment for the requested [`BlockId`]
     ///
     /// If the [`BlockId`] this will return the [`BlockId`] of the block the env was configured
     /// for.
@@ -363,6 +403,47 @@ pub trait LoadState:
                 let evm_env = self.evm_env_for_header(&header)?;
 
                 Ok((evm_env, header.hash().into()))
+            }
+        }
+    }
+
+    /// Returns the recovered block, EVM environment, and state block id for the requested
+    /// [`BlockId`].
+    ///
+    /// For pending blocks, this preserves the state id returned by [`Self::evm_env_at`], which can
+    /// be the pending tag for an actual pending block or the latest block hash when the pending env
+    /// is derived from latest.
+    #[expect(clippy::type_complexity)]
+    fn evm_env_and_recovered_block_at(
+        &self,
+        at: BlockId,
+    ) -> impl Future<
+        Output = Result<
+            (Arc<RecoveredBlock<BlockTy<Self::Primitives>>>, EvmEnvFor<Self::Evm>, BlockId),
+            Self::Error,
+        >,
+    > + Send
+    where
+        Self: SpawnBlocking + LoadBlock,
+    {
+        async move {
+            if at.is_pending() {
+                let (evm_env, block_id) = self.evm_env_at(at).await?;
+                let block = self
+                    .recovered_block(block_id)
+                    .await?
+                    .ok_or_else(|| EthApiError::HeaderNotFound(at))?;
+
+                Ok((block, evm_env, block_id))
+            } else {
+                let block = self
+                    .recovered_block(at)
+                    .await?
+                    .ok_or_else(|| EthApiError::HeaderNotFound(at))?;
+                let evm_env = self.evm_env_for_header(block.sealed_block().sealed_header())?;
+                let block_id = block.hash().into();
+
+                Ok((block, evm_env, block_id))
             }
         }
     }

@@ -51,7 +51,6 @@ jobs:
             --workspace \
             --exclude 'example-*' \
             --exclude 'exex-subscription' \
-            --exclude 'reth-bench' \
             --exclude 'ef-tests' \
             --exclude 'op-reth' \
             --exclude 'reth' \

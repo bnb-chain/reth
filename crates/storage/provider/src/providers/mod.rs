@@ -17,17 +17,13 @@ mod state;
 pub use state::{
     historical::{
         compute_history_rank, history_info, needs_prev_shard_check, HistoricalStateProvider,
-        HistoricalStateProviderRef, HistoryInfo, LowestAvailableBlocks, PipelineConsistency,
+        HistoricalStateProviderRef, HistoryInfo, LowestAvailableBlocks,
     },
     latest::{LatestStateProvider, LatestStateProviderRef},
-    overlay::{OverlayBuilder, OverlayStateProvider, OverlayStateProviderFactory},
 };
 
-mod consistent_view;
-pub use consistent_view::{ConsistentDbView, ConsistentViewError};
-
 mod blockchain_provider;
-pub use blockchain_provider::BlockchainProvider;
+pub use blockchain_provider::{BlockchainProvider, SNAPSHOT_STATE_RETENTION};
 
 mod consistent;
 pub use consistent::ConsistentProvider;

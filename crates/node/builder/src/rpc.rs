@@ -10,11 +10,11 @@ pub use reth_rpc_builder::{
     middleware::{RethAuthHttpMiddleware, RethRpcMiddleware},
     Identity, Stack,
 };
-pub use reth_trie_db::ChangesetCache;
+use reth_storage_overlay::OverlayManager;
 
 use crate::{
-    invalid_block_hook::InvalidBlockHookExt, ConfigureEngineEvm, ConsensusEngineEvent,
-    ConsensusEngineHandle,
+    invalid_block_hook::InvalidBlockHookExt, txpool_prewarm, ConfigureEngineEvm,
+    ConsensusEngineEvent, ConsensusEngineHandle,
 };
 use alloy_rpc_types::engine::ClientVersionV1;
 use alloy_rpc_types_engine::ExecutionData;
@@ -22,11 +22,9 @@ use jsonrpsee::RpcModule;
 use parking_lot::Mutex;
 use reth_chain_state::CanonStateSubscriptions;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec, EthereumHardforks, Hardforks};
-use reth_engine_tree::engine::EngineApiRequest;
 use reth_node_api::{
     AddOnsContext, BlockTy, EngineApiValidator, EngineTypes, FullNodeComponents, FullNodeTypes,
-    NodeAddOns, NodeTypes, NodeTypesWithDBAdapter, PayloadTypes, PayloadValidator, PrimitivesTy,
-    TreeConfig,
+    NodeAddOns, NodeTypes, PayloadTypes, PayloadValidator, PrimitivesTy, TreeConfig,
 };
 use reth_node_core::{
     cli::config::RethTransactionPoolConfig,
@@ -34,7 +32,6 @@ use reth_node_core::{
     version::{version_metadata, CLIENT_CODE},
 };
 use reth_payload_builder::{PayloadBuilderHandle, PayloadStore};
-use reth_provider::providers::BlockchainProvider;
 use reth_rpc::{
     eth::{core::EthRpcConverterFor, DevSigner, EthApiTypes, FullEthApiServer},
     AdminApi,
@@ -55,7 +52,7 @@ use std::{
     ops::{Deref, DerefMut},
     sync::Arc,
 };
-use tokio::sync::{mpsc::UnboundedSender, oneshot};
+use tokio::sync::oneshot;
 
 /// Contains the handles to the spawned RPC servers.
 ///
@@ -333,18 +330,6 @@ where
     }
 }
 
-/// Internal alias for the Engine API sender type tied to a node.
-type EngineApiTx<Node> = UnboundedSender<
-    EngineApiRequest<
-        <<Node as FullNodeTypes>::Types as NodeTypes>::Payload,
-        <<Node as FullNodeTypes>::Types as NodeTypes>::Primitives,
-        BlockchainProvider<
-            NodeTypesWithDBAdapter<<Node as FullNodeTypes>::Types, <Node as FullNodeTypes>::DB>,
-        >,
-        <Node as FullNodeComponents>::Evm,
-    >,
->;
-
 /// Handle to the launched RPC servers.
 pub struct RpcHandle<Node: FullNodeComponents, EthApi: EthApiTypes> {
     /// Handles to launched servers.
@@ -360,11 +345,6 @@ pub struct RpcHandle<Node: FullNodeComponents, EthApi: EthApiTypes> {
     pub beacon_engine_handle: ConsensusEngineHandle<<Node::Types as NodeTypes>::Payload>,
     /// Handle to trigger engine shutdown.
     pub engine_shutdown: EngineShutdown,
-    /// Sender for engine API requests flowing from RPC to engine service.
-    ///
-    /// Factory requirement (for clarity): `ProviderFactory` implements
-    /// `DatabaseProviderFactory<Provider: BlockReader> + Clone + Send + Sync + 'static`.
-    pub engine_api_tx: Option<EngineApiTx<Node>>,
 }
 
 impl<Node: FullNodeComponents, EthApi: EthApiTypes> Clone for RpcHandle<Node, EthApi> {
@@ -375,7 +355,6 @@ impl<Node: FullNodeComponents, EthApi: EthApiTypes> Clone for RpcHandle<Node, Et
             engine_events: self.engine_events.clone(),
             beacon_engine_handle: self.beacon_engine_handle.clone(),
             engine_shutdown: self.engine_shutdown.clone(),
-            engine_api_tx: self.engine_api_tx.clone(),
         }
     }
 }
@@ -1105,7 +1084,6 @@ where
             engine_events,
             beacon_engine_handle: engine_handle,
             engine_shutdown: EngineShutdown::default(),
-            engine_api_tx: None,
         })
     }
 
@@ -1327,6 +1305,7 @@ impl<'a, N: FullNodeComponents<Types: NodeTypes<ChainSpec: Hardforks + EthereumH
             .task_spawner(self.components.task_executor().clone())
             .gas_cap(self.config.rpc_gas_cap.into())
             .max_simulate_blocks(self.config.rpc_max_simulate_blocks)
+            .compute_state_root_for_eth_simulate(self.config.compute_state_root_for_eth_simulate)
             .eth_proof_window(self.config.eth_proof_window)
             .fee_history_cache_config(self.config.fee_history_cache)
             .proof_permits(self.config.proof_permits)
@@ -1433,7 +1412,7 @@ pub trait EngineValidatorBuilder<Node: FullNodeComponents>: Send + Sync + Clone 
         self,
         ctx: &AddOnsContext<'_, Node>,
         tree_config: TreeConfig,
-        changeset_cache: ChangesetCache,
+        overlay_manager: OverlayManager<PrimitivesTy<Node::Types>>,
     ) -> impl Future<Output = eyre::Result<Self::EngineValidator>> + Send;
 }
 
@@ -1481,22 +1460,30 @@ where
         self,
         ctx: &AddOnsContext<'_, Node>,
         tree_config: TreeConfig,
-        changeset_cache: ChangesetCache,
+        overlay_manager: OverlayManager<PrimitivesTy<Node::Types>>,
     ) -> eyre::Result<Self::EngineValidator> {
         let validator = self.payload_validator_builder.build(ctx).await?;
         let data_dir = ctx.config.datadir.clone().resolve_datadir(ctx.config.chain.chain());
         let invalid_block_hook = ctx.create_invalid_block_hook(&data_dir).await?;
 
-        Ok(BasicEngineValidator::new(
+        let txpool_prewarming = tree_config.txpool_prewarming();
+        let mut validator = BasicEngineValidator::new(
             ctx.node.provider().clone(),
             std::sync::Arc::new(ctx.node.consensus().clone()),
             ctx.node.evm_config().clone(),
             validator,
             tree_config,
             invalid_block_hook,
-            changeset_cache,
+            overlay_manager,
             ctx.node.task_executor().clone(),
-        ))
+        );
+
+        if txpool_prewarming {
+            validator = validator
+                .with_txpool_prewarming(txpool_prewarm::Source::new(ctx.node.pool().clone()));
+        }
+
+        Ok(validator)
     }
 }
 

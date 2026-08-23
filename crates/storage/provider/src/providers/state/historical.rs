@@ -1,4 +1,3 @@
-use super::overlay::{Overlay, OverlayBuilder, OverlaySource};
 use crate::{
     AccountReader, BlockHashReader, ChangeSetReader, EitherReader, HashedPostStateProvider,
     ProviderError, RocksDBProviderFactory, StateProvider, StateRootProvider,
@@ -19,8 +18,9 @@ use reth_storage_api::{
     StorageSettingsCache,
 };
 use reth_storage_errors::provider::ProviderResult;
+use reth_storage_overlay::{Overlay, OverlayManager};
 use reth_trie::{
-    hashed_cursor::HashedPostStateCursorFactory,
+    hashed_cursor::{zero_destroyed_account_storage, HashedPostStateCursorFactory},
     proof::{Proof, StorageProof},
     trie_cursor::InMemoryTrieCursorFactory,
     updates::TrieUpdates,
@@ -29,11 +29,9 @@ use reth_trie::{
     MultiProof, MultiProofTargets, StateRoot, StorageMultiProof, StorageRoot, TrieInput,
     TrieInputSorted,
 };
-use reth_trie_db::{
-    ChangesetCache, DatabaseProof, DatabaseStateRoot, DatabaseStorageProof, DatabaseStorageRoot,
-};
+use reth_trie_db::{DatabaseProof, DatabaseStateRoot, DatabaseStorageProof, DatabaseStorageRoot};
 
-use std::{fmt::Debug, marker::PhantomData, sync::Arc};
+use std::{fmt::Debug, sync::Arc};
 
 type DbStateRoot<'a, TX, A> = StateRoot<
     reth_trie_db::DatabaseTrieCursorFactory<&'a TX, A>,
@@ -130,18 +128,12 @@ pub struct HistoricalStateProviderRef<
 {
     /// Database provider
     provider: &'b Provider,
-    /// Changeset cache handle for retrieving trie changesets.
-    changeset_cache: ChangesetCache,
+    /// Manager for state trie overlays and cached changesets.
+    overlay_manager: OverlayManager<N>,
     /// Block number is main index for the history state of accounts and storages.
     block_number: BlockNumber,
     /// Lowest blocks at which different parts of the state are available.
     lowest_available_blocks: LowestAvailableBlocks,
-    /// Cached pipeline consistency info. When the Execution stage checkpoint is ahead of the
-    /// history index checkpoint, `PlainState` has been advanced beyond history coverage and the
-    /// `InPlainState` fallback would return data from a future block.
-    pipeline_consistency: PipelineConsistency,
-    /// Marker for the provider's node primitives.
-    _primitives: PhantomData<N>,
 }
 
 impl<'b, Provider, N> HistoricalStateProviderRef<'b, Provider, N>
@@ -157,15 +149,13 @@ where
     pub fn new(
         provider: &'b Provider,
         block_number: BlockNumber,
-        changeset_cache: ChangesetCache,
+        overlay_manager: OverlayManager<N>,
     ) -> Self {
         Self {
             provider,
-            changeset_cache,
+            overlay_manager,
             block_number,
             lowest_available_blocks: Default::default(),
-            pipeline_consistency: Default::default(),
-            _primitives: PhantomData,
         }
     }
 
@@ -175,30 +165,9 @@ where
         provider: &'b Provider,
         block_number: BlockNumber,
         lowest_available_blocks: LowestAvailableBlocks,
-        changeset_cache: ChangesetCache,
+        overlay_manager: OverlayManager<N>,
     ) -> Self {
-        Self {
-            provider,
-            changeset_cache,
-            block_number,
-            lowest_available_blocks,
-            pipeline_consistency: PipelineConsistency {
-                execution_tip: None,
-                account_history_tip: None,
-                storage_history_tip: None,
-            },
-            _primitives: PhantomData,
-        }
-    }
-
-    /// Set the pipeline consistency info for detecting stale `InPlainState` reads during
-    /// pipeline sync.
-    pub const fn with_pipeline_consistency(
-        mut self,
-        pipeline_consistency: PipelineConsistency,
-    ) -> Self {
-        self.pipeline_consistency = pipeline_consistency;
-        self
+        Self { provider, overlay_manager, block_number, lowest_available_blocks }
     }
 
     /// Lookup an account in the `AccountsHistory` table using `EitherReader`.
@@ -277,15 +246,6 @@ where
                 .map(|entry| entry.value)
                 .map(Some),
             HistoryInfo::InPlainState | HistoryInfo::MaybeInPlainState => {
-                if let Some((exec_tip, hist_tip)) =
-                    self.pipeline_consistency.storage_inconsistency()
-                {
-                    return Err(ProviderError::HistoryStateInconsistent {
-                        block: self.block_number,
-                        execution_tip: exec_tip,
-                        history_tip: hist_tip,
-                    })
-                }
                 if self.provider.cached_storage_settings().use_hashed_state() {
                     let hashed_address = alloy_primitives::keccak256(address);
                     let hashed_slot = alloy_primitives::keccak256(lookup_key);
@@ -338,8 +298,10 @@ where
             .ok_or_else(|| ProviderError::HeaderNotFound(target_block.into()))?;
 
         let TrieInputSorted { nodes, state, prefix_sets } = input;
-        let overlay_builder = OverlayBuilder::<N>::new(anchor_hash, self.changeset_cache.clone())
-            .with_overlay_source(Some(OverlaySource::Immediate { trie: nodes, state }));
+        let overlay_builder = self
+            .overlay_manager
+            .overlay_builder(anchor_hash)
+            .with_immediate_state_trie_overlay(state, nodes);
         let Overlay { trie_updates, hashed_post_state } =
             overlay_builder.build_overlay(self.provider)?;
 
@@ -401,15 +363,6 @@ where
                     .map(|account_before| account_before.info)
             }
             HistoryInfo::InPlainState | HistoryInfo::MaybeInPlainState => {
-                if let Some((exec_tip, hist_tip)) =
-                    self.pipeline_consistency.account_inconsistency()
-                {
-                    return Err(ProviderError::HistoryStateInconsistent {
-                        block: self.block_number,
-                        execution_tip: exec_tip,
-                        history_tip: hist_tip,
-                    })
-                }
                 if self.provider.cached_storage_settings().use_hashed_state() {
                     let hashed_address = alloy_primitives::keccak256(address);
                     Ok(self.tx().get_by_encoded_key::<tables::HashedAccounts>(&hashed_address)?)
@@ -678,11 +631,41 @@ where
 
 impl<Provider, N> HashedPostStateProvider for HistoricalStateProviderRef<'_, Provider, N>
 where
-    Provider: NodePrimitivesProvider<Primitives = N>,
+    Provider: DBProvider
+        + ChangeSetReader
+        + StorageChangeSetReader
+        + BlockNumReader
+        + BlockHashReader
+        + PruneCheckpointReader
+        + StageCheckpointReader
+        + StorageSettingsCache
+        + NodePrimitivesProvider<Primitives = N>,
     N: NodePrimitives,
 {
-    fn hashed_post_state(&self, bundle_state: &revm_database::BundleState) -> HashedPostState {
-        HashedPostState::from_bundle_state::<KeccakKeyHasher>(bundle_state.state())
+    fn hashed_post_state(
+        &self,
+        bundle_state: &revm::database::BundleState,
+    ) -> ProviderResult<HashedPostState> {
+        let mut hashed_state =
+            HashedPostState::from_bundle_state::<KeccakKeyHasher>(bundle_state.state());
+        if !bundle_state
+            .state()
+            .values()
+            .any(|account| account.was_destroyed() && account.original_info.is_some())
+        {
+            return Ok(hashed_state)
+        }
+
+        let historical = self.build_overlay(TrieInputSorted::default())?.state;
+        zero_destroyed_account_storage(
+            &HashedPostStateCursorFactory::new(
+                reth_trie_db::DatabaseHashedCursorFactory::new(self.tx()),
+                historical.as_ref(),
+            ),
+            bundle_state.state(),
+            &mut hashed_state,
+        )?;
+        Ok(hashed_state)
     }
 }
 
@@ -724,30 +707,36 @@ where
 /// State provider for a given block number.
 /// For more detailed description, see [`HistoricalStateProviderRef`].
 #[derive(Debug)]
-pub struct HistoricalStateProvider<Provider> {
+pub struct HistoricalStateProvider<Provider: NodePrimitivesProvider> {
     /// Database provider.
     provider: Provider,
-    /// Changeset cache handle for retrieving trie changesets.
-    changeset_cache: ChangesetCache,
+    /// Manager for state trie overlays and cached changesets.
+    overlay_manager: OverlayManager<Provider::Primitives>,
     /// State at the block number is the main indexer of the state.
     block_number: BlockNumber,
     /// Lowest blocks at which different parts of the state are available.
     lowest_available_blocks: LowestAvailableBlocks,
-    /// Cached pipeline consistency info.
-    pipeline_consistency: PipelineConsistency,
 }
 
-impl<Provider: DBProvider + ChangeSetReader + StorageChangeSetReader + BlockNumReader>
-    HistoricalStateProvider<Provider>
+impl<
+        Provider: DBProvider
+            + ChangeSetReader
+            + StorageChangeSetReader
+            + BlockNumReader
+            + NodePrimitivesProvider,
+    > HistoricalStateProvider<Provider>
 {
     /// Create new `StateProvider` for historical block number
-    pub fn new(provider: Provider, block_number: BlockNumber) -> Self {
+    pub fn new(
+        provider: Provider,
+        block_number: BlockNumber,
+        overlay_manager: OverlayManager<Provider::Primitives>,
+    ) -> Self {
         Self {
             provider,
-            changeset_cache: ChangesetCache::default(),
+            overlay_manager,
             block_number,
             lowest_available_blocks: Default::default(),
-            pipeline_consistency: Default::default(),
         }
     }
 
@@ -768,16 +757,6 @@ impl<Provider: DBProvider + ChangeSetReader + StorageChangeSetReader + BlockNumR
         self.lowest_available_blocks.storage_history_block_number = Some(block_number);
         self
     }
-
-    /// Set the pipeline consistency info for detecting stale `InPlainState` reads during
-    /// pipeline sync.
-    pub const fn with_pipeline_consistency(
-        mut self,
-        pipeline_consistency: PipelineConsistency,
-    ) -> Self {
-        self.pipeline_consistency = pipeline_consistency;
-        self
-    }
 }
 
 impl<
@@ -795,59 +774,13 @@ impl<
             &self.provider,
             self.block_number,
             self.lowest_available_blocks,
-            self.changeset_cache.clone(),
+            self.overlay_manager.clone(),
         )
-        .with_pipeline_consistency(self.pipeline_consistency)
     }
 }
 
 // Delegates all provider impls to [HistoricalStateProviderRef]
 reth_storage_api::macros::delegate_provider_impls!(HistoricalStateProvider<Provider> where [Provider: DBProvider + BlockNumReader + BlockHashReader + ChangeSetReader + StorageChangeSetReader + PruneCheckpointReader + StageCheckpointReader + StorageSettingsCache + RocksDBProviderFactory + NodePrimitivesProvider]);
-
-/// Cached pipeline stage checkpoint info used to detect inconsistent `InPlainState` reads.
-///
-/// During pipeline sync, the `ExecutionStage` commits `PlainAccountState` / `PlainStorageState`
-/// in its own MDBX write transaction **before** the `IndexAccountHistoryStage` and
-/// `IndexStorageHistoryStage` commit the corresponding history indices. This creates a window
-/// where `HistoricalStateProvider` would incorrectly fall back to `InPlainState` and return
-/// data from a future block.
-///
-/// When the Execution checkpoint is ahead of the history index checkpoint, we know `PlainState`
-/// has been silently advanced and the `InPlainState` path must not be used.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct PipelineConsistency {
-    /// Block number up to which the Execution stage has committed `PlainState`.
-    pub execution_tip: Option<BlockNumber>,
-    /// Block number up to which the account history index has been built.
-    pub account_history_tip: Option<BlockNumber>,
-    /// Block number up to which the storage history index has been built.
-    pub storage_history_tip: Option<BlockNumber>,
-}
-
-impl PipelineConsistency {
-    /// Returns `Some((exec_tip, hist_tip))` if account history is inconsistent with `PlainState`,
-    /// meaning the `InPlainState` fallback would return wrong data.
-    ///
-    /// A `None` history tip means the index stage has never run, which is equivalent to block 0.
-    pub const fn account_inconsistency(&self) -> Option<(BlockNumber, BlockNumber)> {
-        match (self.execution_tip, self.account_history_tip) {
-            (Some(exec), Some(hist)) if exec > hist => Some((exec, hist)),
-            (Some(exec), None) => Some((exec, 0)),
-            _ => None,
-        }
-    }
-
-    /// Returns `Some((exec_tip, hist_tip))` if storage history is inconsistent with `PlainState`.
-    ///
-    /// A `None` history tip means the index stage has never run, which is equivalent to block 0.
-    pub const fn storage_inconsistency(&self) -> Option<(BlockNumber, BlockNumber)> {
-        match (self.execution_tip, self.storage_history_tip) {
-            (Some(exec), Some(hist)) if exec > hist => Some((exec, hist)),
-            (Some(exec), None) => Some((exec, 0)),
-            _ => None,
-        }
-    }
-}
 
 /// Lowest blocks at which different parts of the state are available.
 /// They may be [Some] if pruning is enabled.
@@ -965,7 +898,7 @@ where
 mod tests {
     use super::needs_prev_shard_check;
     use crate::{
-        providers::state::historical::{HistoryInfo, LowestAvailableBlocks, PipelineConsistency},
+        providers::state::historical::{HistoryInfo, LowestAvailableBlocks},
         test_utils::create_test_provider_factory,
         AccountReader, HistoricalStateProvider, HistoricalStateProviderRef, RocksDBProviderFactory,
         StateProvider,
@@ -984,7 +917,7 @@ mod tests {
         StorageChangeSetReader, StorageSettingsCache,
     };
     use reth_storage_errors::provider::ProviderError;
-    use reth_trie_db::ChangesetCache;
+    use reth_storage_overlay::OverlayManager;
 
     const ADDRESS: Address = address!("0x0000000000000000000000000000000000000001");
     const HIGHER_ADDRESS: Address = address!("0x0000000000000000000000000000000000000005");
@@ -1075,49 +1008,50 @@ mod tests {
 
         // run
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 1, ChangesetCache::new()).basic_account(&ADDRESS),
+            HistoricalStateProviderRef::new(&db, 1, OverlayManager::default())
+                .basic_account(&ADDRESS),
             Ok(None)
         ));
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 2, ChangesetCache::new()).basic_account(&ADDRESS),
+            HistoricalStateProviderRef::new(&db, 2, OverlayManager::default()).basic_account(&ADDRESS),
             Ok(Some(acc)) if acc == acc_at3
         ));
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 3, ChangesetCache::new()).basic_account(&ADDRESS),
+            HistoricalStateProviderRef::new(&db, 3, OverlayManager::default()).basic_account(&ADDRESS),
             Ok(Some(acc)) if acc == acc_at3
         ));
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 4, ChangesetCache::new()).basic_account(&ADDRESS),
+            HistoricalStateProviderRef::new(&db, 4, OverlayManager::default()).basic_account(&ADDRESS),
             Ok(Some(acc)) if acc == acc_at7
         ));
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 7, ChangesetCache::new()).basic_account(&ADDRESS),
+            HistoricalStateProviderRef::new(&db, 7, OverlayManager::default()).basic_account(&ADDRESS),
             Ok(Some(acc)) if acc == acc_at7
         ));
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 9, ChangesetCache::new()).basic_account(&ADDRESS),
+            HistoricalStateProviderRef::new(&db, 9, OverlayManager::default()).basic_account(&ADDRESS),
             Ok(Some(acc)) if acc == acc_at10
         ));
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 10, ChangesetCache::new()).basic_account(&ADDRESS),
+            HistoricalStateProviderRef::new(&db, 10, OverlayManager::default()).basic_account(&ADDRESS),
             Ok(Some(acc)) if acc == acc_at10
         ));
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 11, ChangesetCache::new()).basic_account(&ADDRESS),
+            HistoricalStateProviderRef::new(&db, 11, OverlayManager::default()).basic_account(&ADDRESS),
             Ok(Some(acc)) if acc == acc_at15
         ));
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 16, ChangesetCache::new()).basic_account(&ADDRESS),
+            HistoricalStateProviderRef::new(&db, 16, OverlayManager::default()).basic_account(&ADDRESS),
             Ok(Some(acc)) if acc == acc_plain
         ));
 
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 1, ChangesetCache::new())
+            HistoricalStateProviderRef::new(&db, 1, OverlayManager::default())
                 .basic_account(&HIGHER_ADDRESS),
             Ok(None)
         ));
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 1000, ChangesetCache::new()).basic_account(&HIGHER_ADDRESS),
+            HistoricalStateProviderRef::new(&db, 1000, OverlayManager::default()).basic_account(&HIGHER_ADDRESS),
             Ok(Some(acc)) if acc == higher_acc_plain
         ));
     }
@@ -1176,46 +1110,46 @@ mod tests {
 
         // run
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 0, ChangesetCache::new())
+            HistoricalStateProviderRef::new(&db, 0, OverlayManager::default())
                 .storage(ADDRESS, STORAGE),
             Ok(None)
         ));
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 3, ChangesetCache::new())
+            HistoricalStateProviderRef::new(&db, 3, OverlayManager::default())
                 .storage(ADDRESS, STORAGE),
             Ok(Some(U256::ZERO))
         ));
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 4, ChangesetCache::new()).storage(ADDRESS, STORAGE),
+            HistoricalStateProviderRef::new(&db, 4, OverlayManager::default()).storage(ADDRESS, STORAGE),
             Ok(Some(expected_value)) if expected_value == entry_at7.value
         ));
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 7, ChangesetCache::new()).storage(ADDRESS, STORAGE),
+            HistoricalStateProviderRef::new(&db, 7, OverlayManager::default()).storage(ADDRESS, STORAGE),
             Ok(Some(expected_value)) if expected_value == entry_at7.value
         ));
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 9, ChangesetCache::new()).storage(ADDRESS, STORAGE),
+            HistoricalStateProviderRef::new(&db, 9, OverlayManager::default()).storage(ADDRESS, STORAGE),
             Ok(Some(expected_value)) if expected_value == entry_at10.value
         ));
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 10, ChangesetCache::new()).storage(ADDRESS, STORAGE),
+            HistoricalStateProviderRef::new(&db, 10, OverlayManager::default()).storage(ADDRESS, STORAGE),
             Ok(Some(expected_value)) if expected_value == entry_at10.value
         ));
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 11, ChangesetCache::new()).storage(ADDRESS, STORAGE),
+            HistoricalStateProviderRef::new(&db, 11, OverlayManager::default()).storage(ADDRESS, STORAGE),
             Ok(Some(expected_value)) if expected_value == entry_at15.value
         ));
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 16, ChangesetCache::new()).storage(ADDRESS, STORAGE),
+            HistoricalStateProviderRef::new(&db, 16, OverlayManager::default()).storage(ADDRESS, STORAGE),
             Ok(Some(expected_value)) if expected_value == entry_plain.value
         ));
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 1, ChangesetCache::new())
+            HistoricalStateProviderRef::new(&db, 1, OverlayManager::default())
                 .storage(HIGHER_ADDRESS, STORAGE),
             Ok(None)
         ));
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 1000, ChangesetCache::new()).storage(HIGHER_ADDRESS, STORAGE),
+            HistoricalStateProviderRef::new(&db, 1000, OverlayManager::default()).storage(HIGHER_ADDRESS, STORAGE),
             Ok(Some(expected_value)) if expected_value == higher_entry_plain.value
         ));
     }
@@ -1234,7 +1168,7 @@ mod tests {
                 account_history_block_number: Some(3),
                 storage_history_block_number: Some(3),
             },
-            ChangesetCache::new(),
+            OverlayManager::default(),
         );
         assert!(matches!(
             provider.account_history_lookup(ADDRESS),
@@ -1254,7 +1188,7 @@ mod tests {
                 account_history_block_number: Some(2),
                 storage_history_block_number: Some(2),
             },
-            ChangesetCache::new(),
+            OverlayManager::default(),
         );
         assert!(matches!(
             provider.account_history_lookup(ADDRESS),
@@ -1274,7 +1208,7 @@ mod tests {
                 account_history_block_number: Some(1),
                 storage_history_block_number: Some(1),
             },
-            ChangesetCache::new(),
+            OverlayManager::default(),
         );
         assert!(matches!(
             provider.account_history_lookup(ADDRESS),
@@ -1355,46 +1289,46 @@ mod tests {
         let db = factory.provider().unwrap();
 
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 0, ChangesetCache::new())
+            HistoricalStateProviderRef::new(&db, 0, OverlayManager::default())
                 .storage(ADDRESS, STORAGE),
             Ok(None)
         ));
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 3, ChangesetCache::new())
+            HistoricalStateProviderRef::new(&db, 3, OverlayManager::default())
                 .storage(ADDRESS, STORAGE),
             Ok(Some(U256::ZERO))
         ));
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 4, ChangesetCache::new()).storage(ADDRESS, STORAGE),
+            HistoricalStateProviderRef::new(&db, 4, OverlayManager::default()).storage(ADDRESS, STORAGE),
             Ok(Some(expected_value)) if expected_value == entry_at7.value
         ));
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 7, ChangesetCache::new()).storage(ADDRESS, STORAGE),
+            HistoricalStateProviderRef::new(&db, 7, OverlayManager::default()).storage(ADDRESS, STORAGE),
             Ok(Some(expected_value)) if expected_value == entry_at7.value
         ));
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 9, ChangesetCache::new()).storage(ADDRESS, STORAGE),
+            HistoricalStateProviderRef::new(&db, 9, OverlayManager::default()).storage(ADDRESS, STORAGE),
             Ok(Some(expected_value)) if expected_value == entry_at10.value
         ));
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 10, ChangesetCache::new()).storage(ADDRESS, STORAGE),
+            HistoricalStateProviderRef::new(&db, 10, OverlayManager::default()).storage(ADDRESS, STORAGE),
             Ok(Some(expected_value)) if expected_value == entry_at10.value
         ));
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 11, ChangesetCache::new()).storage(ADDRESS, STORAGE),
+            HistoricalStateProviderRef::new(&db, 11, OverlayManager::default()).storage(ADDRESS, STORAGE),
             Ok(Some(expected_value)) if expected_value == entry_at15.value
         ));
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 16, ChangesetCache::new()).storage(ADDRESS, STORAGE),
+            HistoricalStateProviderRef::new(&db, 16, OverlayManager::default()).storage(ADDRESS, STORAGE),
             Ok(Some(expected_value)) if expected_value == entry_plain.value
         ));
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 1, ChangesetCache::new())
+            HistoricalStateProviderRef::new(&db, 1, OverlayManager::default())
                 .storage(HIGHER_ADDRESS, STORAGE),
             Ok(None)
         ));
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 1000, ChangesetCache::new()).storage(HIGHER_ADDRESS, STORAGE),
+            HistoricalStateProviderRef::new(&db, 1000, OverlayManager::default()).storage(HIGHER_ADDRESS, STORAGE),
             Ok(Some(expected_value)) if expected_value == higher_entry_plain.value
         ));
     }
@@ -1406,16 +1340,16 @@ mod tests {
         use reth_db_api::models::StorageSettings;
         use reth_execution_types::ExecutionOutcome;
         use reth_testing_utils::generators::{self, random_block_range, BlockRangeParams};
-        use revm_database::BundleState;
+        use revm::database::BundleState;
         use std::collections::HashMap;
 
         let factory = create_test_provider_factory();
         factory.set_storage_settings_cache(StorageSettings::v2());
 
         let slot = U256::from_be_bytes(*STORAGE);
-        let account: revm_state::AccountInfo =
+        let account: revm::state::AccountInfo =
             Account { nonce: 1, balance: U256::from(1000), bytecode_hash: None }.into();
-        let higher_account: revm_state::AccountInfo =
+        let higher_account: revm::state::AccountInfo =
             Account { nonce: 1, balance: U256::from(2000), bytecode_hash: None }.into();
 
         let mut rng = generators::rng();
@@ -1430,7 +1364,7 @@ mod tests {
         let mut higher_storage = HashMap::default();
         higher_storage.insert(slot, (U256::ZERO, U256::from(1000)));
 
-        type Revert = Vec<(Address, Option<Option<revm_state::AccountInfo>>, Vec<(U256, U256)>)>;
+        type Revert = Vec<(Address, Option<Option<revm::state::AccountInfo>>, Vec<(U256, U256)>)>;
         let mut reverts: Vec<Revert> = vec![Vec::new(); 16];
 
         reverts[3] = vec![(ADDRESS, Some(Some(account.clone())), vec![(slot, U256::ZERO)])];
@@ -1498,48 +1432,134 @@ mod tests {
         let db = factory.provider().unwrap();
 
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 0, ChangesetCache::new())
+            HistoricalStateProviderRef::new(&db, 0, OverlayManager::default())
                 .storage(ADDRESS, STORAGE),
             Ok(None)
         ));
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 3, ChangesetCache::new())
+            HistoricalStateProviderRef::new(&db, 3, OverlayManager::default())
                 .storage(ADDRESS, STORAGE),
             Ok(Some(U256::ZERO))
         ));
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 4, ChangesetCache::new()).storage(ADDRESS, STORAGE),
+            HistoricalStateProviderRef::new(&db, 4, OverlayManager::default()).storage(ADDRESS, STORAGE),
             Ok(Some(v)) if v == U256::from(7)
         ));
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 7, ChangesetCache::new()).storage(ADDRESS, STORAGE),
+            HistoricalStateProviderRef::new(&db, 7, OverlayManager::default()).storage(ADDRESS, STORAGE),
             Ok(Some(v)) if v == U256::from(7)
         ));
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 9, ChangesetCache::new()).storage(ADDRESS, STORAGE),
+            HistoricalStateProviderRef::new(&db, 9, OverlayManager::default()).storage(ADDRESS, STORAGE),
             Ok(Some(v)) if v == U256::from(10)
         ));
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 10, ChangesetCache::new()).storage(ADDRESS, STORAGE),
+            HistoricalStateProviderRef::new(&db, 10, OverlayManager::default()).storage(ADDRESS, STORAGE),
             Ok(Some(v)) if v == U256::from(10)
         ));
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 11, ChangesetCache::new()).storage(ADDRESS, STORAGE),
+            HistoricalStateProviderRef::new(&db, 11, OverlayManager::default()).storage(ADDRESS, STORAGE),
             Ok(Some(v)) if v == U256::from(15)
         ));
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 16, ChangesetCache::new()).storage(ADDRESS, STORAGE),
+            HistoricalStateProviderRef::new(&db, 16, OverlayManager::default()).storage(ADDRESS, STORAGE),
             Ok(Some(v)) if v == U256::from(100)
         ));
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 1, ChangesetCache::new())
+            HistoricalStateProviderRef::new(&db, 1, OverlayManager::default())
                 .storage(HIGHER_ADDRESS, STORAGE),
             Ok(None)
         ));
         assert!(matches!(
-            HistoricalStateProviderRef::new(&db, 1000, ChangesetCache::new()).storage(HIGHER_ADDRESS, STORAGE),
+            HistoricalStateProviderRef::new(&db, 1000, OverlayManager::default()).storage(HIGHER_ADDRESS, STORAGE),
             Ok(Some(v)) if v == U256::from(1000)
         ));
+    }
+
+    #[test]
+    fn destroyed_storage_zeros_use_historical_state() {
+        use crate::BlockWriter;
+        use alloy_primitives::{keccak256, map::HashMap};
+        use reth_execution_types::ExecutionOutcome;
+        use reth_stages_types::{StageCheckpoint, StageId};
+        use reth_storage_api::{HashedPostStateProvider, StageCheckpointWriter};
+        use reth_testing_utils::generators::{self, random_block_range, BlockRangeParams};
+        use revm::{
+            database::{AccountStatus, BundleAccount, BundleState},
+            state::AccountInfo,
+        };
+
+        let factory = create_test_provider_factory();
+        let slot = U256::from(1);
+        let old_value = U256::from(2);
+        let account = AccountInfo::default();
+        let blocks = random_block_range(
+            &mut generators::rng(),
+            0..=1,
+            BlockRangeParams { parent: Some(B256::ZERO), tx_count: 0..1, ..Default::default() },
+        );
+        let mut reverts = vec![Vec::new(); 2];
+        reverts[1] = vec![(ADDRESS, None, vec![(slot, old_value)])];
+        let bundle = BundleState::new(
+            [(
+                ADDRESS,
+                Some(account.clone()),
+                Some(account.clone()),
+                HashMap::from_iter([(slot, (old_value, U256::ZERO))]),
+            )],
+            reverts,
+            [],
+        );
+
+        let provider_rw = factory.provider_rw().unwrap();
+        provider_rw
+            .append_blocks_with_state(
+                blocks
+                    .into_iter()
+                    .map(|block| block.try_recover().expect("failed to seal block with senders"))
+                    .collect(),
+                &ExecutionOutcome { bundle, first_block: 0, ..Default::default() },
+                Default::default(),
+            )
+            .unwrap();
+        provider_rw.save_stage_checkpoint(StageId::Finish, StageCheckpoint::new(1)).unwrap();
+        provider_rw.commit().unwrap();
+
+        let db = factory.provider().unwrap();
+        let hashed_address = keccak256(ADDRESS);
+        assert!(db.tx_ref().get::<tables::HashedStorages>(hashed_address).unwrap().is_none());
+
+        let mut destroyed_bundle = BundleState::default();
+        destroyed_bundle.state.insert(
+            ADDRESS,
+            BundleAccount::new(Some(account), None, Default::default(), AccountStatus::Destroyed),
+        );
+        let provider = HistoricalStateProviderRef::new(&db, 1, OverlayManager::default());
+        let hashed_state = provider.hashed_post_state(&destroyed_bundle).unwrap();
+
+        assert_eq!(
+            hashed_state.storages[&hashed_address].storage[&keccak256(B256::from(slot))],
+            U256::ZERO
+        );
+    }
+
+    #[test]
+    fn newly_created_destroyed_account_skips_historical_overlay() {
+        use reth_storage_api::HashedPostStateProvider;
+        use revm::database::{AccountStatus, BundleAccount, BundleState};
+
+        let factory = create_test_provider_factory();
+        let db = factory.provider().unwrap();
+        let mut bundle = BundleState::default();
+        bundle.state.insert(
+            ADDRESS,
+            BundleAccount::new(None, None, Default::default(), AccountStatus::Destroyed),
+        );
+
+        let provider = HistoricalStateProviderRef::new(&db, 1, OverlayManager::default());
+        let hashed_state = provider.hashed_post_state(&bundle).unwrap();
+
+        assert!(hashed_state.storages.is_empty());
     }
 
     #[test]
@@ -1549,139 +1569,5 @@ mod tests {
         assert!(needs_prev_shard_check(0, None, 5));
         assert!(!needs_prev_shard_check(0, Some(5), 5)); // found_block == block_number
         assert!(!needs_prev_shard_check(1, Some(10), 5)); // rank > 0
-    }
-
-    #[test]
-    fn pipeline_consistency_unit_logic() {
-        // Consistent: execution == history
-        let pc = PipelineConsistency {
-            execution_tip: Some(100),
-            account_history_tip: Some(100),
-            storage_history_tip: Some(100),
-        };
-        assert!(pc.account_inconsistency().is_none());
-        assert!(pc.storage_inconsistency().is_none());
-
-        // Inconsistent: execution ahead of history
-        let pc = PipelineConsistency {
-            execution_tip: Some(200),
-            account_history_tip: Some(100),
-            storage_history_tip: Some(150),
-        };
-        assert_eq!(pc.account_inconsistency(), Some((200, 100)));
-        assert_eq!(pc.storage_inconsistency(), Some((200, 150)));
-
-        // History never ran (None) → treated as block 0
-        let pc = PipelineConsistency {
-            execution_tip: Some(50),
-            account_history_tip: None,
-            storage_history_tip: None,
-        };
-        assert_eq!(pc.account_inconsistency(), Some((50, 0)));
-        assert_eq!(pc.storage_inconsistency(), Some((50, 0)));
-
-        // Execution not run yet → consistent
-        let pc = PipelineConsistency {
-            execution_tip: None,
-            account_history_tip: None,
-            storage_history_tip: None,
-        };
-        assert!(pc.account_inconsistency().is_none());
-        assert!(pc.storage_inconsistency().is_none());
-    }
-
-    /// Verifies selective rejection during pipeline inconsistency:
-    /// - Accounts resolving via changeset path → return correct data (not blocked)
-    /// - Accounts resolving via `InPlainState` path → return `HistoryStateInconsistent` error
-    #[test]
-    fn pipeline_consistency_selective_rejection() {
-        let factory = create_test_provider_factory();
-        let tx = factory.provider_rw().unwrap().into_tx();
-
-        let no_history_addr = address!("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
-
-        // History index for ADDRESS: modified at blocks 3, 7, 10, 15
-        tx.put::<tables::AccountsHistory>(
-            ShardedKey { key: ADDRESS, highest_block_number: 7 },
-            BlockNumberList::new([3, 7]).unwrap(),
-        )
-        .unwrap();
-        tx.put::<tables::AccountsHistory>(
-            ShardedKey { key: ADDRESS, highest_block_number: u64::MAX },
-            BlockNumberList::new([10, 15]).unwrap(),
-        )
-        .unwrap();
-
-        // Changesets for ADDRESS
-        let acc_at7 = Account { nonce: 7, balance: U256::ZERO, bytecode_hash: None };
-        let acc_at10 = Account { nonce: 10, balance: U256::ZERO, bytecode_hash: None };
-        tx.put::<tables::AccountChangeSets>(
-            7,
-            AccountBeforeTx { address: ADDRESS, info: Some(acc_at7) },
-        )
-        .unwrap();
-        tx.put::<tables::AccountChangeSets>(
-            10,
-            AccountBeforeTx { address: ADDRESS, info: Some(acc_at10) },
-        )
-        .unwrap();
-
-        // PlainState
-        let acc_plain = Account { nonce: 100, balance: U256::ZERO, bytecode_hash: None };
-        let no_hist_plain = Account { nonce: 999, balance: U256::from(999), bytecode_hash: None };
-        tx.put::<tables::PlainAccountState>(ADDRESS, acc_plain).unwrap();
-        tx.put::<tables::PlainAccountState>(no_history_addr, no_hist_plain).unwrap();
-        tx.commit().unwrap();
-
-        let db = factory.provider().unwrap();
-
-        // Simulate inconsistency: Execution=200, HistoryIndex=15
-        let inconsistent = PipelineConsistency {
-            execution_tip: Some(200),
-            account_history_tip: Some(15),
-            storage_history_tip: Some(15),
-        };
-
-        // Test 1: ADDRESS at block 5 → history index finds block 7 → InChangeset → correct
-        let provider = HistoricalStateProviderRef::new(&db, 5, ChangesetCache::new())
-            .with_pipeline_consistency(inconsistent);
-        let result = provider.basic_account(&ADDRESS);
-        assert!(result.is_ok(), "Changeset path should work during inconsistency: {result:?}");
-        assert_eq!(result.unwrap().unwrap().nonce, 7);
-
-        // Test 2: ADDRESS at block 16 → no entry after 16 → InPlainState → BLOCKED
-        let provider = HistoricalStateProviderRef::new(&db, 16, ChangesetCache::new())
-            .with_pipeline_consistency(inconsistent);
-        let result = provider.basic_account(&ADDRESS);
-        assert!(
-            matches!(result, Err(ProviderError::HistoryStateInconsistent { .. })),
-            "InPlainState should be blocked: {result:?}"
-        );
-
-        // Test 3: no_history_addr at block 5 → never written to history → NotYetWritten → Ok(None)
-        // This is correct: accounts that never existed in history return None regardless of
-        // pipeline consistency, because they were never modified by any block.
-        let provider = HistoricalStateProviderRef::new(&db, 5, ChangesetCache::new())
-            .with_pipeline_consistency(inconsistent);
-        let result = provider.basic_account(&no_history_addr);
-        assert!(matches!(result, Ok(None)), "Never-written account should return None: {result:?}");
-
-        // Test 4: Same queries with consistent pipeline → all succeed
-        let consistent = PipelineConsistency {
-            execution_tip: Some(200),
-            account_history_tip: Some(200),
-            storage_history_tip: Some(200),
-        };
-
-        let provider = HistoricalStateProviderRef::new(&db, 16, ChangesetCache::new())
-            .with_pipeline_consistency(consistent);
-        let result = provider.basic_account(&ADDRESS);
-        assert!(result.is_ok(), "Should succeed when consistent: {result:?}");
-        assert_eq!(result.unwrap().unwrap().nonce, acc_plain.nonce);
-
-        let provider = HistoricalStateProviderRef::new(&db, 5, ChangesetCache::new())
-            .with_pipeline_consistency(consistent);
-        let result = provider.basic_account(&no_history_addr);
-        assert!(result.is_ok(), "Should succeed when consistent: {result:?}");
     }
 }

@@ -1,254 +1,3 @@
-use crate::{
-    providers::{StaticFileProvider, StaticFileWriter},
-    BlockExecutionWriter, BlockWriter, HistoryWriter, StateWriter, StaticFileProviderFactory,
-    TrieWriter,
-};
-use reth_chain_state::ExecutedBlock;
-use reth_db_api::transaction::{DbTx, DbTxMut};
-use reth_errors::{ProviderError, ProviderResult};
-use reth_primitives_traits::AlloyBlockHeader;
-use reth_storage_errors::db::DatabaseError;
-use rust_eth_triedb::get_global_triedb;
-use rust_eth_triedb::triedb_manager::is_triedb_active;
-use reth_primitives_traits::{NodePrimitives, SignedTransaction};
-use reth_static_file_types::StaticFileSegment;
-use reth_storage_api::{DBProvider, StageCheckpointWriter, TransactionsProviderExt};
-use revm_database::OriginalValuesKnown;
-use std::sync::Arc;
-use tracing::debug;
-
-/// [`UnifiedStorageWriter`] is responsible for managing the writing to storage with both database
-/// and static file providers.
-#[derive(Debug)]
-pub struct UnifiedStorageWriter<'a, ProviderDB, ProviderSF> {
-    database: &'a ProviderDB,
-    static_file: Option<ProviderSF>,
-}
-
-impl<'a, ProviderDB, ProviderSF> UnifiedStorageWriter<'a, ProviderDB, ProviderSF> {
-    /// Creates a new instance of [`UnifiedStorageWriter`].
-    ///
-    /// # Parameters
-    /// - `database`: An optional reference to a database provider.
-    /// - `static_file`: An optional mutable reference to a static file instance.
-    pub const fn new(database: &'a ProviderDB, static_file: Option<ProviderSF>) -> Self {
-        Self { database, static_file }
-    }
-
-    /// Creates a new instance of [`UnifiedStorageWriter`] from a database provider and a static
-    /// file instance.
-    pub fn from<P>(database: &'a P, static_file: ProviderSF) -> Self
-    where
-        P: AsRef<ProviderDB>,
-    {
-        Self::new(database.as_ref(), Some(static_file))
-    }
-
-    /// Creates a new instance of [`UnifiedStorageWriter`] from a database provider.
-    pub fn from_database<P>(database: &'a P) -> Self
-    where
-        P: AsRef<ProviderDB>,
-    {
-        Self::new(database.as_ref(), None)
-    }
-
-    /// Returns a reference to the database writer.
-    ///
-    /// # Panics
-    /// If the database provider is not set.
-    const fn database(&self) -> &ProviderDB {
-        self.database
-    }
-
-    /// Returns a reference to the static file instance.
-    ///
-    /// # Panics
-    /// If the static file instance is not set.
-    const fn static_file(&self) -> &ProviderSF {
-        self.static_file.as_ref().expect("should exist")
-    }
-
-}
-
-impl UnifiedStorageWriter<'_, (), ()> {
-    /// Commits both storage types in the right order.
-    ///
-    /// For non-unwinding operations it makes more sense to commit the static files first, since if
-    /// it is interrupted before the database commit, we can just truncate
-    /// the static files according to the checkpoints on the next
-    /// start-up.
-    ///
-    /// NOTE: If unwinding data from storage, use `commit_unwind` instead!
-    pub fn commit<P>(provider: P) -> ProviderResult<()>
-    where
-        P: DBProvider<Tx: DbTxMut> + StaticFileProviderFactory,
-    {
-        let static_file = provider.static_file_provider();
-        static_file.commit()?;
-        provider.commit()?;
-        Ok(())
-    }
-
-    /// Commits both storage types in the right order for an unwind operation.
-    ///
-    /// For unwinding it makes more sense to commit the database first, since if
-    /// it is interrupted before the static files commit, we can just
-    /// truncate the static files according to the
-    /// checkpoints on the next start-up.
-    ///
-    /// NOTE: Should only be used after unwinding data from storage!
-    pub fn commit_unwind<P>(provider: P) -> ProviderResult<()>
-    where
-        P: DBProvider<Tx: DbTxMut> + StaticFileProviderFactory,
-    {
-        let static_file = provider.static_file_provider();
-        provider.commit()?;
-        static_file.commit()?;
-        Ok(())
-    }
-}
-
-impl<ProviderDB> UnifiedStorageWriter<'_, ProviderDB, &StaticFileProvider<ProviderDB::Primitives>>
-where
-    ProviderDB: DBProvider<Tx: DbTx + DbTxMut>
-        + BlockWriter
-        + TransactionsProviderExt
-        + TrieWriter
-        + StateWriter
-        + HistoryWriter
-        + StageCheckpointWriter
-        + BlockExecutionWriter
-        + AsRef<ProviderDB>
-        + StaticFileProviderFactory,
-{
-    /// Writes executed blocks and receipts to storage.
-    pub fn save_blocks<N>(&self, blocks: Vec<ExecutedBlock<N>>) -> ProviderResult<()>
-    where
-        N: NodePrimitives<SignedTx: SignedTransaction>,
-        ProviderDB: BlockWriter<Block = N::Block> + StateWriter<Receipt = N::Receipt>,
-    {
-        if blocks.is_empty() {
-            debug!(target: "provider::storage_writer", "Attempted to write empty block range");
-            return Ok(())
-        }
-
-        // NOTE: checked non-empty above
-        let first_block = blocks.first().unwrap().recovered_block();
-
-        let last_block = blocks.last().unwrap().recovered_block();
-        let first_number = first_block.number();
-        let last_block_number = last_block.number();
-
-        debug!(target: "provider::storage_writer", block_count = %blocks.len(), "Writing blocks and execution data to storage");
-
-        // Only get TrieDB instance if TrieDB is active
-        let mut triedb_opt = if is_triedb_active() {
-            Some(get_global_triedb())
-        } else {
-            None
-        };
-
-        // TODO: Do performant / batched writes for each type of object
-        // instead of a loop over all blocks,
-        // meaning:
-        //  * blocks
-        //  * state
-        //  * hashed state
-        //  * trie updates (cannot naively extend, need helper)
-        //  * indices (already done basically)
-        // Insert the blocks
-        for ExecutedBlock { recovered_block, execution_output, hashed_state, trie_updates } in
-            blocks
-        {
-            let block_number = recovered_block.number();
-            let state_root = recovered_block.state_root();
-            let hashed_state_clone = hashed_state.clone();
-
-            if triedb_opt.is_none() && is_triedb_active() {
-                // TrieDB became active mid-call; switch to TrieDB path for remaining blocks.
-                triedb_opt = Some(get_global_triedb());
-            }
-
-            // Only check latest_persist_state if TrieDB is active
-            let latest_state_root_opt = if let Some(ref mut triedb) = triedb_opt {
-                let (latest_block_number, latest_state_root) = triedb.latest_persist_state()
-                    .map_err(|e| ProviderError::other(e))?;
-
-                if latest_block_number != block_number - 1 {
-                    return Err(ProviderError::Database(DatabaseError::Other(format!("latest_block_number != block_number - 1, latest_block_number={}, block_number={}", latest_block_number, block_number))));
-                }
-                Some(latest_state_root)
-            } else {
-                None
-            };
-
-            self.database().insert_block(Arc::unwrap_or_clone(recovered_block))?;
-
-            // Write state and changesets to the database.
-            // Must be written after blocks because of the receipt lookup.
-            self.database().write_state(
-                &execution_output,
-                OriginalValuesKnown::No,
-            )?;
-
-            if let (Some(ref mut triedb), Some(latest_state_root)) = (triedb_opt.as_mut(), latest_state_root_opt) {
-                let triedb_hashed_post_state = hashed_state_clone.as_ref().to_triedb_hashed_post_state();
-                let (new_root, difflayer) = triedb.commit_hashed_post_state(latest_state_root, None, &triedb_hashed_post_state)
-                    .map_err(|e| ProviderError::other(e))?;
-                if new_root != state_root {
-                    return Err(ProviderError::Database(DatabaseError::Other(format!("write hashed state to triedb, block_number={}, new_root({:?}) != state_root({:?})", block_number, new_root, state_root))));
-                }
-                triedb.flush(block_number, new_root, &difflayer)
-                    .map_err(|e| ProviderError::other(e))?;
-            } else {
-                // insert hashes and intermediate merkle nodes
-                self.database()
-                    .write_hashed_state(&Arc::unwrap_or_clone(hashed_state).into_sorted())?;
-                let trie_updates_sorted = (*trie_updates).clone().into_sorted();
-                self.database().write_trie_changesets(block_number, &trie_updates_sorted, None)?;
-                self.database().write_trie_updates_sorted(&trie_updates_sorted)?;
-            }
-        }
-
-        // update history indices
-        self.database().update_history_indices(first_number..=last_block_number)?;
-
-        // Update pipeline progress
-        self.database().update_pipeline_stages(last_block_number, false)?;
-
-        debug!(target: "provider::storage_writer", range = ?first_number..=last_block_number, "Appended block data");
-
-        Ok(())
-    }
-
-    /// Removes all block, transaction and receipt data above the given block number from the
-    /// database and static files. This is exclusive, i.e., it only removes blocks above
-    /// `block_number`, and does not remove `block_number`.
-    pub fn remove_blocks_above(&self, block_number: u64) -> ProviderResult<()> {
-        // IMPORTANT: we use `block_number+1` to make sure we remove only what is ABOVE the block
-        debug!(target: "provider::storage_writer", ?block_number, "Removing blocks from database above block_number");
-        self.database().remove_block_and_execution_above(block_number)?;
-
-        // Get highest static file block for the total block range
-        let highest_static_file_block = self
-            .static_file()
-            .get_highest_static_file_block(StaticFileSegment::Headers)
-            .expect("todo: error handling, headers should exist");
-
-        // IMPORTANT: we use `highest_static_file_block.saturating_sub(block_number)` to make sure
-        // we remove only what is ABOVE the block.
-        //
-        // i.e., if the highest static file block is 8, we want to remove above block 5 only, we
-        // will have three blocks to remove, which will be block 8, 7, and 6.
-        debug!(target: "provider::storage_writer", ?block_number, "Removing static file blocks above block_number");
-        self.static_file()
-            .get_writer(block_number, StaticFileSegment::Headers)?
-            .prune_headers(highest_static_file_block.saturating_sub(block_number))?;
-
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use crate::{
@@ -273,14 +22,14 @@ mod tests {
         HashedPostState, HashedStorage, StateRoot, StorageRoot, StorageRootProgress,
     };
     use reth_trie_db::{DatabaseStateRoot, DatabaseStorageRoot, LegacyKeyAdapter, PackedKeyAdapter};
-    use revm_database::{
+    use revm::database::{
         states::{
             bundle_state::BundleRetention, changes::PlainStorageRevert, PlainStorageChangeset,
         },
         BundleState, OriginalValuesKnown, State,
     };
-    use revm_database_interface::{DatabaseCommit, EmptyDB};
-    use revm_state::{
+    use revm::database_interface::{DatabaseCommit, EmptyDB};
+    use revm::state::{
         Account as RevmAccount, AccountInfo as RevmAccountInfo, AccountStatus, EvmStorageSlot,
     };
     use std::{collections::BTreeMap, str::FromStr};
@@ -1180,13 +929,21 @@ mod tests {
             let overlay_root = if is_v2 {
                 TestStateRoot::<_, PackedKeyAdapter>::overlay_root(
                     tx,
-                    &provider_factory.hashed_post_state(&state.bundle_state).into_sorted(),
+                    &provider_rw
+                        .latest()
+                        .hashed_post_state(&state.bundle_state)
+                        .unwrap()
+                        .into_sorted(),
                 )
                 .unwrap()
             } else {
                 TestStateRoot::<_, LegacyKeyAdapter>::overlay_root(
                     tx,
-                    &provider_factory.hashed_post_state(&state.bundle_state).into_sorted(),
+                    &provider_rw
+                        .latest()
+                        .hashed_post_state(&state.bundle_state)
+                        .unwrap()
+                        .into_sorted(),
                 )
                 .unwrap()
             };
@@ -1374,7 +1131,6 @@ mod tests {
 
         // insert initial account storage
         let init_storage = HashedStorage::from_iter(
-            false,
             [
                 "50000000000000000000000000000004253371b55351a08cb3267d4d265530b6",
                 "512428ed685fff57294d1a9cbb147b18ae5db9cf6ae4b312fa1946ba0561882e",
@@ -1406,8 +1162,7 @@ mod tests {
             .unwrap();
 
         // destroy the storage and re-create with new slots
-        let updated_storage = HashedStorage::from_iter(
-            true,
+        let mut updated_storage = HashedStorage::from_iter(
             [
                 "00deb8486ad8edccfdedfc07109b3667b38a03a8009271aac250cce062d90917",
                 "88d233b7380bb1bcdc866f6871c94685848f54cf0ee033b1480310b4ddb75fc9",
@@ -1415,6 +1170,7 @@ mod tests {
             .into_iter()
             .map(|str| (B256::from_str(str).unwrap(), U256::from(1))),
         );
+        updated_storage.wiped = true;
         let mut state = HashedPostState::default();
         state.storages.insert(hashed_address, updated_storage.clone());
         provider_rw.write_hashed_state(&state.clone().into_sorted()).unwrap();

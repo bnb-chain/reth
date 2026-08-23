@@ -19,6 +19,7 @@ pub use raw::{RawDupSort, RawKey, RawTable, RawValue, TableRawRow};
 use crate::{
     models::{
         accounts::BlockNumberAddress,
+        bal::{StoredBlockAccessList, StoredBlockAccessListKey},
         blocks::{HeaderHash, StoredBlockOmmers},
         storage_sharded_key::StorageShardedKey,
         AccountBeforeTx, ClientVersion, CompactU256, IntegerList, ShardedKey,
@@ -351,6 +352,18 @@ tables! {
         type Value = StoredBlockWithdrawals;
     }
 
+    /// Stores block access list payloads by block number and block hash.
+    table BlockAccessLists {
+        type Key = StoredBlockAccessListKey;
+        type Value = StoredBlockAccessList;
+    }
+
+    /// Stores the block number for each persisted block access list hash.
+    table BlockAccessListBlockNumbers {
+        type Key = BlockHash;
+        type Value = BlockNumber;
+    }
+
     /// Canonical only Stores the transaction body for canonical transactions.
     table Transactions<T = TransactionSigned> {
         type Key = TxNumber;
@@ -545,8 +558,8 @@ tables! {
         type Value = crate::models::ParliaSnapshotBlob;
     }
 
-    /// Stores BSC Parlia checkpoint snapshots (compressed CBOR bytes).
-    /// defined it here is for schema registration and database initialization.
+    /// Stores BSC Parlia checkpoint snapshots keyed by block hash.
+    /// Defined here for schema registration and database initialization.
     table ParliaSnapshotsByHash {
         type Key = BlockHash;
         type Value = crate::models::ParliaSnapshotBlob;

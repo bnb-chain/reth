@@ -178,22 +178,22 @@ impl Command {
                     StaticFileSegment::Headers => (
                         table_key::<tables::Headers>(&key)?,
                         None,
-                        <HeaderWithHashMask<HeaderTy<N>> as ColumnSelectorTwo>::MASK,
+                        <HeaderWithHashMask<HeaderTy<N>>>::MASK,
                     ),
                     StaticFileSegment::Transactions => (
                         table_key::<tables::Transactions>(&key)?,
                         None,
-                        <TransactionMask<TxTy<N>> as ColumnSelectorOne>::MASK,
+                        <TransactionMask<TxTy<N>>>::MASK,
                     ),
                     StaticFileSegment::Receipts => (
                         table_key::<tables::Receipts>(&key)?,
                         None,
-                        <ReceiptMask<ReceiptTy<N>> as ColumnSelectorOne>::MASK,
+                        <ReceiptMask<ReceiptTy<N>>>::MASK,
                     ),
                     StaticFileSegment::TransactionSenders => (
                         table_key::<tables::TransactionSenders>(&key)?,
                         None,
-                        <TransactionSenderMask as ColumnSelectorOne>::MASK,
+                        TransactionSenderMask::MASK,
                     ),
                     StaticFileSegment::AccountChangeSets => {
                         let subkey =
@@ -201,7 +201,7 @@ impl Command {
                         (
                             table_key::<tables::AccountChangeSets>(&key)?,
                             subkey,
-                            <AccountChangesetMask as ColumnSelectorOne>::MASK,
+                            AccountChangesetMask::MASK,
                         )
                     }
                     StaticFileSegment::StorageChangeSets => {
@@ -219,7 +219,7 @@ impl Command {
                             .account_block_changeset(key)?;
 
                         println!("{}", serde_json::to_string_pretty(&changesets)?);
-                        return Ok(());
+                        return Ok(())
                     };
 
                     let account = tool
@@ -233,7 +233,7 @@ impl Command {
                         error!(target: "reth::cli", "No content for the given table key.");
                     }
 
-                    return Ok(());
+                    return Ok(())
                 }
 
                 let content = tool.provider_factory.static_file_provider().find_static_file(

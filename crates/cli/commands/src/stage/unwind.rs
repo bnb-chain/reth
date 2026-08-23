@@ -22,7 +22,6 @@ use reth_stages::{
     ExecutionStageThresholds, Pipeline, StageSet,
 };
 use reth_static_file::StaticFileProducer;
-use rust_eth_triedb::triedb_manager::{disable_triedb, init_global_triedb_manager};
 use std::sync::Arc;
 use tokio::sync::watch;
 use tracing::info;
@@ -92,65 +91,7 @@ impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> Command<C>
 
         let (tip_tx, tip_rx) = watch::channel(B256::ZERO);
 
-        let mut is_triedb = false;
-        // Initialize or disable TrieDB based on config
-        if let Some(ref statedb_config) = config.statedb {
-            if statedb_config.r#type == "triedb" {
-                init_global_triedb_manager(&statedb_config.path.to_string_lossy());
-                is_triedb = true;
-            } else {
-                disable_triedb();
-            }
-        } else {
-            // No statedb config, default to MDBX
-            disable_triedb();
-        }
-
-        let builder = if is_triedb {
-            if self.offline {
-                Pipeline::<N>::builder().add_stages(
-                    OfflineStages::new(
-                        evm_config,
-                        NoopConsensus::arc(),
-                        config.stages,
-                        prune_modes.clone(),
-                    )
-                    .builder()
-                    .disable(reth_stages::StageId::SenderRecovery)
-                    .disable(reth_stages::StageId::MerkleExecute)
-                    .disable(reth_stages::StageId::MerkleUnwind),
-                )
-            } else {
-                Pipeline::<N>::builder().with_tip_sender(tip_tx).add_stages(
-                    DefaultStages::new(
-                        provider_factory.clone(),
-                        tip_rx,
-                        Arc::new(NoopConsensus::default()),
-                        NoopHeaderDownloader::default(),
-                        NoopBodiesDownloader::default(),
-                        evm_config.clone(),
-                        stage_conf.clone(),
-                        prune_modes.clone(),
-                        None,
-                    )
-                    .builder()
-                    .disable(reth_stages::StageId::MerkleExecute)
-                    .disable(reth_stages::StageId::MerkleUnwind)
-                    .set(ExecutionStage::new(
-                        evm_config,
-                        Arc::new(NoopConsensus::default()),
-                        ExecutionStageThresholds {
-                            max_blocks: None,
-                            max_changes: None,
-                            max_cumulative_gas: None,
-                            max_duration: None,
-                        },
-                        stage_conf.execution_external_clean_threshold(),
-                        ExExManagerHandle::empty(),
-                    )),
-                )
-            }
-        } else if self.offline {
+        let builder = if self.offline {
             Pipeline::<N>::builder().add_stages(
                 OfflineStages::new(
                     evm_config,

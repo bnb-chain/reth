@@ -8,11 +8,12 @@ use crate::{
     EitherWriterDestination, HeaderProvider, ReceiptProvider, StageCheckpointReader, StatsReader,
     TransactionVariant, TransactionsProvider, TransactionsProviderExt,
 };
-use alloy_consensus::{transaction::TransactionMeta, Header};
-use alloy_eips::{eip2718::Encodable2718, BlockHashOrNumber};
-use alloy_primitives::{
-    b256, keccak256, Address, BlockHash, BlockNumber, TxHash, TxNumber, B256, U256,
+use alloy_consensus::{
+    transaction::{TransactionMeta, TxHashRef},
+    Header,
 };
+use alloy_eips::BlockHashOrNumber;
+use alloy_primitives::{b256, Address, BlockHash, BlockNumber, TxHash, TxNumber, B256};
 
 use parking_lot::RwLock;
 use reth_chain_state::ExecutedBlock;
@@ -21,8 +22,7 @@ use reth_db::{
     lockfile::StorageLock,
     static_file::{
         iter_static_files, BlockHashMask, HeaderMask, HeaderWithHashMask, ReceiptMask,
-        StaticFileCursor, StorageChangesetMask, TDWithHashMask, TransactionMask,
-        TransactionSenderMask,
+        StaticFileCursor, StorageChangesetMask, TransactionMask, TransactionSenderMask,
     },
 };
 use reth_db_api::{
@@ -439,20 +439,14 @@ impl<N: NodePrimitives> StaticFileProvider<N> {
     }
 
     /// Writes headers for all blocks to the static file segment.
-    ///
-    /// `starting_td` is the total difficulty of the parent block (block before the first block).
     #[instrument(level = "debug", target = "providers::static_file", skip_all)]
     fn write_headers(
         w: &mut StaticFileProviderRWRefMut<'_, N>,
         blocks: &[ExecutedBlock<N>],
-        starting_td: U256,
     ) -> ProviderResult<()> {
-        let mut current_td = starting_td;
         for block in blocks {
             let b = block.recovered_block();
-            // Calculate new TD: parent_td + block_difficulty
-            current_td = current_td.saturating_add(b.header().difficulty());
-            w.append_header_with_td(b.header(), current_td, &b.hash())?;
+            w.append_header(b.header(), &b.hash())?;
         }
         Ok(())
     }
@@ -598,22 +592,12 @@ impl<N: NodePrimitives> StaticFileProvider<N> {
         tx_nums: &[TxNumber],
         ctx: StaticFileWriteCtx,
         runtime: &reth_tasks::Runtime,
-    ) -> ProviderResult<()>
-    where
-        N::BlockHeader: Value,
-    {
+    ) -> ProviderResult<()> {
         if blocks.is_empty() {
             return Ok(());
         }
 
         let first_block_number = blocks[0].recovered_block().number();
-
-        // Get the TD of the parent block (block before first_block_number) to continue accumulating
-        let starting_td = if first_block_number > 0 {
-            self.header_td_by_number(first_block_number - 1)?.unwrap_or(U256::ZERO)
-        } else {
-            U256::ZERO
-        };
 
         let mut r_headers = None;
         let mut r_txs = None;
@@ -630,7 +614,7 @@ impl<N: NodePrimitives> StaticFileProvider<N> {
                 let _guard = span.enter();
                 r_headers =
                     Some(self.write_segment(StaticFileSegment::Headers, first_block_number, |w| {
-                        Self::write_headers(w, blocks, starting_td)
+                        Self::write_headers(w, blocks)
                     }));
             });
 
@@ -951,6 +935,8 @@ impl<N: NodePrimitives> StaticFileProvider<N> {
     /// Returns a list of `SegmentHeader`s from the deleted jars.
     pub fn delete_segment(&self, segment: StaticFileSegment) -> ProviderResult<Vec<SegmentHeader>> {
         let mut deleted_headers = Vec::new();
+
+        self.writers.remove(segment);
 
         while let Some(block_height) = self.get_highest_static_file_block(segment) {
             debug!(
@@ -1587,7 +1573,7 @@ impl<N: NodePrimitives> StaticFileProvider<N> {
         highest_block: Option<BlockNumber>,
     ) -> ProviderResult<Option<BlockNumber>>
     where
-        Provider: DBProvider + BlockReader + StageCheckpointReader,
+        Provider: DBProvider + BlockReader + StageCheckpointReader + PruneCheckpointReader,
         N: NodePrimitives<Receipt: Value, BlockHeader: Value, SignedTx: Value>,
     {
         match segment {
@@ -1659,7 +1645,7 @@ impl<N: NodePrimitives> StaticFileProvider<N> {
         highest_static_file_block: Option<BlockNumber>,
     ) -> ProviderResult<Option<BlockNumber>>
     where
-        Provider: DBProvider + BlockReader + StageCheckpointReader,
+        Provider: DBProvider + BlockReader + StageCheckpointReader + PruneCheckpointReader,
     {
         debug!(target: "reth::providers::static_file", "Ensuring invariants");
         let mut db_cursor = provider.tx_ref().cursor_read::<T>()?;
@@ -1705,15 +1691,18 @@ impl<N: NodePrimitives> StaticFileProvider<N> {
             provider.get_stage_checkpoint(stage_id)?.unwrap_or_default().block_number;
         debug!(target: "reth::providers::static_file", ?stage_id, checkpoint_block_number, "Retrieved stage checkpoint");
 
+        let effective_coverage_block =
+            Self::effective_coverage_block(provider, segment, highest_static_file_block)?;
+
         // If the checkpoint is ahead, then we lost static file data. May be data corruption.
-        if checkpoint_block_number > highest_static_file_block {
+        if checkpoint_block_number > effective_coverage_block {
             info!(
                 target: "reth::providers::static_file",
                 checkpoint_block_number,
-                unwind_target = highest_static_file_block,
+                unwind_target = effective_coverage_block,
                 "Setting unwind target."
             );
-            return Ok(Some(highest_static_file_block));
+            return Ok(Some(effective_coverage_block));
         }
 
         // If the checkpoint is ahead, or matches, then nothing to do.
@@ -1793,7 +1782,7 @@ impl<N: NodePrimitives> StaticFileProvider<N> {
         block_from_key: F,
     ) -> ProviderResult<Option<BlockNumber>>
     where
-        Provider: DBProvider + BlockReader + StageCheckpointReader,
+        Provider: DBProvider + BlockReader + StageCheckpointReader + PruneCheckpointReader,
         T: Table,
         F: Fn(&T::Key) -> BlockNumber,
     {
@@ -1842,15 +1831,18 @@ impl<N: NodePrimitives> StaticFileProvider<N> {
         let checkpoint_block_number =
             provider.get_stage_checkpoint(stage_id)?.unwrap_or_default().block_number;
 
-        if checkpoint_block_number > highest_static_file_block {
+        let effective_coverage_block =
+            Self::effective_coverage_block(provider, segment, highest_static_file_block)?;
+
+        if checkpoint_block_number > effective_coverage_block {
             info!(
                 target: "reth::providers::static_file",
                 checkpoint_block_number,
-                unwind_target = highest_static_file_block,
+                unwind_target = effective_coverage_block,
                 ?segment,
                 "Setting unwind target."
             );
-            return Ok(Some(highest_static_file_block))
+            return Ok(Some(effective_coverage_block))
         }
 
         if checkpoint_block_number < highest_static_file_block {
@@ -1875,6 +1867,46 @@ impl<N: NodePrimitives> StaticFileProvider<N> {
         }
 
         Ok(None)
+    }
+
+    /// Returns the highest block accounted for in this segment, either through data
+    /// present in static files or through data intentionally removed by pruning.
+    ///
+    /// Data below a segment's prune checkpoint has been intentionally deleted, so its
+    /// absence from static files is not an inconsistency. Without this, a pruned segment
+    /// whose stage checkpoint is ahead of its (empty) static files is treated as data
+    /// corruption and triggers an unwind to block 0, which aborts the node on startup.
+    /// See <https://github.com/paradigmxyz/reth/issues/23463>.
+    fn effective_coverage_block<Provider>(
+        provider: &Provider,
+        segment: StaticFileSegment,
+        highest_static_file_block: BlockNumber,
+    ) -> ProviderResult<BlockNumber>
+    where
+        Provider: PruneCheckpointReader,
+    {
+        let Some(prune_segment) = Self::prune_segment_for_static_file(segment) else {
+            return Ok(highest_static_file_block)
+        };
+
+        let prune_checkpoint_block = provider
+            .get_prune_checkpoint(prune_segment)?
+            .and_then(|checkpoint| checkpoint.block_number)
+            .unwrap_or_default();
+
+        Ok(highest_static_file_block.max(prune_checkpoint_block))
+    }
+
+    /// Returns the prune segment that governs data availability for a static file segment,
+    /// or `None` if the segment is never pruned.
+    const fn prune_segment_for_static_file(segment: StaticFileSegment) -> Option<PruneSegment> {
+        match segment {
+            StaticFileSegment::Receipts => Some(PruneSegment::Receipts),
+            StaticFileSegment::TransactionSenders => Some(PruneSegment::SenderRecovery),
+            StaticFileSegment::AccountChangeSets => Some(PruneSegment::AccountHistory),
+            StaticFileSegment::StorageChangeSets => Some(PruneSegment::StorageHistory),
+            StaticFileSegment::Headers | StaticFileSegment::Transactions => None,
+        }
     }
 
     /// Returns the earliest available block number that has not been expired and is still
@@ -2127,7 +2159,7 @@ impl<N: NodePrimitives> StaticFileProvider<N> {
         FD: Fn() -> ProviderResult<Option<T>>,
     {
         // If there is, check the maximum block or transaction number of the segment.
-        let static_file_upper_bound = if segment.is_block_based() {
+        let static_file_upper_bound = if segment.is_block_or_change_based() {
             self.get_highest_static_file_block(segment)
         } else {
             self.get_highest_static_file_tx(segment)
@@ -2581,27 +2613,6 @@ impl<N: NodePrimitives<BlockHeader: Value>> HeaderProvider for StaticFileProvide
             })
     }
 
-    fn header_td(&self, block_hash: &BlockHash) -> ProviderResult<Option<U256>> {
-        self.find_static_file(StaticFileSegment::Headers, |jar_provider| {
-            Ok(jar_provider
-                .cursor()?
-                .get_two::<TDWithHashMask>(block_hash.into())?
-                .and_then(|(td, hash)| (&hash == block_hash).then_some(td.0)))
-        })
-    }
-
-    fn header_td_by_number(&self, num: BlockNumber) -> ProviderResult<Option<U256>> {
-        self.get_segment_provider_for_block(StaticFileSegment::Headers, num, None)
-            .and_then(|provider| provider.header_td_by_number(num))
-            .or_else(|err| {
-                if let ProviderError::MissingStaticFileBlock(_, _) = err {
-                    Ok(None)
-                } else {
-                    Err(err)
-                }
-            })
-    }
-
     fn headers_range(
         &self,
         range: impl RangeBounds<BlockNumber>,
@@ -2753,10 +2764,8 @@ impl<N: NodePrimitives<SignedTx: Value, Receipt: Value, BlockHeader: Value>> Tra
             let manager = self.clone();
 
             // Spawn the task onto the global rayon pool
-            // This task will send the results through the channel after it has calculated
-            // the hash.
+            // This task will send the cached transaction hash through the channel.
             rayon::spawn(move || {
-                let mut rlp_buf = Vec::with_capacity(128);
                 let _ = manager.fetch_range_with_predicate(
                     StaticFileSegment::Transactions,
                     chunk_range,
@@ -2764,9 +2773,7 @@ impl<N: NodePrimitives<SignedTx: Value, Receipt: Value, BlockHeader: Value>> Tra
                         Ok(cursor
                             .get_one::<TransactionMask<Self::Transaction>>(number.into())?
                             .map(|transaction| {
-                                rlp_buf.clear();
-                                let _ = channel_tx
-                                    .send(calculate_hash((number, transaction), &mut rlp_buf));
+                                let _ = channel_tx.send(transaction_hash((number, transaction)));
                             }))
                     },
                     |_| true,
@@ -2798,7 +2805,7 @@ impl<N: NodePrimitives<SignedTx: Decompress + SignedTransaction>> TransactionsPr
             let mut cursor = jar_provider.cursor()?;
             if cursor
                 .get_one::<TransactionMask<Self::Transaction>>((&tx_hash).into())?
-                .and_then(|tx| (tx.trie_hash() == tx_hash).then_some(tx))
+                .and_then(|tx| (*tx.tx_hash() == tx_hash).then_some(tx))
                 .is_some()
             {
                 Ok(cursor.number())
@@ -2840,7 +2847,7 @@ impl<N: NodePrimitives<SignedTx: Decompress + SignedTransaction>> TransactionsPr
             Ok(jar_provider
                 .cursor()?
                 .get_one::<TransactionMask<Self::Transaction>>((&hash).into())?
-                .and_then(|tx| (tx.trie_hash() == hash).then_some(tx)))
+                .and_then(|tx| (*tx.tx_hash() == hash).then_some(tx)))
         })
     }
 
@@ -3042,18 +3049,14 @@ impl<N: NodePrimitives> StatsReader for StaticFileProvider<N> {
     }
 }
 
-/// Calculates the tx hash for the given transaction and its id.
+/// Returns the tx hash for the given transaction and its id.
 #[inline]
-fn calculate_hash<T>(
-    entry: (TxNumber, T),
-    rlp_buf: &mut Vec<u8>,
-) -> Result<(B256, TxNumber), Box<ProviderError>>
+fn transaction_hash<T>(entry: (TxNumber, T)) -> Result<(B256, TxNumber), Box<ProviderError>>
 where
-    T: Encodable2718,
+    T: TxHashRef,
 {
     let (tx_id, tx) = entry;
-    tx.encode_2718(rlp_buf);
-    Ok((keccak256(rlp_buf), tx_id))
+    Ok((*tx.tx_hash(), tx_id))
 }
 
 #[cfg(test)]

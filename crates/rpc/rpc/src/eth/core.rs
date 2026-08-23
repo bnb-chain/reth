@@ -183,11 +183,6 @@ where
     fn cache(&self) -> &EthStateCache<N::Primitives> {
         self.inner.cache()
     }
-
-    #[inline]
-    fn current_validators_len(&self) -> Option<usize> {
-        self.inner.current_validators_len()
-    }
 }
 
 impl<N, Rpc> std::fmt::Debug for EthApi<N, Rpc>
@@ -241,6 +236,8 @@ pub struct EthApiInner<N: RpcNodeCore, Rpc: RpcConvert> {
     gas_cap: u64,
     /// Maximum number of blocks for `eth_simulateV1`.
     max_simulate_blocks: u64,
+    /// Whether to compute state roots for `eth_simulateV1`.
+    compute_state_root_for_eth_simulate: bool,
     /// The maximum number of blocks into the past for generating state proofs.
     eth_proof_window: u64,
     /// The block number at which the node started
@@ -290,8 +287,6 @@ pub struct EthApiInner<N: RpcNodeCore, Rpc: RpcConvert> {
 
     /// Whether to force upcasting EIP-4844 blob sidecars to EIP-7594 format when Osaka is active.
     force_blob_sidecar_upcasting: bool,
-    /// Optional callback returning the current active validator count.
-    current_validators_len: Option<Arc<dyn Fn() -> Option<usize> + Send + Sync>>,
 }
 
 impl<N, Rpc> EthApiInner<N, Rpc>
@@ -307,6 +302,7 @@ where
         gas_oracle: GasPriceOracle<N::Provider>,
         gas_cap: impl Into<GasCap>,
         max_simulate_blocks: u64,
+        compute_state_root_for_eth_simulate: bool,
         eth_proof_window: u64,
         blocking_task_pool: BlockingTaskPool,
         fee_history_cache: FeeHistoryCache<ProviderHeader<N::Provider>>,
@@ -321,7 +317,6 @@ where
         send_raw_transaction_sync_timeout: Duration,
         evm_memory_limit: u64,
         force_blob_sidecar_upcasting: bool,
-        current_validators_len: Option<Arc<dyn Fn() -> Option<usize> + Send + Sync>>,
     ) -> Self {
         let signers = parking_lot::RwLock::new(Default::default());
         // get the block number of the latest block
@@ -349,6 +344,7 @@ where
             gas_oracle,
             gas_cap: gas_cap.into().into(),
             max_simulate_blocks,
+            compute_state_root_for_eth_simulate,
             eth_proof_window,
             starting_block,
             task_spawner,
@@ -367,7 +363,6 @@ where
             blob_sidecar_converter: BlobSidecarConverter::new(),
             evm_memory_limit,
             force_blob_sidecar_upcasting,
-            current_validators_len,
         }
     }
 }
@@ -387,11 +382,6 @@ where
     #[inline]
     pub const fn converter(&self) -> &Rpc {
         &self.converter
-    }
-
-    /// Returns the current active validator count.
-    pub fn current_validators_len(&self) -> Option<usize> {
-        self.current_validators_len.as_ref().and_then(|resolve| resolve())
     }
 
     /// Returns a handle to data in memory.
@@ -449,6 +439,12 @@ where
     #[inline]
     pub const fn max_simulate_blocks(&self) -> u64 {
         self.max_simulate_blocks
+    }
+
+    /// Returns whether state roots are computed for `eth_simulateV1`.
+    #[inline]
+    pub const fn compute_state_root_for_eth_simulate(&self) -> bool {
+        self.compute_state_root_for_eth_simulate
     }
 
     /// Returns a handle to the gas oracle.
@@ -590,10 +586,10 @@ mod tests {
     use reth_network_api::noop::NoopNetwork;
     use reth_provider::{
         test_utils::{MockEthProvider, NoopProvider},
-        StageCheckpointReader,
+        PruneCheckpointReader, StageCheckpointReader,
     };
     use reth_rpc_eth_api::{node::RpcNodeCoreAdapter, EthApiServer};
-    use reth_storage_api::{BlockReader, BlockReaderIdExt, StateProviderFactory};
+    use reth_storage_api::{BalProvider, BlockReader, BlockReaderIdExt, StateProviderFactory};
     use reth_testing_utils::generators;
     use reth_transaction_pool::test_utils::{testing_pool, TestPool};
 
@@ -613,6 +609,8 @@ mod tests {
             + StateProviderFactory
             + CanonStateSubscriptions<Primitives = reth_ethereum_primitives::EthPrimitives>
             + StageCheckpointReader
+            + PruneCheckpointReader
+            + BalProvider
             + Unpin
             + Clone
             + 'static,
