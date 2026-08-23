@@ -74,6 +74,8 @@ jobs:
           cache-on-failure: true
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y liburing-dev pkg-config libclang-dev
+      # revmc (enabled under --all-features) pulls llvm-sys, which needs LLVM installed.
+      - run: .github/scripts/install_llvm.sh ubuntu
       - run: cargo clippy --workspace --lib --examples --tests --benches --all-features --locked
         env:
           RUSTFLAGS: -D warnings
