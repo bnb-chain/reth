@@ -16,7 +16,7 @@ ignore = [
     "RUSTSEC-2026-0119",
     # https://rustsec.org/advisories/RUSTSEC-2026-0173 proc-macro-error2 unmaintained, transitive dep via aquamarine (build-time only)
     "RUSTSEC-2026-0173",
-    # https://rustsec.org/advisories/RUSTSEC-2026-0247 bitmaps is unmaintained, transitive dep via imbl
+    # https://rustsec.org/advisories/RUSTSEC-2026-0247 bitmaps is unmaintained, transitive dep via imbl -> reth-transaction-pool
     "RUSTSEC-2026-0247",
 ]
 

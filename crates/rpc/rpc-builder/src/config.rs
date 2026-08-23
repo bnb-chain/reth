@@ -89,7 +89,7 @@ pub trait RethRpcServerConfig {
 /// jsonrpsee defaults to [`BatchRequestConfig::Unlimited`], so without this a single HTTP request
 /// can carry an arbitrary number of calls — bounded only by `--rpc.max-request-size` — which makes
 /// per-request rate limiting ineffective. `0` preserves the previous unlimited behaviour.
-fn batch_request_config(limit: u32) -> BatchRequestConfig {
+const fn batch_request_config(limit: u32) -> BatchRequestConfig {
     match limit {
         0 => BatchRequestConfig::Unlimited,
         n => BatchRequestConfig::Limit(n),
