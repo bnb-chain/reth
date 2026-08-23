@@ -145,7 +145,7 @@ pub trait EthBlocks: LoadBlock<RpcConvert: RpcConvert<Primitives = Self::Primiti
     /// Walks back from the tip counting distinct block signers until `threshold` distinct
     /// validators are seen (a block is probabilistically final once that many validators have
     /// built on it), and returns the max of that and the fast-finalized height.
-    /// `verified_validator_num` selects the threshold; see [`resolved_validators_threshold`].
+    /// `verified_validator_num` selects the threshold (see `resolved_validators_threshold`).
     fn finalized_block_number(
         &self,
         verified_validator_num: i64,
