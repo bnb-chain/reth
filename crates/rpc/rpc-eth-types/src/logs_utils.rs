@@ -44,7 +44,8 @@ where
     for (receipt_idx, (tx_hash, receipt)) in tx_hashes_and_receipts.into_iter().enumerate() {
         for log in receipt.logs() {
             // `matches_topic_count` enforces geth's rule that a filter naming N topic positions
-            // only matches logs carrying >= N topics; `Filter::matches` alone cannot (see LogFilter).
+            // only matches logs carrying >= N topics; `Filter::matches` alone cannot (see
+            // LogFilter).
             if filter.matches(log) && filter.matches_topic_count(log.topics()) {
                 let log = Log {
                     inner: log.clone(),
