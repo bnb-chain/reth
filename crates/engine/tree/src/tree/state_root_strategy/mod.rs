@@ -764,7 +764,7 @@ impl DefaultStateRootStrategy {
 /// Spawns a state-root task for a payload builder that runs outside the engine's own payload path
 /// (e.g. a chain-specific block producer such as the BSC parlia miner).
 ///
-/// This is a thin public wrapper over the same [`DefaultStateRootStrategy::spawn_state_root`] the
+/// This is a thin public wrapper over the same `DefaultStateRootStrategy::spawn_state_root` the
 /// engine uses, so the caller gets the current overlay-manager / sparse-trie machinery rather than
 /// a bespoke re-implementation. The engine's own builder path goes through
 /// [`StateRootStrategy::prepare_payload_builder`], which needs the engine's `EngineApiTreeState`;
