@@ -54,20 +54,12 @@ pub trait BlobStore: fmt::Debug + Send + Sync + 'static {
     /// the store uses deferred cleanup: [`DiskFileBlobStore`]
     fn cleanup(&self) -> BlobStoreCleanupStat;
 
-    /// Removes blob files whose last-modified time is older than `max_age`, up to `max_deletes`
-    /// files, and returns how many were removed.
+    /// Removes blob files older than `max_age`, up to `max_deletes`, and returns how many were
+    /// removed.
     ///
-    /// This is a backstop for [`BlobStoreCanonTracker`], which lives in memory only and is rebuilt
-    /// empty on every restart. Sidecars written before the current process started - by a previous
-    /// run, by staged-sync backfill, or by a chain that was later reorged out - are never handed to
-    /// [`BlobStore::delete_all`] and would otherwise stay on disk forever.
-    ///
-    /// Deletion is keyed on the filesystem timestamp rather than on chain state, so it needs no
-    /// index and survives restarts. It is deliberately approximate and must never be the only thing
-    /// standing between the node and data it still has to serve; implementations are expected to
-    /// clamp `max_age` to a safe floor.
-    ///
-    /// The default implementation is a no-op: only file-backed stores need it.
+    /// This is a timestamp-based backstop for sidecars that never reach deferred cleanup, such as
+    /// leftovers from a previous run or backfill. Implementations are expected to clamp `max_age`
+    /// to a safe floor. The default implementation is a no-op.
     fn sweep_expired(&self, _max_age: Duration, _max_deletes: usize) -> usize {
         0
     }
