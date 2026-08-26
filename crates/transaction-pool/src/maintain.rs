@@ -87,7 +87,6 @@ pub struct MaintainPoolConfig {
     ///   - no price exemptions
     ///   - no eviction exemptions
     pub no_local_exemptions: bool,
-
 }
 
 impl Default for MaintainPoolConfig {

@@ -782,8 +782,6 @@ pub trait TransactionPoolExt: TransactionPool {
     /// Maintenance function to cleanup blobs that are no longer needed.
     fn cleanup_blobs(&self);
 
-    /// Removes blob files older than `max_age`, up to `max_deletes`, and returns how many were
-    /// removed.
     fn sweep_expired_blobs(&self, _max_age: Duration, _max_deletes: usize) -> usize {
         0
     }

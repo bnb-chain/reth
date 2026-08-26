@@ -23,14 +23,10 @@ pub const DEFAULT_MAX_CACHED_BLOBS: u32 = 100;
 
 /// Lower bound on how long a blob file is kept, whatever the caller configures.
 ///
-/// BSC keeps sidecars retrievable for ~19.2 days, and this directory also backs `GetBlockBodies`.
-/// A sidecar deleted here cannot be refetched, so the floor is enforced in code.
+/// This directory also backs `GetBlockBodies`, so the floor is enforced in code.
 const MIN_BLOB_RETENTION: Duration = Duration::from_secs(1_658_880);
 
 /// Wall-clock budget for a single [`BlobStore::sweep_expired`] pass.
-///
-/// The sweep runs on the blocking pool inside an `async` block that never hits an await point, so
-/// the shutdown signal cannot preempt it. This bounds how long it can hold up a shutdown.
 const SWEEP_TIME_BUDGET: Duration = Duration::from_secs(30);
 
 /// How many shards the blob directory is split into, by first hex character of the file name.
@@ -66,7 +62,6 @@ impl DiskFileBlobStore {
         let DiskFileBlobStoreConfig { max_cached_entries, .. } = opts;
         let inner = DiskFileBlobStoreInner::new(blob_dir, max_cached_entries);
 
-        // Keep existing sidecars on startup; maintenance deletes them later.
         inner.create_blob_dir()?;
 
         Ok(Self { inner: Arc::new(inner) })
@@ -579,10 +574,6 @@ impl DiskFileBlobStoreInner {
     }
 
     /// Deletes blob files whose last-modified time is older than `max_age`.
-    ///
-    /// The sweep only stats files in the current hex shard to avoid paying `metadata()` on the
-    /// whole directory. The shard is derived from wall clock, so coverage needs no persisted
-    /// cursor.
     fn sweep_expired(&self, max_age: Duration, max_deletes: usize) -> usize {
         let max_age = max_age.max(MIN_BLOB_RETENTION);
 

@@ -55,11 +55,7 @@ pub trait BlobStore: fmt::Debug + Send + Sync + 'static {
     fn cleanup(&self) -> BlobStoreCleanupStat;
 
     /// Removes blob files older than `max_age`, up to `max_deletes`, and returns how many were
-    /// removed.
-    ///
-    /// This is a timestamp-based backstop for sidecars that never reach deferred cleanup, such as
-    /// leftovers from a previous run or backfill. Implementations are expected to clamp `max_age`
-    /// to a safe floor. The default implementation is a no-op.
+    /// removed. The default implementation is a no-op.
     fn sweep_expired(&self, _max_age: Duration, _max_deletes: usize) -> usize {
         0
     }
