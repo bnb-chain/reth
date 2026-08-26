@@ -12,6 +12,7 @@
 use url as _;
 
 pub mod block;
+pub mod block_overrides_ext;
 pub mod builder;
 pub mod cache;
 pub mod error;
@@ -41,6 +42,7 @@ pub use gas_oracle::{
 };
 pub use id_provider::EthSubscriptionIdProvider;
 pub use log_filter::LogFilter;
+pub use block_overrides_ext::BlockOverridesExt;
 pub use pending_block::{PendingBlock, PendingBlockEnv, PendingBlockEnvOrigin};
 pub use transaction::{FillTransactionResult, TransactionDataAndReceipt, TransactionSource};
 pub use tx_forward::ForwardConfig;
