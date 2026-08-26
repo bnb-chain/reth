@@ -30,6 +30,7 @@ pub mod utils;
 
 pub use alloy_rpc_types_eth::FillTransaction;
 pub use block::CachedTransaction;
+pub use block_overrides_ext::BlockOverridesExt;
 pub use builder::config::{EthConfig, EthFilterConfig};
 pub use cache::{
     config::EthStateCacheConfig, db::StateCacheDb, multi_consumer::MultiConsumerLruCache,
@@ -42,7 +43,6 @@ pub use gas_oracle::{
 };
 pub use id_provider::EthSubscriptionIdProvider;
 pub use log_filter::LogFilter;
-pub use block_overrides_ext::BlockOverridesExt;
 pub use pending_block::{PendingBlock, PendingBlockEnv, PendingBlockEnvOrigin};
 pub use transaction::{FillTransactionResult, TransactionDataAndReceipt, TransactionSource};
 pub use tx_forward::ForwardConfig;
