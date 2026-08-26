@@ -47,17 +47,10 @@ pub const MAX_QUEUED_TRANSACTION_LIFETIME: Duration = Duration::from_secs(3 * 60
 // The storage time of Sidecar is 19.2 days 19.2*86400/0.75 = 2211840
 const FINALIZED_BLOCK_OFFSET: u64 = 2211840;
 
-/// Shortest gap between two blob-file sweeps.
-///
-/// The sweep piggybacks on the stale-transaction tick, whose period is operator-tunable
-/// (`max_tx_lifetime`). Without this clamp, lowering that flag would turn a mempool knob into a
-/// "walk the whole blob directory every few minutes" knob.
+/// Minimum interval between blob sweeps.
 const BLOB_SWEEP_MIN_INTERVAL: Duration = Duration::from_secs(3 * 60 * 60);
 
-/// Upper bound on files removed by a single blob sweep.
-///
-/// Also caps the damage from a clock that jumped forward, which would otherwise make every file
-/// look expired at once.
+/// Maximum files removed by a single blob sweep.
 const BLOB_SWEEP_MAX_DELETES: usize = 50_000;
 
 /// Default wall-clock retention for blob sidecar files before the backstop sweep removes them.
