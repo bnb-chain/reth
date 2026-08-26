@@ -320,11 +320,6 @@ pub async fn maintain_transaction_pool<N, Client, P, St>(
                 debug!(target: "txpool", count=%stale_txs.len(), "removing stale transactions");
                 pool.remove_transactions(stale_txs);
                 pool.delete_blobs(stale_blobs);
-
-                let pool = pool.clone();
-                task_spawner.spawn_blocking_task(async move {
-                    pool.cleanup_blobs();
-                });
             }
             _ = blob_sweep_interval.tick() => {
                 let pool = pool.clone();
