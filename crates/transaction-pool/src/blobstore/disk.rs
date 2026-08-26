@@ -13,7 +13,7 @@ use schnellru::{ByLength, LruMap};
 use std::{
     fmt, fs, io,
     path::PathBuf,
-    sync::Arc,
+    sync::{atomic::{AtomicU8, Ordering}, Arc},
     time::{Duration, Instant, SystemTime},
 };
 use tracing::{debug, trace};
@@ -30,10 +30,7 @@ pub(crate) const BLOB_SWEEP_MAX_AGE: Duration = Duration::from_secs(1_918_080);
 const SWEEP_TIME_BUDGET: Duration = Duration::from_secs(30);
 
 /// How many shards the blob directory is split into, by first hex character of the file name.
-const SWEEP_SHARDS: u64 = 16;
-
-/// How often the sweep advances to the next shard.
-const SWEEP_SHARD_ROTATION: Duration = Duration::from_secs(3 * 60 * 60);
+const SWEEP_SHARDS: u8 = 16;
 
 /// A cache size heuristic based on the highest blob params
 ///
@@ -415,6 +412,7 @@ struct DiskFileBlobStoreInner {
     size_tracker: BlobStoreSize,
     file_lock: RwLock<()>,
     txs_to_delete: RwLock<B256Set>,
+    next_sweep_shard: AtomicU8,
     /// Tracks of known versioned hashes and a transaction they exist in
     ///
     /// Note: It is possible that one blob can appear in multiple transactions but this only tracks
@@ -431,6 +429,7 @@ impl DiskFileBlobStoreInner {
             size_tracker: Default::default(),
             file_lock: Default::default(),
             txs_to_delete: Default::default(),
+            next_sweep_shard: AtomicU8::new(0),
             versioned_hashes_to_txhash: Mutex::new(LruMap::new(ByLength::new(
                 VERSIONED_HASH_TO_TX_HASH_CACHE_SIZE as u32,
             ))),
@@ -579,9 +578,7 @@ impl DiskFileBlobStoreInner {
 
         let now = SystemTime::now();
         let Some(cutoff) = now.checked_sub(max_age) else { return 0 };
-        let Ok(since_epoch) = now.duration_since(SystemTime::UNIX_EPOCH) else { return 0 };
-
-        let shard = (since_epoch.as_secs() / SWEEP_SHARD_ROTATION.as_secs()) % SWEEP_SHARDS;
+        let shard = self.next_sweep_shard.fetch_add(1, Ordering::Relaxed) % SWEEP_SHARDS;
         let Some(shard) = char::from_digit(shard as u32, 16) else { return 0 };
 
         let Ok(entries) = fs::read_dir(&self.blob_dir) else { return 0 };
@@ -851,13 +848,6 @@ mod tests {
         (store, dir)
     }
 
-    /// Returns the shard `sweep_expired` will pick right now.
-    fn current_sweep_shard() -> char {
-        let secs = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
-        char::from_digit(((secs / SWEEP_SHARD_ROTATION.as_secs()) % SWEEP_SHARDS) as u32, 16)
-            .unwrap()
-    }
-
     /// Writes `name` into the blob dir and backdates its mtime by `age`.
     fn write_aged_file(dir: &std::path::Path, name: &str, age: Duration) {
         let path = dir.join(name);
@@ -869,8 +859,8 @@ mod tests {
     #[test]
     fn sweep_expired_deletes_only_aged_files_in_the_current_shard() {
         let (store, dir) = tmp_store();
-        let shard = current_sweep_shard();
-        let other = if shard == '0' { '1' } else { '0' };
+        let shard = '0';
+        let other = '1';
         let old = Duration::from_secs(30 * 24 * 60 * 60);
 
         let aged_in_shard = format!("{shard}{}", "a".repeat(63));
@@ -893,8 +883,7 @@ mod tests {
     #[test]
     fn sweep_expired_clamps_max_age_to_the_retention_floor() {
         let (store, dir) = tmp_store();
-        let shard = current_sweep_shard();
-        let name = format!("{shard}{}", "d".repeat(63));
+        let name = format!("{}{}", '0', "d".repeat(63));
 
         write_aged_file(dir.path(), &name, Duration::from_secs(24 * 60 * 60));
 
@@ -905,11 +894,10 @@ mod tests {
     #[test]
     fn sweep_expired_honours_the_delete_cap() {
         let (store, dir) = tmp_store();
-        let shard = current_sweep_shard();
         let old = Duration::from_secs(30 * 24 * 60 * 60);
 
         for i in 0..5 {
-            write_aged_file(dir.path(), &format!("{shard}{i:063x}"), old);
+            write_aged_file(dir.path(), &format!("0{i:063x}"), old);
         }
 
         assert_eq!(store.sweep_expired(Duration::from_secs(1), 2), 2);
