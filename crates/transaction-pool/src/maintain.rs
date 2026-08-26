@@ -2,7 +2,6 @@
 
 use crate::{
     blobstore::{BlobSidecarConverter, BlobStoreCanonTracker, BlobStoreUpdates},
-    config::DEFAULT_MAX_BLOB_FILE_AGE,
     error::PoolError,
     metrics::MaintainPoolMetrics,
     traits::{CanonicalStateUpdate, EthPoolTransaction, TransactionPool, TransactionPoolExt},
@@ -62,6 +61,9 @@ const BLOB_SWEEP_MIN_INTERVAL: Duration = Duration::from_secs(3 * 60 * 60);
 /// look expired at once.
 const BLOB_SWEEP_MAX_DELETES: usize = 50_000;
 
+/// Default wall-clock retention for blob sidecar files before the backstop sweep removes them.
+const BLOB_SWEEP_MAX_AGE: Duration = Duration::from_secs(1_918_080);
+
 /// Additional settings for maintaining the transaction pool
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MaintainPoolConfig {
@@ -86,14 +88,6 @@ pub struct MaintainPoolConfig {
     ///   - no eviction exemptions
     pub no_local_exemptions: bool,
 
-    /// How long a blob file may sit on disk before the backstop sweep removes it.
-    ///
-    /// This exists because [`BlobStoreCanonTracker`] is in-memory only: it is rebuilt empty on
-    /// every restart and is never told about sidecars written by staged-sync backfill, so on its
-    /// own it leaks blob files permanently.
-    ///
-    /// [`BlobStoreCanonTracker`]: crate::blobstore::BlobStoreCanonTracker
-    pub max_blob_file_age: Option<Duration>,
 }
 
 impl Default for MaintainPoolConfig {
@@ -103,7 +97,6 @@ impl Default for MaintainPoolConfig {
             max_reload_accounts: 100,
             max_tx_lifetime: MAX_QUEUED_TRANSACTION_LIFETIME,
             no_local_exemptions: false,
-            max_blob_file_age: Some(DEFAULT_MAX_BLOB_FILE_AGE),
         }
     }
 }
@@ -334,21 +327,17 @@ pub async fn maintain_transaction_pool<N, Client, P, St>(
                 pool.remove_transactions(stale_txs);
                 pool.delete_blobs(stale_blobs);
 
-                // `delete_blobs` only queues; the sole flush site sits inside the finalized-block
-                // arm, which cannot fire until the node has been up for FINALIZED_BLOCK_OFFSET
-                // blocks. Until then `txs_to_delete` grows unbounded and nothing reaches the disk,
-                // so flush here as well.
-                let sweep = config
-                    .max_blob_file_age
-                    .filter(|_| last_blob_sweep.elapsed() >= BLOB_SWEEP_MIN_INTERVAL);
-                if sweep.is_some() {
+                // `delete_blobs` only queues, so flush here as well.
+                let sweep = last_blob_sweep.elapsed() >= BLOB_SWEEP_MIN_INTERVAL;
+                if sweep {
                     last_blob_sweep = Instant::now();
                 }
                 let pool = pool.clone();
                 task_spawner.spawn_blocking_task(async move {
                     pool.cleanup_blobs();
-                    if let Some(max_age) = sweep {
-                        let deleted = pool.sweep_expired_blobs(max_age, BLOB_SWEEP_MAX_DELETES);
+                    if sweep {
+                        let deleted =
+                            pool.sweep_expired_blobs(BLOB_SWEEP_MAX_AGE, BLOB_SWEEP_MAX_DELETES);
                         if deleted > 0 {
                             debug!(target: "txpool", %deleted, "swept expired blob files");
                         }

@@ -34,11 +34,6 @@ pub const MAX_NEW_PENDING_TXS_NOTIFICATIONS: usize = 200;
 /// Default maximum allowed in flight delegated transactions per account.
 pub const DEFAULT_MAX_INFLIGHT_DELEGATED_SLOTS: usize = 1;
 
-/// Default wall-clock retention for blob sidecar files before the backstop sweep can remove them.
-///
-/// This keeps the current ~19.2 day floor plus a 3 day buffer.
-pub const DEFAULT_MAX_BLOB_FILE_AGE: Duration = Duration::from_secs(1_918_080);
-
 /// Configuration options for the Transaction pool.
 #[derive(Debug, Clone)]
 pub struct PoolConfig {
@@ -73,8 +68,6 @@ pub struct PoolConfig {
     pub max_new_pending_txs_notifications: usize,
     /// Maximum lifetime for transactions in the pool
     pub max_queued_lifetime: Duration,
-    /// How long a blob sidecar file may sit on disk before the backstop sweep removes it.
-    pub max_blob_file_age: Option<Duration>,
     /// The maximum allowed inflight transactions a delegated sender can have.
     ///
     /// This restricts how many executable transaction a delegated sender can stack.
@@ -135,7 +128,6 @@ impl Default for PoolConfig {
             new_tx_listener_buffer_size: NEW_TX_LISTENER_BUFFER_SIZE,
             max_new_pending_txs_notifications: MAX_NEW_PENDING_TXS_NOTIFICATIONS,
             max_queued_lifetime: MAX_QUEUED_TRANSACTION_LIFETIME,
-            max_blob_file_age: Some(DEFAULT_MAX_BLOB_FILE_AGE),
             max_inflight_delegated_slot_limit: DEFAULT_MAX_INFLIGHT_DELEGATED_SLOTS,
         }
     }
