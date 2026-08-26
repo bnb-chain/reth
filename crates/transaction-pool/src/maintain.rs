@@ -1,7 +1,9 @@
 //! Support for maintaining the state of the transaction pool
 
 use crate::{
-    blobstore::{BlobSidecarConverter, BlobStoreCanonTracker, BlobStoreUpdates},
+    blobstore::{
+        disk::BLOB_SWEEP_MAX_AGE, BlobSidecarConverter, BlobStoreCanonTracker, BlobStoreUpdates,
+    },
     error::PoolError,
     metrics::MaintainPoolMetrics,
     traits::{CanonicalStateUpdate, EthPoolTransaction, TransactionPool, TransactionPoolExt},
@@ -52,11 +54,6 @@ const BLOB_SWEEP_MIN_INTERVAL: Duration = Duration::from_secs(3 * 60 * 60);
 
 /// Maximum files removed by a single blob sweep.
 const BLOB_SWEEP_MAX_DELETES: usize = 50_000;
-
-/// Default wall-clock retention for blob sidecar files before the backstop sweep removes them.
-///
-/// This keeps the current ~19.2 day floor plus a 3 day buffer.
-const BLOB_SWEEP_MAX_AGE: Duration = Duration::from_secs(1_918_080);
 
 /// Additional settings for maintaining the transaction pool
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

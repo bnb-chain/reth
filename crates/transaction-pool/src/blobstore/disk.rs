@@ -21,10 +21,10 @@ use tracing::{debug, trace};
 /// How many [`BlobTransactionSidecarVariant`] to cache in memory.
 pub const DEFAULT_MAX_CACHED_BLOBS: u32 = 100;
 
-/// Lower bound on how long a blob file is kept, whatever the caller configures.
+/// Default wall-clock retention for blob sidecar files before the backstop sweep removes them.
 ///
-/// This directory also backs `GetBlockBodies`, so the floor is enforced in code.
-const MIN_BLOB_RETENTION: Duration = Duration::from_secs(1_658_880);
+/// This keeps the current ~19.2 day floor plus a 3 day buffer.
+pub(crate) const BLOB_SWEEP_MAX_AGE: Duration = Duration::from_secs(1_918_080);
 
 /// Wall-clock budget for a single [`BlobStore::sweep_expired`] pass.
 const SWEEP_TIME_BUDGET: Duration = Duration::from_secs(30);
@@ -575,7 +575,7 @@ impl DiskFileBlobStoreInner {
 
     /// Deletes blob files whose last-modified time is older than `max_age`.
     fn sweep_expired(&self, max_age: Duration, max_deletes: usize) -> usize {
-        let max_age = max_age.max(MIN_BLOB_RETENTION);
+        let max_age = max_age.max(BLOB_SWEEP_MAX_AGE);
 
         let now = SystemTime::now();
         let Some(cutoff) = now.checked_sub(max_age) else { return 0 };
