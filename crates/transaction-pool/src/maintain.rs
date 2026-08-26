@@ -34,7 +34,6 @@ use std::{
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
     sync::Arc,
-    time::Instant,
 };
 use tokio::{
     sync::oneshot,
@@ -199,8 +198,8 @@ pub async fn maintain_transaction_pool<N, Client, P, St>(
     // eviction interval for stale non local txs
     let mut stale_eviction_interval = time::interval(config.max_tx_lifetime);
 
-    // Last time the blob sweep ran, to keep it on its own cadence - see BLOB_SWEEP_MIN_INTERVAL.
-    let mut last_blob_sweep = Instant::now();
+    // periodic blob sweep for orphaned files on disk
+    let mut blob_sweep_interval = time::interval(BLOB_SWEEP_MIN_INTERVAL);
 
     // toggle for the first notification
     let mut first_event = true;
@@ -322,20 +321,18 @@ pub async fn maintain_transaction_pool<N, Client, P, St>(
                 pool.remove_transactions(stale_txs);
                 pool.delete_blobs(stale_blobs);
 
-                // `delete_blobs` only queues, so flush here as well.
-                let sweep = last_blob_sweep.elapsed() >= BLOB_SWEEP_MIN_INTERVAL;
-                if sweep {
-                    last_blob_sweep = Instant::now();
-                }
                 let pool = pool.clone();
                 task_spawner.spawn_blocking_task(async move {
                     pool.cleanup_blobs();
-                    if sweep {
-                        let deleted =
-                            pool.sweep_expired_blobs(BLOB_SWEEP_MAX_AGE, BLOB_SWEEP_MAX_DELETES);
-                        if deleted > 0 {
-                            debug!(target: "txpool", %deleted, "swept expired blob files");
-                        }
+                });
+            }
+            _ = blob_sweep_interval.tick() => {
+                let pool = pool.clone();
+                task_spawner.spawn_blocking_task(async move {
+                    let deleted =
+                        pool.sweep_expired_blobs(BLOB_SWEEP_MAX_AGE, BLOB_SWEEP_MAX_DELETES);
+                    if deleted > 0 {
+                        debug!(target: "txpool", %deleted, "swept expired blob files");
                     }
                 });
             }
