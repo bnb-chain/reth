@@ -24,7 +24,7 @@ jobs:
     # full nodes in one process and drives them through the engine API; on the
     # 4-core ubuntu-latest the nodes contend for cores, block production stalls,
     # and runs trip the 90 minute timeout below.
-    runs-on: ${{ github.repository == 'bnb-chain/reth' && 'runner-linux-x64-16core' || 'ubuntu-latest' }}
+    runs-on: runner-linux-x64-16core
     env:
       RUST_BACKTRACE: 1
     timeout-minutes: 90
