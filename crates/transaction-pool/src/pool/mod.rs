@@ -1329,6 +1329,7 @@ where
         self.update_blob_store_metrics();
     }
 
+    /// Removes expired blob files and refreshes blob store metrics.
     pub fn sweep_expired_blobs(&self, max_age: Duration, max_deletes: usize) -> usize {
         let deleted = self.blob_store.sweep_expired(max_age, max_deletes);
         self.update_blob_store_metrics();

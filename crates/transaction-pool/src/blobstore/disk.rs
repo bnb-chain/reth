@@ -13,7 +13,10 @@ use schnellru::{ByLength, LruMap};
 use std::{
     fmt, fs, io,
     path::PathBuf,
-    sync::{atomic::{AtomicU8, Ordering}, Arc},
+    sync::{
+        atomic::{AtomicU8, Ordering},
+        Arc,
+    },
     time::{Duration, Instant, SystemTime},
 };
 use tracing::{debug, trace};
