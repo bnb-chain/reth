@@ -62,6 +62,8 @@ const BLOB_SWEEP_MIN_INTERVAL: Duration = Duration::from_secs(3 * 60 * 60);
 const BLOB_SWEEP_MAX_DELETES: usize = 50_000;
 
 /// Default wall-clock retention for blob sidecar files before the backstop sweep removes them.
+///
+/// This keeps the current ~19.2 day floor plus a 3 day buffer.
 const BLOB_SWEEP_MAX_AGE: Duration = Duration::from_secs(1_918_080);
 
 /// Additional settings for maintaining the transaction pool
@@ -195,13 +197,7 @@ pub async fn maintain_transaction_pool<N, Client, P, St>(
     let mut reload_accounts_fut = Fuse::terminated();
 
     // eviction interval for stale non local txs
-    // Deliberately not `time::interval`, whose first tick is immediately ready: at startup the pool
-    // is empty so the stale-tx pass has nothing to do, while the blob sweep below would kick off a
-    // directory walk right as the node starts syncing.
-    let mut stale_eviction_interval = time::interval_at(
-        time::Instant::now() + config.max_tx_lifetime,
-        config.max_tx_lifetime,
-    );
+    let mut stale_eviction_interval = time::interval(config.max_tx_lifetime);
 
     // Last time the blob sweep ran, to keep it on its own cadence - see BLOB_SWEEP_MIN_INTERVAL.
     let mut last_blob_sweep = Instant::now();
