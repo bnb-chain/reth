@@ -2,6 +2,7 @@
 
 use crate::{
     blobstore::{BlobSidecarConverter, BlobStoreCanonTracker, BlobStoreUpdates},
+    config::DEFAULT_MAX_BLOB_FILE_AGE,
     error::PoolError,
     metrics::MaintainPoolMetrics,
     traits::{CanonicalStateUpdate, EthPoolTransaction, TransactionPool, TransactionPoolExt},
@@ -87,14 +88,9 @@ pub struct MaintainPoolConfig {
 
     /// How long a blob file may sit on disk before the backstop sweep removes it.
     ///
-    /// `None` disables the sweep. This exists because [`BlobStoreCanonTracker`] is in-memory only:
-    /// it is rebuilt empty on every restart and is never told about sidecars written by staged-sync
-    /// backfill, so on its own it leaks blob files permanently.
-    ///
-    /// Off by default. [`FINALIZED_BLOCK_OFFSET`] is a *block* count and is applied without
-    /// consulting the chain spec, so the retention it encodes is only ~19.2 days at BSC's block
-    /// time - on a 12s chain the same constant is closer to a year. A wall-clock default derived
-    /// from it would silently shorten retention for every other chain.
+    /// This exists because [`BlobStoreCanonTracker`] is in-memory only: it is rebuilt empty on
+    /// every restart and is never told about sidecars written by staged-sync backfill, so on its
+    /// own it leaks blob files permanently.
     ///
     /// [`BlobStoreCanonTracker`]: crate::blobstore::BlobStoreCanonTracker
     pub max_blob_file_age: Option<Duration>,
@@ -107,7 +103,7 @@ impl Default for MaintainPoolConfig {
             max_reload_accounts: 100,
             max_tx_lifetime: MAX_QUEUED_TRANSACTION_LIFETIME,
             no_local_exemptions: false,
-            max_blob_file_age: None,
+            max_blob_file_age: Some(DEFAULT_MAX_BLOB_FILE_AGE),
         }
     }
 }
