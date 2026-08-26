@@ -59,6 +59,10 @@ impl DiskFileBlobStore {
         let DiskFileBlobStoreConfig { max_cached_entries, .. } = opts;
         let inner = DiskFileBlobStoreInner::new(blob_dir, max_cached_entries);
 
+        // Do NOT wipe existing sidecars on startup. Peers may request bodies for
+        // recently-finalized blocks (EIP-4844 keeps sidecars around for the blob
+        // retention window); the pool maintenance task handles delayed deletion
+        // via FINALIZED_BLOCK_OFFSET once blocks age out.
         inner.create_blob_dir()?;
 
         Ok(Self { inner: Arc::new(inner) })
@@ -592,7 +596,7 @@ impl DiskFileBlobStoreInner {
                 break
             }
             scanned += 1;
-            if scanned.is_multiple_of(4096) && Instant::now() >= deadline {
+            if Instant::now() >= deadline {
                 break
             }
 
