@@ -10,11 +10,36 @@ use alloy_eips::{
 use alloy_primitives::{map::B256Set, TxHash, B128, B256};
 use parking_lot::{Mutex, RwLock};
 use schnellru::{ByLength, LruMap};
-use std::{fmt, fs, io, path::PathBuf, sync::Arc};
+use std::{
+    fmt, fs, io,
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant, SystemTime},
+};
 use tracing::{debug, trace};
 
 /// How many [`BlobTransactionSidecarVariant`] to cache in memory.
 pub const DEFAULT_MAX_CACHED_BLOBS: u32 = 100;
+
+/// Lower bound on how long a blob file is kept, whatever the caller configures.
+///
+/// BSC keeps sidecars retrievable for ~19.2 days (BEP-336 `MinBlocksForBlobRequests` plus geth's
+/// one-day reserve), and downstream this directory also backs `GetBlockBodies`. A sidecar deleted
+/// here cannot be refetched from anywhere, so the floor is enforced in code rather than left to
+/// configuration.
+const MIN_BLOB_RETENTION: Duration = Duration::from_secs(1_658_880);
+
+/// Wall-clock budget for a single [`BlobStore::sweep_expired`] pass.
+///
+/// The sweep runs on the blocking pool inside an `async` block that never hits an await point, so
+/// the shutdown signal cannot preempt it. This bounds how long it can hold up a shutdown.
+const SWEEP_TIME_BUDGET: Duration = Duration::from_secs(30);
+
+/// How many shards the blob directory is split into, by first hex character of the file name.
+const SWEEP_SHARDS: u64 = 16;
+
+/// How often the sweep advances to the next shard.
+const SWEEP_SHARD_ROTATION: Duration = Duration::from_secs(3 * 60 * 60);
 
 /// A cache size heuristic based on the highest blob params
 ///
@@ -263,6 +288,10 @@ impl BlobStore for DiskFileBlobStore {
         self.inner.size_tracker.sub_size(subsize as usize);
         self.inner.size_tracker.sub_len(stat.delete_succeed);
         stat
+    }
+
+    fn sweep_expired(&self, max_age: Duration, max_deletes: usize) -> usize {
+        self.inner.sweep_expired(max_age, max_deletes)
     }
 
     fn get(&self, tx: B256) -> Result<Option<Arc<BlobTransactionSidecarVariant>>, BlobStoreError> {
@@ -554,6 +583,86 @@ impl DiskFileBlobStoreInner {
         self.blob_dir.join(format!("{tx:x}"))
     }
 
+    /// Deletes blob files whose last-modified time is older than `max_age`.
+    ///
+    /// Only files whose name starts with the current shard's hex digit are stat'ed, which keeps the
+    /// per-pass `lstat` count near 1/[`SWEEP_SHARDS`] of the directory - `lstat` is a random inode
+    /// read and is what actually costs, while walking the names is a cheap sequential `getdents`.
+    /// The shard is derived from wall clock, so coverage needs no persisted cursor and a restart
+    /// does not reset it.
+    ///
+    /// The directory walk itself is never truncated: [`fs::ReadDir`] has no resumable cursor and
+    /// readdir order is uncorrelated with mtime, so stopping early would re-visit the same entries
+    /// every pass and never reach the rest.
+    fn sweep_expired(&self, max_age: Duration, max_deletes: usize) -> usize {
+        // Never go below the floor, whatever was configured.
+        let max_age = max_age.max(MIN_BLOB_RETENTION);
+
+        let now = SystemTime::now();
+        // A clock far enough in the past that the cutoff underflows: do nothing.
+        let Some(cutoff) = now.checked_sub(max_age) else { return 0 };
+        let Ok(since_epoch) = now.duration_since(SystemTime::UNIX_EPOCH) else { return 0 };
+
+        let shard = (since_epoch.as_secs() / SWEEP_SHARD_ROTATION.as_secs()) % SWEEP_SHARDS;
+        // Blob file names come from `format!("{tx:x}")`, so the digit must be lowercase hex.
+        let Some(shard) = char::from_digit(shard as u32, 16) else { return 0 };
+
+        let Ok(entries) = fs::read_dir(&self.blob_dir) else { return 0 };
+
+        let deadline = Instant::now() + SWEEP_TIME_BUDGET;
+        let mut deleted = 0usize;
+        let mut scanned = 0usize;
+
+        for entry in entries.flatten() {
+            if deleted >= max_deletes {
+                break
+            }
+            // Checking the clock costs more than the name filter below, so only do it periodically.
+            scanned += 1;
+            if scanned.is_multiple_of(4096) && Instant::now() >= deadline {
+                break
+            }
+
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            // Anything that is not a 64-char lowercase hex name was not written by us - leave it
+            // alone. The shard check deliberately precedes `metadata()`: skipping the syscall for
+            // 15 out of 16 files is the whole point of sharding.
+            if name.len() != 64 ||
+                !name.starts_with(shard) ||
+                !name.bytes().all(|b| b.is_ascii_hexdigit())
+            {
+                continue
+            }
+
+            // Fail open: if we cannot prove the file is old, keep it. Never fall back to
+            // `created()`/`accessed()` - the latter is meaningless under `relatime`.
+            let Ok(meta) = entry.metadata() else { continue };
+            let Ok(modified) = meta.modified() else { continue };
+            if modified >= cutoff {
+                continue
+            }
+
+            match fs::remove_file(entry.path()) {
+                Ok(()) => deleted += 1,
+                // Raced with `cleanup()` or another sweep.
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+                Err(err) => {
+                    debug!(target: "txpool::blob", %err, name, "Failed to sweep expired blob")
+                }
+            }
+        }
+
+        // `size_tracker` is deliberately left alone: it only counts blobs inserted by the current
+        // process, and the files swept here were overwhelmingly written by an earlier run and never
+        // counted. Subtracting them would drag the gauges monotonically to zero.
+        if deleted > 0 {
+            debug!(target: "txpool::blob", deleted, %shard, scanned, "Swept expired blobs");
+        }
+
+        deleted
+    }
+
     /// Retrieves the blob data for the given transaction hash.
     #[inline]
     fn read_one(&self, tx: B256) -> Result<Option<BlobTransactionSidecarVariant>, BlobStoreError> {
@@ -773,6 +882,75 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = DiskFileBlobStore::open(dir.path(), Default::default()).unwrap();
         (store, dir)
+    }
+
+    /// The shard `sweep_expired` will pick right now, computed the same way the implementation
+    /// does. Only stable away from a rotation boundary, which is 3h wide.
+    fn current_sweep_shard() -> char {
+        let secs = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
+        char::from_digit(((secs / SWEEP_SHARD_ROTATION.as_secs()) % SWEEP_SHARDS) as u32, 16)
+            .unwrap()
+    }
+
+    /// Writes `name` into the blob dir and backdates its mtime by `age`.
+    fn write_aged_file(dir: &std::path::Path, name: &str, age: Duration) {
+        let path = dir.join(name);
+        fs::write(&path, b"blob").unwrap();
+        let mtime = SystemTime::now().checked_sub(age).unwrap();
+        fs::File::options().write(true).open(&path).unwrap().set_modified(mtime).unwrap();
+    }
+
+    #[test]
+    fn sweep_expired_deletes_only_aged_files_in_the_current_shard() {
+        let (store, dir) = tmp_store();
+        let shard = current_sweep_shard();
+        let other = if shard == '0' { '1' } else { '0' };
+        let old = Duration::from_secs(30 * 24 * 60 * 60);
+
+        let aged_in_shard = format!("{shard}{}", "a".repeat(63));
+        let fresh_in_shard = format!("{shard}{}", "b".repeat(63));
+        let aged_other_shard = format!("{other}{}", "c".repeat(63));
+
+        write_aged_file(dir.path(), &aged_in_shard, old);
+        write_aged_file(dir.path(), &fresh_in_shard, Duration::from_secs(0));
+        write_aged_file(dir.path(), &aged_other_shard, old);
+        // Not one of ours: must survive regardless of age.
+        write_aged_file(dir.path(), "README", old);
+
+        // `max_age` is clamped up to MIN_BLOB_RETENTION, so only the 30-day-old file qualifies.
+        assert_eq!(store.sweep_expired(Duration::from_secs(1), 10), 1);
+
+        assert!(!dir.path().join(&aged_in_shard).exists());
+        assert!(dir.path().join(&fresh_in_shard).exists());
+        assert!(dir.path().join(&aged_other_shard).exists());
+        assert!(dir.path().join("README").exists());
+    }
+
+    #[test]
+    fn sweep_expired_clamps_max_age_to_the_retention_floor() {
+        let (store, dir) = tmp_store();
+        let shard = current_sweep_shard();
+        let name = format!("{shard}{}", "d".repeat(63));
+
+        // Older than the caller asked for, but well inside MIN_BLOB_RETENTION.
+        write_aged_file(dir.path(), &name, Duration::from_secs(24 * 60 * 60));
+
+        assert_eq!(store.sweep_expired(Duration::from_secs(1), 10), 0);
+        assert!(dir.path().join(&name).exists());
+    }
+
+    #[test]
+    fn sweep_expired_honours_the_delete_cap() {
+        let (store, dir) = tmp_store();
+        let shard = current_sweep_shard();
+        let old = Duration::from_secs(30 * 24 * 60 * 60);
+
+        for i in 0..5 {
+            write_aged_file(dir.path(), &format!("{shard}{i:063x}"), old);
+        }
+
+        assert_eq!(store.sweep_expired(Duration::from_secs(1), 2), 2);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 3);
     }
 
     fn rng_blobs(num: usize) -> Vec<(TxHash, BlobTransactionSidecarVariant)> {

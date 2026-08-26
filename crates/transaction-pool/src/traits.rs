@@ -86,6 +86,7 @@ use std::{
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
+    time::Duration,
 };
 use tokio::sync::mpsc::Receiver;
 
@@ -780,6 +781,16 @@ pub trait TransactionPoolExt: TransactionPool {
 
     /// Maintenance function to cleanup blobs that are no longer needed.
     fn cleanup_blobs(&self);
+
+    /// Maintenance function that removes blob files older than `max_age`, up to `max_deletes`, and
+    /// returns how many were removed.
+    ///
+    /// Backstop for the in-memory canon tracker, which cannot see sidecars written by a previous
+    /// process run, by staged-sync backfill, or by a chain that was reorged out. Defaults to a
+    /// no-op so that pools backed by a store without on-disk state are unaffected.
+    fn sweep_expired_blobs(&self, _max_age: Duration, _max_deletes: usize) -> usize {
+        0
+    }
 }
 
 /// A Helper type that bundles all transactions in the pool.

@@ -105,7 +105,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 use tokio::sync::mpsc;
 use tracing::{debug, trace, warn};
@@ -1327,6 +1327,13 @@ where
         let stat = self.blob_store.cleanup();
         self.blob_store_metrics.blobstore_failed_deletes.increment(stat.delete_failed as u64);
         self.update_blob_store_metrics();
+    }
+
+    /// Removes blob files older than `max_age` from the blob store.
+    pub fn sweep_expired_blobs(&self, max_age: Duration, max_deletes: usize) -> usize {
+        let deleted = self.blob_store.sweep_expired(max_age, max_deletes);
+        self.update_blob_store_metrics();
+        deleted
     }
 
     fn update_blob_store_metrics(&self) {

@@ -404,6 +404,13 @@ pub struct TxPoolArgs {
     #[arg(long = "txpool.lifetime", value_parser = parse_duration_from_secs_or_ms, value_name = "DURATION", default_value = format_duration_as_secs_or_ms(DefaultTxPoolValues::get_global().max_queued_lifetime))]
     pub max_queued_lifetime: Duration,
 
+    /// How long a blob sidecar file may sit on disk before the backstop sweep removes it.
+    ///
+    /// Unset by default, which disables the sweep. Values below the built-in retention floor are
+    /// clamped up to it.
+    #[arg(long = "txpool.blob-file-max-age", value_parser = parse_duration_from_secs_or_ms, value_name = "DURATION")]
+    pub max_blob_file_age: Option<Duration>,
+
     /// Age threshold for hash-only reannouncement of local pending transactions.
     ///
     /// Default is effectively disabled at 10 years. Minimum is 1 minute.
@@ -482,6 +489,8 @@ impl Default for TxPoolArgs {
             max_batch_size,
         } = DefaultTxPoolValues::get_global().clone();
         Self {
+            // Off by default: the sweep is a backstop, and the right age is chain-specific.
+            max_blob_file_age: None,
             pending_max_count,
             pending_max_size,
             basefee_max_count,
@@ -556,6 +565,7 @@ impl RethTransactionPoolConfig for TxPoolArgs {
             new_tx_listener_buffer_size: self.new_tx_listener_buffer_size,
             max_new_pending_txs_notifications: self.max_new_pending_txs_notifications,
             max_queued_lifetime: self.max_queued_lifetime,
+            max_blob_file_age: self.max_blob_file_age,
             max_inflight_delegated_slot_limit: default_config.max_inflight_delegated_slot_limit,
         }
     }
@@ -609,6 +619,7 @@ mod tests {
     #[test]
     fn txpool_args() {
         let args = TxPoolArgs {
+            max_blob_file_age: None,
             pending_max_count: 1000,
             pending_max_size: 200,
             basefee_max_count: 2000,

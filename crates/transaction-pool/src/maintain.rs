@@ -34,6 +34,7 @@ use std::{
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
     sync::Arc,
+    time::Instant,
 };
 use tokio::{
     sync::oneshot,
@@ -46,6 +47,19 @@ pub const MAX_QUEUED_TRANSACTION_LIFETIME: Duration = Duration::from_secs(3 * 60
 
 // The storage time of Sidecar is 19.2 days 19.2*86400/0.75 = 2211840
 const FINALIZED_BLOCK_OFFSET: u64 = 2211840;
+
+/// Shortest gap between two blob-file sweeps.
+///
+/// The sweep piggybacks on the stale-transaction tick, whose period is operator-tunable
+/// (`max_tx_lifetime`). Without this clamp, lowering that flag would turn a mempool knob into a
+/// "walk the whole blob directory every few minutes" knob.
+const BLOB_SWEEP_MIN_INTERVAL: Duration = Duration::from_secs(3 * 60 * 60);
+
+/// Upper bound on files removed by a single blob sweep.
+///
+/// Also caps the damage from a clock that jumped forward, which would otherwise make every file
+/// look expired at once.
+const BLOB_SWEEP_MAX_DELETES: usize = 50_000;
 
 /// Additional settings for maintaining the transaction pool
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,6 +84,20 @@ pub struct MaintainPoolConfig {
     ///   - no price exemptions
     ///   - no eviction exemptions
     pub no_local_exemptions: bool,
+
+    /// How long a blob file may sit on disk before the backstop sweep removes it.
+    ///
+    /// `None` disables the sweep. This exists because [`BlobStoreCanonTracker`] is in-memory only:
+    /// it is rebuilt empty on every restart and is never told about sidecars written by staged-sync
+    /// backfill, so on its own it leaks blob files permanently.
+    ///
+    /// Off by default. [`FINALIZED_BLOCK_OFFSET`] is a *block* count and is applied without
+    /// consulting the chain spec, so the retention it encodes is only ~19.2 days at BSC's block
+    /// time - on a 12s chain the same constant is closer to a year. A wall-clock default derived
+    /// from it would silently shorten retention for every other chain.
+    ///
+    /// [`BlobStoreCanonTracker`]: crate::blobstore::BlobStoreCanonTracker
+    pub max_blob_file_age: Option<Duration>,
 }
 
 impl Default for MaintainPoolConfig {
@@ -79,6 +107,7 @@ impl Default for MaintainPoolConfig {
             max_reload_accounts: 100,
             max_tx_lifetime: MAX_QUEUED_TRANSACTION_LIFETIME,
             no_local_exemptions: false,
+            max_blob_file_age: None,
         }
     }
 }
@@ -178,7 +207,16 @@ pub async fn maintain_transaction_pool<N, Client, P, St>(
     let mut reload_accounts_fut = Fuse::terminated();
 
     // eviction interval for stale non local txs
-    let mut stale_eviction_interval = time::interval(config.max_tx_lifetime);
+    // Deliberately not `time::interval`, whose first tick is immediately ready: at startup the pool
+    // is empty so the stale-tx pass has nothing to do, while the blob sweep below would kick off a
+    // directory walk right as the node starts syncing.
+    let mut stale_eviction_interval = time::interval_at(
+        time::Instant::now() + config.max_tx_lifetime,
+        config.max_tx_lifetime,
+    );
+
+    // Last time the blob sweep ran, to keep it on its own cadence - see BLOB_SWEEP_MIN_INTERVAL.
+    let mut last_blob_sweep = Instant::now();
 
     // toggle for the first notification
     let mut first_event = true;
@@ -299,6 +337,27 @@ pub async fn maintain_transaction_pool<N, Client, P, St>(
                 debug!(target: "txpool", count=%stale_txs.len(), "removing stale transactions");
                 pool.remove_transactions(stale_txs);
                 pool.delete_blobs(stale_blobs);
+
+                // `delete_blobs` only queues; the sole flush site sits inside the finalized-block
+                // arm, which cannot fire until the node has been up for FINALIZED_BLOCK_OFFSET
+                // blocks. Until then `txs_to_delete` grows unbounded and nothing reaches the disk,
+                // so flush here as well.
+                let sweep = config
+                    .max_blob_file_age
+                    .filter(|_| last_blob_sweep.elapsed() >= BLOB_SWEEP_MIN_INTERVAL);
+                if sweep.is_some() {
+                    last_blob_sweep = Instant::now();
+                }
+                let pool = pool.clone();
+                task_spawner.spawn_blocking_task(async move {
+                    pool.cleanup_blobs();
+                    if let Some(max_age) = sweep {
+                        let deleted = pool.sweep_expired_blobs(max_age, BLOB_SWEEP_MAX_DELETES);
+                        if deleted > 0 {
+                            debug!(target: "txpool", %deleted, "swept expired blob files");
+                        }
+                    }
+                });
             }
         }
         // handle the result of the account reload

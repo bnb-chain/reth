@@ -15,6 +15,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
         Arc,
     },
+    time::Duration,
 };
 pub use tracker::{BlobStoreCanonTracker, BlobStoreUpdates};
 
@@ -52,6 +53,24 @@ pub trait BlobStore: fmt::Debug + Send + Sync + 'static {
     /// This is intended to be called in the background to clean up any old or unused data, in case
     /// the store uses deferred cleanup: [`DiskFileBlobStore`]
     fn cleanup(&self) -> BlobStoreCleanupStat;
+
+    /// Removes blob files whose last-modified time is older than `max_age`, up to `max_deletes`
+    /// files, and returns how many were removed.
+    ///
+    /// This is a backstop for [`BlobStoreCanonTracker`], which lives in memory only and is rebuilt
+    /// empty on every restart. Sidecars written before the current process started - by a previous
+    /// run, by staged-sync backfill, or by a chain that was later reorged out - are never handed to
+    /// [`BlobStore::delete_all`] and would otherwise stay on disk forever.
+    ///
+    /// Deletion is keyed on the filesystem timestamp rather than on chain state, so it needs no
+    /// index and survives restarts. It is deliberately approximate and must never be the only thing
+    /// standing between the node and data it still has to serve; implementations are expected to
+    /// clamp `max_age` to a safe floor.
+    ///
+    /// The default implementation is a no-op: only file-backed stores need it.
+    fn sweep_expired(&self, _max_age: Duration, _max_deletes: usize) -> usize {
+        0
+    }
 
     /// Retrieves the decoded blob data for the given transaction hash.
     fn get(&self, tx: B256) -> Result<Option<Arc<BlobTransactionSidecarVariant>>, BlobStoreError>;
