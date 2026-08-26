@@ -50,7 +50,7 @@ pub const MAX_QUEUED_TRANSACTION_LIFETIME: Duration = Duration::from_secs(3 * 60
 const FINALIZED_BLOCK_OFFSET: u64 = 2211840;
 
 /// Minimum interval between blob sweeps.
-const BLOB_SWEEP_MIN_INTERVAL: Duration = Duration::from_secs(3 * 60 * 60);
+const BLOB_SWEEP_MIN_INTERVAL: Duration = Duration::from_secs(10 * 60);
 
 /// Maximum files removed by a single blob sweep.
 const BLOB_SWEEP_MAX_DELETES: usize = 50_000;
@@ -314,11 +314,15 @@ pub async fn maintain_transaction_pool<N, Client, P, St>(
             _ = blob_sweep_interval.tick() => {
                 let pool = pool.clone();
                 task_spawner.spawn_blocking_task(async move {
+                    let started_at = std::time::Instant::now();
                     let deleted =
                         pool.sweep_expired_blobs(BLOB_SWEEP_MAX_AGE, BLOB_SWEEP_MAX_DELETES);
-                    if deleted > 0 {
-                        debug!(target: "txpool", %deleted, "swept expired blob files");
-                    }
+                    debug!(
+                        target: "txpool",
+                        %deleted,
+                        elapsed = ?started_at.elapsed(),
+                        "swept expired blob files"
+                    );
                 });
             }
         }
