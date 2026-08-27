@@ -10,11 +10,30 @@ use alloy_eips::{
 use alloy_primitives::{map::B256Set, TxHash, B128, B256};
 use parking_lot::{Mutex, RwLock};
 use schnellru::{ByLength, LruMap};
-use std::{fmt, fs, io, path::PathBuf, sync::Arc};
+use std::{
+    fmt, fs, io,
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicU8, Ordering},
+        Arc,
+    },
+    time::{Duration, Instant, SystemTime},
+};
 use tracing::{debug, trace};
 
 /// How many [`BlobTransactionSidecarVariant`] to cache in memory.
 pub const DEFAULT_MAX_CACHED_BLOBS: u32 = 100;
+
+/// Default wall-clock retention for blob sidecar files before the backstop sweep removes them.
+///
+/// This keeps the current ~19.2 day floor plus a 3 day buffer.
+pub(crate) const BLOB_SWEEP_MAX_AGE: Duration = Duration::from_secs(1_918_080);
+
+/// Wall-clock budget for a single [`BlobStore::sweep_expired`] pass.
+const SWEEP_TIME_BUDGET: Duration = Duration::from_secs(30);
+
+/// How many shards the blob directory is split into, by first hex character of the file name.
+const SWEEP_SHARDS: u8 = 16;
 
 /// A cache size heuristic based on the highest blob params
 ///
@@ -265,6 +284,10 @@ impl BlobStore for DiskFileBlobStore {
         stat
     }
 
+    fn sweep_expired(&self, max_age: Duration, max_deletes: usize) -> usize {
+        self.inner.sweep_expired(max_age, max_deletes)
+    }
+
     fn get(&self, tx: B256) -> Result<Option<Arc<BlobTransactionSidecarVariant>>, BlobStoreError> {
         self.inner.get_one(tx)
     }
@@ -396,6 +419,7 @@ struct DiskFileBlobStoreInner {
     size_tracker: BlobStoreSize,
     file_lock: RwLock<()>,
     txs_to_delete: RwLock<B256Set>,
+    next_sweep_shard: AtomicU8,
     /// Tracks of known versioned hashes and a transaction they exist in
     ///
     /// Note: It is possible that one blob can appear in multiple transactions but this only tracks
@@ -412,6 +436,7 @@ impl DiskFileBlobStoreInner {
             size_tracker: Default::default(),
             file_lock: Default::default(),
             txs_to_delete: Default::default(),
+            next_sweep_shard: AtomicU8::new(0),
             versioned_hashes_to_txhash: Mutex::new(LruMap::new(ByLength::new(
                 VERSIONED_HASH_TO_TX_HASH_CACHE_SIZE as u32,
             ))),
@@ -552,6 +577,61 @@ impl DiskFileBlobStoreInner {
     #[inline]
     fn blob_disk_file(&self, tx: B256) -> PathBuf {
         self.blob_dir.join(format!("{tx:x}"))
+    }
+
+    /// Deletes blob files whose last-modified time is older than `max_age`.
+    fn sweep_expired(&self, max_age: Duration, max_deletes: usize) -> usize {
+        let max_age = max_age.max(BLOB_SWEEP_MAX_AGE);
+
+        let now = SystemTime::now();
+        let Some(cutoff) = now.checked_sub(max_age) else { return 0 };
+        let shard = self.next_sweep_shard.fetch_add(1, Ordering::Relaxed) % SWEEP_SHARDS;
+        let Some(shard) = char::from_digit(shard as u32, 16) else { return 0 };
+
+        let Ok(entries) = fs::read_dir(&self.blob_dir) else { return 0 };
+
+        let deadline = Instant::now() + SWEEP_TIME_BUDGET;
+        let mut deleted = 0usize;
+        let mut scanned = 0usize;
+
+        for entry in entries.flatten() {
+            if deleted >= max_deletes {
+                break
+            }
+            scanned += 1;
+            if Instant::now() >= deadline {
+                break
+            }
+
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            if name.len() != 64 ||
+                !name.starts_with(shard) ||
+                !name.bytes().all(|b| b.is_ascii_hexdigit())
+            {
+                continue
+            }
+
+            let Ok(meta) = entry.metadata() else { continue };
+            let Ok(modified) = meta.modified() else { continue };
+            if modified >= cutoff {
+                continue
+            }
+
+            match fs::remove_file(entry.path()) {
+                Ok(()) => deleted += 1,
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+                Err(err) => {
+                    debug!(target: "txpool::blob", %err, name, "Failed to sweep expired blob")
+                }
+            }
+        }
+
+        if deleted > 0 {
+            debug!(target: "txpool::blob", deleted, %shard, scanned, "Swept expired blobs");
+        }
+
+        deleted
     }
 
     /// Retrieves the blob data for the given transaction hash.
@@ -773,6 +853,62 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = DiskFileBlobStore::open(dir.path(), Default::default()).unwrap();
         (store, dir)
+    }
+
+    /// Writes `name` into the blob dir and backdates its mtime by `age`.
+    fn write_aged_file(dir: &std::path::Path, name: &str, age: Duration) {
+        let path = dir.join(name);
+        fs::write(&path, b"blob").unwrap();
+        let mtime = SystemTime::now().checked_sub(age).unwrap();
+        fs::File::options().write(true).open(&path).unwrap().set_modified(mtime).unwrap();
+    }
+
+    #[test]
+    fn sweep_expired_deletes_only_aged_files_in_the_current_shard() {
+        let (store, dir) = tmp_store();
+        let shard = '0';
+        let other = '1';
+        let old = Duration::from_secs(30 * 24 * 60 * 60);
+
+        let aged_in_shard = format!("{shard}{}", "a".repeat(63));
+        let fresh_in_shard = format!("{shard}{}", "b".repeat(63));
+        let aged_other_shard = format!("{other}{}", "c".repeat(63));
+
+        write_aged_file(dir.path(), &aged_in_shard, old);
+        write_aged_file(dir.path(), &fresh_in_shard, Duration::from_secs(0));
+        write_aged_file(dir.path(), &aged_other_shard, old);
+        write_aged_file(dir.path(), "README", old);
+
+        assert_eq!(store.sweep_expired(Duration::from_secs(1), 10), 1);
+
+        assert!(!dir.path().join(&aged_in_shard).exists());
+        assert!(dir.path().join(&fresh_in_shard).exists());
+        assert!(dir.path().join(&aged_other_shard).exists());
+        assert!(dir.path().join("README").exists());
+    }
+
+    #[test]
+    fn sweep_expired_clamps_max_age_to_the_retention_floor() {
+        let (store, dir) = tmp_store();
+        let name = format!("{}{}", '0', "d".repeat(63));
+
+        write_aged_file(dir.path(), &name, Duration::from_secs(24 * 60 * 60));
+
+        assert_eq!(store.sweep_expired(Duration::from_secs(1), 10), 0);
+        assert!(dir.path().join(&name).exists());
+    }
+
+    #[test]
+    fn sweep_expired_honours_the_delete_cap() {
+        let (store, dir) = tmp_store();
+        let old = Duration::from_secs(30 * 24 * 60 * 60);
+
+        for i in 0..5 {
+            write_aged_file(dir.path(), &format!("0{i:063x}"), old);
+        }
+
+        assert_eq!(store.sweep_expired(Duration::from_secs(1), 2), 2);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 3);
     }
 
     fn rng_blobs(num: usize) -> Vec<(TxHash, BlobTransactionSidecarVariant)> {
