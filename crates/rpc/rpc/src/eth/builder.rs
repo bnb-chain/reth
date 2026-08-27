@@ -25,7 +25,6 @@ use std::{sync::Arc, time::Duration};
 ///
 /// This builder type contains all settings to create an [`EthApiInner`] or an [`EthApi`] instance
 /// directly.
-#[derive(Debug)]
 pub struct EthApiBuilder<N: RpcNodeCore, Rpc, NextEnv = ()> {
     components: N,
     rpc_converter: Rpc,
@@ -49,6 +48,13 @@ pub struct EthApiBuilder<N: RpcNodeCore, Rpc, NextEnv = ()> {
     send_raw_transaction_sync_timeout: Duration,
     evm_memory_limit: u64,
     force_blob_sidecar_upcasting: bool,
+    current_validators_len: Option<Arc<dyn Fn() -> Option<usize> + Send + Sync>>,
+}
+
+impl<N: RpcNodeCore, Rpc, NextEnv> std::fmt::Debug for EthApiBuilder<N, Rpc, NextEnv> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EthApiBuilder").finish_non_exhaustive()
+    }
 }
 
 impl<Provider, Pool, Network, EvmConfig, ChainSpec>
@@ -103,6 +109,7 @@ impl<N: RpcNodeCore, Rpc, NextEnv> EthApiBuilder<N, Rpc, NextEnv> {
             send_raw_transaction_sync_timeout,
             evm_memory_limit,
             force_blob_sidecar_upcasting,
+            current_validators_len,
         } = self;
         EthApiBuilder {
             components,
@@ -127,6 +134,7 @@ impl<N: RpcNodeCore, Rpc, NextEnv> EthApiBuilder<N, Rpc, NextEnv> {
             send_raw_transaction_sync_timeout,
             evm_memory_limit,
             force_blob_sidecar_upcasting,
+            current_validators_len,
         }
     }
 }
@@ -162,6 +170,7 @@ where
             send_raw_transaction_sync_timeout: Duration::from_secs(30),
             evm_memory_limit: (1 << 32) - 1,
             force_blob_sidecar_upcasting: false,
+            current_validators_len: None,
         }
     }
 }
@@ -204,6 +213,7 @@ where
             send_raw_transaction_sync_timeout,
             evm_memory_limit,
             force_blob_sidecar_upcasting,
+            current_validators_len,
         } = self;
         EthApiBuilder {
             components,
@@ -228,6 +238,7 @@ where
             send_raw_transaction_sync_timeout,
             evm_memory_limit,
             force_blob_sidecar_upcasting,
+            current_validators_len,
         }
     }
 
@@ -259,6 +270,7 @@ where
             send_raw_transaction_sync_timeout,
             evm_memory_limit,
             force_blob_sidecar_upcasting,
+            current_validators_len,
         } = self;
         EthApiBuilder {
             components,
@@ -283,6 +295,7 @@ where
             send_raw_transaction_sync_timeout,
             evm_memory_limit,
             force_blob_sidecar_upcasting,
+            current_validators_len,
         }
     }
 
@@ -531,6 +544,7 @@ where
             send_raw_transaction_sync_timeout,
             evm_memory_limit,
             force_blob_sidecar_upcasting,
+            current_validators_len,
         } = self;
 
         let provider = components.provider().clone();
@@ -584,6 +598,7 @@ where
             send_raw_transaction_sync_timeout,
             evm_memory_limit,
             force_blob_sidecar_upcasting,
+            current_validators_len,
         )
     }
 
@@ -618,6 +633,16 @@ where
     /// Sets whether to force upcasting EIP-4844 blob sidecars to EIP-7594 format.
     pub const fn force_blob_sidecar_upcasting(mut self, force: bool) -> Self {
         self.force_blob_sidecar_upcasting = force;
+        self
+    }
+
+    /// Injects a resolver for the active validator count (BSC parlia finality), enabling
+    /// `eth_getFinalizedBlock` / `eth_getFinalizedHeader`.
+    pub fn with_current_validators_len<F>(mut self, current_validators_len: F) -> Self
+    where
+        F: Fn() -> Option<usize> + Send + Sync + 'static,
+    {
+        self.current_validators_len = Some(Arc::new(current_validators_len));
         self
     }
 }

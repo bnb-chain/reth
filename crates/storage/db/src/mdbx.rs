@@ -41,7 +41,9 @@ fn is_zfs(path: &Path) -> std::io::Result<bool> {
     unsafe {
         let mut stat: libc::statfs = std::mem::zeroed();
         if libc::statfs(c_path.as_ptr(), &raw mut stat) == 0 {
-            Ok(stat.f_type == ZFS_SUPER_MAGIC)
+            // `statfs::f_type` is `i64` on glibc but `u64` on musl; widen both
+            // sides to `i128` so the comparison compiles on either libc.
+            Ok(i128::from(stat.f_type) == i128::from(ZFS_SUPER_MAGIC))
         } else {
             Err(std::io::Error::last_os_error())
         }

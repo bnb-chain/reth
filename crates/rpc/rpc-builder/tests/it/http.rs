@@ -146,7 +146,7 @@ where
     .unwrap();
     let id = EthFilterApiClient::<Transaction, Log>::new_block_filter(client).await.unwrap();
     EthFilterApiClient::<Transaction, Log>::filter_changes(client, id.clone()).await.unwrap();
-    EthFilterApiClient::<Transaction, Log>::logs(client, Filter::default()).await.unwrap();
+    EthFilterApiClient::<Transaction, Log>::logs(client, Filter::default().into()).await.unwrap();
     let id = EthFilterApiClient::<Transaction, Log>::new_filter(client, Filter::default())
         .await
         .unwrap();

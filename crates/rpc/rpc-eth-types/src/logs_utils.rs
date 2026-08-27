@@ -2,10 +2,10 @@
 //!
 //! Log parsing for building filter.
 
-use crate::EthApiError;
+use crate::{EthApiError, LogFilter};
 use alloy_consensus::{transaction::TxHashRef, BlockHeader, TxReceipt};
 use alloy_primitives::TxHash;
-use alloy_rpc_types_eth::{Filter, Log};
+use alloy_rpc_types_eth::Log;
 use jsonrpsee_types::ErrorObject;
 use reth_chainspec::ChainInfo;
 use reth_errors::ProviderError;
@@ -21,7 +21,7 @@ use thiserror::Error;
 /// known.
 pub fn matching_block_logs_with_tx_hashes<'a, I, R, C>(
     converter: &C,
-    filter: &Filter,
+    filter: &LogFilter,
     header: &SealedHeaderFor<C::Primitives>,
     tx_hashes_and_receipts: I,
     removed: bool,
@@ -43,7 +43,10 @@ where
     // Iterate over transaction hashes and receipts and append matching logs.
     for (receipt_idx, (tx_hash, receipt)) in tx_hashes_and_receipts.into_iter().enumerate() {
         for log in receipt.logs() {
-            if filter.matches(log) {
+            // `matches_topic_count` enforces geth's rule that a filter naming N topic positions
+            // only matches logs carrying >= N topics; `Filter::matches` alone cannot (see
+            // LogFilter).
+            if filter.matches(log) && filter.matches_topic_count(log.topics()) {
                 let log = Log {
                     inner: log.clone(),
                     block_hash: Some(block_num_hash.hash),
@@ -78,7 +81,7 @@ pub fn append_matching_block_logs<P, C>(
     all_logs: &mut Vec<RpcLog<C::Network>>,
     converter: &C,
     provider_or_block: ProviderOrBlock<'_, P>,
-    filter: &Filter,
+    filter: &LogFilter,
     header: &SealedHeaderFor<C::Primitives>,
     receipts: &[P::Receipt],
     removed: bool,
@@ -106,7 +109,7 @@ where
         let mut transaction_hash = None;
 
         for log in receipt.logs() {
-            if filter.matches(log) {
+            if filter.matches(log) && filter.matches_topic_count(log.topics()) {
                 // if this is the first match in the receipt's logs, look up the transaction hash
                 if transaction_hash.is_none() {
                     transaction_hash = match &provider_or_block {

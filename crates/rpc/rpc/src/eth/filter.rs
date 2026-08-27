@@ -23,7 +23,7 @@ use reth_rpc_eth_api::{
 };
 use reth_rpc_eth_types::{
     logs_utils::{self, append_matching_block_logs, ProviderOrBlock},
-    EthApiError, EthFilterConfig, EthStateCache, EthSubscriptionIdProvider,
+    EthApiError, EthFilterConfig, EthStateCache, EthSubscriptionIdProvider, LogFilter,
 };
 use reth_rpc_server_types::{result::rpc_error_with_code, ToRpcResult};
 use reth_storage_api::{
@@ -62,7 +62,8 @@ where
         limits: QueryLimits,
     ) -> impl Future<Output = RpcResult<Vec<RpcLog<Eth::NetworkTypes>>>> + Send {
         trace!(target: "rpc::eth", "Serving eth_getLogs");
-        self.logs_for_filter(filter, limits).map_err(|e| e.into())
+        // Engine namespace has no topic-position count; impose no extra constraint.
+        self.logs_for_filter(filter.into(), limits).map_err(|e| e.into())
     }
 }
 
@@ -295,7 +296,8 @@ where
                     .inner
                     .clone()
                     .get_logs_in_block_range(
-                        *filter,
+                        // Stored filters don't retain the request's topic-position count.
+                        (*filter).into(),
                         from_block_number,
                         to_block_number,
                         self.inner.query_limits,
@@ -328,13 +330,14 @@ where
             }
         };
 
-        self.logs_for_filter(filter, self.inner.query_limits).await
+        // Stored filters don't retain the request's topic-position count.
+        self.logs_for_filter(filter.into(), self.inner.query_limits).await
     }
 
     /// Returns logs matching given filter object.
     async fn logs_for_filter(
         &self,
-        filter: Filter,
+        filter: LogFilter,
         limits: QueryLimits,
     ) -> Result<Vec<RpcLog<Eth::NetworkTypes>>, EthFilterError> {
         self.inner.clone().logs_for_filter(filter, limits).await
@@ -425,7 +428,7 @@ where
     /// Returns logs matching given filter object.
     ///
     /// Handler for `eth_getLogs`
-    async fn logs(&self, filter: Filter) -> RpcResult<Vec<RpcLog<Eth::NetworkTypes>>> {
+    async fn logs(&self, filter: LogFilter) -> RpcResult<Vec<RpcLog<Eth::NetworkTypes>>> {
         trace!(target: "rpc::eth", "Serving eth_getLogs");
         Ok(self.logs_for_filter(filter, self.inner.query_limits).await?)
     }
@@ -480,7 +483,7 @@ where
     /// Returns logs matching given filter object.
     async fn logs_for_filter(
         self: Arc<Self>,
-        filter: Filter,
+        filter: LogFilter,
         limits: QueryLimits,
     ) -> Result<Vec<RpcLog<Eth::NetworkTypes>>, EthFilterError> {
         match filter.block_option {
@@ -640,7 +643,7 @@ where
     ///  - amount of matches exceeds configured limit
     async fn get_logs_in_block_range(
         self: Arc<Self>,
-        filter: Filter,
+        filter: LogFilter,
         from_block: u64,
         to_block: u64,
         limits: QueryLimits,
@@ -679,7 +682,7 @@ where
     ///  - underlying database error
     async fn get_logs_in_block_range_inner(
         self: Arc<Self>,
-        filter: &Filter,
+        filter: &LogFilter,
         from_block: u64,
         to_block: u64,
         limits: QueryLimits,
@@ -1900,7 +1903,7 @@ mod tests {
             .inner
             .clone()
             .get_logs_in_block_range(
-                Filter::default(),
+                Filter::default().into(),
                 100,
                 102,
                 QueryLimits { max_blocks_per_filter: None, max_logs_per_response: Some(2) },
@@ -2007,7 +2010,7 @@ mod tests {
         let logs = eth_filter
             .inner
             .clone()
-            .get_logs_in_block_range(filter, 100, 103, QueryLimits::default())
+            .get_logs_in_block_range(filter.into(), 100, 103, QueryLimits::default())
             .await
             .expect("should succeed");
 
