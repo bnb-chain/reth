@@ -315,7 +315,7 @@ use reth_evm_ethereum::EthEvmConfig;
 use reth_execution_types::ChangedAccount;
 use reth_primitives_traits::{HeaderTy, Recovered};
 use reth_storage_api::{BlockReaderIdExt, StateProviderFactory};
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 use tokio::sync::mpsc::Receiver;
 use tracing::{instrument, trace};
 
@@ -859,6 +859,10 @@ where
 
     fn cleanup_blobs(&self) {
         self.pool.cleanup_blobs()
+    }
+
+    fn sweep_expired_blobs(&self, max_age: Duration, max_deletes: usize) -> usize {
+        self.pool.sweep_expired_blobs(max_age, max_deletes)
     }
 }
 
