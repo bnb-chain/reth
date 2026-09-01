@@ -309,8 +309,7 @@ where
         async move {
             let (evm_env, at) = self.evm_env_at(at).await?;
 
-            self.spawn_blocking_io_fut(async move |this| {
-                let state = this.state_at_block_id(at).await?;
+            self.spawn_with_state(Some(at), move |this, state| {
                 EstimateCall::estimate_gas_with(&this, evm_env, request, state, state_override)
             })
             .await

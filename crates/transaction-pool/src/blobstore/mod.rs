@@ -15,6 +15,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
         Arc,
     },
+    time::Duration,
 };
 pub use tracker::{BlobStoreCanonTracker, BlobStoreUpdates};
 
@@ -52,6 +53,12 @@ pub trait BlobStore: fmt::Debug + Send + Sync + 'static {
     /// This is intended to be called in the background to clean up any old or unused data, in case
     /// the store uses deferred cleanup: [`DiskFileBlobStore`]
     fn cleanup(&self) -> BlobStoreCleanupStat;
+
+    /// Removes blob files older than `max_age`, up to `max_deletes`, and returns how many were
+    /// removed. The default implementation is a no-op.
+    fn sweep_expired(&self, _max_age: Duration, _max_deletes: usize) -> usize {
+        0
+    }
 
     /// Retrieves the decoded blob data for the given transaction hash.
     fn get(&self, tx: B256) -> Result<Option<Arc<BlobTransactionSidecarVariant>>, BlobStoreError>;

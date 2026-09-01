@@ -1,7 +1,9 @@
 //! Support for maintaining the state of the transaction pool
 
 use crate::{
-    blobstore::{BlobSidecarConverter, BlobStoreCanonTracker, BlobStoreUpdates},
+    blobstore::{
+        disk::BLOB_SWEEP_MAX_AGE, BlobSidecarConverter, BlobStoreCanonTracker, BlobStoreUpdates,
+    },
     error::PoolError,
     metrics::MaintainPoolMetrics,
     traits::{CanonicalStateUpdate, EthPoolTransaction, TransactionPool, TransactionPoolExt},
@@ -46,6 +48,12 @@ pub const MAX_QUEUED_TRANSACTION_LIFETIME: Duration = Duration::from_secs(3 * 60
 
 // The storage time of Sidecar is 19.2 days 19.2*86400/0.75 = 2211840
 const FINALIZED_BLOCK_OFFSET: u64 = 2211840;
+
+/// Minimum interval between blob sweeps.
+const BLOB_SWEEP_MIN_INTERVAL: Duration = Duration::from_secs(10 * 60);
+
+/// Maximum files removed by a single blob sweep.
+const BLOB_SWEEP_MAX_DELETES: usize = 50_000;
 
 /// Additional settings for maintaining the transaction pool
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -180,6 +188,9 @@ pub async fn maintain_transaction_pool<N, Client, P, St>(
     // eviction interval for stale non local txs
     let mut stale_eviction_interval = time::interval(config.max_tx_lifetime);
 
+    // periodic blob sweep for orphaned files on disk
+    let mut blob_sweep_interval = time::interval(BLOB_SWEEP_MIN_INTERVAL);
+
     // toggle for the first notification
     let mut first_event = true;
 
@@ -299,6 +310,20 @@ pub async fn maintain_transaction_pool<N, Client, P, St>(
                 debug!(target: "txpool", count=%stale_txs.len(), "removing stale transactions");
                 pool.remove_transactions(stale_txs);
                 pool.delete_blobs(stale_blobs);
+            }
+            _ = blob_sweep_interval.tick() => {
+                let pool = pool.clone();
+                task_spawner.spawn_blocking_task(async move {
+                    let started_at = std::time::Instant::now();
+                    let deleted =
+                        pool.sweep_expired_blobs(BLOB_SWEEP_MAX_AGE, BLOB_SWEEP_MAX_DELETES);
+                    debug!(
+                        target: "txpool",
+                        %deleted,
+                        elapsed = ?started_at.elapsed(),
+                        "swept expired blob files"
+                    );
+                });
             }
         }
         // handle the result of the account reload
