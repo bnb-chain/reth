@@ -31,10 +31,7 @@ use revm::{
 use tracing::trace;
 
 /// Gas execution estimates
-pub trait EstimateCall: Call
-where
-    reth_evm::BlockEnvFor<Self::Evm>: reth_rpc_eth_types::BlockOverridesExt,
-{
+pub trait EstimateCall: Call {
     /// Estimates the gas usage of the `request` with the state.
     ///
     /// This will execute the [`RpcTxReq`] and find the best gas limit via binary search.

@@ -78,7 +78,6 @@ where
         > + EthTransactions
         + TraceExt
         + 'static,
-    reth_evm::BlockEnvFor<Eth::Evm>: reth_rpc_eth_types::BlockOverridesExt,
 {
     /// Handler for `ots_getHeaderByNumber` and `erigon_getHeaderByNumber`
     async fn get_header_by_number(

@@ -674,18 +674,18 @@ impl<T: NodePrimitives, ChainSpec: EthChainSpec + Send + Sync + 'static> BlockRe
 
     fn recovered_block(
         &self,
-        id: BlockHashOrNumber,
+        _id: BlockHashOrNumber,
         _transaction_kind: TransactionVariant,
     ) -> ProviderResult<Option<RecoveredBlock<Self::Block>>> {
-        Ok(self.block(id)?.and_then(|block| block.try_into_recovered().ok()))
+        Ok(None)
     }
 
     fn sealed_block_with_senders(
         &self,
-        id: BlockHashOrNumber,
+        _id: BlockHashOrNumber,
         _transaction_kind: TransactionVariant,
     ) -> ProviderResult<Option<RecoveredBlock<Self::Block>>> {
-        Ok(self.block(id)?.and_then(|block| block.try_into_recovered().ok()))
+        Ok(None)
     }
 
     fn block_range(&self, range: RangeInclusive<BlockNumber>) -> ProviderResult<Vec<Self::Block>> {

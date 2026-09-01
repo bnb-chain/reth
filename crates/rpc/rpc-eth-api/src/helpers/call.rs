@@ -20,8 +20,8 @@ use alloy_rpc_types_eth::{
 use futures::Future;
 use reth_errors::{ProviderError, RethError};
 use reth_evm::{
-    block::BlockExecutor, env::BlockEnvironment, execute::BlockBuilder, BlockEnvFor, ConfigureEvm,
-    Evm, EvmEnvFor, HaltReasonFor, InspectorFor, TransactionEnvMut, TxEnvFor,
+    block::BlockExecutor, env::BlockEnvironment, execute::BlockBuilder, ConfigureEvm, Evm,
+    EvmEnvFor, HaltReasonFor, InspectorFor, TransactionEnvMut, TxEnvFor,
 };
 use reth_node_api::BlockBody;
 use reth_primitives_traits::Recovered;
@@ -35,7 +35,7 @@ use reth_rpc_eth_types::{
     cache::db::StateProviderTraitObjWrapper,
     error::{AsEthApiError, FromEthApiError},
     simulate::{self, EthSimulateError},
-    BlockOverridesExt, EthApiError, StateCacheDb,
+    EthApiError, StateCacheDb,
 };
 use reth_storage_api::{BlockIdReader, ProviderTx, StateProviderBox};
 use revm::{
@@ -51,10 +51,7 @@ pub type SimulatedBlocksResult<N, E> = Result<Vec<SimulatedBlock<RpcBlock<N>>>, 
 
 /// Execution related functions for the [`EthApiServer`](crate::EthApiServer) trait in
 /// the `eth_` namespace.
-pub trait EthCall: EstimateCall + Call + LoadPendingBlock + LoadBlock + FullEthApiTypes
-where
-    BlockEnvFor<Self::Evm>: BlockOverridesExt,
-{
+pub trait EthCall: EstimateCall + Call + LoadPendingBlock + LoadBlock + FullEthApiTypes {
     /// Estimate gas needed for execution of the `request` at the [`BlockId`].
     fn estimate_gas_at(
         &self,
@@ -165,16 +162,10 @@ where
                             return Err(EthApiError::other(EthSimulateError::GasLimitReached).into())
                         }
                         apply_block_overrides(
-                            block_overrides.clone(),
+                            block_overrides,
                             &mut db,
                             evm_env.block_env.inner_mut(),
                         );
-                        // Let chain-specific block environments observe the overrides
-                        // (no-op for the standard `BlockEnv`).
-                        evm_env
-                            .block_env
-                            .apply_block_overrides_ext(&block_overrides)
-                            .map_err(EthApiError::InvalidParams)?;
                     }
                     if let Some(ref state_overrides) = state_overrides {
                         apply_state_overrides(state_overrides.clone(), &mut db)
@@ -554,8 +545,6 @@ pub trait Call:
                    + From<<Self::RpcConvert as RpcConvert>::Error>
                    + From<ProviderError>,
     > + SpawnBlocking
-where
-    BlockEnvFor<Self::Evm>: BlockOverridesExt,
 {
     /// Returns default gas limit to use for `eth_call` and tracing RPC methods.
     ///
@@ -913,13 +902,7 @@ where
         request.as_mut().take_nonce();
 
         if let Some(block_overrides) = overrides.block {
-            apply_block_overrides((*block_overrides).clone(), db, evm_env.block_env.inner_mut());
-            // Let chain-specific block environments observe the overrides (no-op for the
-            // standard `BlockEnv`).
-            evm_env
-                .block_env
-                .apply_block_overrides_ext(&block_overrides)
-                .map_err(EthApiError::InvalidParams)?;
+            apply_block_overrides(*block_overrides, db, evm_env.block_env.inner_mut());
         }
         if let Some(state_overrides) = overrides.state {
             apply_state_overrides(state_overrides, db)

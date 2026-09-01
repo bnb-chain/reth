@@ -12,7 +12,6 @@
 use url as _;
 
 pub mod block;
-pub mod block_overrides_ext;
 pub mod builder;
 pub mod cache;
 pub mod error;
@@ -30,7 +29,6 @@ pub mod utils;
 
 pub use alloy_rpc_types_eth::FillTransaction;
 pub use block::CachedTransaction;
-pub use block_overrides_ext::BlockOverridesExt;
 pub use builder::config::{EthConfig, EthFilterConfig};
 pub use cache::{
     config::EthStateCacheConfig, db::StateCacheDb, multi_consumer::MultiConsumerLruCache,

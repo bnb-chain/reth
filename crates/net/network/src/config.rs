@@ -180,7 +180,7 @@ where
     }
 }
 
-/// Builder for [`NetworkConfig`].
+/// Builder for [`NetworkConfig`](struct.NetworkConfig.html).
 #[derive(Debug)]
 pub struct NetworkConfigBuilder<N: NetworkPrimitives = EthNetworkPrimitives> {
     /// The node's secret key, from which the node's identity is derived.

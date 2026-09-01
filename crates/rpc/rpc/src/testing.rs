@@ -77,7 +77,6 @@ impl<Eth, Evm> TestingApi<Eth, Evm> {
 
 impl<Eth, Evm> TestingApi<Eth, Evm>
 where
-    reth_evm::BlockEnvFor<Eth::Evm>: reth_rpc_eth_types::BlockOverridesExt,
     Eth: Call<
         Provider: BlockReader<Header = Header> + ChainSpecProvider<ChainSpec: EthereumHardforks>,
     >,
@@ -226,7 +225,6 @@ where
 #[async_trait]
 impl<Eth, Evm> TestingApiServer for TestingApi<Eth, Evm>
 where
-    reth_evm::BlockEnvFor<Eth::Evm>: reth_rpc_eth_types::BlockOverridesExt,
     Eth: Call<
         Provider: BlockReader<Header = Header> + ChainSpecProvider<ChainSpec: EthereumHardforks>,
     >,
