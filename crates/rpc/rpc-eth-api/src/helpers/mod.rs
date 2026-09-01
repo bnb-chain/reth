@@ -47,10 +47,17 @@ use crate::FullEthApiTypes;
 /// Extension trait that bundles traits needed for tracing transactions.
 pub trait TraceExt:
     LoadTransaction + LoadBlock + SpawnBlocking + Trace + Call + GetBlockAccessList
+where
+    reth_evm::BlockEnvFor<Self::Evm>: reth_rpc_eth_types::BlockOverridesExt,
 {
 }
 
-impl<T> TraceExt for T where T: LoadTransaction + LoadBlock + Trace + Call + GetBlockAccessList {}
+impl<T> TraceExt for T
+where
+    T: LoadTransaction + LoadBlock + Trace + Call + GetBlockAccessList,
+    reth_evm::BlockEnvFor<T::Evm>: reth_rpc_eth_types::BlockOverridesExt,
+{
+}
 
 /// Helper trait to unify all `eth` rpc server building block traits, for simplicity.
 ///
@@ -66,10 +73,13 @@ pub trait FullEthApi:
     + Trace
     + LoadReceipt
     + GetBlockAccessList
+where
+    reth_evm::BlockEnvFor<Self::Evm>: reth_rpc_eth_types::BlockOverridesExt,
 {
 }
 
-impl<T> FullEthApi for T where
+impl<T> FullEthApi for T
+where
     T: FullEthApiTypes
         + EthApiSpec
         + EthTransactions
@@ -79,6 +89,7 @@ impl<T> FullEthApi for T where
         + EthFees
         + Trace
         + LoadReceipt
-        + GetBlockAccessList
+        + GetBlockAccessList,
+    reth_evm::BlockEnvFor<T::Evm>: reth_rpc_eth_types::BlockOverridesExt,
 {
 }

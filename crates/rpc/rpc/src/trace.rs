@@ -87,6 +87,7 @@ where
     // tracing methods do _not_ read from mempool, hence no `LoadBlock` trait
     // bound
     Eth: Trace + Call + LoadPendingBlock + LoadTransaction + 'static,
+    reth_evm::BlockEnvFor<Eth::Evm>: reth_rpc_eth_types::BlockOverridesExt,
 {
     /// Executes the given call and returns a number of possible traces for it.
     pub async fn trace_call(
@@ -336,6 +337,7 @@ where
     // tracing methods read from mempool, hence `LoadBlock` trait bound via
     // `TraceExt`
     Eth: TraceExt + 'static,
+    reth_evm::BlockEnvFor<Eth::Evm>: reth_rpc_eth_types::BlockOverridesExt,
 {
     /// Returns all transaction traces that match the given filter.
     ///
@@ -634,6 +636,7 @@ where
 impl<Eth> TraceApiServer<RpcTxReq<Eth::NetworkTypes>> for TraceApi<Eth>
 where
     Eth: TraceExt + 'static,
+    reth_evm::BlockEnvFor<Eth::Evm>: reth_rpc_eth_types::BlockOverridesExt,
 {
     /// Executes the given call and returns a number of possible traces for it.
     ///

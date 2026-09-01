@@ -80,6 +80,8 @@ async fn assert_chain_advances<N, AddOns>(node: &FullNode<N, AddOns>)
 where
     N: FullNodeComponents<Provider: CanonStateSubscriptions>,
     AddOns: RethRpcAddOns<N, EthApi: EthTransactions>,
+    reth_evm::BlockEnvFor<<AddOns::EthApi as reth_rpc_eth_api::RpcNodeCore>::Evm>:
+        reth_rpc_eth_types::BlockOverridesExt,
 {
     let mut notifications = node.provider.canonical_state_stream();
 
