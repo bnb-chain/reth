@@ -14,9 +14,9 @@ use reth_db_api::{
 };
 use reth_primitives_traits::{Account, Bytecode, NodePrimitives};
 use reth_storage_api::{
-    BlockNumReader, BytecodeReader, DBProvider, NodePrimitivesProvider, PruneCheckpointReader,
-    StageCheckpointReader, StateProofProvider, StorageChangeSetReader, StorageRootProvider,
-    StorageSettingsCache,
+    record_storage_read, BlockNumReader, BytecodeReader, DBProvider, NodePrimitivesProvider,
+    PruneCheckpointReader, StageCheckpointReader, StateProofProvider, StorageBucket,
+    StorageChangeSetReader, StorageRootProvider, StorageSettingsCache,
 };
 use reth_storage_errors::provider::ProviderResult;
 use reth_trie::{
@@ -210,16 +210,18 @@ where
             return Err(ProviderError::StateAtBlockPruned(self.block_number))
         }
 
-        let visible_tip = self.provider.best_block_number()?;
+        record_storage_read(StorageBucket::History, || {
+            let visible_tip = self.provider.best_block_number()?;
 
-        self.provider.with_rocksdb_snapshot(|rocksdb_ref| {
-            let mut reader = EitherReader::new_accounts_history(self.provider, rocksdb_ref)?;
-            reader.account_history_info(
-                address,
-                self.block_number,
-                self.lowest_available_blocks.account_history_block_number,
-                visible_tip,
-            )
+            self.provider.with_rocksdb_snapshot(|rocksdb_ref| {
+                let mut reader = EitherReader::new_accounts_history(self.provider, rocksdb_ref)?;
+                reader.account_history_info(
+                    address,
+                    self.block_number,
+                    self.lowest_available_blocks.account_history_block_number,
+                    visible_tip,
+                )
+            })
         })
     }
 
@@ -238,17 +240,19 @@ where
             return Err(ProviderError::StateAtBlockPruned(self.block_number))
         }
 
-        let visible_tip = self.provider.best_block_number()?;
+        record_storage_read(StorageBucket::History, || {
+            let visible_tip = self.provider.best_block_number()?;
 
-        self.provider.with_rocksdb_snapshot(|rocksdb_ref| {
-            let mut reader = EitherReader::new_storages_history(self.provider, rocksdb_ref)?;
-            reader.storage_history_info(
-                address,
-                lookup_key,
-                self.block_number,
-                self.lowest_available_blocks.storage_history_block_number,
-                visible_tip,
-            )
+            self.provider.with_rocksdb_snapshot(|rocksdb_ref| {
+                let mut reader = EitherReader::new_storages_history(self.provider, rocksdb_ref)?;
+                reader.storage_history_info(
+                    address,
+                    lookup_key,
+                    self.block_number,
+                    self.lowest_available_blocks.storage_history_block_number,
+                    visible_tip,
+                )
+            })
         })
     }
 
@@ -266,16 +270,22 @@ where
     {
         match self.storage_history_lookup(address, lookup_key)? {
             HistoryInfo::NotYetWritten => Ok(None),
-            HistoryInfo::InChangeset(changeset_block_number) => self
-                .provider
-                .get_storage_before_block(changeset_block_number, address, lookup_key)?
+            HistoryInfo::InChangeset(changeset_block_number) => {
+                record_storage_read(StorageBucket::Changeset, || {
+                    self.provider.get_storage_before_block(
+                        changeset_block_number,
+                        address,
+                        lookup_key,
+                    )
+                })?
                 .ok_or_else(|| ProviderError::StorageChangesetNotFound {
                     block_number: changeset_block_number,
                     address,
                     storage_key: Box::new(lookup_key),
                 })
                 .map(|entry| entry.value)
-                .map(Some),
+                .map(Some)
+            }
             HistoryInfo::InPlainState | HistoryInfo::MaybeInPlainState => {
                 if let Some((exec_tip, hist_tip)) =
                     self.pipeline_consistency.storage_inconsistency()
@@ -388,36 +398,41 @@ where
 {
     /// Get basic account information.
     fn basic_account(&self, address: &Address) -> ProviderResult<Option<Account>> {
-        match self.account_history_lookup(*address)? {
-            HistoryInfo::NotYetWritten => Ok(None),
-            HistoryInfo::InChangeset(changeset_block_number) => {
-                // Use ChangeSetReader trait method to get the account from changesets
-                self.provider
-                    .get_account_before_block(changeset_block_number, *address)?
+        record_storage_read(StorageBucket::Account, || {
+            match self.account_history_lookup(*address)? {
+                HistoryInfo::NotYetWritten => Ok(None),
+                HistoryInfo::InChangeset(changeset_block_number) => {
+                    // Use ChangeSetReader trait method to get the account from changesets
+                    record_storage_read(StorageBucket::Changeset, || {
+                        self.provider.get_account_before_block(changeset_block_number, *address)
+                    })?
                     .ok_or(ProviderError::AccountChangesetNotFound {
                         block_number: changeset_block_number,
                         address: *address,
                     })
                     .map(|account_before| account_before.info)
-            }
-            HistoryInfo::InPlainState | HistoryInfo::MaybeInPlainState => {
-                if let Some((exec_tip, hist_tip)) =
-                    self.pipeline_consistency.account_inconsistency()
-                {
-                    return Err(ProviderError::HistoryStateInconsistent {
-                        block: self.block_number,
-                        execution_tip: exec_tip,
-                        history_tip: hist_tip,
-                    })
                 }
-                if self.provider.cached_storage_settings().use_hashed_state() {
-                    let hashed_address = alloy_primitives::keccak256(address);
-                    Ok(self.tx().get_by_encoded_key::<tables::HashedAccounts>(&hashed_address)?)
-                } else {
-                    Ok(self.tx().get_by_encoded_key::<tables::PlainAccountState>(address)?)
+                HistoryInfo::InPlainState | HistoryInfo::MaybeInPlainState => {
+                    if let Some((exec_tip, hist_tip)) =
+                        self.pipeline_consistency.account_inconsistency()
+                    {
+                        return Err(ProviderError::HistoryStateInconsistent {
+                            block: self.block_number,
+                            execution_tip: exec_tip,
+                            history_tip: hist_tip,
+                        })
+                    }
+                    if self.provider.cached_storage_settings().use_hashed_state() {
+                        let hashed_address = alloy_primitives::keccak256(address);
+                        Ok(self
+                            .tx()
+                            .get_by_encoded_key::<tables::HashedAccounts>(&hashed_address)?)
+                    } else {
+                        Ok(self.tx().get_by_encoded_key::<tables::PlainAccountState>(address)?)
+                    }
                 }
             }
-        }
+        })
     }
 }
 
@@ -706,7 +721,9 @@ where
         address: Address,
         storage_key: StorageKey,
     ) -> ProviderResult<Option<StorageValue>> {
-        self.storage_by_lookup_key(address, storage_key)
+        record_storage_read(StorageBucket::Slot, || {
+            self.storage_by_lookup_key(address, storage_key)
+        })
     }
 }
 
@@ -717,7 +734,9 @@ where
 {
     /// Get account code by its hash
     fn bytecode_by_hash(&self, code_hash: &B256) -> ProviderResult<Option<Bytecode>> {
-        self.tx().get_by_encoded_key::<tables::Bytecodes>(code_hash).map_err(Into::into)
+        record_storage_read(StorageBucket::Bytecode, || {
+            self.tx().get_by_encoded_key::<tables::Bytecodes>(code_hash).map_err(Into::into)
+        })
     }
 }
 

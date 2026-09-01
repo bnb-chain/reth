@@ -17,11 +17,13 @@ use reth_revm::{
     database::StateProviderDatabase,
     db::{bal::EvmDatabaseError, State},
 };
-use reth_rpc_eth_types::cache::db::StateCacheDb;
-use reth_storage_api::{ProviderBlock, ProviderTx};
+use reth_rpc_eth_types::{
+    cache::db::StateCacheDb, log_block_storage_timings, storage_timings_enabled,
+};
+use reth_storage_api::{ProviderBlock, ProviderTx, StorageTimingsScope};
 use revm::{context::Block, context_interface::result::ResultAndState};
 use revm_inspectors::tracing::{TracingInspector, TracingInspectorConfig};
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 /// Executes CPU heavy tasks.
 pub trait Trace: LoadState<Error: FromEvmError<Self::Evm>> + Call {
@@ -287,6 +289,9 @@ pub trait Trace: LoadState<Error: FromEvmError<Self::Evm>> + Call {
                 let block_timestamp = evm_env.block_env.timestamp().saturating_to();
                 let base_fee = evm_env.block_env.basefee();
 
+                let started_at = Instant::now();
+                let storage_timings = StorageTimingsScope::new(storage_timings_enabled());
+
                 this.apply_pre_execution_changes(&block, &mut db, evm_env.clone())?;
 
                 // prepare transactions, we do everything upfront to reduce time spent with open
@@ -319,6 +324,16 @@ pub trait Trace: LoadState<Error: FromEvmError<Self::Evm>> + Call {
                         f(tx_info, ctx)
                     })
                     .collect::<Result<_, _>>()?;
+
+                if let Some(timings) = storage_timings.timings() {
+                    log_block_storage_timings(
+                        "trace_block",
+                        block_number,
+                        max_transactions.min(block.body().transaction_count()),
+                        started_at.elapsed(),
+                        &timings,
+                    );
+                }
 
                 Ok(Some(results))
             })

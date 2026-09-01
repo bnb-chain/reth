@@ -23,6 +23,7 @@ pub mod logs_utils;
 pub mod pending_block;
 pub mod receipt;
 pub mod simulate;
+pub mod storage_timings;
 pub mod transaction;
 pub mod tx_forward;
 pub mod utils;
@@ -42,5 +43,6 @@ pub use gas_oracle::{
 pub use id_provider::EthSubscriptionIdProvider;
 pub use log_filter::LogFilter;
 pub use pending_block::{PendingBlock, PendingBlockEnv, PendingBlockEnvOrigin};
+pub use storage_timings::{log_block_storage_timings, storage_timings_enabled};
 pub use transaction::{FillTransactionResult, TransactionDataAndReceipt, TransactionSource};
 pub use tx_forward::ForwardConfig;
