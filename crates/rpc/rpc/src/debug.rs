@@ -110,6 +110,7 @@ where
 impl<Eth> DebugApi<Eth>
 where
     Eth: TraceExt,
+    reth_evm::BlockEnvFor<Eth::Evm>: reth_rpc_eth_types::BlockOverridesExt,
 {
     /// Treat a `null` sub-tracer config in a `muxTracer` request as "use that tracer's defaults",
     /// matching go-ethereum.
@@ -1157,6 +1158,7 @@ where
 impl<Eth> DebugApiServer<RpcTxReq<Eth::NetworkTypes>> for DebugApi<Eth>
 where
     Eth: EthTransactions + TraceExt,
+    reth_evm::BlockEnvFor<Eth::Evm>: reth_rpc_eth_types::BlockOverridesExt,
 {
     /// Handler for `debug_getRawHeader`
     async fn raw_header(&self, block_id: BlockId) -> RpcResult<Bytes> {

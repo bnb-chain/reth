@@ -37,10 +37,13 @@ pub trait FullEthApiServer:
         TxTy<Self::Primitives>,
     > + FullEthApi
     + Clone
+where
+    reth_evm::BlockEnvFor<Self::Evm>: reth_rpc_eth_types::BlockOverridesExt,
 {
 }
 
-impl<T> FullEthApiServer for T where
+impl<T> FullEthApiServer for T
+where
     T: EthApiServer<
             RpcTxReq<T::NetworkTypes>,
             RpcTransaction<T::NetworkTypes>,
@@ -49,7 +52,8 @@ impl<T> FullEthApiServer for T where
             RpcHeader<T::NetworkTypes>,
             TxTy<T::Primitives>,
         > + FullEthApi
-        + Clone
+        + Clone,
+    reth_evm::BlockEnvFor<T::Evm>: reth_rpc_eth_types::BlockOverridesExt,
 {
 }
 
@@ -483,6 +487,7 @@ impl<T>
     > for T
 where
     T: FullEthApi,
+    reth_evm::BlockEnvFor<T::Evm>: reth_rpc_eth_types::BlockOverridesExt,
     jsonrpsee_types::error::ErrorObject<'static>: From<T::Error>,
 {
     /// Handler for: `eth_protocolVersion`
