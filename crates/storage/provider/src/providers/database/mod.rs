@@ -11,13 +11,13 @@ use crate::{
     RocksDBProviderFactory, StageCheckpointReader, StateProviderBox, StaticFileProviderFactory,
     StaticFileWriter, TransactionVariant, TransactionsProvider,
 };
-use alloy_consensus::transaction::TransactionMeta;
+use alloy_consensus::{transaction::TransactionMeta, BlockHeader};
 use alloy_eips::BlockHashOrNumber;
 use alloy_primitives::{Address, BlockHash, BlockNumber, TxHash, TxNumber, B256, U256};
 use core::fmt;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use parking_lot::RwLock;
-use reth_chainspec::ChainInfo;
+use reth_chainspec::{ChainInfo, EthChainSpec};
 use reth_db::{init_db, mdbx::DatabaseArguments, DatabaseEnv};
 use reth_db_api::{database::Database, models::StoredBlockBodyIndices};
 use reth_errors::{RethError, RethResult};
@@ -111,6 +111,11 @@ impl<N: NodeTypesForProvider> ProviderFactory<NodeTypesWithDBAdapter<N, Database
 }
 
 impl<N: ProviderNodeTypes> ProviderFactory<N> {
+    fn may_have_pruned_genesis(&self, number: BlockNumber) -> bool {
+        self.prune_modes.header_history.is_some() &&
+            number == self.chain_spec.genesis_header().number()
+    }
+
     /// Create new database provider factory.
     ///
     /// The storage backends used by the produced factory MAY be inconsistent.
@@ -639,6 +644,9 @@ impl<N: ProviderNodeTypes> HeaderProvider for ProviderFactory<N> {
     }
 
     fn header_by_number(&self, num: BlockNumber) -> ProviderResult<Option<Self::Header>> {
+        if self.may_have_pruned_genesis(num) {
+            return self.provider()?.header_by_number(num)
+        }
         self.static_file_provider.get_with_static_file_or_database(
             StaticFileSegment::Headers,
             num,
@@ -666,6 +674,9 @@ impl<N: ProviderNodeTypes> HeaderProvider for ProviderFactory<N> {
         &self,
         number: BlockNumber,
     ) -> ProviderResult<Option<SealedHeader<Self::Header>>> {
+        if self.may_have_pruned_genesis(number) {
+            return self.provider()?.sealed_header(number)
+        }
         self.static_file_provider.get_with_static_file_or_database(
             StaticFileSegment::Headers,
             number,
@@ -692,6 +703,9 @@ impl<N: ProviderNodeTypes> HeaderProvider for ProviderFactory<N> {
 
 impl<N: ProviderNodeTypes> BlockHashReader for ProviderFactory<N> {
     fn block_hash(&self, number: u64) -> ProviderResult<Option<B256>> {
+        if self.may_have_pruned_genesis(number) {
+            return self.provider()?.block_hash(number)
+        }
         self.static_file_provider.get_with_static_file_or_database(
             StaticFileSegment::Headers,
             number,
@@ -1037,8 +1051,8 @@ mod tests {
     use crate::{
         providers::{StaticFileProvider, StaticFileWriter},
         test_utils::{blocks::TEST_BLOCK, create_test_provider_factory, MockNodeTypesWithDB},
-        BlockHashReader, BlockNumReader, BlockWriter, DBProvider, HeaderSyncGapProvider,
-        TransactionsProvider,
+        BlockHashReader, BlockNumReader, BlockWriter, DBProvider, HeaderProvider,
+        HeaderSyncGapProvider, TransactionsProvider,
     };
     use alloy_primitives::{TxNumber, B256};
     use assert_matches::assert_matches;
@@ -1047,7 +1061,7 @@ mod tests {
         mdbx::DatabaseArguments,
         test_utils::{create_test_rocksdb_dir, create_test_static_files_dir, ERROR_TEMPDIR},
     };
-    use reth_db_api::tables;
+    use reth_db_api::{tables, transaction::DbTxMut};
     use reth_primitives_traits::SignerRecoverable;
     use reth_prune_types::{PruneMode, PruneModes};
     use reth_storage_errors::provider::ProviderError;
@@ -1078,6 +1092,43 @@ mod tests {
         let provider_rw = factory.provider_rw().unwrap();
         provider_rw.block_hash(0).unwrap();
         provider.block_hash(0).unwrap();
+    }
+
+    #[test]
+    fn minimal_provider_restores_pruned_genesis_header() {
+        let factory = create_test_provider_factory();
+        let genesis = factory.chain_spec().genesis_header().clone();
+        let genesis_hash = factory.chain_spec().genesis_hash();
+        let genesis_number = genesis.number();
+        let minimal_factory = factory.clone().with_prune_modes(PruneModes {
+            header_history: Some(PruneMode::Distance(MINIMUM_UNWIND_SAFE_DISTANCE)),
+            ..Default::default()
+        });
+
+        assert_eq!(minimal_factory.block_hash(genesis_number).unwrap(), None);
+        assert_eq!(minimal_factory.header_by_number(genesis_number).unwrap(), None);
+
+        {
+            let provider = factory.database_provider_rw().unwrap();
+            provider.tx_ref().put::<tables::HeaderNumbers>(genesis_hash, genesis_number).unwrap();
+            provider.commit().unwrap();
+        }
+
+        assert_eq!(factory.block_hash(genesis_number).unwrap(), None);
+        assert_eq!(factory.header_by_number(genesis_number).unwrap(), None);
+        assert_eq!(minimal_factory.block_hash(genesis_number).unwrap(), Some(genesis_hash));
+        assert_eq!(
+            minimal_factory.header_by_number(genesis_number).unwrap(),
+            Some(genesis.clone())
+        );
+        assert_eq!(
+            minimal_factory.sealed_header(genesis_number).unwrap().unwrap().hash(),
+            genesis_hash
+        );
+        assert_eq!(
+            minimal_factory.header_td_by_number(genesis_number).unwrap(),
+            Some(genesis.difficulty())
+        );
     }
 
     #[test]
