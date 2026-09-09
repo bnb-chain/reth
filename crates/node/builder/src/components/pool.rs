@@ -277,6 +277,14 @@ where
 {
     let chain_events = ctx.provider().canonical_state_stream();
     let client = ctx.provider().clone();
+    let mut maintenance_config = reth_transaction_pool::maintain::MaintainPoolConfig {
+        max_tx_lifetime: pool_config.max_queued_lifetime,
+        no_local_exemptions: pool_config.local_transactions_config.no_exemptions,
+        ..Default::default()
+    };
+    if ctx.config().pruning.minimal {
+        maintenance_config.blob_sweep_max_age = std::time::Duration::from_secs(60 * 60);
+    }
 
     ctx.task_executor().spawn_critical_task(
         "txpool maintenance task",
@@ -285,11 +293,7 @@ where
             pool,
             chain_events,
             ctx.task_executor().clone(),
-            reth_transaction_pool::maintain::MaintainPoolConfig {
-                max_tx_lifetime: pool_config.max_queued_lifetime,
-                no_local_exemptions: pool_config.local_transactions_config.no_exemptions,
-                ..Default::default()
-            },
+            maintenance_config,
         ),
     );
 

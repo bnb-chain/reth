@@ -4,7 +4,7 @@ use alloy_eips::{
     eip4844::{BlobAndProofV1, BlobAndProofV2, BlobCellsAndProofsV1},
     eip7594::BlobTransactionSidecarVariant,
 };
-use alloy_primitives::{B128, B256};
+use alloy_primitives::{map::B256Set, B128, B256};
 pub use converter::BlobSidecarConverter;
 pub use disk::{DiskFileBlobStore, DiskFileBlobStoreConfig, OpenDiskFileBlobStore};
 pub use mem::InMemoryBlobStore;
@@ -58,6 +58,16 @@ pub trait BlobStore: fmt::Debug + Send + Sync + 'static {
     /// removed. The default implementation is a no-op.
     fn sweep_expired(&self, _max_age: Duration, _max_deletes: usize) -> usize {
         0
+    }
+
+    /// Removes expired blob files except those in `protected`.
+    fn sweep_expired_except(
+        &self,
+        max_age: Duration,
+        max_deletes: usize,
+        _protected: &B256Set,
+    ) -> usize {
+        self.sweep_expired(max_age, max_deletes)
     }
 
     /// Retrieves the decoded blob data for the given transaction hash.

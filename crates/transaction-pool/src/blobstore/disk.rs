@@ -285,7 +285,16 @@ impl BlobStore for DiskFileBlobStore {
     }
 
     fn sweep_expired(&self, max_age: Duration, max_deletes: usize) -> usize {
-        self.inner.sweep_expired(max_age, max_deletes)
+        self.inner.sweep_expired(max_age.max(BLOB_SWEEP_MAX_AGE), max_deletes, &B256Set::default())
+    }
+
+    fn sweep_expired_except(
+        &self,
+        max_age: Duration,
+        max_deletes: usize,
+        protected: &B256Set,
+    ) -> usize {
+        self.inner.sweep_expired(max_age, max_deletes, protected)
     }
 
     fn get(&self, tx: B256) -> Result<Option<Arc<BlobTransactionSidecarVariant>>, BlobStoreError> {
@@ -580,9 +589,7 @@ impl DiskFileBlobStoreInner {
     }
 
     /// Deletes blob files whose last-modified time is older than `max_age`.
-    fn sweep_expired(&self, max_age: Duration, max_deletes: usize) -> usize {
-        let max_age = max_age.max(BLOB_SWEEP_MAX_AGE);
-
+    fn sweep_expired(&self, max_age: Duration, max_deletes: usize, protected: &B256Set) -> usize {
         let now = SystemTime::now();
         let Some(cutoff) = now.checked_sub(max_age) else { return 0 };
         let shard = self.next_sweep_shard.fetch_add(1, Ordering::Relaxed) % SWEEP_SHARDS;
@@ -610,6 +617,12 @@ impl DiskFileBlobStoreInner {
                 !name.bytes().all(|b| b.is_ascii_hexdigit())
             {
                 continue
+            }
+            if !protected.is_empty() {
+                let Ok(tx_hash) = name.parse::<B256>() else { continue };
+                if protected.contains(&tx_hash) {
+                    continue
+                }
             }
 
             let Ok(meta) = entry.metadata() else { continue };
@@ -896,6 +909,25 @@ mod tests {
 
         assert_eq!(store.sweep_expired(Duration::from_secs(1), 10), 0);
         assert!(dir.path().join(&name).exists());
+    }
+
+    #[test]
+    fn sweep_expired_except_uses_shorter_retention_and_skips_protected() {
+        let (store, dir) = tmp_store();
+        let protected = B256::with_last_byte(1);
+        let expired = B256::with_last_byte(2);
+        let age = Duration::from_secs(2 * 60 * 60);
+
+        write_aged_file(dir.path(), &format!("{protected:x}"), age);
+        write_aged_file(dir.path(), &format!("{expired:x}"), age);
+
+        let protected_hashes = [protected].into_iter().collect();
+        assert_eq!(
+            store.sweep_expired_except(Duration::from_secs(60 * 60), 10, &protected_hashes,),
+            1
+        );
+        assert!(dir.path().join(format!("{protected:x}")).exists());
+        assert!(!dir.path().join(format!("{expired:x}")).exists());
     }
 
     #[test]

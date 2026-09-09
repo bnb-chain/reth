@@ -72,6 +72,9 @@ pub struct MaintainPoolConfig {
     /// Default: 3 hours
     pub max_tx_lifetime: Duration,
 
+    /// Maximum age of unreferenced blob files.
+    pub blob_sweep_max_age: Duration,
+
     /// Apply no exemptions to the locally received transactions.
     ///
     /// This includes:
@@ -86,6 +89,7 @@ impl Default for MaintainPoolConfig {
             max_update_depth: 64,
             max_reload_accounts: 100,
             max_tx_lifetime: MAX_QUEUED_TRANSACTION_LIFETIME,
+            blob_sweep_max_age: BLOB_SWEEP_MAX_AGE,
             no_local_exemptions: false,
         }
     }
@@ -315,8 +319,8 @@ pub async fn maintain_transaction_pool<N, Client, P, St>(
                 let pool = pool.clone();
                 task_spawner.spawn_blocking_task(async move {
                     let started_at = std::time::Instant::now();
-                    let deleted =
-                        pool.sweep_expired_blobs(BLOB_SWEEP_MAX_AGE, BLOB_SWEEP_MAX_DELETES);
+                    let deleted = pool
+                        .sweep_expired_blobs(config.blob_sweep_max_age, BLOB_SWEEP_MAX_DELETES);
                     debug!(
                         target: "txpool",
                         %deleted,
