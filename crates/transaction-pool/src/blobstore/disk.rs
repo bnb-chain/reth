@@ -921,9 +921,9 @@ mod tests {
         write_aged_file(dir.path(), &format!("{protected:x}"), age);
         write_aged_file(dir.path(), &format!("{expired:x}"), age);
 
-        let protected_hashes = [protected].into_iter().collect();
+        let protected_hashes = std::iter::once(protected).collect();
         assert_eq!(
-            store.sweep_expired_except(Duration::from_secs(60 * 60), 10, &protected_hashes,),
+            store.sweep_expired_except(Duration::from_secs(60 * 60), 10, &protected_hashes),
             1
         );
         assert!(dir.path().join(format!("{protected:x}")).exists());
