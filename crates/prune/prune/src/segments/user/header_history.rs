@@ -8,6 +8,8 @@ use reth_prune_types::{
 };
 use reth_stages_types::StageId;
 use reth_static_file_types::StaticFileSegment;
+use std::time::Instant;
+use tracing::info;
 
 /// Prunes historical header static files.
 #[derive(Debug)]
@@ -39,6 +41,7 @@ where
     }
 
     fn prune(&self, provider: &Provider, input: PruneInput) -> Result<SegmentOutput, PrunerError> {
+        let started_at = Instant::now();
         let static_files = provider.static_file_provider();
         let deleted = static_files.delete_segment_below_block(
             StaticFileSegment::Headers,
@@ -66,6 +69,17 @@ where
                 tx_number: None,
             });
 
+        if !deleted.is_empty() {
+            info!(
+                target: "pruner",
+                deleted_files = deleted.len(),
+                pruned_blocks = pruned,
+                highest_pruned_block = ?checkpoint.and_then(|checkpoint| checkpoint.block_number),
+                elapsed = ?started_at.elapsed(),
+                "Pruned header history"
+            );
+        }
+
         Ok(SegmentOutput { progress: PruneProgress::Finished, pruned, checkpoint })
     }
 
@@ -79,8 +93,8 @@ mod tests {
     use super::*;
     use crate::PruneLimiter;
     use reth_provider::{
-        test_utils::create_test_provider_factory, DatabaseProviderFactory,
-        StaticFileProviderFactory, StaticFileWriter,
+        test_utils::create_test_provider_factory, DatabaseProviderFactory, HeaderProvider,
+        ProviderError, StaticFileProviderFactory, StaticFileWriter,
     };
     use reth_static_file_types::{
         SegmentHeader, SegmentRangeInclusive, DEFAULT_BLOCKS_PER_STATIC_FILE,
@@ -133,6 +147,11 @@ mod tests {
             factory.static_file_provider().get_lowest_range_start(StaticFileSegment::Headers),
             Some(500_000)
         );
+        assert_eq!(factory.static_file_provider().earliest_history_height(), 500_000);
+        assert!(matches!(
+            factory.static_file_provider().headers_range(0..1),
+            Err(ProviderError::BlockExpired { requested: 0, earliest_available: 500_000 })
+        ));
     }
 
     #[test]

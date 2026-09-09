@@ -164,15 +164,13 @@ impl PruneModes {
             ),
         ] {
             if let Some(PruneMode::Distance(limit)) = prune_mode {
-                // check if distance exceeds the configured limit
-                if distance > *limit {
-                    // but only if we haven't pruned the target yet, if we don't have a checkpoint
-                    // yet, it's fully unpruned yet
+                let header_checkpoint_exists =
+                    *history_type == HistoryType::Headers && checkpoint.is_some();
+                if distance > *limit || header_checkpoint_exists {
                     let pruned_height = checkpoint
                         .and_then(|checkpoint| checkpoint.1.block_number)
                         .unwrap_or(latest_block);
                     if pruned_height >= target_block {
-                        // we've pruned the target block already and can't unwind past it
                         return Err(UnwindTargetPrunedError::TargetBeyondHistoryLimit {
                             latest_block,
                             target_block,
@@ -439,6 +437,28 @@ mod tests {
 
         assert_matches!(
             prune_modes.ensure_unwind_target_unpruned(1000, 800, &checkpoints),
+            Err(UnwindTargetPrunedError::TargetBeyondHistoryLimit {
+                history_type: HistoryType::Headers,
+                ..
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_unwind_at_pruned_header_boundary() {
+        let prune_modes =
+            PruneModes { header_history: Some(PruneMode::Distance(100)), ..Default::default() };
+        let checkpoints = [(
+            PruneSegment::HeaderHistory,
+            PruneCheckpoint {
+                block_number: Some(900),
+                tx_number: None,
+                prune_mode: PruneMode::Distance(100),
+            },
+        )];
+
+        assert_matches!(
+            prune_modes.ensure_unwind_target_unpruned(1000, 900, &checkpoints),
             Err(UnwindTargetPrunedError::TargetBeyondHistoryLimit {
                 history_type: HistoryType::Headers,
                 ..

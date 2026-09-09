@@ -13,6 +13,9 @@ use std::{collections::BTreeMap, ops::Not, sync::OnceLock};
 /// Global static pruning defaults
 static PRUNING_DEFAULTS: OnceLock<DefaultPruningValues> = OnceLock::new();
 
+/// Includes the EVM block-hash window before the oldest unwindable block.
+const MINIMAL_HEADER_HISTORY_DISTANCE: u64 = MINIMUM_UNWIND_SAFE_DISTANCE + 256;
+
 /// Default values for `--full` and `--minimal` pruning modes that can be customized.
 ///
 /// Global defaults can be set via [`DefaultPruningValues::try_init`].
@@ -85,7 +88,7 @@ impl Default for DefaultPruningValues {
                 receipts: Some(PruneMode::Distance(MINIMUM_DISTANCE)),
                 account_history: Some(PruneMode::Distance(MINIMUM_UNWIND_SAFE_DISTANCE)),
                 storage_history: Some(PruneMode::Distance(MINIMUM_UNWIND_SAFE_DISTANCE)),
-                header_history: Some(PruneMode::Distance(MINIMUM_UNWIND_SAFE_DISTANCE)),
+                header_history: Some(PruneMode::Distance(MINIMAL_HEADER_HISTORY_DISTANCE)),
                 bodies_history: Some(PruneMode::Distance(MINIMUM_UNWIND_SAFE_DISTANCE)),
                 receipts_log_filter: Default::default(),
             },
@@ -106,7 +109,7 @@ pub struct PruningArgs {
     ///
     /// This mode configures the node to use minimal disk space by:
     /// - Fully pruning sender recovery, transaction lookup, receipts
-    /// - Leaving 10,064 blocks for account, storage, header and body history
+    /// - Leaving 10,064 blocks for account, storage and body history, and 10,320 headers
     /// - Using 10,000 blocks per static file segment
     #[arg(long, default_value_t = false, conflicts_with = "full")]
     pub minimal: bool,
@@ -443,7 +446,7 @@ mod tests {
 
         assert_eq!(
             config.segments.header_history,
-            Some(PruneMode::Distance(MINIMUM_UNWIND_SAFE_DISTANCE))
+            Some(PruneMode::Distance(MINIMAL_HEADER_HISTORY_DISTANCE))
         );
         assert!(PruningArgs::default().prune_config(MAINNET.as_ref()).is_none());
 

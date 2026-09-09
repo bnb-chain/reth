@@ -294,9 +294,7 @@ impl<TX, N: NodeTypes> DatabaseProvider<TX, N> {
 
 impl<TX: DbTx + 'static, N: NodeTypes> DatabaseProvider<TX, N> {
     fn is_pruned_genesis(&self, number: BlockNumber) -> ProviderResult<bool> {
-        if self.prune_modes.header_history.is_none() ||
-            number != self.chain_spec.genesis_header().number()
-        {
+        if number != self.chain_spec.genesis_header().number() {
             return Ok(false)
         }
 
@@ -1933,6 +1931,7 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> HeaderProvider for DatabasePro
         )?;
 
         if header.is_none() && self.is_pruned_genesis(num)? {
+            debug!(target: "providers::database", "Serving pruned genesis header");
             return Ok(Some(self.chain_spec.genesis_header().clone()))
         }
         Ok(header)
@@ -1963,6 +1962,7 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> HeaderProvider for DatabasePro
         )?;
 
         if td.is_none() && self.is_pruned_genesis(number)? {
+            debug!(target: "providers::database", "Serving pruned genesis total difficulty");
             return Ok(Some(self.chain_spec.genesis_header().difficulty()))
         }
         Ok(td)
@@ -1979,7 +1979,7 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> HeaderProvider for DatabasePro
         &self,
         number: BlockNumber,
     ) -> ProviderResult<Option<SealedHeader<Self::Header>>> {
-        self.static_file_provider.get_with_static_file_or_database(
+        let header = self.static_file_provider.get_with_static_file_or_database(
             StaticFileSegment::Headers,
             number,
             |static_file| static_file.sealed_header(number),
@@ -1993,7 +1993,16 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> HeaderProvider for DatabasePro
                     Ok(None)
                 }
             },
-        )
+        )?;
+
+        if header.is_none() && self.is_pruned_genesis(number)? {
+            debug!(target: "providers::database", "Serving pruned sealed genesis header");
+            return Ok(Some(SealedHeader::new(
+                self.chain_spec.genesis_header().clone(),
+                self.chain_spec.genesis_hash(),
+            )))
+        }
+        Ok(header)
     }
 
     fn sealed_headers_while(
@@ -2009,6 +2018,7 @@ impl<TX: DbTx + 'static, N: NodeTypes> BlockHashReader for DatabaseProvider<TX, 
     fn block_hash(&self, number: u64) -> ProviderResult<Option<B256>> {
         let hash = self.static_file_provider.block_hash(number)?;
         if hash.is_none() && self.is_pruned_genesis(number)? {
+            debug!(target: "providers::database", "Serving pruned genesis hash");
             return Ok(Some(self.chain_spec.genesis_hash()))
         }
         Ok(hash)

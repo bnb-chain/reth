@@ -111,9 +111,8 @@ impl<N: NodeTypesForProvider> ProviderFactory<NodeTypesWithDBAdapter<N, Database
 }
 
 impl<N: ProviderNodeTypes> ProviderFactory<N> {
-    fn may_have_pruned_genesis(&self, number: BlockNumber) -> bool {
-        self.prune_modes.header_history.is_some() &&
-            number == self.chain_spec.genesis_header().number()
+    fn is_genesis(&self, number: BlockNumber) -> bool {
+        number == self.chain_spec.genesis_header().number()
     }
 
     /// Create new database provider factory.
@@ -644,7 +643,10 @@ impl<N: ProviderNodeTypes> HeaderProvider for ProviderFactory<N> {
     }
 
     fn header_by_number(&self, num: BlockNumber) -> ProviderResult<Option<Self::Header>> {
-        if self.may_have_pruned_genesis(num) {
+        if self.is_genesis(num) {
+            if let Some(header) = self.static_file_provider.header_by_number(num)? {
+                return Ok(Some(header))
+            }
             return self.provider()?.header_by_number(num)
         }
         self.static_file_provider.get_with_static_file_or_database(
@@ -674,7 +676,10 @@ impl<N: ProviderNodeTypes> HeaderProvider for ProviderFactory<N> {
         &self,
         number: BlockNumber,
     ) -> ProviderResult<Option<SealedHeader<Self::Header>>> {
-        if self.may_have_pruned_genesis(number) {
+        if self.is_genesis(number) {
+            if let Some(header) = self.static_file_provider.sealed_header(number)? {
+                return Ok(Some(header))
+            }
             return self.provider()?.sealed_header(number)
         }
         self.static_file_provider.get_with_static_file_or_database(
@@ -703,7 +708,10 @@ impl<N: ProviderNodeTypes> HeaderProvider for ProviderFactory<N> {
 
 impl<N: ProviderNodeTypes> BlockHashReader for ProviderFactory<N> {
     fn block_hash(&self, number: u64) -> ProviderResult<Option<B256>> {
-        if self.may_have_pruned_genesis(number) {
+        if self.is_genesis(number) {
+            if let Some(hash) = self.static_file_provider.block_hash(number)? {
+                return Ok(Some(hash))
+            }
             return self.provider()?.block_hash(number)
         }
         self.static_file_provider.get_with_static_file_or_database(
@@ -1064,6 +1072,9 @@ mod tests {
     use reth_db_api::{tables, transaction::DbTxMut};
     use reth_primitives_traits::SignerRecoverable;
     use reth_prune_types::{PruneMode, PruneModes};
+    use reth_static_file_types::{
+        SegmentHeader, SegmentRangeInclusive, DEFAULT_BLOCKS_PER_STATIC_FILE,
+    };
     use reth_storage_errors::provider::ProviderError;
     use reth_testing_utils::generators::{self, random_block, random_header, BlockParams};
     use std::{ops::RangeInclusive, sync::Arc};
@@ -1095,18 +1106,14 @@ mod tests {
     }
 
     #[test]
-    fn minimal_provider_restores_pruned_genesis_header() {
+    fn provider_restores_pruned_genesis_header() {
         let factory = create_test_provider_factory();
         let genesis = factory.chain_spec().genesis_header().clone();
         let genesis_hash = factory.chain_spec().genesis_hash();
         let genesis_number = genesis.number();
-        let minimal_factory = factory.clone().with_prune_modes(PruneModes {
-            header_history: Some(PruneMode::Distance(MINIMUM_UNWIND_SAFE_DISTANCE)),
-            ..Default::default()
-        });
 
-        assert_eq!(minimal_factory.block_hash(genesis_number).unwrap(), None);
-        assert_eq!(minimal_factory.header_by_number(genesis_number).unwrap(), None);
+        assert_eq!(factory.block_hash(genesis_number).unwrap(), None);
+        assert_eq!(factory.header_by_number(genesis_number).unwrap(), None);
 
         {
             let provider = factory.database_provider_rw().unwrap();
@@ -1114,19 +1121,32 @@ mod tests {
             provider.commit().unwrap();
         }
 
-        assert_eq!(factory.block_hash(genesis_number).unwrap(), None);
-        assert_eq!(factory.header_by_number(genesis_number).unwrap(), None);
-        assert_eq!(minimal_factory.block_hash(genesis_number).unwrap(), Some(genesis_hash));
+        let static_files = factory.static_file_provider();
+        let mut writer = static_files.latest_writer(StaticFileSegment::Headers).unwrap();
+        for jar in 0..2 {
+            let start = jar * DEFAULT_BLOCKS_PER_STATIC_FILE;
+            let end = start + DEFAULT_BLOCKS_PER_STATIC_FILE - 1;
+            *writer.user_header_mut() = SegmentHeader::new(
+                SegmentRangeInclusive::new(start, end),
+                Some(SegmentRangeInclusive::new(start, end)),
+                None,
+                StaticFileSegment::Headers,
+            );
+            writer.inner().set_dirty();
+            writer.commit().unwrap();
+            if jar == 0 {
+                writer.increment_block(end + 1).unwrap();
+            }
+        }
+        drop(writer);
+        static_files.initialize_index().unwrap();
+        static_files.delete_jar(StaticFileSegment::Headers, genesis_number).unwrap();
+
+        assert_eq!(factory.block_hash(genesis_number).unwrap(), Some(genesis_hash));
+        assert_eq!(factory.header_by_number(genesis_number).unwrap(), Some(genesis.clone()));
+        assert_eq!(factory.sealed_header(genesis_number).unwrap().unwrap().hash(), genesis_hash);
         assert_eq!(
-            minimal_factory.header_by_number(genesis_number).unwrap(),
-            Some(genesis.clone())
-        );
-        assert_eq!(
-            minimal_factory.sealed_header(genesis_number).unwrap().unwrap().hash(),
-            genesis_hash
-        );
-        assert_eq!(
-            minimal_factory.header_td_by_number(genesis_number).unwrap(),
+            factory.header_td_by_number(genesis_number).unwrap(),
             Some(genesis.difficulty())
         );
     }
