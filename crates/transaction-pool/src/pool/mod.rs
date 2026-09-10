@@ -66,7 +66,7 @@
 //!    category (2.) and become pending.
 
 use crate::{
-    blobstore::BlobStore,
+    blobstore::{disk::BLOB_SWEEP_MAX_AGE, BlobStore},
     error::{PoolError, PoolErrorKind, PoolResult},
     identifier::{SenderId, SenderIdentifiers, TransactionId},
     metrics::BlobStoreMetrics,
@@ -89,7 +89,7 @@ use crate::{
 };
 
 use alloy_primitives::{
-    map::{AddressSet, HashSet},
+    map::{AddressSet, B256Set, HashSet},
     Address, TxHash, B256,
 };
 use parking_lot::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -1331,7 +1331,13 @@ where
 
     /// Removes expired blob files and refreshes blob store metrics.
     pub fn sweep_expired_blobs(&self, max_age: Duration, max_deletes: usize) -> usize {
-        let deleted = self.blob_store.sweep_expired(max_age, max_deletes);
+        // Sweep faster in minimal storage mode.
+        let deleted = if max_age < BLOB_SWEEP_MAX_AGE {
+            let protected = self.all_transaction_hashes().into_iter().collect::<B256Set>();
+            self.blob_store.sweep_expired_except(max_age, max_deletes, &protected)
+        } else {
+            self.blob_store.sweep_expired(max_age, max_deletes)
+        };
         self.update_blob_store_metrics();
         deleted
     }

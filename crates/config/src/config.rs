@@ -598,6 +598,7 @@ impl PruneConfig {
                     receipts,
                     account_history,
                     storage_history,
+                    header_history,
                     bodies_history,
                     receipts_log_filter,
                 },
@@ -620,6 +621,7 @@ impl PruneConfig {
         self.segments.receipts = self.segments.receipts.or(receipts);
         self.segments.account_history = self.segments.account_history.or(account_history);
         self.segments.storage_history = self.segments.storage_history.or(storage_history);
+        self.segments.header_history = self.segments.header_history.or(header_history);
         self.segments.bodies_history = self.segments.bodies_history.or(bodies_history);
 
         if self.segments.receipts_log_filter.0.is_empty() && !receipts_log_filter.0.is_empty() {
@@ -1158,6 +1160,7 @@ receipts = { distance = 16384 }
                 receipts: Some(PruneMode::Distance(1000)),
                 account_history: None,
                 storage_history: Some(PruneMode::Before(5000)),
+                header_history: None,
                 bodies_history: None,
                 receipts_log_filter: ReceiptsLogPruneConfig(BTreeMap::from([(
                     Address::random(),
@@ -1175,6 +1178,7 @@ receipts = { distance = 16384 }
                 receipts: Some(PruneMode::Full),
                 account_history: Some(PruneMode::Distance(2000)),
                 storage_history: Some(PruneMode::Distance(3000)),
+                header_history: Some(PruneMode::Distance(20_000)),
                 bodies_history: None,
                 receipts_log_filter: ReceiptsLogPruneConfig(BTreeMap::from([
                     (Address::random(), PruneMode::Distance(1000)),
@@ -1194,6 +1198,7 @@ receipts = { distance = 16384 }
         assert_eq!(config1.segments.receipts, Some(PruneMode::Distance(1000)));
         assert_eq!(config1.segments.account_history, Some(PruneMode::Distance(2000)));
         assert_eq!(config1.segments.storage_history, Some(PruneMode::Before(5000)));
+        assert_eq!(config1.segments.header_history, Some(PruneMode::Distance(20_000)));
         assert_eq!(config1.segments.receipts_log_filter, original_filter);
     }
 

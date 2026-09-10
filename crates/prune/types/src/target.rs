@@ -39,6 +39,8 @@ pub enum HistoryType {
     AccountHistory,
     /// Storage history
     StorageHistory,
+    /// Headers
+    Headers,
 }
 
 /// Pruning configuration for every segment of the data that can be pruned.
@@ -74,6 +76,15 @@ pub struct PruneModes {
         )
     )]
     pub storage_history: Option<PruneMode>,
+    /// Header History pruning configuration.
+    #[cfg_attr(
+        any(test, feature = "serde"),
+        serde(
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "deserialize_opt_prune_mode_with_min_blocks::<MINIMUM_UNWIND_SAFE_DISTANCE, _>"
+        )
+    )]
+    pub header_history: Option<PruneMode>,
     /// Bodies History pruning configuration.
     #[cfg_attr(any(test, feature = "serde"), serde(skip_serializing_if = "Option::is_none"))]
     pub bodies_history: Option<PruneMode>,
@@ -90,7 +101,7 @@ pub struct PruneModes {
 }
 
 impl PruneModes {
-    /// Sets pruning to all targets.
+    /// Sets all standard pruning targets.
     pub fn all() -> Self {
         Self {
             sender_recovery: Some(PruneMode::Full),
@@ -98,6 +109,7 @@ impl PruneModes {
             receipts: Some(PruneMode::Full),
             account_history: Some(PruneMode::Full),
             storage_history: Some(PruneMode::Full),
+            header_history: None,
             bodies_history: Some(PruneMode::Full),
             receipts_log_filter: Default::default(),
         }
@@ -136,6 +148,11 @@ impl PruneModes {
         let distance = latest_block.saturating_sub(target_block);
         for (prune_mode, history_type, checkpoint) in &[
             (
+                self.header_history,
+                HistoryType::Headers,
+                checkpoints.iter().find(|(segment, _)| segment.is_header_history()),
+            ),
+            (
                 self.account_history,
                 HistoryType::AccountHistory,
                 checkpoints.iter().find(|(segment, _)| segment.is_account_history()),
@@ -147,15 +164,13 @@ impl PruneModes {
             ),
         ] {
             if let Some(PruneMode::Distance(limit)) = prune_mode {
-                // check if distance exceeds the configured limit
-                if distance > *limit {
-                    // but only if we haven't pruned the target yet, if we don't have a checkpoint
-                    // yet, it's fully unpruned yet
+                let header_checkpoint_exists =
+                    *history_type == HistoryType::Headers && checkpoint.is_some();
+                if distance > *limit || header_checkpoint_exists {
                     let pruned_height = checkpoint
                         .and_then(|checkpoint| checkpoint.1.block_number)
                         .unwrap_or(latest_block);
                     if pruned_height >= target_block {
-                        // we've pruned the target block already and can't unwind past it
                         return Err(UnwindTargetPrunedError::TargetBeyondHistoryLimit {
                             latest_block,
                             target_block,
@@ -405,5 +420,49 @@ mod tests {
             PruneModes { account_history: Some(PruneMode::Distance(100)), ..Default::default() };
         // Target block (1500) > latest block (1000) - distance should be 0
         assert!(prune_modes.ensure_unwind_target_unpruned(1000, 1500, &[]).is_ok());
+    }
+
+    #[test]
+    fn rejects_unwind_into_pruned_header_history() {
+        let prune_modes =
+            PruneModes { header_history: Some(PruneMode::Distance(100)), ..Default::default() };
+        let checkpoints = [(
+            PruneSegment::HeaderHistory,
+            PruneCheckpoint {
+                block_number: Some(850),
+                tx_number: None,
+                prune_mode: PruneMode::Distance(100),
+            },
+        )];
+
+        assert_matches!(
+            prune_modes.ensure_unwind_target_unpruned(1000, 800, &checkpoints),
+            Err(UnwindTargetPrunedError::TargetBeyondHistoryLimit {
+                history_type: HistoryType::Headers,
+                ..
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_unwind_at_pruned_header_boundary() {
+        let prune_modes =
+            PruneModes { header_history: Some(PruneMode::Distance(100)), ..Default::default() };
+        let checkpoints = [(
+            PruneSegment::HeaderHistory,
+            PruneCheckpoint {
+                block_number: Some(900),
+                tx_number: None,
+                prune_mode: PruneMode::Distance(100),
+            },
+        )];
+
+        assert_matches!(
+            prune_modes.ensure_unwind_target_unpruned(1000, 900, &checkpoints),
+            Err(UnwindTargetPrunedError::TargetBeyondHistoryLimit {
+                history_type: HistoryType::Headers,
+                ..
+            })
+        );
     }
 }
