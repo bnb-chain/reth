@@ -4240,6 +4240,66 @@ mod tests {
         )
     }
 
+    /// A datadir older than the parlia TD feature has no `HeaderTerminalDifficulties` rows at
+    /// all. The write path used to read a missing parent as zero and re-anchor the running sum
+    /// there, so TD came out far below the real value and geth peers refused to sync from us.
+    #[test]
+    fn total_difficulty_rebuilds_when_no_row_is_stored() {
+        let factory = create_test_provider_factory();
+        let data = BlockchainTestData::default();
+
+        let provider_rw = factory.provider_rw().unwrap();
+        provider_rw.insert_block(&data.genesis.try_recover().unwrap()).unwrap();
+        for (block, _) in &data.blocks[..3] {
+            provider_rw.insert_block(block).unwrap();
+        }
+        // Drop every row, reproducing a pre-feature datadir (and the state left behind by the
+        // `db clear mdbx HeaderTerminalDifficulties` repair).
+        provider_rw.tx_ref().clear::<tables::HeaderTerminalDifficulties>().unwrap();
+        provider_rw.commit().unwrap();
+
+        let provider = factory.provider().unwrap();
+        assert!(provider.header_td_by_number(3).unwrap().is_none());
+
+        let expected = (0..=3)
+            .map(|n| provider.header_by_number(n).unwrap().unwrap().difficulty)
+            .fold(U256::ZERO, |acc, d| acc + d);
+        // Guard against the assertion passing because every difficulty happens to be zero.
+        assert!(expected > U256::ZERO, "test data has no difficulty to accumulate");
+
+        assert_eq!(provider.total_difficulty_at(3).unwrap(), expected);
+    }
+
+    /// An unwind can delete the rows above some block, so the rebuild must resume from the
+    /// closest stored ancestor rather than walking back to genesis and ignoring it.
+    #[test]
+    fn total_difficulty_anchors_on_the_closest_stored_row() {
+        let factory = create_test_provider_factory();
+        let data = BlockchainTestData::default();
+
+        let provider_rw = factory.provider_rw().unwrap();
+        provider_rw.insert_block(&data.genesis.try_recover().unwrap()).unwrap();
+        for (block, _) in &data.blocks[..3] {
+            provider_rw.insert_block(block).unwrap();
+        }
+        provider_rw.tx_ref().clear::<tables::HeaderTerminalDifficulties>().unwrap();
+        // A deliberately implausible anchor: if the walk restarted from genesis instead of
+        // resuming here, the result could not contain it.
+        let anchor = U256::from(1_000_000u64);
+        provider_rw
+            .tx_ref()
+            .put::<tables::HeaderTerminalDifficulties>(1, anchor.into())
+            .unwrap();
+        provider_rw.commit().unwrap();
+
+        let provider = factory.provider().unwrap();
+        let expected = (2..=3)
+            .map(|n| provider.header_by_number(n).unwrap().unwrap().difficulty)
+            .fold(anchor, |acc, d| acc + d);
+
+        assert_eq!(provider.total_difficulty_at(3).unwrap(), expected);
+    }
+
     #[test]
     fn test_receipts_by_block_range_empty_range() {
         let factory = create_test_provider_factory();
