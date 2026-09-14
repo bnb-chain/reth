@@ -1,4 +1,5 @@
 use alloc::vec::Vec;
+use alloy_consensus::BlockHeader as _;
 use alloy_eips::BlockHashOrNumber;
 use alloy_primitives::{BlockHash, BlockNumber};
 use core::ops::RangeBounds;
@@ -49,6 +50,47 @@ pub trait HeaderProvider: Send {
         _number: BlockNumber,
     ) -> ProviderResult<Option<alloy_primitives::U256>> {
         Ok(None)
+    }
+
+    /// Total difficulty at `number`, rebuilding it when the entry is missing.
+    ///
+    /// `header_td_by_number` only answers for blocks whose TD this node actually persisted, so
+    /// a datadir older than the parlia TD feature (or one whose table was cleared to repair it)
+    /// has nothing to return. Callers that advertise TD to peers must not treat that as zero:
+    /// a zero total difficulty makes geth rank us below its own head and refuse to sync from us.
+    ///
+    /// Stored TDs form a contiguous suffix ending at the tip, so a miss at `number` means every
+    /// lower block is missing too, and the only anchor left is genesis. Providers that can seek
+    /// the table directly should override this with a cheaper walk.
+    fn total_difficulty_at(&self, number: BlockNumber) -> ProviderResult<alloy_primitives::U256> {
+        if let Some(td) = self.header_td_by_number(number)? {
+            return Ok(td)
+        }
+
+        let genesis = self
+            .header_by_number(0)?
+            .ok_or(reth_storage_errors::provider::ProviderError::HeaderNotFound(0.into()))?;
+        let mut td = genesis.difficulty();
+
+        // Chunked so a cold datadir does not materialize millions of headers at once.
+        const CHUNK: u64 = 65_536;
+        let mut base = 0u64;
+        while base < number {
+            let end = core::cmp::min(base + CHUNK, number);
+            let headers = self.headers_range(base + 1..=end)?;
+            // A short range means a header is missing; summing it would silently under-count.
+            if headers.len() as u64 != end - base {
+                return Err(reth_storage_errors::provider::ProviderError::HeaderNotFound(
+                    (base + 1).into(),
+                ))
+            }
+            for header in headers {
+                td += header.difficulty();
+            }
+            base = end;
+        }
+
+        Ok(td)
     }
 
     /// Get header by block number or hash

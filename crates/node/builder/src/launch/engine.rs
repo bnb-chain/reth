@@ -375,7 +375,7 @@ impl EngineNodeLauncher {
                                         // get filtered out by remote peers as a useless sync source.
                                         total_difficulty: chainspec.final_paris_total_difficulty()
                                             .filter(|_| chainspec.is_paris_active_at_block(head.number()))
-                                            .or_else(|| provider.header_td_by_number(head.number()).ok().flatten())
+                                            .or_else(|| provider.total_difficulty_at(head.number()).ok())
                                             .unwrap_or_default(),
                                     };
                                     network_handle.update_status(head_block);

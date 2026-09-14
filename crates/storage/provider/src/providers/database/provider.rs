@@ -570,60 +570,6 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
         }
     }
 
-    /// Total difficulty at `number`, rebuilding it when the entry is missing.
-    ///
-    /// `HeaderTerminalDifficulties` is a BSC/parlia addition, so a datadir created before it
-    /// landed holds no rows at all, and static files are no help either (the header writer
-    /// stores `U256::ZERO` in the TD column). Treating an absent parent as zero re-anchors the
-    /// running sum at whatever block this node happened to write first, producing a TD far below
-    /// the real one — geth peers then rank us below their own head and never sync from us.
-    ///
-    /// So rebuild instead: seek the closest ancestor that does have a TD (genesis at worst) and
-    /// sum header difficulties forward from it. Only the first block written after an upgrade
-    /// pays the full walk; every later block finds its parent already stored.
-    fn total_difficulty_at(&self, number: BlockNumber) -> ProviderResult<alloy_primitives::U256> {
-        if let Some(td) = self.header_td_by_number(number)? {
-            return Ok(td)
-        }
-
-        let (mut base, mut td) = {
-            let mut cursor = self.tx.cursor_read::<tables::HeaderTerminalDifficulties>()?;
-            // Nothing is stored at `number` itself, so whatever precedes the first row at or
-            // after it is the closest ancestor; an empty tail means the last row is.
-            let ancestor = match cursor.seek(number)? {
-                Some(_) => cursor.prev()?,
-                None => cursor.last()?,
-            };
-            match ancestor {
-                Some((block, td)) => (block, td.0),
-                // Genesis TD is never written by `save_blocks`; take it from the header.
-                None => (
-                    0,
-                    self.header_by_number(0)?
-                        .ok_or(ProviderError::HeaderNotFound(0.into()))?
-                        .difficulty(),
-                ),
-            }
-        };
-
-        // Chunked so a cold datadir does not materialize millions of headers at once.
-        const CHUNK: u64 = 65_536;
-        while base < number {
-            let end = (base + CHUNK).min(number);
-            let headers = self.headers_range(base + 1..=end)?;
-            // A short range means a header is missing; summing it would silently under-count.
-            if headers.len() as u64 != end - base {
-                return Err(ProviderError::HeaderNotFound((base + 1).into()))
-            }
-            for header in headers {
-                td += header.difficulty();
-            }
-            base = end;
-        }
-
-        Ok(td)
-    }
-
     /// Advances the independent persistence frontiers described by [`SaveBlocksInput`].
     ///
     /// Ordinary block data and hashed-state/trie updates advance independently according to the
@@ -1958,6 +1904,62 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> HeaderProvider for DatabasePro
         }
         Ok(None)
     }
+
+    /// Overrides the trait default with a direct table seek: an unwind can leave a gap, and
+    /// seeking the closest stored ancestor avoids walking back to genesis when one exists.
+    ///
+    /// `HeaderTerminalDifficulties` is a BSC/parlia addition, so a datadir created before it
+    /// landed holds no rows at all, and static files are no help either (the header writer
+    /// stores `U256::ZERO` in the TD column). Treating an absent parent as zero re-anchors the
+    /// running sum at whatever block this node happened to write first, producing a TD far below
+    /// the real one — geth peers then rank us below their own head and never sync from us.
+    ///
+    /// So rebuild instead: seek the closest ancestor that does have a TD (genesis at worst) and
+    /// sum header difficulties forward from it. Only the first block written after an upgrade
+    /// pays the full walk; every later block finds its parent already stored.
+    fn total_difficulty_at(&self, number: BlockNumber) -> ProviderResult<alloy_primitives::U256> {
+        if let Some(td) = self.header_td_by_number(number)? {
+            return Ok(td)
+        }
+
+        let (mut base, mut td) = {
+            let mut cursor = self.tx.cursor_read::<tables::HeaderTerminalDifficulties>()?;
+            // Nothing is stored at `number` itself, so whatever precedes the first row at or
+            // after it is the closest ancestor; an empty tail means the last row is.
+            let ancestor = match cursor.seek(number)? {
+                Some(_) => cursor.prev()?,
+                None => cursor.last()?,
+            };
+            match ancestor {
+                Some((block, td)) => (block, td.0),
+                // Genesis TD is never written by `save_blocks`; take it from the header.
+                None => (
+                    0,
+                    self.header_by_number(0)?
+                        .ok_or(ProviderError::HeaderNotFound(0.into()))?
+                        .difficulty(),
+                ),
+            }
+        };
+
+        // Chunked so a cold datadir does not materialize millions of headers at once.
+        const CHUNK: u64 = 65_536;
+        while base < number {
+            let end = (base + CHUNK).min(number);
+            let headers = self.headers_range(base + 1..=end)?;
+            // A short range means a header is missing; summing it would silently under-count.
+            if headers.len() as u64 != end - base {
+                return Err(ProviderError::HeaderNotFound((base + 1).into()))
+            }
+            for header in headers {
+                td += header.difficulty();
+            }
+            base = end;
+        }
+
+        Ok(td)
+    }
+
 
     fn headers_range(
         &self,
