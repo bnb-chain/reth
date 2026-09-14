@@ -2012,8 +2012,8 @@ where
                 // Compute and cache changesets using the computed trie_updates.
                 // Skip in TrieDB mode — TrieDB manages its own trie data.
                 // Open a fresh MDBX read transaction just for the cursor-walk phase.
-                // The overlay cache is keyed by db tip hash, so a tip that moved since the
-                // engine loop pre-warmed it makes this a miss that reads the changeset cache.
+                // The overlay cache was pre-warmed on the engine loop thread, so this
+                // call hits the cache and does not re-read the changeset cache.
                 // The provider is dropped at the end of this block, releasing the read
                 // transaction promptly and avoiding long-lived readers that block MDBX GC.
                 if !rust_eth_triedb::triedb_manager::is_triedb_active() {
@@ -2032,9 +2032,7 @@ where
                         }
                     };
 
-                    // Registering earlier deadlocks: building the provider reads this cache.
                     let pending_changeset_guard = changeset_cache.register_pending(block_hash);
-
                     match reth_trie::changesets::compute_trie_changesets(
                         &changeset_provider,
                         &computed.trie_updates,
