@@ -35,7 +35,7 @@ use reth_node_core::{
 use reth_node_events::node;
 use reth_provider::{
     providers::{BlockchainProvider, NodeTypesForProvider},
-    BlockNumReader, StorageSettingsCache,
+    BlockNumReader, HeaderProvider, StorageSettingsCache,
 };
 use reth_storage_overlay::OverlayManager;
 use reth_tasks::TaskExecutor;
@@ -368,8 +368,14 @@ impl EngineNodeLauncher {
                                         hash: head.hash(),
                                         difficulty: head.difficulty(),
                                         timestamp: head.timestamp(),
+                                        // For Ethereum, total_difficulty becomes a constant at Paris
+                                        // so the first branch is the fast path. For chains where
+                                        // Paris never activates (BSC), fall back to the real TD from
+                                        // the provider so the status message doesn't advertise 0 and
+                                        // get filtered out by remote peers as a useless sync source.
                                         total_difficulty: chainspec.final_paris_total_difficulty()
                                             .filter(|_| chainspec.is_paris_active_at_block(head.number()))
+                                            .or_else(|| provider.header_td_by_number(head.number()).ok().flatten())
                                             .unwrap_or_default(),
                                     };
                                     network_handle.update_status(head_block);
