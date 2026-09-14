@@ -1974,11 +1974,7 @@ where
         // Capture block info and cache handle for changeset computation
         let block_hash = block.hash();
         let block_number = block.number();
-
-        // Register a pending changeset entry so that concurrent readers will wait for
-        // this computation to finish rather than falling back to the expensive DB path.
-        // The guard ensures the pending entry is cancelled if the task panics.
-        let pending_changeset_guard = self.changeset_cache.register_pending(block_hash);
+        let changeset_cache = self.changeset_cache.clone();
 
         // Spawn background task to compute trie data. Calling `wait_cloned` will compute from
         // the stored inputs and cache the result, so subsequent calls return immediately.
@@ -2016,8 +2012,8 @@ where
                 // Compute and cache changesets using the computed trie_updates.
                 // Skip in TrieDB mode — TrieDB manages its own trie data.
                 // Open a fresh MDBX read transaction just for the cursor-walk phase.
-                // The overlay cache was pre-warmed on the engine loop thread, so this
-                // call hits the cache and does not re-read the changeset cache.
+                // The overlay cache is keyed by db tip hash, so a tip that moved since the
+                // engine loop pre-warmed it makes this a miss that reads the changeset cache.
                 // The provider is dropped at the end of this block, releasing the read
                 // transaction promptly and avoiding long-lived readers that block MDBX GC.
                 if !rust_eth_triedb::triedb_manager::is_triedb_active() {
@@ -2035,6 +2031,9 @@ where
                             return;
                         }
                     };
+
+                    // Registering earlier deadlocks: building the provider reads this cache.
+                    let pending_changeset_guard = changeset_cache.register_pending(block_hash);
 
                     match reth_trie::changesets::compute_trie_changesets(
                         &changeset_provider,
