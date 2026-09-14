@@ -71,6 +71,20 @@ pub enum ProviderError {
     /// When required header related data was not found but was required.
     #[error("no header found for {_0:?}")]
     HeaderNotFound(BlockHashOrNumber),
+    /// Total difficulty is missing for a block and the inline rebuild would be too large.
+    ///
+    /// The rebuild runs inside the caller's read transaction and would not finish before
+    /// `--db.read-transaction-timeout`, so it is refused rather than retried forever.
+    #[error(
+        "total difficulty missing for block {number} and rebuilding it would span {span} blocks; \
+         stop the node and run `db rebuild-td` to repair the HeaderTerminalDifficulties table"
+    )]
+    TotalDifficultyRebuildTooLarge {
+        /// The block whose total difficulty could not be resolved.
+        number: u64,
+        /// How many blocks the rebuild would have had to walk.
+        span: u64,
+    },
     /// The specific transaction identified by hash or id is missing.
     #[error("no transaction found for {_0:?}")]
     TransactionNotFound(HashOrNumber),

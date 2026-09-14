@@ -52,6 +52,15 @@ pub trait HeaderProvider: Send {
         Ok(None)
     }
 
+    /// Largest gap this will rebuild inline before giving up.
+    ///
+    /// A rebuild runs inside the caller's read transaction, so it has to finish well inside
+    /// `--db.read-transaction-timeout` (30s by default). A mainnet-sized walk does not: it is
+    /// killed, retried, killed again, and the node makes no progress while looking healthy.
+    /// Refusing loudly past this point keeps that failure out of the live path -- use the
+    /// offline `db rebuild-td` repair for anything larger.
+    const MAX_INLINE_TD_REBUILD: u64 = 100_000;
+
     /// Total difficulty at `number`, rebuilding it when the entry is missing.
     ///
     /// `header_td_by_number` only answers for blocks whose TD this node actually persisted, so
@@ -62,9 +71,18 @@ pub trait HeaderProvider: Send {
     /// Stored TDs form a contiguous suffix ending at the tip, so a miss at `number` means every
     /// lower block is missing too, and the only anchor left is genesis. Providers that can seek
     /// the table directly should override this with a cheaper walk.
+    ///
+    /// Bounded by [`Self::MAX_INLINE_TD_REBUILD`]; a larger gap is an error, not a stall.
     fn total_difficulty_at(&self, number: BlockNumber) -> ProviderResult<alloy_primitives::U256> {
         if let Some(td) = self.header_td_by_number(number)? {
             return Ok(td)
+        }
+
+        if number > Self::MAX_INLINE_TD_REBUILD {
+            return Err(reth_storage_errors::provider::ProviderError::TotalDifficultyRebuildTooLarge {
+                number,
+                span: number,
+            })
         }
 
         let genesis = self

@@ -1942,6 +1942,15 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> HeaderProvider for DatabasePro
             }
         };
 
+        // Refuse a walk that cannot finish inside the caller's read transaction rather than
+        // being killed and retried forever; `db rebuild-td` handles the large case offline.
+        if number - base > Self::MAX_INLINE_TD_REBUILD {
+            return Err(ProviderError::TotalDifficultyRebuildTooLarge {
+                number,
+                span: number - base,
+            })
+        }
+
         // Chunked so a cold datadir does not materialize millions of headers at once.
         const CHUNK: u64 = 65_536;
         while base < number {
