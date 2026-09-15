@@ -771,7 +771,8 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
                             // here rather than refusing the insert -- the chain genuinely has no
                             // earlier difficulty to account for.
                             Err(ProviderError::TotalDifficultyHistoryIncomplete {
-                                missing, ..
+                                missing,
+                                ..
                             }) => {
                                 debug!(
                                     target: "providers::db",
