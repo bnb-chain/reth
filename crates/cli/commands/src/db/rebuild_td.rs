@@ -74,7 +74,9 @@ impl Command {
             for (offset, header) in headers.into_iter().enumerate() {
                 let number = next + offset as u64;
                 td += header.difficulty();
-                provider_rw.tx_ref().put::<tables::HeaderTerminalDifficulties>(number, td.into())?;
+                provider_rw
+                    .tx_ref()
+                    .put::<tables::HeaderTerminalDifficulties>(number, td.into())?;
                 written += 1;
                 if number.is_multiple_of(self.log_interval) {
                     info!(target: "reth::cli", number, td = %td, "Rebuilding total difficulty");

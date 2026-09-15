@@ -71,6 +71,17 @@ pub enum ProviderError {
     /// When required header related data was not found but was required.
     #[error("no header found for {_0:?}")]
     HeaderNotFound(BlockHashOrNumber),
+    /// Total difficulty cannot be rebuilt because ancestor headers are absent.
+    ///
+    /// Distinct from a missing TD row: here the chain itself has no history to sum, as after
+    /// `init-state --without-evm`, which inserts the tip before backfilling placeholders.
+    #[error("cannot rebuild total difficulty for block {number}: header {missing} is absent")]
+    TotalDifficultyHistoryIncomplete {
+        /// The block whose total difficulty was requested.
+        number: u64,
+        /// The first ancestor header found to be missing.
+        missing: u64,
+    },
     /// Total difficulty is missing for a block and the inline rebuild would be too large.
     ///
     /// The rebuild runs inside the caller's read transaction and would not finish before

@@ -763,7 +763,26 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
                         // Rebuilds the parent TD when the entry is absent instead of defaulting
                         // to zero, which would silently re-anchor the running sum. See
                         // `total_difficulty_at`.
-                        self.total_difficulty_at(number - 1)? + difficulty
+                        match self.total_difficulty_at(number - 1) {
+                            Ok(parent_td) => parent_td + difficulty,
+                            // No ancestor headers at all, so there is no history to sum: this is
+                            // a snapshot import (`init-state --without-evm` inserts the tip
+                            // before backfilling placeholders), not a missing-row bug. Anchor
+                            // here rather than refusing the insert -- the chain genuinely has no
+                            // earlier difficulty to account for.
+                            Err(ProviderError::TotalDifficultyHistoryIncomplete {
+                                missing, ..
+                            }) => {
+                                debug!(
+                                    target: "providers::db",
+                                    number,
+                                    missing,
+                                    "No ancestor headers; anchoring total difficulty at this block"
+                                );
+                                difficulty
+                            }
+                            Err(err) => return Err(err),
+                        }
                     };
                     self.tx.put::<tables::HeaderTerminalDifficulties>(number, td.into())?;
                 }
@@ -1958,7 +1977,10 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> HeaderProvider for DatabasePro
             let headers = self.headers_range(base + 1..=end)?;
             // A short range means a header is missing; summing it would silently under-count.
             if headers.len() as u64 != end - base {
-                return Err(ProviderError::HeaderNotFound((base + 1).into()))
+                return Err(ProviderError::TotalDifficultyHistoryIncomplete {
+                    number,
+                    missing: base + 1 + headers.len() as u64,
+                })
             }
             for header in headers {
                 td += header.difficulty();
@@ -1968,7 +1990,6 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> HeaderProvider for DatabasePro
 
         Ok(td)
     }
-
 
     fn headers_range(
         &self,
@@ -4295,10 +4316,7 @@ mod tests {
         // A deliberately implausible anchor: if the walk restarted from genesis instead of
         // resuming here, the result could not contain it.
         let anchor = U256::from(1_000_000u64);
-        provider_rw
-            .tx_ref()
-            .put::<tables::HeaderTerminalDifficulties>(1, anchor.into())
-            .unwrap();
+        provider_rw.tx_ref().put::<tables::HeaderTerminalDifficulties>(1, anchor.into()).unwrap();
         provider_rw.commit().unwrap();
 
         let provider = factory.provider().unwrap();

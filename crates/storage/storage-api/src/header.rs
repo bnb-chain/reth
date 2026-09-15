@@ -79,10 +79,12 @@ pub trait HeaderProvider: Send {
         }
 
         if number > Self::MAX_INLINE_TD_REBUILD {
-            return Err(reth_storage_errors::provider::ProviderError::TotalDifficultyRebuildTooLarge {
-                number,
-                span: number,
-            })
+            return Err(
+                reth_storage_errors::provider::ProviderError::TotalDifficultyRebuildTooLarge {
+                    number,
+                    span: number,
+                },
+            )
         }
 
         let genesis = self
@@ -98,9 +100,12 @@ pub trait HeaderProvider: Send {
             let headers = self.headers_range(base + 1..=end)?;
             // A short range means a header is missing; summing it would silently under-count.
             if headers.len() as u64 != end - base {
-                return Err(reth_storage_errors::provider::ProviderError::HeaderNotFound(
-                    (base + 1).into(),
-                ))
+                return Err(
+                    reth_storage_errors::provider::ProviderError::TotalDifficultyHistoryIncomplete {
+                        number,
+                        missing: base + 1 + headers.len() as u64,
+                    },
+                )
             }
             for header in headers {
                 td += header.difficulty();
