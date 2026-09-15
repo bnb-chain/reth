@@ -112,6 +112,10 @@ export const rethCliSidebar: SidebarItem = {
                     ]
                 },
                 {
+                    text: "reth db rebuild-td",
+                    link: "/cli/reth/db/rebuild-td"
+                },
+                {
                     text: "reth db repair-trie",
                     link: "/cli/reth/db/repair-trie"
                 },
