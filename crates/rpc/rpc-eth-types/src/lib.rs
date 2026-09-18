@@ -19,6 +19,7 @@ pub mod error;
 pub mod fee_history;
 pub mod gas_oracle;
 pub mod id_provider;
+pub mod log_filter;
 pub mod logs_utils;
 pub mod pending_block;
 pub mod receipt;
@@ -41,6 +42,7 @@ pub use gas_oracle::{
     GasCap, GasPriceOracle, GasPriceOracleConfig, GasPriceOracleResult, RPC_DEFAULT_GAS_CAP,
 };
 pub use id_provider::EthSubscriptionIdProvider;
+pub use log_filter::LogFilter;
 pub use pending_block::{PendingBlock, PendingBlockEnv, PendingBlockEnvOrigin};
-pub use transaction::TransactionSource;
+pub use transaction::{TransactionDataAndReceipt, TransactionSource};
 pub use tx_forward::ForwardConfig;

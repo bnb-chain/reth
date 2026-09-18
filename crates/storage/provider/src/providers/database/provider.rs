@@ -760,10 +760,30 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
                     let td = if number == 0 {
                         difficulty
                     } else {
-                        // Parent TD via `header_td_by_number` (not a raw table read) so the genesis
-                        // fallback is applied when the parent is block 0 — otherwise TD(1) would
-                        // omit the genesis difficulty and every persisted TD would be off by it.
-                        self.header_td_by_number(number - 1)?.unwrap_or_default() + difficulty
+                        // Rebuilds the parent TD when the entry is absent instead of defaulting
+                        // to zero, which would silently re-anchor the running sum. See
+                        // `total_difficulty_at`.
+                        match self.total_difficulty_at(number - 1) {
+                            Ok(parent_td) => parent_td + difficulty,
+                            // No ancestor headers at all, so there is no history to sum: this is
+                            // a snapshot import (`init-state --without-evm` inserts the tip
+                            // before backfilling placeholders), not a missing-row bug. Anchor
+                            // here rather than refusing the insert -- the chain genuinely has no
+                            // earlier difficulty to account for.
+                            Err(ProviderError::TotalDifficultyHistoryIncomplete {
+                                missing,
+                                ..
+                            }) => {
+                                debug!(
+                                    target: "providers::db",
+                                    number,
+                                    missing,
+                                    "No ancestor headers; anchoring total difficulty at this block"
+                                );
+                                difficulty
+                            }
+                            Err(err) => return Err(err),
+                        }
                     };
                     self.tx.put::<tables::HeaderTerminalDifficulties>(number, td.into())?;
                 }
@@ -1903,6 +1923,73 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> HeaderProvider for DatabasePro
             return Ok(self.header_by_number(0)?.map(|h| h.difficulty()));
         }
         Ok(None)
+    }
+
+    /// Overrides the trait default with a direct table seek: an unwind can leave a gap, and
+    /// seeking the closest stored ancestor avoids walking back to genesis when one exists.
+    ///
+    /// `HeaderTerminalDifficulties` is a BSC/parlia addition, so a datadir created before it
+    /// landed holds no rows at all, and static files are no help either (the header writer
+    /// stores `U256::ZERO` in the TD column). Treating an absent parent as zero re-anchors the
+    /// running sum at whatever block this node happened to write first, producing a TD far below
+    /// the real one — geth peers then rank us below their own head and never sync from us.
+    ///
+    /// So rebuild instead: seek the closest ancestor that does have a TD (genesis at worst) and
+    /// sum header difficulties forward from it. Only the first block written after an upgrade
+    /// pays the full walk; every later block finds its parent already stored.
+    fn total_difficulty_at(&self, number: BlockNumber) -> ProviderResult<alloy_primitives::U256> {
+        if let Some(td) = self.header_td_by_number(number)? {
+            return Ok(td)
+        }
+
+        let (mut base, mut td) = {
+            let mut cursor = self.tx.cursor_read::<tables::HeaderTerminalDifficulties>()?;
+            // Nothing is stored at `number` itself, so whatever precedes the first row at or
+            // after it is the closest ancestor; an empty tail means the last row is.
+            let ancestor = match cursor.seek(number)? {
+                Some(_) => cursor.prev()?,
+                None => cursor.last()?,
+            };
+            match ancestor {
+                Some((block, td)) => (block, td.0),
+                // Genesis TD is never written by `save_blocks`; take it from the header.
+                None => (
+                    0,
+                    self.header_by_number(0)?
+                        .ok_or(ProviderError::HeaderNotFound(0.into()))?
+                        .difficulty(),
+                ),
+            }
+        };
+
+        // Refuse a walk that cannot finish inside the caller's read transaction rather than
+        // being killed and retried forever; `db rebuild-td` handles the large case offline.
+        if number - base > Self::MAX_INLINE_TD_REBUILD {
+            return Err(ProviderError::TotalDifficultyRebuildTooLarge {
+                number,
+                span: number - base,
+            })
+        }
+
+        // Chunked so a cold datadir does not materialize millions of headers at once.
+        const CHUNK: u64 = 65_536;
+        while base < number {
+            let end = (base + CHUNK).min(number);
+            let headers = self.headers_range(base + 1..=end)?;
+            // A short range means a header is missing; summing it would silently under-count.
+            if headers.len() as u64 != end - base {
+                return Err(ProviderError::TotalDifficultyHistoryIncomplete {
+                    number,
+                    missing: base + 1 + headers.len() as u64,
+                })
+            }
+            for header in headers {
+                td += header.difficulty();
+            }
+            base = end;
+        }
+
+        Ok(td)
     }
 
     fn headers_range(
@@ -4182,6 +4269,63 @@ mod tests {
             None,
             SaveBlocksMode::Full,
         )
+    }
+
+    /// A datadir older than the parlia TD feature has no `HeaderTerminalDifficulties` rows at
+    /// all. The write path used to read a missing parent as zero and re-anchor the running sum
+    /// there, so TD came out far below the real value and geth peers refused to sync from us.
+    #[test]
+    fn total_difficulty_rebuilds_when_no_row_is_stored() {
+        let factory = create_test_provider_factory();
+        let data = BlockchainTestData::default();
+
+        let provider_rw = factory.provider_rw().unwrap();
+        provider_rw.insert_block(&data.genesis.try_recover().unwrap()).unwrap();
+        for (block, _) in &data.blocks[..3] {
+            provider_rw.insert_block(block).unwrap();
+        }
+        // Drop every row, reproducing a pre-feature datadir (and the state left behind by the
+        // `db clear mdbx HeaderTerminalDifficulties` repair).
+        provider_rw.tx_ref().clear::<tables::HeaderTerminalDifficulties>().unwrap();
+        provider_rw.commit().unwrap();
+
+        let provider = factory.provider().unwrap();
+        assert!(provider.header_td_by_number(3).unwrap().is_none());
+
+        let expected = (0..=3)
+            .map(|n| provider.header_by_number(n).unwrap().unwrap().difficulty)
+            .fold(U256::ZERO, |acc, d| acc + d);
+        // Guard against the assertion passing because every difficulty happens to be zero.
+        assert!(expected > U256::ZERO, "test data has no difficulty to accumulate");
+
+        assert_eq!(provider.total_difficulty_at(3).unwrap(), expected);
+    }
+
+    /// An unwind can delete the rows above some block, so the rebuild must resume from the
+    /// closest stored ancestor rather than walking back to genesis and ignoring it.
+    #[test]
+    fn total_difficulty_anchors_on_the_closest_stored_row() {
+        let factory = create_test_provider_factory();
+        let data = BlockchainTestData::default();
+
+        let provider_rw = factory.provider_rw().unwrap();
+        provider_rw.insert_block(&data.genesis.try_recover().unwrap()).unwrap();
+        for (block, _) in &data.blocks[..3] {
+            provider_rw.insert_block(block).unwrap();
+        }
+        provider_rw.tx_ref().clear::<tables::HeaderTerminalDifficulties>().unwrap();
+        // A deliberately implausible anchor: if the walk restarted from genesis instead of
+        // resuming here, the result could not contain it.
+        let anchor = U256::from(1_000_000u64);
+        provider_rw.tx_ref().put::<tables::HeaderTerminalDifficulties>(1, anchor.into()).unwrap();
+        provider_rw.commit().unwrap();
+
+        let provider = factory.provider().unwrap();
+        let expected = (2..=3)
+            .map(|n| provider.header_by_number(n).unwrap().unwrap().difficulty)
+            .fold(anchor, |acc, d| acc + d);
+
+        assert_eq!(provider.total_difficulty_at(3).unwrap(), expected);
     }
 
     #[test]

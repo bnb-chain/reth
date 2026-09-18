@@ -18,7 +18,9 @@ use alloy_serde::JsonStorageKey;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use reth_primitives_traits::TxTy;
 use reth_rpc_convert::RpcTxReq;
-use reth_rpc_eth_types::{EthApiError, EthCapabilities, FillTransaction};
+use reth_rpc_eth_types::{
+    EthApiError, EthCapabilities, FillTransaction, TransactionDataAndReceipt,
+};
 use reth_rpc_server_types::{result::internal_rpc_err, ToRpcResult};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -201,6 +203,24 @@ pub trait EthApi<
     #[method(name = "getTransactionReceipt")]
     async fn transaction_receipt(&self, hash: B256) -> RpcResult<Option<R>>;
 
+    /// Returns information about all transactions by block hash.
+    #[method(name = "getTransactionsByBlockHash")]
+    async fn transactions_by_block_hash(&self, hash: B256) -> RpcResult<Option<Vec<T>>>;
+
+    /// Returns information about all transactions by block number.
+    #[method(name = "getTransactionsByBlockNumber")]
+    async fn transactions_by_block_number(
+        &self,
+        number: BlockNumberOrTag,
+    ) -> RpcResult<Option<Vec<T>>>;
+
+    /// Returns the transaction data and receipt for a transaction by transaction hash.
+    #[method(name = "getTransactionDataAndReceipt")]
+    async fn transaction_data_and_receipt(
+        &self,
+        hash: B256,
+    ) -> RpcResult<Option<TransactionDataAndReceipt<T, R>>>;
+
     /// Returns the balance of the account of given address.
     #[method(name = "getBalance")]
     async fn balance(&self, address: Address, block_number: Option<BlockId>) -> RpcResult<U256>;
@@ -237,6 +257,20 @@ pub trait EthApi<
     /// Returns the block's header at given number.
     #[method(name = "getHeaderByNumber")]
     async fn header_by_number(&self, hash: BlockNumberOrTag) -> RpcResult<Option<H>>;
+
+    /// Returns the finalized block header (BSC parlia fast finality); `verified_validator_num`
+    /// selects the validator threshold.
+    #[method(name = "getFinalizedHeader")]
+    async fn finalized_header(&self, verified_validator_num: i64) -> RpcResult<Option<H>>;
+
+    /// Returns the finalized block (BSC parlia fast finality); `verified_validator_num` selects the
+    /// validator threshold.
+    #[method(name = "getFinalizedBlock")]
+    async fn finalized_block(
+        &self,
+        verified_validator_num: i64,
+        full: bool,
+    ) -> RpcResult<Option<B>>;
 
     /// Returns the block's header at given hash.
     #[method(name = "getHeaderByHash")]
@@ -692,6 +726,37 @@ where
         Ok(EthTransactions::transaction_receipt(self, hash).await?)
     }
 
+    /// Handler for: `eth_getTransactionsByBlockHash`
+    async fn transactions_by_block_hash(
+        &self,
+        hash: B256,
+    ) -> RpcResult<Option<Vec<RpcTransaction<T::NetworkTypes>>>> {
+        trace!(target: "rpc::eth", ?hash, "Serving eth_getTransactionsByBlockHash");
+        Ok(EthTransactions::transactions_by_block_id(self, hash.into()).await?)
+    }
+
+    /// Handler for: `eth_getTransactionsByBlockNumber`
+    async fn transactions_by_block_number(
+        &self,
+        number: BlockNumberOrTag,
+    ) -> RpcResult<Option<Vec<RpcTransaction<T::NetworkTypes>>>> {
+        trace!(target: "rpc::eth", ?number, "Serving eth_getTransactionsByBlockNumber");
+        Ok(EthTransactions::transactions_by_block_id(self, number.into()).await?)
+    }
+
+    /// Handler for: `eth_getTransactionDataAndReceipt`
+    async fn transaction_data_and_receipt(
+        &self,
+        hash: B256,
+    ) -> RpcResult<
+        Option<
+            TransactionDataAndReceipt<RpcTransaction<T::NetworkTypes>, RpcReceipt<T::NetworkTypes>>,
+        >,
+    > {
+        trace!(target: "rpc::eth", ?hash, "Serving eth_getTransactionDataAndReceipt");
+        Ok(EthTransactions::transaction_data_and_receipt(self, hash).await?)
+    }
+
     /// Handler for: `eth_getBalance`
     async fn balance(&self, address: Address, block_number: Option<BlockId>) -> RpcResult<U256> {
         trace!(target: "rpc::eth", ?address, ?block_number, "Serving eth_getBalance");
@@ -742,6 +807,25 @@ where
     ) -> RpcResult<Option<RpcHeader<T::NetworkTypes>>> {
         trace!(target: "rpc::eth", ?block_number, "Serving eth_getHeaderByNumber");
         Ok(EthBlocks::rpc_block_header(self, block_number.into()).await?)
+    }
+
+    /// Handler for: `eth_getFinalizedHeader`
+    async fn finalized_header(
+        &self,
+        verified_validator_num: i64,
+    ) -> RpcResult<Option<RpcHeader<T::NetworkTypes>>> {
+        trace!(target: "rpc::eth", verified_validator_num, "Serving eth_getFinalizedHeader");
+        Ok(EthBlocks::rpc_finalized_header(self, verified_validator_num).await?)
+    }
+
+    /// Handler for: `eth_getFinalizedBlock`
+    async fn finalized_block(
+        &self,
+        verified_validator_num: i64,
+        full: bool,
+    ) -> RpcResult<Option<RpcBlock<T::NetworkTypes>>> {
+        trace!(target: "rpc::eth", verified_validator_num, ?full, "Serving eth_getFinalizedBlock");
+        Ok(EthBlocks::rpc_finalized_block(self, verified_validator_num, full).await?)
     }
 
     /// Handler for: `eth_getHeaderByHash`

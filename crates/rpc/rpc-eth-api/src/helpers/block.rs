@@ -6,16 +6,64 @@ use crate::{
     RpcReceipt,
 };
 use alloy_consensus::{transaction::TxHashRef, TxReceipt};
-use alloy_eips::BlockId;
+use alloy_eips::{BlockId, BlockNumberOrTag};
+use alloy_primitives::U256;
 use alloy_rlp::Encodable;
 use alloy_rpc_types_eth::{Block, BlockTransactions, Index};
 use futures::Future;
 use reth_node_api::BlockBody;
 use reth_primitives_traits::{AlloyBlockHeader, RecoveredBlock, SealedHeader, TransactionMeta};
 use reth_rpc_convert::{transaction::ConvertReceiptInput, RpcConvert, RpcHeader};
-use reth_storage_api::{BlockIdReader, BlockReader, ProviderHeader, ProviderReceipt, ProviderTx};
+use reth_rpc_eth_types::EthApiError;
+use reth_storage_api::{
+    BlockIdReader, BlockReader, BlockReaderIdExt, HeaderProvider, ProviderHeader, ProviderReceipt,
+    ProviderTx,
+};
 use reth_transaction_pool::{PoolTransaction, TransactionPool};
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
+
+/// Max blocks to walk back when deriving the probabilistic finalized height for
+/// `eth_getFinalizedBlock`/`eth_getFinalizedHeader`.
+const MAX_VALIDATOR_LOOKBACK: usize = 1000;
+
+/// Resolves the distinct-validator threshold for a `verified_validator_num` request value, per
+/// go-bsc semantics: `-1` = ceil(N/2), `-2` = ceil(2N/3), `-3` = N, `>=1` = explicit threshold.
+fn resolved_validators_threshold(
+    verified_validator_num: i64,
+    active_validator_count: Option<usize>,
+) -> Result<usize, EthApiError> {
+    let missing_validator_count = || -> EthApiError {
+        EthApiError::InvalidParams(format!(
+            "Unable to derive validator-count from request value {verified_validator_num} without chain validator set"
+        ))
+    };
+
+    match verified_validator_num {
+        -3..=-1 => {
+            let active_validator_count =
+                active_validator_count.ok_or_else(missing_validator_count)?;
+            match verified_validator_num {
+                -1 => Ok(active_validator_count.div_ceil(2)),
+                -2 => Ok((active_validator_count * 2).div_ceil(3)),
+                _ => Ok(active_validator_count),
+            }
+        }
+        value if value < 1 => Err(EthApiError::InvalidParams(format!(
+            "{value} neither within the range [1,{}] nor the range [-3,-1]",
+            active_validator_count.unwrap_or(0)
+        ))),
+        value
+            if active_validator_count
+                .is_some_and(|validator_count| value > validator_count as i64) =>
+        {
+            Err(EthApiError::InvalidParams(format!(
+                "{value} neither within the range [1,{}] nor the range [-3,-1]",
+                active_validator_count.unwrap_or(0)
+            )))
+        }
+        value => Ok(value as usize),
+    }
+}
 
 /// Result type of the fetched block receipts.
 pub type BlockReceiptsResult<N, E> = Result<Option<Vec<RpcReceipt<N>>>, E>;
@@ -41,9 +89,27 @@ pub trait EthBlocks: LoadBlock<RpcConvert: RpcConvert<Primitives = Self::Primiti
     {
         async move {
             let Some(block) = self.recovered_block(block_id).await? else { return Ok(None) };
-            let header =
-                self.converter().convert_header(block.clone_sealed_header(), block.rlp_length())?;
+            let sealed_header = block.clone_sealed_header();
+            let td = self.total_difficulty_for(&sealed_header);
+            let header = self.converter().convert_header(sealed_header, block.rlp_length(), td)?;
             Ok(Some(header))
+        }
+    }
+
+    /// Returns the total difficulty at `header`'s height (go-bsc attaches it to block/header
+    /// responses). Falls back to `parent_td + difficulty` for blocks not yet in the DB (pending).
+    fn total_difficulty_for(
+        &self,
+        header: &SealedHeader<ProviderHeader<Self::Provider>>,
+    ) -> Option<U256> {
+        let block_number = header.number();
+        match self.provider().header_td_by_number(block_number) {
+            Ok(Some(td)) => Some(td),
+            _ => {
+                let parent_td =
+                    self.provider().header_td_by_number(block_number.saturating_sub(1)).ok()??;
+                Some(parent_td.saturating_add(header.difficulty()))
+            }
         }
     }
 
@@ -65,9 +131,127 @@ pub trait EthBlocks: LoadBlock<RpcConvert: RpcConvert<Primitives = Self::Primiti
             let block = block.clone_into_rpc_block(
                 full.into(),
                 |tx, tx_info| self.converter().fill(tx, tx_info),
-                |header, size| self.converter().convert_header(header, size),
+                |header, size| {
+                    let td = self.total_difficulty_for(&header);
+                    self.converter().convert_header(header, size, td)
+                },
             )?;
             Ok(Some(block))
+        }
+    }
+
+    /// Derives the probabilistic finalized block number for BSC parlia fast finality.
+    ///
+    /// Walks back from the tip counting distinct block signers until `threshold` distinct
+    /// validators are seen (a block is probabilistically final once that many validators have
+    /// built on it), and returns the max of that and the fast-finalized height.
+    /// `verified_validator_num` selects the threshold (see `resolved_validators_threshold`).
+    fn finalized_block_number(
+        &self,
+        verified_validator_num: i64,
+    ) -> impl Future<Output = Result<Option<u64>, Self::Error>> + Send
+    where
+        Self: FullEthApiTypes,
+        Self::Provider: BlockReaderIdExt,
+    {
+        async move {
+            let latest_header = self
+                .provider()
+                .sealed_header_by_id(BlockNumberOrTag::Latest.into())
+                .map_err(Self::Error::from_eth_err)?
+                .ok_or_else(|| {
+                    Self::Error::from_eth_err(EthApiError::HeaderNotFound(
+                        BlockNumberOrTag::Latest.into(),
+                    ))
+                })?;
+
+            let fast_finalized_header = self
+                .provider()
+                .sealed_header_by_id(BlockNumberOrTag::Finalized.into())
+                .map_err(Self::Error::from_eth_err)?
+                .ok_or_else(|| {
+                    Self::Error::from_eth_err(EthApiError::HeaderNotFound(
+                        BlockNumberOrTag::Finalized.into(),
+                    ))
+                })?;
+
+            let lower_bound = fast_finalized_header.number().max(1);
+            let active_validator_count = self.current_validators_len();
+            let threshold =
+                resolved_validators_threshold(verified_validator_num, active_validator_count)
+                    .map_err(Self::Error::from_eth_err)?;
+            if threshold == 0 {
+                return Ok(Some(fast_finalized_header.number()));
+            }
+
+            let mut cursor = latest_header;
+            let mut seen_signers = HashSet::with_capacity(threshold.max(1));
+            let mut probabilistic_finalized = fast_finalized_header.number();
+            for i in 0..=MAX_VALIDATOR_LOOKBACK {
+                seen_signers.insert(cursor.beneficiary());
+                probabilistic_finalized = cursor.number();
+
+                if seen_signers.len() >= threshold {
+                    break;
+                }
+
+                let parent_hash = cursor.parent_hash();
+                if cursor.number() <= lower_bound {
+                    break;
+                }
+
+                if i == MAX_VALIDATOR_LOOKBACK {
+                    break;
+                }
+                cursor = self
+                    .provider()
+                    .sealed_header_by_hash(parent_hash)
+                    .map_err(Self::Error::from_eth_err)?
+                    .ok_or_else(|| {
+                        Self::Error::from_eth_err(EthApiError::HeaderNotFound(parent_hash.into()))
+                    })?;
+            }
+
+            Ok(Some(std::cmp::max(fast_finalized_header.number(), probabilistic_finalized)))
+        }
+    }
+
+    /// Returns the finalized block header. Backs `eth_getFinalizedHeader`.
+    fn rpc_finalized_header(
+        &self,
+        verified_validator_num: i64,
+    ) -> impl Future<Output = Result<Option<RpcHeader<Self::NetworkTypes>>, Self::Error>> + Send
+    where
+        Self: FullEthApiTypes,
+        Self::Provider: BlockReaderIdExt,
+    {
+        async move {
+            let Some(finalized_block_number) =
+                self.finalized_block_number(verified_validator_num).await?
+            else {
+                return Ok(None);
+            };
+            self.rpc_block_header(BlockNumberOrTag::Number(finalized_block_number).into()).await
+        }
+    }
+
+    /// Returns the finalized block. Backs `eth_getFinalizedBlock`.
+    fn rpc_finalized_block(
+        &self,
+        verified_validator_num: i64,
+        full: bool,
+    ) -> impl Future<Output = Result<Option<RpcBlock<Self::NetworkTypes>>, Self::Error>> + Send
+    where
+        Self: FullEthApiTypes,
+        Self::Provider: BlockReaderIdExt,
+    {
+        async move {
+            let Some(finalized_block_number) =
+                self.finalized_block_number(verified_validator_num).await?
+            else {
+                return Ok(None);
+            };
+            self.rpc_block(BlockNumberOrTag::Number(finalized_block_number).into(), full).await
         }
     }
 
@@ -232,9 +416,11 @@ pub trait EthBlocks: LoadBlock<RpcConvert: RpcConvert<Primitives = Self::Primiti
                     let block =
                         alloy_consensus::Block::<alloy_consensus::TxEnvelope, _>::uncle(header);
                     let size = block.length();
-                    let header = self
-                        .converter()
-                        .convert_header(SealedHeader::new_unhashed(block.header), size)?;
+                    let header = self.converter().convert_header(
+                        SealedHeader::new_unhashed(block.header),
+                        size,
+                        None,
+                    )?;
                     Ok(Block {
                         uncles: vec![],
                         header,

@@ -26,11 +26,11 @@ use reth_rpc_eth_types::{
     block::convert_transaction_receipt,
     utils::binary_search,
     EthApiError::{self, TransactionConfirmationTimeout},
-    FillTransaction, SignError, TransactionSource,
+    FillTransaction, SignError, TransactionDataAndReceipt, TransactionSource,
 };
 use reth_storage_api::{
-    BlockNumReader, BlockReaderIdExt, ProviderBlock, ProviderReceipt, ProviderTx, ReceiptProvider,
-    TransactionsProvider,
+    BlockIdReader, BlockNumReader, BlockReaderIdExt, ProviderBlock, ProviderReceipt, ProviderTx,
+    ReceiptProvider, TransactionsProvider,
 };
 use reth_transaction_pool::{
     AddedTransactionOutcome, PoolPooledTx, PoolTransaction, PoolTx, TransactionOrigin,
@@ -255,6 +255,108 @@ pub trait EthTransactions: LoadTransaction<Provider: BlockReaderIdExt> {
                 None => Ok(None),
                 Some((tx, at)) => Ok(at.as_block_hash().map(|hash| (tx, hash))),
             }
+        }
+    }
+
+    /// Get all transactions in the block identified by [`BlockId`].
+    ///
+    /// Returns `Ok(None)` if the block does not exist. Backs
+    /// `eth_getTransactionsByBlockHash` / `eth_getTransactionsByBlockNumber`.
+    #[expect(clippy::type_complexity)]
+    fn transactions_by_block_id(
+        &self,
+        block_id: BlockId,
+    ) -> impl Future<Output = Result<Option<Vec<RpcTransaction<Self::NetworkTypes>>>, Self::Error>> + Send
+    where
+        Self: LoadBlock,
+        Self::Provider: BlockIdReader,
+    {
+        async move {
+            let block_info = self.recovered_block(block_id).await?.map(|block| {
+                (block.hash(), block.number(), block.timestamp(), block.base_fee_per_gas())
+            });
+
+            let block_hash = match block_id {
+                BlockId::Hash(hash) => hash.block_hash,
+                BlockId::Number(_) => {
+                    if let Some(hash) = self
+                        .provider()
+                        .block_hash_for_id(block_id)
+                        .map_err(Self::Error::from_eth_err)?
+                    {
+                        hash
+                    } else {
+                        return Ok(None);
+                    }
+                }
+            };
+
+            let transactions = EthTransactions::transactions_by_block(self, block_hash).await?;
+
+            match transactions {
+                Some(txs) => {
+                    let mut rpc_transactions = Vec::with_capacity(txs.len());
+                    for (index, tx) in txs.into_iter().enumerate() {
+                        let recovered = tx
+                            .try_into_recovered_unchecked()
+                            .map_err(|_| EthApiError::InvalidTransactionSignature)?;
+
+                        let source = match block_info {
+                            Some((block_hash, block_number, block_timestamp, base_fee)) => {
+                                TransactionSource::Block {
+                                    transaction: recovered,
+                                    index: index as u64,
+                                    block_hash,
+                                    block_number,
+                                    block_timestamp,
+                                    base_fee,
+                                }
+                            }
+                            None => TransactionSource::Pool(recovered),
+                        };
+
+                        rpc_transactions.push(source.into_transaction(self.converter())?);
+                    }
+                    Ok(Some(rpc_transactions))
+                }
+                None => Ok(None),
+            }
+        }
+    }
+
+    /// Get the transaction data and receipt for the given hash.
+    ///
+    /// Returns `Ok(None)` unless BOTH the mined transaction and its receipt exist (matching
+    /// go-bsc's `eth_getTransactionDataAndReceipt`, which returns a bare `null` otherwise rather
+    /// than an object of nulls). Backs `eth_getTransactionDataAndReceipt`.
+    #[expect(clippy::type_complexity)]
+    fn transaction_data_and_receipt(
+        &self,
+        hash: B256,
+    ) -> impl Future<
+        Output = Result<
+            Option<
+                TransactionDataAndReceipt<
+                    RpcTransaction<Self::NetworkTypes>,
+                    RpcReceipt<Self::NetworkTypes>,
+                >,
+            >,
+            Self::Error,
+        >,
+    > + Send
+    where
+        Self: LoadReceipt,
+    {
+        async move {
+            let receipt = self.transaction_receipt(hash).await?;
+            let data = match LoadTransaction::transaction_by_hash(self, hash).await? {
+                Some(tx) => Some(tx.into_transaction(self.converter())?),
+                None => None,
+            };
+
+            let (Some(tx_data), Some(receipt)) = (data, receipt) else { return Ok(None) };
+
+            Ok(Some(TransactionDataAndReceipt { tx_data: Some(tx_data), receipt: Some(receipt) }))
         }
     }
 

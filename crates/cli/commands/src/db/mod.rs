@@ -18,6 +18,7 @@ mod get;
 mod list;
 mod migrate_v2;
 mod prune_checkpoints;
+mod rebuild_td;
 mod repair_trie;
 mod settings;
 mod stage_checkpoints;
@@ -60,6 +61,9 @@ pub enum Subcommands {
     },
     /// Deletes all table entries
     Clear(clear::Command),
+    /// Rebuilds the parlia total-difficulty table from genesis (node must be stopped)
+    #[command(name = "rebuild-td")]
+    RebuildTd(rebuild_td::Command),
     /// Verifies trie consistency and outputs any inconsistencies
     RepairTrie(repair_trie::Command),
     /// Reads and displays the static file segment header
@@ -176,6 +180,11 @@ impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> Command<C>
                 });
             }
             Subcommands::Clear(command) => {
+                db_exec!(self.env, tool, N, AccessRights::RW, {
+                    command.execute(&tool)?;
+                });
+            }
+            Subcommands::RebuildTd(command) => {
                 db_exec!(self.env, tool, N, AccessRights::RW, {
                     command.execute(&tool)?;
                 });

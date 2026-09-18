@@ -89,7 +89,11 @@ fn _deprioritize_background_threads() {
         // threads when no other (SCHED_OTHER/SCHED_BATCH/RT) threads need the CPU.
         // SAFETY: sched_setscheduler is safe to call with a valid TID.
         unsafe {
-            let param = libc::sched_param { sched_priority: 0 };
+            // musl's `sched_param` carries extra POSIX sporadic-server fields
+            // (`sched_ss_*`) that glibc omits, so a struct literal isn't portable.
+            // Zero all fields, then set `sched_priority` (0 for SCHED_IDLE).
+            let mut param: libc::sched_param = std::mem::zeroed();
+            param.sched_priority = 0;
             if libc::sched_setscheduler(tid, libc::SCHED_IDLE, std::ptr::from_ref(&param)) != 0 {
                 tracing::debug!(
                     tid,
