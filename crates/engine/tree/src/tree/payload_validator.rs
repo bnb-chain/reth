@@ -823,10 +823,33 @@ where
         );
         let root_elapsed = root_start.elapsed();
 
+        // Fingerprint of the execution output the root was computed over. When two nodes
+        // disagree on a state root for the same block, these counts say immediately whether
+        // they executed it differently, or executed it identically and hashed it differently.
+        // That is the first thing a cross-node investigation needs and the hardest to recover
+        // after the fact.
+        let (changed_accounts, changed_storage_tries, changed_storage_slots, wiped_storages) = {
+            let hs = hashed_state.get();
+            (
+                hs.accounts.len(),
+                hs.storages.len(),
+                hs.storages.values().map(|s| s.storage.len()).sum::<usize>(),
+                hs.storages.values().filter(|s| s.wiped).count(),
+            )
+        };
+
         info!(
             target: "engine::tree::payload_validator",
+            block_number = block.number(),
+            block_hash = ?block.hash(),
+            parent_hash = ?block.parent_hash(),
+            header_state_root = ?block.state_root(),
             strategy = state_root_job_name,
             state_root = ?root_outcome.state_root,
+            changed_accounts,
+            changed_storage_tries,
+            changed_storage_slots,
+            wiped_storages,
             elapsed = ?root_elapsed,
             "State root job finished"
         );

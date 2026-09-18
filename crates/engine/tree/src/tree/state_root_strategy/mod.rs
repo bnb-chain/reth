@@ -1137,10 +1137,17 @@ where
     ) -> ProviderResult<StateRootJobOutcome> {
         let outcome = self.sparse_outcome(block, output, outcome);
         if outcome.state_root == block.header().state_root() {
+            // NOTE: agreement with the header is not independent confirmation. If the block
+            // was sealed using this same computation, a wrong root here matches a wrong root
+            // there and nothing cross-checks it. Only a producer-side verification, or
+            // `always_compare_trie_updates`, catches that case.
             return Ok(outcome)
         }
+        metrics::counter!("engine.tree.state_root_task_incorrect_root").increment(1);
         warn!(
             target: "engine::tree::state_root_strategy",
+            block_number = block.header().number(),
+            block_hash = ?block.hash(),
             state_root = ?outcome.state_root,
             block_state_root = ?block.header().state_root(),
             "State root task returned incorrect state root, recomputing serially"
@@ -1256,8 +1263,11 @@ where
                     return Ok(outcome)
                 }
                 // A wrong task root falls through to the serial fallback already racing below.
+                metrics::counter!("engine.tree.state_root_task_incorrect_root").increment(1);
                 warn!(
                     target: "engine::tree::state_root_strategy",
+                    block_number = block.header().number(),
+                    block_hash = ?block.hash(),
                     state_root = ?outcome.state_root,
                     block_state_root = ?block.header().state_root(),
                     "State root task returned incorrect state root, using serial fallback"
