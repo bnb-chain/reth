@@ -65,6 +65,22 @@ pub struct DebugArgs {
     #[arg(long = "debug.skip-state-root", help_heading = "Debug", hide = true)]
     pub skip_state_root: bool,
 
+    /// Write an execution witness for EVERY validated block into this directory.
+    ///
+    /// The witness is built from the execution that validation already performed, so no block
+    /// is executed twice -- only the proof-gathering step is additional. That is the whole
+    /// reason to do this in-node rather than by polling `debug_executionWitness`, which
+    /// re-executes each block a second time.
+    ///
+    /// Writes are local and best-effort: a failure is logged and the block proceeds. Ship the
+    /// files onward with an external migrator rather than pointing this at network storage --
+    /// a slow filesystem here would sit directly on the validation path.
+    ///
+    /// Intended for observer nodes. On a producing validator the extra work competes with the
+    /// slot deadline.
+    #[arg(long = "debug.witness-every-block", help_heading = "Debug", value_name = "DIR")]
+    pub witness_every_block: Option<PathBuf>,
+
     /// If set, bypasses genesis hash validation during init.
     /// Intended for tools that direct-write the database (e.g. snapshot
     /// importers, state-actor) and want reth to trust the DB-resident
@@ -137,6 +153,7 @@ impl Default for DebugArgs {
             skip_fcu: None,
             skip_new_payload: None,
             skip_state_root: false,
+            witness_every_block: None,
             skip_genesis_validation: false,
             reorg_frequency: None,
             reorg_depth: None,

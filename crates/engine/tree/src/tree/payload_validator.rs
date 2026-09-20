@@ -1116,6 +1116,45 @@ where
             .in_scope(|| db.merge_transitions(BundleRetention::Reverts));
 
         let built_bal = if has_bal { db.take_built_alloy_bal() } else { None };
+
+        // Per-block execution witness (`--debug.witness-every-block`).
+        //
+        // Placed before `take_bundle()` because this is the one point where the *read* cache
+        // from the validating execution is still intact. A witness needs proofs for accounts
+        // that were only read, not just those that changed, so `BlockExecutionOutput` alone is
+        // insufficient -- which is why the invalid-block hook has to re-execute. Reusing this
+        // execution is the entire saving.
+        //
+        // Best-effort: any failure is logged and the block proceeds unaffected.
+        if let Some(dir) = self.config.witness_every_block() {
+            let num_hash = input.num_hash();
+            let started = Instant::now();
+            match write_execution_witness(
+                &db,
+                &db.database.0,
+                // Zero-padded so the files sort correctly: unpadded, block 9 lexically
+                // follows block 96, which makes `ls` and any glob-ordered tooling misleading.
+                &format!("{:010}_{}", num_hash.number, num_hash.hash),
+                dir,
+            ) {
+                Ok(bytes) => debug!(
+                    target: "engine::tree::payload_validator",
+                    block_number = num_hash.number,
+                    block_hash = ?num_hash.hash,
+                    bytes,
+                    elapsed = ?started.elapsed(),
+                    "Wrote per-block execution witness"
+                ),
+                Err(err) => warn!(
+                    target: "engine::tree::payload_validator",
+                    block_number = num_hash.number,
+                    block_hash = ?num_hash.hash,
+                    %err,
+                    "Failed to write per-block execution witness; continuing"
+                ),
+            }
+        }
+
         let output = BlockExecutionOutput { result, state: db.take_bundle() };
 
         let execution_duration = execution_start.elapsed();
@@ -2106,6 +2145,155 @@ impl<T: PayloadTypes> BlockOrPayload<T> {
         match self {
             Self::Payload(payload) => payload.gas_limit(),
             Self::Block(block) => block.gas_limit(),
+        }
+    }
+}
+
+/// Builds an execution witness from an already-executed `State` and writes it to `dir`.
+///
+/// Shared by engine validation and by the payload builder. A proposer never validates its own
+/// block, so without a second call site the node that *built* a block -- the one whose
+/// internals matter most when its root later turns out wrong -- would capture nothing.
+///
+/// `stem` names the file. Validation uses `<number>_<hash>`; the builder has no block hash yet
+/// at the point its state is still intact, so it uses `<number>_<parent hash>.proposed`.
+///
+/// Reuses the caller's execution: a witness needs proofs for accounts that were merely read,
+/// which live in `db.cache` and nowhere in the bundle. That is why this borrows the `State`
+/// rather than re-executing the way `InvalidBlockWitnessHook` must.
+pub fn write_execution_witness<DB, S>(
+    db: &reth_revm::db::State<DB>,
+    state: &S,
+    stem: &str,
+    dir: &std::path::Path,
+) -> Result<u64, Box<dyn std::error::Error + Send + Sync>>
+where
+    DB: reth_revm::Database,
+    S: StateProvider + ?Sized,
+{
+    use alloy_primitives::keccak256;
+    use std::collections::BTreeMap;
+
+    let bundle_state = &db.bundle_state;
+    let mut hashed_state = state.hashed_post_state(bundle_state)?;
+    let mut codes: BTreeMap<B256, alloy_primitives::Bytes> = BTreeMap::new();
+    let mut preimages: BTreeMap<B256, alloy_primitives::Bytes> = BTreeMap::new();
+
+    for code in db.cache.contracts.values().chain(bundle_state.contracts.values()) {
+        let bytes = code.original_bytes();
+        codes.insert(keccak256(&bytes), bytes);
+    }
+
+    for (address, account) in &db.cache.accounts {
+        let hashed_address = keccak256(address);
+        hashed_state
+            .accounts
+            .insert(hashed_address, account.account.as_ref().map(|a| a.info.clone().into()));
+
+        if let Some(account_data) = &account.account {
+            preimages.insert(hashed_address, alloy_rlp::encode(address).into());
+            let storage = hashed_state
+                .storages
+                .entry(hashed_address)
+                .or_insert_with(|| reth_trie::HashedStorage::new(false));
+            for (slot, value) in &account_data.storage {
+                let slot_bytes = B256::from(*slot);
+                let hashed_slot = keccak256(slot_bytes);
+                storage.storage.insert(hashed_slot, *value);
+                preimages.insert(hashed_slot, alloy_rlp::encode(slot_bytes).into());
+            }
+        }
+    }
+
+    let witness_nodes =
+        state.witness(Default::default(), hashed_state, reth_trie::ExecutionWitnessMode::Legacy)?;
+
+    // Emitted by hand rather than via serde_json, which is only an optional dependency here.
+    // The shape matches `alloy_rpc_types_debug::ExecutionWitness`, so these files are
+    // interchangeable with the ones the invalid-block hook writes.
+    fn join_hex(items: impl Iterator<Item = alloy_primitives::Bytes>) -> String {
+        let mut out = String::new();
+        for (i, b) in items.enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            out.push('"');
+            out.push_str(&alloy_primitives::hex::encode_prefixed(b.as_ref()));
+            out.push('"');
+        }
+        out
+    }
+    let witness = format!(
+        "{{\"state\":[{}],\"codes\":[{}],\"keys\":[{}],\"headers\":[]}}",
+        join_hex(witness_nodes.into_iter()),
+        join_hex(codes.into_values()),
+        join_hex(preimages.into_values()),
+    );
+
+    // Hand the bytes to the writer thread. Everything above had to run here -- the trie walk
+    // needs the live `State` -- but formatting and disk I/O do not, and a slow filesystem must
+    // never sit on the validation path.
+    let queued = witness.len() as u64;
+    enqueue_witness(dir.join(format!("{stem}.witness.json")), witness);
+    Ok(queued)
+}
+
+/// Number of witnesses dropped because the writer queue was full.
+static WITNESSES_DROPPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Queue a witness for background writing, never blocking the caller.
+///
+/// The channel is bounded and the send is non-blocking: if the writer cannot keep up, the
+/// witness is dropped and counted rather than stalling block validation. Losing diagnostics is
+/// always preferable to delaying consensus -- that trade is the whole reason this is
+/// asynchronous.
+fn enqueue_witness(path: std::path::PathBuf, body: String) {
+    use std::sync::{atomic::Ordering, mpsc, OnceLock};
+
+    static TX: OnceLock<mpsc::SyncSender<(std::path::PathBuf, String)>> = OnceLock::new();
+
+    let tx = TX.get_or_init(|| {
+        let (tx, rx) = mpsc::sync_channel::<(std::path::PathBuf, String)>(64);
+        if let Err(err) = std::thread::Builder::new()
+            .name("witness-writer".to_string())
+            .spawn(move || {
+                for (final_path, body) in rx {
+                    if let Some(parent) = final_path.parent() &&
+                        let Err(err) = std::fs::create_dir_all(parent)
+                    {
+                        warn!(target: "engine::tree::payload_validator", %err, "witness dir");
+                        continue
+                    }
+                    // Temp name then rename: the external migrator must never observe a
+                    // half-written file, and rename is atomic within a filesystem.
+                    let tmp_path = final_path.with_extension("json.tmp");
+                    if let Err(err) = std::fs::write(&tmp_path, body.as_bytes())
+                        .and_then(|()| std::fs::rename(&tmp_path, &final_path))
+                    {
+                        warn!(
+                            target: "engine::tree::payload_validator",
+                            path = %final_path.display(),
+                            %err,
+                            "Failed to write execution witness"
+                        );
+                    }
+                }
+            })
+        {
+            warn!(target: "engine::tree::payload_validator", %err, "witness writer thread");
+        }
+        tx
+    });
+
+    if let Err(mpsc::TrySendError::Full(_)) = tx.try_send((path, body)) {
+        let n = WITNESSES_DROPPED.fetch_add(1, Ordering::Relaxed) + 1;
+        if n == 1 || n.is_multiple_of(100) {
+            warn!(
+                target: "engine::tree::payload_validator",
+                dropped_total = n,
+                "Witness writer queue full; dropping witnesses. Disk cannot keep up with the \
+                 chain -- diagnostics are being lost, but block validation is unaffected."
+            );
         }
     }
 }
