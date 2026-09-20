@@ -2230,9 +2230,16 @@ where
         join_hex(preimages.into_values()),
     );
 
-    // Hand the bytes to the writer thread. Everything above had to run here -- the trie walk
-    // needs the live `State` -- but formatting and disk I/O do not, and a slow filesystem must
-    // never sit on the validation path.
+    // Hand the bytes to the writer thread so a slow filesystem never sits on the validation
+    // path.
+    //
+    // Note what is NOT deferred: the trie walk above must run here, because it needs the live
+    // `State` that the caller consumes on the next line. The JSON formatting could be deferred
+    // but is not, so that the returned byte count is exact -- it is cheap relative to the walk.
+    // If the walk itself proves too costly at high gas limits, the way to move it off the hot
+    // path is to clone the read cache and re-acquire the state provider on the writer thread
+    // via `state_by_block_hash(parent_hash)`; historical state by hash is stable, so the proofs
+    // are identical. That trades CPU here for a copy of the very data you were avoiding.
     let queued = witness.len() as u64;
     enqueue_witness(dir.join(format!("{stem}.witness.json")), witness);
     Ok(queued)
