@@ -123,7 +123,10 @@ where
     }
 
     /// Set the engine tree configuration
-    pub const fn with_tree_config(mut self, tree_config: TreeConfig) -> Self {
+    ///
+    /// Not `const`: `TreeConfig` owns heap data, so overwriting the old value here runs a
+    /// destructor, which `const fn` cannot do.
+    pub fn with_tree_config(mut self, tree_config: TreeConfig) -> Self {
         self.tree_config = tree_config;
         self
     }

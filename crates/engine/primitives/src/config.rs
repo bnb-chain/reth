@@ -214,6 +214,8 @@ pub struct TreeConfig {
     /// This trusts the block header's state root. It is intended for experiments that measure
     /// execution without trie state-root work.
     skip_state_root: bool,
+    /// Directory to write a per-block execution witness into, if enabled.
+    witness_every_block: Option<std::path::PathBuf>,
     /// Maximum random jitter applied before each proof computation (trie-debug only).
     /// When set, each proof worker sleeps for a random duration up to this value
     /// before starting a proof calculation.
@@ -266,6 +268,7 @@ impl Default for TreeConfig {
             disable_bal_parallel_state_root: false,
             disable_bal_batch_io: false,
             skip_state_root: false,
+            witness_every_block: None,
             #[cfg(feature = "trie-debug")]
             proof_jitter: None,
         }
@@ -346,6 +349,7 @@ impl TreeConfig {
             disable_bal_parallel_state_root: false,
             disable_bal_batch_io: false,
             skip_state_root: false,
+            witness_every_block: None,
             #[cfg(feature = "trie-debug")]
             proof_jitter: None,
         }
@@ -790,6 +794,17 @@ impl TreeConfig {
     /// Returns whether trie state-root computation is skipped during engine validation.
     pub const fn skip_state_root(&self) -> bool {
         self.skip_state_root
+    }
+
+    /// Directory to write a per-block execution witness into, or `None` when disabled.
+    pub fn witness_every_block(&self) -> Option<&std::path::Path> {
+        self.witness_every_block.as_deref()
+    }
+
+    /// Sets the directory for per-block execution witnesses.
+    pub fn with_witness_every_block(mut self, dir: Option<std::path::PathBuf>) -> Self {
+        self.witness_every_block = dir;
+        self
     }
 
     /// Setter for whether to skip trie state-root computation during engine validation.

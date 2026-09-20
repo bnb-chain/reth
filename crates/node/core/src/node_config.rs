@@ -196,7 +196,9 @@ impl<ChainSpec> NodeConfig<ChainSpec> {
 
     /// Creates a [`TreeConfig`] from all node arguments that affect the engine tree.
     pub fn tree_config(&self) -> TreeConfig {
-        self.engine.tree_config().with_skip_state_root(self.debug.skip_state_root)
+        self.engine.tree_config()
+            .with_skip_state_root(self.debug.skip_state_root)
+            .with_witness_every_block(self.debug.witness_every_block.clone())
     }
 
     /// Sets --dev mode for the node.
