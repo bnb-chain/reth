@@ -46,8 +46,8 @@ use tracing::{debug, error, info, trace, warn};
 /// Maximum amount of time non-executable transaction are queued.
 pub const MAX_QUEUED_TRANSACTION_LIFETIME: Duration = Duration::from_secs(3 * 60 * 60);
 
-// The storage time of Sidecar is 19.2 days 19.2*86400/0.75 = 2211840
-const FINALIZED_BLOCK_OFFSET: u64 = 2211840;
+// Retain sidecars for at least 19.2 days at Fermi's 450ms block interval.
+const FINALIZED_BLOCK_OFFSET: u64 = 3_686_400;
 
 /// Minimum interval between blob sweeps.
 const BLOB_SWEEP_MIN_INTERVAL: Duration = Duration::from_secs(10 * 60);
@@ -895,12 +895,36 @@ mod tests {
     };
     use alloy_consensus::Transaction;
     use alloy_eips::eip2718::Decodable2718;
-    use alloy_primitives::{hex, U256};
+    use alloy_primitives::{hex, B256, U256};
     use reth_ethereum_primitives::PooledTransactionVariant;
     use reth_evm_ethereum::EthEvmConfig;
     use reth_fs_util as fs;
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_tasks::Runtime;
+
+    #[test]
+    fn finalized_blob_retention_at_fermi() {
+        let mut tracker = BlobStoreCanonTracker::default();
+        let tx = B256::with_last_byte(1);
+        tracker.add_block(1, [tx]);
+        let minimum_window: u64 = 182 * 24 * 60 * 60 * 1000 / 10 / 450;
+        let retention_window: u64 = 192 * 24 * 60 * 60 * 1000 / 10 / 450;
+
+        assert_eq!(
+            tracker
+                .on_finalized_block((1 + minimum_window).saturating_sub(FINALIZED_BLOCK_OFFSET)),
+            BlobStoreUpdates::None,
+        );
+        assert_eq!(
+            tracker.on_finalized_block(retention_window.saturating_sub(FINALIZED_BLOCK_OFFSET)),
+            BlobStoreUpdates::None,
+        );
+        assert_eq!(
+            tracker
+                .on_finalized_block((1 + retention_window).saturating_sub(FINALIZED_BLOCK_OFFSET)),
+            BlobStoreUpdates::Finalized(vec![tx]),
+        );
+    }
 
     #[test]
     fn changed_acc_entry() {
