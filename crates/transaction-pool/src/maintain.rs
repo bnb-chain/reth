@@ -75,6 +75,9 @@ pub struct MaintainPoolConfig {
     /// Maximum age of unreferenced blob files.
     pub blob_sweep_max_age: Duration,
 
+    /// Keep sidecars when stale transactions leave the pool.
+    pub retain_blobs_on_discard: bool,
+
     /// Apply no exemptions to the locally received transactions.
     ///
     /// This includes:
@@ -90,6 +93,7 @@ impl Default for MaintainPoolConfig {
             max_reload_accounts: 100,
             max_tx_lifetime: MAX_QUEUED_TRANSACTION_LIFETIME,
             blob_sweep_max_age: BLOB_SWEEP_MAX_AGE,
+            retain_blobs_on_discard: false,
             no_local_exemptions: false,
         }
     }
@@ -259,6 +263,9 @@ pub async fn maintain_transaction_pool<N, Client, P, St>(
             {
                 let num_blobs = blobs.len();
                 metrics.inc_deleted_tracked_blobs(num_blobs);
+                for tx in &blobs {
+                    debug!(target: "txpool::blob", tx_hash = ?tx, reason = "finalized_retention", finalized, cutoff = finalized - FINALIZED_BLOCK_OFFSET, "Blob deletion requested");
+                }
                 // remove all finalized blobs from the blob store
                 pool.delete_blobs(blobs);
                 // and also do periodic cleanup
@@ -305,7 +312,7 @@ pub async fn maintain_transaction_pool<N, Client, P, St>(
                         (tx.origin.is_external() || config.no_local_exemptions) && now - tx.timestamp > config.max_tx_lifetime
                     })
                     .map(|tx| {
-                        if tx.is_eip4844() {
+                        if tx.is_eip4844() && !config.retain_blobs_on_discard {
                             stale_blobs.push(*tx.hash());
                         }
                         *tx.hash()
@@ -313,6 +320,9 @@ pub async fn maintain_transaction_pool<N, Client, P, St>(
                     .collect();
                 debug!(target: "txpool", count=%stale_txs.len(), "removing stale transactions");
                 pool.remove_transactions(stale_txs);
+                for tx in &stale_blobs {
+                    debug!(target: "txpool::blob", tx_hash = ?tx, reason = "stale_queued", "Blob deletion requested");
+                }
                 pool.delete_blobs(stale_blobs);
             }
             _ = blob_sweep_interval.tick() => {

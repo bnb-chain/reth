@@ -279,6 +279,7 @@ where
     let client = ctx.provider().clone();
     let mut maintenance_config = reth_transaction_pool::maintain::MaintainPoolConfig {
         max_tx_lifetime: pool_config.max_queued_lifetime,
+        retain_blobs_on_discard: pool_config.retain_blobs_on_discard,
         no_local_exemptions: pool_config.local_transactions_config.no_exemptions,
         ..Default::default()
     };

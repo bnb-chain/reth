@@ -256,21 +256,28 @@ impl BlobStore for DiskFileBlobStore {
     }
 
     fn cleanup(&self) -> BlobStoreCleanupStat {
-        let txs_to_delete = std::mem::take(&mut *self.inner.txs_to_delete.write());
+        let txs_to_delete: Vec<_> = self.inner.txs_to_delete.read().iter().copied().collect();
         let mut stat = BlobStoreCleanupStat::default();
-        let mut subsize = 0;
         debug!(target:"txpool::blob", num_blobs=%txs_to_delete.len(), "Removing blobs from disk");
         for tx in txs_to_delete {
+            let _lock = self.inner.file_lock.write();
+            // A successful reinsert may have cancelled this deletion since the snapshot.
+            if !self.inner.txs_to_delete.write().remove(&tx) {
+                continue
+            }
             let path = self.inner.blob_disk_file(tx);
             let filesize = fs::metadata(&path).map_or(0, |meta| meta.len());
             match fs::remove_file(&path) {
                 Ok(_) => {
                     stat.delete_succeed += 1;
-                    subsize += filesize;
+                    self.inner.size_tracker.sub_size(filesize as usize);
+                    self.inner.size_tracker.sub_len(1);
+                    debug!(target: "txpool::blob", tx_hash = ?tx, collector = "deferred_cleanup", filesize, "Blob file deleted");
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     // Already deleted by a concurrent cleanup task
                     stat.delete_succeed += 1;
+                    debug!(target: "txpool::blob", tx_hash = ?tx, collector = "deferred_cleanup", "Blob file already absent");
                 }
                 Err(e) => {
                     stat.delete_failed += 1;
@@ -279,8 +286,6 @@ impl BlobStore for DiskFileBlobStore {
                 }
             };
         }
-        self.inner.size_tracker.sub_size(subsize as usize);
-        self.inner.size_tracker.sub_len(stat.delete_succeed);
         stat
     }
 
@@ -471,6 +476,7 @@ impl DiskFileBlobStoreInner {
         // Serialize file and cache publication, including sidecar version replacements.
         let _lock = self.file_lock.write();
         self.write_one_encoded(tx, &buf)?;
+        self.txs_to_delete.write().remove(&tx);
 
         {
             // cache the versioned hashes to tx hash
@@ -571,14 +577,18 @@ impl DiskFileBlobStoreInner {
                 }
             }
 
-            let Ok(meta) = entry.metadata() else { continue };
+            let _lock = self.file_lock.write();
+            let Ok(meta) = fs::symlink_metadata(entry.path()) else { continue };
             let Ok(modified) = meta.modified() else { continue };
             if modified >= cutoff {
                 continue
             }
 
             match fs::remove_file(entry.path()) {
-                Ok(()) => deleted += 1,
+                Ok(()) => {
+                    deleted += 1;
+                    debug!(target: "txpool::blob", tx_hash = name, collector = "age_sweep", ?modified, max_age_seconds = max_age.as_secs(), "Blob file deleted");
+                }
                 Err(err) if err.kind() == io::ErrorKind::NotFound => {}
                 Err(err) => {
                     debug!(target: "txpool::blob", %err, name, "Failed to sweep expired blob")
@@ -601,7 +611,10 @@ impl DiskFileBlobStoreInner {
             let _lock = self.file_lock.read();
             match fs::read(&path) {
                 Ok(data) => data,
-                Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    debug!(target: "txpool::blob", tx_hash = ?tx, ?path, "Blob file not found");
+                    return Ok(None)
+                }
                 Err(e) => {
                     return Err(BlobStoreError::Other(Box::new(DiskFileBlobStoreError::ReadFile(
                         tx, path, e,
@@ -668,7 +681,14 @@ impl DiskFileBlobStoreInner {
         trace!(target:"txpool::blob", "[{:?}] writing blob file", tx);
         let path = self.blob_disk_file(tx);
         let previous_size = match fs::metadata(&path) {
-            Ok(meta) if meta.is_file() && meta.len() == data.len() as u64 => return Ok(()),
+            Ok(meta) if meta.is_file() && meta.len() == data.len() as u64 => {
+                // Reuse the bytes, but renew the age-based retention window.
+                return fs::File::options()
+                    .write(true)
+                    .open(&path)
+                    .and_then(|file| file.set_modified(SystemTime::now()))
+                    .map_err(|err| DiskFileBlobStoreError::WriteFile(tx, path, err))
+            }
             Ok(meta) if meta.is_file() => Some(meta.len() as usize),
             Ok(_) => {
                 return Err(DiskFileBlobStoreError::WriteFile(
@@ -1125,6 +1145,57 @@ mod tests {
                 proofs: vec![]
             })))
         );
+    }
+
+    #[test]
+    fn disk_reinsert_cancels_cleanup_snapshot() {
+        use reth_tracing::tracing_subscriber::{layer::Context, prelude::*, Registry};
+
+        struct Reinsert(DiskFileBlobStore, B256, BlobTransactionSidecarVariant);
+        impl reth_tracing::tracing_subscriber::Layer<Registry> for Reinsert {
+            fn on_event(&self, event: &tracing::Event<'_>, _: Context<'_, Registry>) {
+                // Cleanup has snapshotted the queue but has not started deleting files.
+                if event.metadata().fields().field("num_blobs").is_some() {
+                    self.0.insert_all(vec![(self.1, self.2.clone())]).unwrap();
+                }
+            }
+        }
+
+        let (store, dir) = tmp_store();
+        let (tx, blob) = rng_blobs(1).pop().unwrap();
+        store.insert(tx, blob.clone()).unwrap();
+        store.delete(tx).unwrap();
+        let subscriber = Registry::default().with(Reinsert(store.clone(), tx, blob.clone()));
+        let stat = tracing::subscriber::with_default(subscriber, || store.cleanup());
+        assert_eq!(stat.delete_succeed, 0);
+        let cold = DiskFileBlobStore::open(dir.path(), Default::default()).unwrap();
+        assert_eq!(cold.get(tx).unwrap().as_deref(), Some(&blob));
+
+        store.delete(tx).unwrap();
+        assert_eq!(store.cleanup().delete_succeed, 1);
+        store.insert(tx, blob.clone()).unwrap();
+        store.clear_cache();
+        assert_eq!(store.get(tx).unwrap().as_deref(), Some(&blob));
+    }
+
+    #[test]
+    fn disk_reinsert_refreshes_expiry() {
+        let (store, dir) = tmp_store();
+        let tx = B256::with_last_byte(1);
+        let (_, blob) = rng_blobs(1).pop().unwrap();
+        store.insert(tx, blob.clone()).unwrap();
+        let path = dir.path().join(format!("{tx:x}"));
+        let old = SystemTime::now() - Duration::from_secs(30 * 24 * 60 * 60);
+        fs::File::options().write(true).open(&path).unwrap().set_modified(old).unwrap();
+        store.insert_all(vec![(tx, blob.clone())]).unwrap();
+        assert_eq!(store.sweep_expired(BLOB_SWEEP_MAX_AGE, 10), 0);
+        store.inner.next_sweep_shard.store(0, Ordering::Relaxed);
+        assert_eq!(
+            store.sweep_expired_except(Duration::from_secs(3600), 10, &B256Set::default()),
+            0
+        );
+        let cold = DiskFileBlobStore::open(dir.path(), Default::default()).unwrap();
+        assert_eq!(cold.get(tx).unwrap().as_deref(), Some(&blob));
     }
 
     #[test]
