@@ -745,7 +745,6 @@ where
             self.delete_blob(replaced);
         }
 
-        // Delete discarded blob sidecars if any, this doesnt do any IO.
         if let Some(discarded) = meta.added.discarded_transactions() {
             self.delete_discarded_blobs(discarded.iter(), "admission_discard");
         }
@@ -1359,7 +1358,7 @@ where
         self.blob_store_metrics.blobstore_entries.set(self.blob_store.blobs_len() as f64);
     }
 
-    /// Deletes all blob transactions that were discarded.
+    /// Requests deletion of discarded sidecars unless the retention policy keeps them.
     fn delete_discarded_blobs<'a>(
         &'a self,
         transactions: impl IntoIterator<Item = &'a Arc<ValidPoolTransaction<T::Transaction>>>,
