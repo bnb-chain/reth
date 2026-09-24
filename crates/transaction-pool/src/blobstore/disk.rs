@@ -233,10 +233,10 @@ impl BlobStore for DiskFileBlobStore {
         &self,
         txs: Vec<(B256, BlobTransactionSidecarVariant)>,
     ) -> Result<(), BlobStoreError> {
-        if txs.is_empty() {
-            return Ok(())
+        for (tx, data) in txs {
+            self.inner.insert_one(tx, data)?;
         }
-        self.inner.insert_many(txs)
+        Ok(())
     }
 
     fn delete(&self, tx: B256) -> Result<(), BlobStoreError> {
@@ -256,21 +256,28 @@ impl BlobStore for DiskFileBlobStore {
     }
 
     fn cleanup(&self) -> BlobStoreCleanupStat {
-        let txs_to_delete = std::mem::take(&mut *self.inner.txs_to_delete.write());
+        let txs_to_delete: Vec<_> = self.inner.txs_to_delete.read().iter().copied().collect();
         let mut stat = BlobStoreCleanupStat::default();
-        let mut subsize = 0;
         debug!(target:"txpool::blob", num_blobs=%txs_to_delete.len(), "Removing blobs from disk");
         for tx in txs_to_delete {
+            let _lock = self.inner.file_lock.write();
+            // A successful reinsert may have cancelled this deletion since the snapshot.
+            if !self.inner.txs_to_delete.write().remove(&tx) {
+                continue
+            }
             let path = self.inner.blob_disk_file(tx);
             let filesize = fs::metadata(&path).map_or(0, |meta| meta.len());
             match fs::remove_file(&path) {
                 Ok(_) => {
                     stat.delete_succeed += 1;
-                    subsize += filesize;
+                    self.inner.size_tracker.sub_size(filesize as usize);
+                    self.inner.size_tracker.sub_len(1);
+                    debug!(target: "txpool::blob", tx_hash = ?tx, collector = "deferred_cleanup", filesize, "Blob file deleted");
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     // Already deleted by a concurrent cleanup task
                     stat.delete_succeed += 1;
+                    debug!(target: "txpool::blob", tx_hash = ?tx, collector = "deferred_cleanup", "Blob file already absent");
                 }
                 Err(e) => {
                     stat.delete_failed += 1;
@@ -279,8 +286,6 @@ impl BlobStore for DiskFileBlobStore {
                 }
             };
         }
-        self.inner.size_tracker.sub_size(subsize as usize);
-        self.inner.size_tracker.sub_len(stat.delete_succeed);
         stat
     }
 
@@ -468,6 +473,11 @@ impl DiskFileBlobStoreInner {
         let mut buf = Vec::with_capacity(data.rlp_encoded_fields_length());
         data.rlp_encode_fields(&mut buf);
 
+        // Serialize file and cache publication, including sidecar version replacements.
+        let _lock = self.file_lock.write();
+        self.write_one_encoded(tx, &buf)?;
+        self.txs_to_delete.write().remove(&tx);
+
         {
             // cache the versioned hashes to tx hash
             let mut map = self.versioned_hashes_to_txhash.lock();
@@ -477,64 +487,6 @@ impl DiskFileBlobStoreInner {
         }
 
         self.blob_cache.lock().insert(tx, Arc::new(data));
-
-        let size = self.write_one_encoded(tx, &buf)?;
-
-        self.size_tracker.add_size(size);
-        self.size_tracker.inc_len(1);
-        Ok(())
-    }
-
-    /// Ensures blobs are in the blob cache and written to the disk.
-    fn insert_many(
-        &self,
-        txs: Vec<(B256, BlobTransactionSidecarVariant)>,
-    ) -> Result<(), BlobStoreError> {
-        let raw = txs
-            .iter()
-            .map(|(tx, data)| {
-                let mut buf = Vec::with_capacity(data.rlp_encoded_fields_length());
-                data.rlp_encode_fields(&mut buf);
-                (self.blob_disk_file(*tx), buf)
-            })
-            .collect::<Vec<_>>();
-
-        {
-            // cache versioned hashes to tx hash
-            let mut map = self.versioned_hashes_to_txhash.lock();
-            for (tx, data) in &txs {
-                data.versioned_hashes().for_each(|hash| {
-                    map.insert(hash, *tx);
-                });
-            }
-        }
-
-        {
-            // cache blobs
-            let mut cache = self.blob_cache.lock();
-            for (tx, data) in txs {
-                cache.insert(tx, Arc::new(data));
-            }
-        }
-
-        let mut add = 0;
-        let mut num = 0;
-        {
-            let _lock = self.file_lock.write();
-            for (path, data) in raw {
-                if path.exists() {
-                    debug!(target:"txpool::blob", ?path, "Blob already exists");
-                } else if let Err(err) = fs::write(&path, &data) {
-                    debug!(target:"txpool::blob", %err, ?path, "Failed to write blob file");
-                } else {
-                    add += data.len();
-                    num += 1;
-                }
-            }
-        }
-        self.size_tracker.add_size(add);
-        self.size_tracker.inc_len(num);
-
         Ok(())
     }
 
@@ -625,14 +577,18 @@ impl DiskFileBlobStoreInner {
                 }
             }
 
-            let Ok(meta) = entry.metadata() else { continue };
+            let _lock = self.file_lock.write();
+            let Ok(meta) = fs::symlink_metadata(entry.path()) else { continue };
             let Ok(modified) = meta.modified() else { continue };
             if modified >= cutoff {
                 continue
             }
 
             match fs::remove_file(entry.path()) {
-                Ok(()) => deleted += 1,
+                Ok(()) => {
+                    deleted += 1;
+                    debug!(target: "txpool::blob", tx_hash = name, collector = "age_sweep", ?modified, max_age_seconds = max_age.as_secs(), "Blob file deleted");
+                }
                 Err(err) if err.kind() == io::ErrorKind::NotFound => {}
                 Err(err) => {
                     debug!(target: "txpool::blob", %err, name, "Failed to sweep expired blob")
@@ -655,7 +611,10 @@ impl DiskFileBlobStoreInner {
             let _lock = self.file_lock.read();
             match fs::read(&path) {
                 Ok(data) => data,
-                Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    debug!(target: "txpool::blob", tx_hash = ?tx, ?path, "Blob file not found");
+                    return Ok(None)
+                }
                 Err(e) => {
                     return Err(BlobStoreError::Other(Box::new(DiskFileBlobStoreError::ReadFile(
                         tx, path, e,
@@ -676,6 +635,16 @@ impl DiskFileBlobStoreInner {
             .into_iter()
             .filter_map(|(tx, data)| {
                 BlobTransactionSidecarVariant::rlp_decode_fields(&mut data.as_slice())
+                    .inspect_err(|err| {
+                        tracing::warn!(
+                            target: "txpool::blob",
+                            tx_hash = ?tx,
+                            path = ?self.blob_disk_file(tx),
+                            encoded_bytes = data.len(),
+                            error = %err,
+                            "Failed to decode blob file"
+                        );
+                    })
                     .map(|sidecar| (tx, sidecar))
                     .ok()
             })
@@ -695,8 +664,11 @@ impl DiskFileBlobStoreInner {
                 Ok(data) => {
                     res.push((tx, data));
                 }
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                    debug!(target: "txpool::blob", tx_hash = ?tx, ?path, "Blob file not found");
+                }
                 Err(err) => {
-                    debug!(target:"txpool::blob", %err, ?tx, "Failed to read blob file");
+                    tracing::warn!(target: "txpool::blob", tx_hash = ?tx, ?path, error = %err, "Failed to read blob file");
                 }
             };
         }
@@ -705,19 +677,59 @@ impl DiskFileBlobStoreInner {
 
     /// Writes the blob data for the given transaction hash to the disk.
     #[inline]
-    fn write_one_encoded(&self, tx: B256, data: &[u8]) -> Result<usize, DiskFileBlobStoreError> {
+    fn write_one_encoded(&self, tx: B256, data: &[u8]) -> Result<(), DiskFileBlobStoreError> {
         trace!(target:"txpool::blob", "[{:?}] writing blob file", tx);
-        let mut add = 0;
         let path = self.blob_disk_file(tx);
-        {
-            let _lock = self.file_lock.write();
-            if !path.exists() {
-                fs::write(&path, data)
-                    .map_err(|e| DiskFileBlobStoreError::WriteFile(tx, path, e))?;
-                add = data.len();
+        let previous_size = match fs::metadata(&path) {
+            Ok(meta) if meta.is_file() && meta.len() == data.len() as u64 => {
+                // Reuse the bytes, but renew the age-based retention window.
+                return fs::File::options()
+                    .write(true)
+                    .open(&path)
+                    .and_then(|file| file.set_modified(SystemTime::now()))
+                    .map_err(|err| DiskFileBlobStoreError::WriteFile(tx, path, err))
             }
+            Ok(meta) if meta.is_file() => Some(meta.len() as usize),
+            Ok(_) => {
+                return Err(DiskFileBlobStoreError::WriteFile(
+                    tx,
+                    path,
+                    io::Error::new(io::ErrorKind::InvalidData, "blob path is not a file"),
+                ))
+            }
+            Err(err) if err.kind() == io::ErrorKind::NotFound => None,
+            Err(err) => return Err(DiskFileBlobStoreError::WriteFile(tx, path, err)),
+        };
+
+        // Publish only complete files; failed writes must not look like successful inserts.
+        let tmp_path = path.with_extension("tmp");
+        if let Err((operation, err)) = fs::write(&tmp_path, data)
+            .map_err(|err| ("write_temp", err))
+            .and_then(|_| fs::rename(&tmp_path, &path).map_err(|err| ("rename", err)))
+        {
+            tracing::warn!(
+                target: "txpool::blob",
+                operation,
+                tx_hash = ?tx,
+                ?path,
+                ?tmp_path,
+                encoded_bytes = data.len(),
+                error = %err,
+                "Failed to publish blob file"
+            );
+            let _ = fs::remove_file(&tmp_path);
+            return Err(DiskFileBlobStoreError::WriteFile(tx, path, err))
         }
-        Ok(add)
+        if previous_size.is_none() {
+            self.size_tracker.inc_len(1);
+        }
+        let previous_size = previous_size.unwrap_or_default();
+        if data.len() >= previous_size {
+            self.size_tracker.add_size(data.len() - previous_size);
+        } else {
+            self.size_tracker.sub_size(previous_size - data.len());
+        }
+        Ok(())
     }
 
     /// Retrieves blobs for the given transaction hashes from the blob cache or disk.
@@ -1023,6 +1035,96 @@ mod tests {
     }
 
     #[test]
+    fn disk_insert_failure_does_not_cache_and_can_retry() {
+        let (store, dir) = tmp_store();
+        let tx = B256::with_last_byte(1);
+        let (blob, versioned_hash, _) = eip7594_single_blob_sidecar();
+        let path = store.inner.blob_disk_file(tx);
+        let tmp_path = path.with_extension("tmp");
+        fs::create_dir(&tmp_path).unwrap();
+
+        assert!(store.insert(tx, blob.clone()).is_err());
+        assert!(!path.exists());
+        assert!(!store.is_cached(&tx));
+        assert!(store.inner.versioned_hashes_to_txhash.lock().get(&versioned_hash).is_none());
+        assert_eq!(store.data_size_hint(), Some(0));
+        assert_eq!(store.blobs_len(), 0);
+
+        fs::remove_dir(&tmp_path).unwrap();
+        fs::write(&tmp_path, b"partial write").unwrap();
+        store.insert(tx, blob.clone()).unwrap();
+        store.insert(tx, blob.clone()).unwrap();
+        assert!(!tmp_path.exists());
+        assert_eq!(store.blobs_len(), 1);
+        assert_eq!(store.data_size_hint(), Some(blob.rlp_encoded_fields_length()));
+
+        let reopened = DiskFileBlobStore::open(dir.path(), Default::default()).unwrap();
+        assert_eq!(reopened.get(tx).unwrap().as_deref(), Some(&blob));
+    }
+
+    #[test]
+    fn disk_insert_all_preserves_successful_prefix_on_failure() {
+        let (store, _dir) = tmp_store();
+        let blobs = rng_blobs(3);
+        let failed_path = store.inner.blob_disk_file(blobs[1].0);
+        fs::create_dir(&failed_path).unwrap();
+
+        assert!(store.insert_all(blobs.clone()).is_err());
+        assert!(store.is_cached(&blobs[0].0));
+        assert!(!store.is_cached(&blobs[1].0));
+        assert!(!store.is_cached(&blobs[2].0));
+        assert_eq!(store.blobs_len(), 1);
+        assert_eq!(store.data_size_hint(), Some(blobs[0].1.rlp_encoded_fields_length()));
+
+        fs::remove_dir(failed_path).unwrap();
+        store.insert_all(blobs.clone()).unwrap();
+        assert_eq!(store.blobs_len(), blobs.len());
+        assert_eq!(
+            store.data_size_hint(),
+            Some(blobs.iter().map(|(_, blob)| blob.rlp_encoded_fields_length()).sum())
+        );
+        store.clear_cache();
+        for (tx, blob) in blobs {
+            assert_eq!(store.get(tx).unwrap().as_deref(), Some(&blob));
+        }
+    }
+
+    #[test]
+    fn disk_insert_replaces_legacy_sidecar_and_incomplete_file() {
+        let (store, _dir) = tmp_store();
+        let tx = B256::with_last_byte(1);
+        let legacy = BlobTransactionSidecarVariant::Eip4844(BlobTransactionSidecar {
+            blobs: vec![Blob::default()],
+            commitments: vec![Bytes48::default()],
+            proofs: vec![Bytes48::default()],
+        });
+        store.insert(tx, legacy.clone()).unwrap();
+        let (blob, _, _) = eip7594_single_blob_sidecar();
+        let tmp_path = store.inner.blob_disk_file(tx).with_extension("tmp");
+        fs::create_dir(&tmp_path).unwrap();
+        assert!(store.insert(tx, blob.clone()).is_err());
+        assert_eq!(store.get(tx).unwrap().as_deref(), Some(&legacy));
+        assert_eq!(store.blobs_len(), 1);
+        assert_eq!(store.data_size_hint(), Some(legacy.rlp_encoded_fields_length()));
+        store.clear_cache();
+        assert_eq!(store.get(tx).unwrap().as_deref(), Some(&legacy));
+        fs::remove_dir(tmp_path).unwrap();
+
+        store.insert(tx, blob.clone()).unwrap();
+        assert_eq!(store.blobs_len(), 1);
+        assert_eq!(store.data_size_hint(), Some(blob.rlp_encoded_fields_length()));
+        store.clear_cache();
+        assert_eq!(store.get(tx).unwrap().as_deref(), Some(&blob));
+
+        fs::write(store.inner.blob_disk_file(tx), b"truncated").unwrap();
+        store.clear_cache();
+        assert!(store.get_all(vec![tx]).unwrap().is_empty());
+        store.insert(tx, blob.clone()).unwrap();
+        store.clear_cache();
+        assert_eq!(store.get(tx).unwrap().as_deref(), Some(&blob));
+    }
+
+    #[test]
     fn disk_delete_blob() {
         let (store, _dir) = tmp_store();
 
@@ -1043,6 +1145,57 @@ mod tests {
                 proofs: vec![]
             })))
         );
+    }
+
+    #[test]
+    fn disk_reinsert_cancels_cleanup_snapshot() {
+        use reth_tracing::tracing_subscriber::{layer::Context, prelude::*, Registry};
+
+        struct Reinsert(DiskFileBlobStore, B256, BlobTransactionSidecarVariant);
+        impl reth_tracing::tracing_subscriber::Layer<Registry> for Reinsert {
+            fn on_event(&self, event: &tracing::Event<'_>, _: Context<'_, Registry>) {
+                // Cleanup has snapshotted the queue but has not started deleting files.
+                if event.metadata().fields().field("num_blobs").is_some() {
+                    self.0.insert_all(vec![(self.1, self.2.clone())]).unwrap();
+                }
+            }
+        }
+
+        let (store, dir) = tmp_store();
+        let (tx, blob) = rng_blobs(1).pop().unwrap();
+        store.insert(tx, blob.clone()).unwrap();
+        store.delete(tx).unwrap();
+        let subscriber = Registry::default().with(Reinsert(store.clone(), tx, blob.clone()));
+        let stat = tracing::subscriber::with_default(subscriber, || store.cleanup());
+        assert_eq!(stat.delete_succeed, 0);
+        let cold = DiskFileBlobStore::open(dir.path(), Default::default()).unwrap();
+        assert_eq!(cold.get(tx).unwrap().as_deref(), Some(&blob));
+
+        store.delete(tx).unwrap();
+        assert_eq!(store.cleanup().delete_succeed, 1);
+        store.insert(tx, blob.clone()).unwrap();
+        store.clear_cache();
+        assert_eq!(store.get(tx).unwrap().as_deref(), Some(&blob));
+    }
+
+    #[test]
+    fn disk_reinsert_refreshes_expiry() {
+        let (store, dir) = tmp_store();
+        let tx = B256::with_last_byte(1);
+        let (_, blob) = rng_blobs(1).pop().unwrap();
+        store.insert(tx, blob.clone()).unwrap();
+        let path = dir.path().join(format!("{tx:x}"));
+        let old = SystemTime::now() - Duration::from_secs(30 * 24 * 60 * 60);
+        fs::File::options().write(true).open(&path).unwrap().set_modified(old).unwrap();
+        store.insert_all(vec![(tx, blob.clone())]).unwrap();
+        assert_eq!(store.sweep_expired(BLOB_SWEEP_MAX_AGE, 10), 0);
+        store.inner.next_sweep_shard.store(0, Ordering::Relaxed);
+        assert_eq!(
+            store.sweep_expired_except(Duration::from_secs(3600), 10, &B256Set::default()),
+            0
+        );
+        let cold = DiskFileBlobStore::open(dir.path(), Default::default()).unwrap();
+        assert_eq!(cold.get(tx).unwrap().as_deref(), Some(&blob));
     }
 
     #[test]
