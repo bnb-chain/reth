@@ -7,3 +7,4 @@ self-hosted-runner:
     - depot-ubuntu-latest-16
     - available
     - ubuntu-24.04-16core
+    - runner-linux-x64-16core
