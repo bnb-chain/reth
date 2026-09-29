@@ -30,7 +30,7 @@ use reth_rpc_eth_api::{
     helpers::{EthTransactions, TraceExt},
     FromEthApiError, FromEvmError, RpcConvert, RpcNodeCore,
 };
-use reth_rpc_eth_types::{EthApiError, StateCacheDb};
+use reth_rpc_eth_types::{BlockOverridesExt, EthApiError, StateCacheDb};
 use reth_rpc_server_types::{
     result::{internal_rpc_err, rpc_error_with_code},
     ToRpcResult,
@@ -748,6 +748,15 @@ where
                         let res = eth_api.transact(&mut db, evm_env.clone(), tx_env)?;
                         db.commit(res.state);
                     }
+                }
+
+                // Historical replay must use canonical routing. Only the simulated calls
+                // inherit override metadata, including calls after state_overrides.take().
+                if let Some(overrides) = state_overrides.as_ref() {
+                    evm_env
+                        .block_env
+                        .apply_state_overrides_ext(overrides)
+                        .map_err(EthApiError::InvalidParams)?;
                 }
 
                 // Trace all bundles

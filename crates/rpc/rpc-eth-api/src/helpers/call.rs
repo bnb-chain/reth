@@ -177,6 +177,10 @@ where
                             .map_err(EthApiError::InvalidParams)?;
                     }
                     if let Some(ref state_overrides) = state_overrides {
+                        evm_env
+                            .block_env
+                            .apply_state_overrides_ext(state_overrides)
+                            .map_err(EthApiError::InvalidParams)?;
                         apply_state_overrides(state_overrides.clone(), &mut db)
                             .map_err(Self::Error::from_eth_err)?;
                     }
@@ -349,7 +353,7 @@ where
                 .recovered_block(target_block)
                 .await?
                 .ok_or(EthApiError::HeaderNotFound(target_block))?;
-            let evm_env = self.evm_env_for_header(block.sealed_block().sealed_header())?;
+            let mut evm_env = self.evm_env_for_header(block.sealed_block().sealed_header())?;
 
             // we're essentially replaying the transactions in the block here, hence we need the
             // state that points to the beginning of the block, which is the state at
@@ -379,6 +383,15 @@ where
                     for tx in block.transactions_recovered().take(num_txs) {
                         executor.execute_transaction(tx).map_err(Self::Error::from_eth_err)?;
                     }
+                }
+
+                // Preserve override metadata across calls, but never apply it to historical
+                // replay. The database overrides themselves are consumed by the first call.
+                if let Some(overrides) = state_override.as_ref() {
+                    evm_env
+                        .block_env
+                        .apply_state_overrides_ext(overrides)
+                        .map_err(EthApiError::InvalidParams)?;
                 }
 
                 // transact all bundles
@@ -480,6 +493,10 @@ where
             let mut db = State::builder().with_database(StateProviderDatabase::new(state)).build();
 
             if let Some(state_overrides) = state_override {
+                evm_env
+                    .block_env
+                    .apply_state_overrides_ext(&state_overrides)
+                    .map_err(EthApiError::InvalidParams)?;
                 apply_state_overrides(state_overrides, &mut db)
                     .map_err(Self::Error::from_eth_err)?;
             }
@@ -913,6 +930,10 @@ where
                 .map_err(EthApiError::InvalidParams)?;
         }
         if let Some(state_overrides) = overrides.state {
+            evm_env
+                .block_env
+                .apply_state_overrides_ext(&state_overrides)
+                .map_err(EthApiError::InvalidParams)?;
             apply_state_overrides(state_overrides, db)
                 .map_err(EthApiError::from_state_overrides_err)?;
         }

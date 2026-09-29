@@ -20,7 +20,7 @@ use reth_rpc_eth_types::{
         api::{FromEvmHalt, FromRevert},
         FromEvmError,
     },
-    EthApiError, RpcInvalidTransactionError,
+    BlockOverridesExt, EthApiError, RpcInvalidTransactionError,
 };
 use reth_rpc_server_types::constants::gas_oracle::{CALL_STIPEND_GAS, ESTIMATE_GAS_ERROR_RATIO};
 use revm::{
@@ -104,6 +104,10 @@ where
 
         // Apply any state overrides if specified.
         if let Some(state_override) = state_override {
+            evm_env
+                .block_env
+                .apply_state_overrides_ext(&state_override)
+                .map_err(EthApiError::InvalidParams)?;
             apply_state_overrides(state_override, &mut db).map_err(Self::Error::from_eth_err)?;
         }
 
