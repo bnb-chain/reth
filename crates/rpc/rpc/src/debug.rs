@@ -750,8 +750,7 @@ where
                     }
                 }
 
-                // Historical replay must use canonical routing. Only the simulated calls
-                // inherit override metadata, including calls after state_overrides.take().
+                // After replay, preserve override metadata in the env cloned for each call.
                 if let Some(overrides) = state_overrides.as_ref() {
                     evm_env
                         .block_env

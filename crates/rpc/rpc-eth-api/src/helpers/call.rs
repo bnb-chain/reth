@@ -385,8 +385,7 @@ where
                     }
                 }
 
-                // Preserve override metadata across calls, but never apply it to historical
-                // replay. The database overrides themselves are consumed by the first call.
+                // After replay, preserve override metadata in the env cloned for each call.
                 if let Some(overrides) = state_override.as_ref() {
                     evm_env
                         .block_env

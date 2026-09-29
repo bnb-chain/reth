@@ -11,8 +11,6 @@ use revm::context::BlockEnv;
 /// state from those fields (e.g. a chain that packs a sub-second timestamp remainder next
 /// to the seconds) needs to observe the overrides to keep that state consistent, and may
 /// reject override values that are invalid under its chain rules.
-/// State overrides can also require execution metadata, such as disabling native
-/// contract routing when a caller explicitly replaces an account's bytecode.
 ///
 /// This trait is deliberately **not** blanket-implemented: every block environment type
 /// used with the RPC call helpers provides its own implementation, so downstream
@@ -28,12 +26,9 @@ pub trait BlockOverridesExt {
     /// same overrides. Implementations may adjust derived state or reject invalid values.
     fn apply_block_overrides_ext(&mut self, overrides: &BlockOverrides) -> Result<(), String>;
 
-    /// Called before state overrides are applied to the temporary database. Implementations may
-    /// update request-local execution metadata derived from those overrides.
+    /// Updates request-local execution metadata before applying state overrides.
     ///
-    /// Must be idempotent: batched calls may invoke it on an environment that already carries
-    /// the same overrides. Metadata must survive subsequent calls that reuse the overridden
-    /// database, and must not affect historical transaction replay or other requests.
+    /// Must be idempotent: batched calls may apply the same overrides more than once.
     fn apply_state_overrides_ext(&mut self, _overrides: &StateOverride) -> Result<(), String> {
         Ok(())
     }
@@ -63,13 +58,6 @@ mod tests {
         };
         // Accepts any overrides and leaves the environment untouched.
         assert_eq!(env.apply_block_overrides_ext(&overrides), Ok(()));
-        assert_eq!(env, before);
-    }
-
-    #[test]
-    fn state_override_hook_is_a_noop() {
-        let mut env = BlockEnv::default();
-        let before = env.clone();
         assert_eq!(env.apply_state_overrides_ext(&StateOverride::default()), Ok(()));
         assert_eq!(env, before);
     }
