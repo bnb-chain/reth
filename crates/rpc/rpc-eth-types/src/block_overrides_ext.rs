@@ -1,6 +1,6 @@
-//! Post-override hook for chain-specific block environment extensions.
+//! RPC override hooks for chain-specific block environment extensions.
 
-use alloy_rpc_types_eth::BlockOverrides;
+use alloy_rpc_types_eth::{state::StateOverride, BlockOverrides};
 use revm::context::BlockEnv;
 
 /// Chain-specific fix-up applied after [`apply_block_overrides`] has written a set of
@@ -25,6 +25,13 @@ pub trait BlockOverridesExt {
     /// Called right after `apply_block_overrides(overrides, db, self.inner_mut())` with the
     /// same overrides. Implementations may adjust derived state or reject invalid values.
     fn apply_block_overrides_ext(&mut self, overrides: &BlockOverrides) -> Result<(), String>;
+
+    /// Updates request-local execution metadata before applying state overrides.
+    ///
+    /// Must be idempotent: batched calls may apply the same overrides more than once.
+    fn apply_state_overrides_ext(&mut self, _overrides: &StateOverride) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 impl BlockOverridesExt for BlockEnv {
@@ -51,6 +58,7 @@ mod tests {
         };
         // Accepts any overrides and leaves the environment untouched.
         assert_eq!(env.apply_block_overrides_ext(&overrides), Ok(()));
+        assert_eq!(env.apply_state_overrides_ext(&StateOverride::default()), Ok(()));
         assert_eq!(env, before);
     }
 
