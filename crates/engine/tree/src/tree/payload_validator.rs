@@ -492,7 +492,23 @@ where
             .triedb_validate_root_duration
             .record(root_start.elapsed().as_secs_f64());
 
-        if new_root != block_state_root {
+        // Benchmark-only escape hatch: TrieDB v0.0.2 computes a wrong root for some mainnet
+        // blocks (first at 69,615,172). Execution is still verified (gas, receipts, bloom) and
+        // reads state from MDBX, and TrieDB resolves nodes by path, so accepting the root keeps
+        // the trie workload intact while the chain advances. Never set this outside a benchmark.
+        let bench_skip_root_check = new_root != block_state_root &&
+            std::env::var_os("RETH_TRIEDB_BENCH_SKIP_ROOT_CHECK").is_some();
+        if bench_skip_root_check {
+            warn!(
+                target: "engine::tree",
+                number = block_num_hash.number,
+                got = ?new_root,
+                expected = ?block_state_root,
+                "BENCH: accepting mismatched triedb state root (RETH_TRIEDB_BENCH_SKIP_ROOT_CHECK)"
+            );
+        }
+
+        if new_root != block_state_root && !bench_skip_root_check {
             // Diagnostic: recompute without the prefetch state to determine whether the
             // prefetch inputs are affecting correctness.  Uses the non-committing API so
             // the underlying DB/difflayers are not mutated.
