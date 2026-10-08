@@ -27,7 +27,7 @@ use reth_storage_errors::{
 use rocksdb::{
     BlockBasedOptions, BoundColumnFamily, Cache, ColumnFamilyDescriptor, CompactionPri,
     DBCompressionType, DBRawIteratorWithThreadMode, IteratorMode, OptimisticTransactionDB,
-    OptimisticTransactionOptions, Options, SnapshotWithThreadMode, Transaction,
+    OptimisticTransactionOptions, Options, ReadOptions, SnapshotWithThreadMode, Transaction,
     WriteBatchWithTransaction, WriteOptions, DB,
 };
 use std::{
@@ -1477,10 +1477,16 @@ enum RocksReadSnapshotInner<'db> {
 
 impl<'db> RocksReadSnapshotInner<'db> {
     /// Returns a raw iterator over a column family.
-    fn raw_iterator_cf(&self, cf: &Arc<BoundColumnFamily<'_>>) -> RocksDBRawIterEnum<'_> {
+    fn raw_iterator_cf(
+        &self,
+        cf: &Arc<BoundColumnFamily<'_>>,
+        opts: ReadOptions,
+    ) -> RocksDBRawIterEnum<'_> {
         match self {
-            Self::ReadWrite(snap) => RocksDBRawIterEnum::ReadWrite(snap.raw_iterator_cf(cf)),
-            Self::Secondary(db) => RocksDBRawIterEnum::ReadOnly(db.raw_iterator_cf(cf)),
+            Self::ReadWrite(snap) => {
+                RocksDBRawIterEnum::ReadWrite(snap.raw_iterator_cf_opt(cf, opts))
+            }
+            Self::Secondary(db) => RocksDBRawIterEnum::ReadOnly(db.raw_iterator_cf_opt(cf, opts)),
         }
     }
 }
@@ -1600,7 +1606,18 @@ impl<'db> RocksReadSnapshot<'db> {
         };
 
         let cf = self.cf_handle::<T>()?;
-        let mut iter = self.inner.raw_iterator_cf(&cf);
+        // Bound both seek and prev to this address/slot. Checking the returned key is too
+        // late: an unbounded iterator can scan unrelated pruning tombstones before returning.
+        let prefix = &encoded_key[..encoded_key.len() - std::mem::size_of::<BlockNumber>()];
+        let mut opts = ReadOptions::default();
+        opts.set_iterate_lower_bound(prefix.to_vec());
+        let mut upper = prefix.to_vec();
+        if let Some(last) = upper.iter().rposition(|byte| *byte != u8::MAX) {
+            upper[last] += 1;
+            upper.truncate(last + 1);
+            opts.set_iterate_upper_bound(upper);
+        }
+        let mut iter = self.inner.raw_iterator_cf(&cf, opts);
 
         iter.seek(encoded_key);
         iter.status().map_err(|e| {
@@ -3087,6 +3104,71 @@ mod tests {
         // Last should return the largest key
         let last = provider.last::<TestTable>().unwrap();
         assert_eq!(last, Some((20, b"value_20".to_vec())));
+    }
+
+    #[test]
+    fn history_bounds_skip_unrelated_tombstones() {
+        use rocksdb::perf::{set_perf_stats, PerfContext, PerfMetric, PerfStatsLevel};
+        let dir = TempDir::new().unwrap();
+        let provider = RocksDBBuilder::new(dir.path()).with_default_tables().build().unwrap();
+        let address = Address::repeat_byte(1);
+        let chunk = IntegerList::new([10]).unwrap();
+        let shard = |i| StorageShardedKey::new(address, B256::repeat_byte(i), u64::MAX);
+        for i in 1..=100 {
+            provider.put::<tables::StoragesHistory>(shard(i), &chunk).unwrap();
+        }
+        let _pinned = provider.snapshot();
+        for i in 1..=100 {
+            provider.delete::<tables::StoragesHistory>(shard(i)).unwrap();
+        }
+        let snap = provider.snapshot();
+        let cf = snap.cf_handle::<tables::StoragesHistory>().unwrap();
+        let key = StorageShardedKey::new(address, B256::ZERO, 5).encode();
+        set_perf_stats(PerfStatsLevel::EnableCount);
+        let mut perf = PerfContext::default();
+        perf.reset();
+        let mut unbounded = snap.inner.raw_iterator_cf(&cf, ReadOptions::default());
+        unbounded.seek(key.as_ref());
+        assert!(!unbounded.valid());
+        assert!(perf.metric(PerfMetric::InternalDeleteSkippedCount) >= 100);
+        perf.reset();
+        assert_eq!(
+            snap.storage_history_info(address, B256::ZERO, 5, None, u64::MAX).unwrap(),
+            HistoryInfo::NotYetWritten
+        );
+        let skipped = perf.metric(PerfMetric::InternalDeleteSkippedCount);
+        set_perf_stats(PerfStatsLevel::Disable);
+        assert_eq!(skipped, 0);
+    }
+
+    #[test]
+    fn history_bounds_include_maximum_prefix_and_terminal_shard() {
+        let dir = TempDir::new().unwrap();
+        let provider = RocksDBBuilder::new(dir.path()).with_default_tables().build().unwrap();
+        let address = Address::repeat_byte(255);
+        let slot = B256::repeat_byte(255);
+        for end in [10, u64::MAX] {
+            let chunk = IntegerList::new([if end == 10 { 10 } else { 20 }]).unwrap();
+            provider.put::<tables::AccountsHistory>(ShardedKey::new(address, end), &chunk).unwrap();
+            provider
+                .put::<tables::StoragesHistory>(StorageShardedKey::new(address, slot, end), &chunk)
+                .unwrap();
+        }
+        let snap = provider.snapshot();
+        for (height, expected) in [
+            (5, HistoryInfo::NotYetWritten),
+            (15, HistoryInfo::InChangeset(20)),
+            (25, HistoryInfo::InPlainState),
+        ] {
+            assert_eq!(
+                snap.account_history_info(address, height, None, u64::MAX).unwrap(),
+                expected
+            );
+            assert_eq!(
+                snap.storage_history_info(address, slot, height, None, u64::MAX).unwrap(),
+                expected
+            );
+        }
     }
 
     /// Tests the edge case where block < `lowest_available_block_number`.
