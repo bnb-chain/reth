@@ -544,6 +544,7 @@ impl RethTransactionPoolConfig for TxPoolArgs {
                 max_size: self.blobpool_max_size.saturating_mul(1024 * 1024),
             },
             blob_cache_size: self.blob_cache_size,
+            retain_blobs_on_discard: default_config.retain_blobs_on_discard,
             max_account_slots: self.max_account_slots,
             price_bumps: PriceBumpConfig {
                 default_price_bump: self.price_bump,

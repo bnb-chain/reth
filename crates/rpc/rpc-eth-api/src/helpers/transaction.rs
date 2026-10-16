@@ -59,7 +59,10 @@ use std::{sync::Arc, time::Duration};
 /// See also <https://github.com/paradigmxyz/reth/issues/6240>
 ///
 /// This implementation follows the behaviour of Geth and disables the basefee check for tracing.
-pub trait EthTransactions: LoadTransaction<Provider: BlockReaderIdExt> {
+pub trait EthTransactions: LoadTransaction<Provider: BlockReaderIdExt>
+where
+    reth_evm::BlockEnvFor<Self::Evm>: reth_rpc_eth_types::BlockOverridesExt,
+{
     /// Returns a handle for signing data.
     ///
     /// Signer access in default (L1) trait method implementations.

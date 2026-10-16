@@ -276,16 +276,7 @@ pub struct StaticFileProviderInner<N> {
     map: DashMap<(BlockNumber, StaticFileSegment), LoadedJar>,
     /// Indexes per segment.
     indexes: RwLock<StaticFileMap<StaticFileSegmentIndex>>,
-    /// This is an additional index that tracks the expired height, this will track the highest
-    /// block number that has been expired (missing). The first, non expired block is
-    /// `expired_history_height + 1`.
-    ///
-    /// This is effectively the transaction range that has been expired:
-    /// [`StaticFileProvider::delete_segment_below_block`] and mirrors
-    /// `static_files_min_block[transactions] - blocks_per_file`.
-    ///
-    /// This additional tracker exists for more efficient lookups because the node must be aware of
-    /// the expired height.
+    /// Earliest block with both header and transaction history available.
     earliest_history_height: AtomicU64,
     /// Directory where `static_files` are located
     path: PathBuf,
@@ -1235,14 +1226,14 @@ impl<N: NodePrimitives> StaticFileProvider<N> {
         // If this is a re-initialization, we need to clear this as well
         self.map.clear();
 
-        // initialize the expired history height to the lowest static file block
-        if let Some(lowest_range) =
-            indexes.get(StaticFileSegment::Transactions).and_then(|index| index.min_block_range)
-        {
-            // the earliest height is the lowest available block number
-            self.earliest_history_height
-                .store(lowest_range.start(), std::sync::atomic::Ordering::Relaxed);
-        }
+        let earliest_history_height = [StaticFileSegment::Headers, StaticFileSegment::Transactions]
+            .into_iter()
+            .filter_map(|segment| indexes.get(segment)?.min_block_range)
+            .map(|range| range.start())
+            .max()
+            .unwrap_or_default();
+        self.earliest_history_height
+            .store(earliest_history_height, std::sync::atomic::Ordering::Relaxed);
 
         Ok(())
     }
@@ -2002,6 +1993,20 @@ impl<N: NodePrimitives> StaticFileProvider<N> {
         F: FnMut(&mut StaticFileCursor<'_>, u64) -> ProviderResult<Option<T>>,
         P: FnMut(&T) -> bool,
     {
+        if segment.is_headers() &&
+            !range.is_empty() &&
+            let Some(earliest_available) = self.get_lowest_range_start(segment) &&
+            range.start < earliest_available
+        {
+            debug!(
+                target: "providers::static_file",
+                requested = range.start,
+                earliest_available,
+                "Header history has expired"
+            );
+            return Err(ProviderError::BlockExpired { requested: range.start, earliest_available })
+        }
+
         let mut result = Vec::with_capacity((range.end - range.start).min(100) as usize);
 
         /// Resolves to the provider for the given block or transaction number.

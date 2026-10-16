@@ -66,7 +66,7 @@
 //!    category (2.) and become pending.
 
 use crate::{
-    blobstore::BlobStore,
+    blobstore::{disk::BLOB_SWEEP_MAX_AGE, BlobStore},
     error::{PoolError, PoolErrorKind, PoolResult},
     identifier::{SenderId, SenderIdentifiers, TransactionId},
     metrics::BlobStoreMetrics,
@@ -89,7 +89,7 @@ use crate::{
 };
 
 use alloy_primitives::{
-    map::{AddressSet, HashSet},
+    map::{AddressSet, B256Set, HashSet},
     Address, TxHash, B256,
 };
 use parking_lot::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -105,7 +105,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 use tokio::sync::mpsc;
 use tracing::{debug, trace, warn};
@@ -544,7 +544,7 @@ where
         );
 
         // This will discard outdated transactions based on the account's nonce
-        self.delete_discarded_blobs(outcome.discarded.iter());
+        self.delete_discarded_blobs(outcome.discarded.iter(), "canonical_update");
 
         // notify listeners about updates
         self.notify_on_new_state(outcome);
@@ -705,7 +705,7 @@ where
 
         if !discarded.is_empty() {
             // Delete any blobs associated with discarded blob transactions
-            self.delete_discarded_blobs(discarded.iter());
+            self.delete_discarded_blobs(discarded.iter(), "capacity");
             self.with_event_listener(|listener| listener.discarded_many(&discarded));
 
             let discarded_hashes =
@@ -738,14 +738,15 @@ where
         }
 
         // Delete replaced blob sidecar if any
-        if let Some(replaced) = meta.added.replaced_blob_transaction() {
-            debug!(target: "txpool", "[{:?}] delete replaced blob sidecar", replaced);
+        if let Some(replaced) = meta.added.replaced_blob_transaction() &&
+            !self.config.retain_blobs_on_discard
+        {
+            debug!(target: "txpool::blob", tx_hash = ?replaced, reason = "replacement", "Blob deletion requested");
             self.delete_blob(replaced);
         }
 
-        // Delete discarded blob sidecars if any, this doesnt do any IO.
         if let Some(discarded) = meta.added.discarded_transactions() {
-            self.delete_discarded_blobs(discarded.iter());
+            self.delete_discarded_blobs(discarded.iter(), "admission_discard");
         }
 
         // Notify pending transaction listeners
@@ -994,7 +995,7 @@ where
         if !discarded.is_empty() {
             // This deletes outdated blob txs from the blob store, based on the account's nonce.
             // This is called during txpool maintenance when the pool drifted.
-            self.delete_discarded_blobs(discarded.iter());
+            self.delete_discarded_blobs(discarded.iter(), "account_update");
         }
     }
 
@@ -1314,12 +1315,16 @@ where
 
     /// Delete a blob from the blob store
     pub fn delete_blob(&self, blob: TxHash) {
-        let _ = self.blob_store.delete(blob);
+        if let Err(err) = self.blob_store.delete(blob) {
+            warn!(target: "txpool::blob", tx_hash = ?blob, %err, "Failed to request blob deletion");
+        }
     }
 
     /// Delete all blobs from the blob store
     pub fn delete_blobs(&self, txs: Vec<TxHash>) {
-        let _ = self.blob_store.delete_all(txs);
+        if let Err(err) = self.blob_store.delete_all(txs) {
+            warn!(target: "txpool::blob", %err, "Failed to request blob batch deletion");
+        }
     }
 
     /// Cleans up the blob store
@@ -1327,6 +1332,19 @@ where
         let stat = self.blob_store.cleanup();
         self.blob_store_metrics.blobstore_failed_deletes.increment(stat.delete_failed as u64);
         self.update_blob_store_metrics();
+    }
+
+    /// Removes expired blob files and refreshes blob store metrics.
+    pub fn sweep_expired_blobs(&self, max_age: Duration, max_deletes: usize) -> usize {
+        // Sweep faster in minimal storage mode.
+        let deleted = if max_age < BLOB_SWEEP_MAX_AGE {
+            let protected = self.all_transaction_hashes().into_iter().collect::<B256Set>();
+            self.blob_store.sweep_expired_except(max_age, max_deletes, &protected)
+        } else {
+            self.blob_store.sweep_expired(max_age, max_deletes)
+        };
+        self.update_blob_store_metrics();
+        deleted
     }
 
     fn update_blob_store_metrics(&self) {
@@ -1340,15 +1358,22 @@ where
         self.blob_store_metrics.blobstore_entries.set(self.blob_store.blobs_len() as f64);
     }
 
-    /// Deletes all blob transactions that were discarded.
+    /// Requests deletion of discarded sidecars unless the retention policy keeps them.
     fn delete_discarded_blobs<'a>(
         &'a self,
         transactions: impl IntoIterator<Item = &'a Arc<ValidPoolTransaction<T::Transaction>>>,
+        reason: &'static str,
     ) {
+        if self.config.retain_blobs_on_discard {
+            return
+        }
         let blob_txs = transactions
             .into_iter()
             .filter(|tx| tx.transaction.is_eip4844())
-            .map(|tx| *tx.hash())
+            .map(|tx| {
+                debug!(target: "txpool::blob", tx_hash = ?tx.hash(), reason, "Blob deletion requested");
+                *tx.hash()
+            })
             .collect();
         self.delete_blobs(blob_txs);
     }
@@ -1682,6 +1707,60 @@ mod tests {
     use alloy_eips::{eip4844::BlobTransactionSidecar, eip7594::BlobTransactionSidecarVariant};
     use alloy_primitives::Address;
     use std::{fs, path::PathBuf};
+
+    #[tokio::test]
+    async fn retain_blobs_after_replacement_and_account_update() {
+        use crate::{TransactionPool, TransactionPoolExt};
+
+        for retain_blobs_on_discard in [false, true] {
+            let pool = TestPoolBuilder::default()
+                .with_config(PoolConfig { retain_blobs_on_discard, ..Default::default() });
+            let sidecar = BlobTransactionSidecarVariant::Eip4844(Default::default());
+            let tx = MockTransaction::eip4844_with_sidecar(sidecar.clone());
+            let replacement = tx.clone().rng_hash().with_gas_price(100).with_blob_fee(1_000_000);
+            let old_hash = *tx.get_hash();
+            let new_hash = *replacement.get_hash();
+            let sender = *tx.get_sender();
+            for transaction in [tx, replacement] {
+                pool.add_transaction(TransactionOrigin::External, transaction).await.unwrap();
+            }
+            assert!(pool.get(&old_hash).is_none());
+            assert!(pool.get(&new_hash).is_some());
+            assert_eq!(pool.blob_store().contains(old_hash).unwrap(), retain_blobs_on_discard);
+
+            pool.update_accounts(vec![reth_execution_types::ChangedAccount {
+                address: sender,
+                nonce: 1,
+                balance: U256::MAX,
+            }]);
+            assert!(pool.get(&new_hash).is_none());
+            assert_eq!(pool.blob_store().contains(new_hash).unwrap(), retain_blobs_on_discard);
+
+            // Retention expiry must still be able to delete retained sidecars.
+            pool.delete_blobs(vec![old_hash, new_hash]);
+            assert_eq!(pool.blob_store().blobs_len(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn retain_blobs_on_capacity_discard() {
+        use crate::{error::PoolErrorKind, TransactionPool};
+
+        for retain_blobs_on_discard in [false, true] {
+            let pool = TestPoolBuilder::default().with_config(PoolConfig {
+                retain_blobs_on_discard,
+                pending_limit: SubPoolLimit::new(0, usize::MAX),
+                blob_limit: SubPoolLimit::new(0, usize::MAX),
+                ..Default::default()
+            });
+            let tx = MockTransaction::eip4844();
+            let hash = *tx.get_hash();
+            let err = pool.add_transaction(TransactionOrigin::External, tx).await.unwrap_err();
+            assert!(matches!(err.kind, PoolErrorKind::DiscardedOnInsert));
+            assert!(pool.get(&hash).is_none());
+            assert_eq!(pool.blob_store().contains(hash).unwrap(), retain_blobs_on_discard);
+        }
+    }
 
     #[test]
     fn test_discard_blobs_on_blob_tx_eviction() {

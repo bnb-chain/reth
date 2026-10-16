@@ -7118,7 +7118,8 @@ mod tests {
     fn find_leaf_exclusion_branch_divergence() {
         let mut sparse = ParallelSparseTrie::default();
         let path1 = pad_nibbles_right(Nibbles::from_nibbles([0x1, 0x2, 0x3, 0x4])); // Creates branch at 0x12
-        let path2 = pad_nibbles_right(Nibbles::from_nibbles([0x1, 0x2, 0x5, 0x6])); // Belongs to same branch
+        let path2 = pad_nibbles_right(Nibbles::from_nibbles([0x1, 0x2, 0x5, 0x6])); // Belongs to
+                                                                                    // same branch
         let search_path = pad_nibbles_right(Nibbles::from_nibbles([0x1, 0x2, 0x7, 0x8])); // Diverges at nibble 7
 
         sparse.update_leaf(path1, encode_account_value(0)).unwrap();
@@ -7159,7 +7160,8 @@ mod tests {
         let mut sparse = ParallelSparseTrie::default();
         let path1 = pad_nibbles_right(Nibbles::from_nibbles([0x1, 0x2, 0x3, 0x4])); // Creates branch at 0x12
         let path2 = pad_nibbles_right(Nibbles::from_nibbles([0x1, 0x2, 0x5, 0x6]));
-        let search_path = pad_nibbles_right(Nibbles::from_nibbles([0x1, 0x2])); // Path of the branch itself
+        let search_path = pad_nibbles_right(Nibbles::from_nibbles([0x1, 0x2])); // Path of the
+                                                                                // branch itself
 
         sparse.update_leaf(path1, encode_account_value(0)).unwrap();
         sparse.update_leaf(path2, encode_account_value(1)).unwrap();

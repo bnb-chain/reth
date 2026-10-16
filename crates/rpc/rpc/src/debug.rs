@@ -30,7 +30,7 @@ use reth_rpc_eth_api::{
     helpers::{EthTransactions, TraceExt},
     FromEthApiError, FromEvmError, RpcConvert, RpcNodeCore,
 };
-use reth_rpc_eth_types::{EthApiError, StateCacheDb};
+use reth_rpc_eth_types::{BlockOverridesExt, EthApiError, StateCacheDb};
 use reth_rpc_server_types::{
     result::{internal_rpc_err, rpc_error_with_code},
     ToRpcResult,
@@ -110,6 +110,7 @@ where
 impl<Eth> DebugApi<Eth>
 where
     Eth: TraceExt,
+    reth_evm::BlockEnvFor<Eth::Evm>: reth_rpc_eth_types::BlockOverridesExt,
 {
     /// Treat a `null` sub-tracer config in a `muxTracer` request as "use that tracer's defaults",
     /// matching go-ethereum.
@@ -749,6 +750,14 @@ where
                     }
                 }
 
+                // After replay, preserve override metadata in the env cloned for each call.
+                if let Some(overrides) = state_overrides.as_ref() {
+                    evm_env
+                        .block_env
+                        .apply_state_overrides_ext(overrides)
+                        .map_err(EthApiError::InvalidParams)?;
+                }
+
                 // Trace all bundles
                 let mut bundles = bundles.into_iter().peekable();
                 let mut inspector = DebugInspector::new(tracing_options.clone())
@@ -1157,6 +1166,7 @@ where
 impl<Eth> DebugApiServer<RpcTxReq<Eth::NetworkTypes>> for DebugApi<Eth>
 where
     Eth: EthTransactions + TraceExt,
+    reth_evm::BlockEnvFor<Eth::Evm>: reth_rpc_eth_types::BlockOverridesExt,
 {
     /// Handler for `debug_getRawHeader`
     async fn raw_header(&self, block_id: BlockId) -> RpcResult<Bytes> {

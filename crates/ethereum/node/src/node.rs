@@ -149,6 +149,7 @@ where
         Evm = N::Evm,
     >,
     EthApiError: FromEvmError<N::Evm>,
+    reth_evm::BlockEnvFor<N::Evm>: reth_rpc_eth_types::BlockOverridesExt,
 {
     type EthApi = EthApiFor<N, NetworkT>;
 

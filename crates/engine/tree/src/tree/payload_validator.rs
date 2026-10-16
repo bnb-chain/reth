@@ -1974,11 +1974,7 @@ where
         // Capture block info and cache handle for changeset computation
         let block_hash = block.hash();
         let block_number = block.number();
-
-        // Register a pending changeset entry so that concurrent readers will wait for
-        // this computation to finish rather than falling back to the expensive DB path.
-        // The guard ensures the pending entry is cancelled if the task panics.
-        let pending_changeset_guard = self.changeset_cache.register_pending(block_hash);
+        let changeset_cache = self.changeset_cache.clone();
 
         // Spawn background task to compute trie data. Calling `wait_cloned` will compute from
         // the stored inputs and cache the result, so subsequent calls return immediately.
@@ -2036,6 +2032,7 @@ where
                         }
                     };
 
+                    let pending_changeset_guard = changeset_cache.register_pending(block_hash);
                     match reth_trie::changesets::compute_trie_changesets(
                         &changeset_provider,
                         &computed.trie_updates,
