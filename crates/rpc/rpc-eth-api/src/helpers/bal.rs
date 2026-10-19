@@ -17,7 +17,10 @@ use crate::{
 };
 
 /// Helper trait for `eth_blockAccessList` RPC method.
-pub trait GetBlockAccessList: Trace + Call + LoadBlock + RpcNodeCoreExt {
+pub trait GetBlockAccessList: Trace + Call + LoadBlock + RpcNodeCoreExt
+where
+    reth_evm::BlockEnvFor<Self::Evm>: reth_rpc_eth_types::BlockOverridesExt,
+{
     /// Retrieves the block access list for a block identified by its hash.
     fn get_block_access_list(
         &self,

@@ -4,7 +4,7 @@ use alloy_eips::{
     eip4844::{BlobAndProofV1, BlobAndProofV2, BlobCellsAndProofsV1},
     eip7594::{BlobCellMask, BlobTransactionSidecarVariant, Cell},
 };
-use alloy_primitives::{TxHash, B128, B256};
+use alloy_primitives::{map::B256Set, TxHash, B128, B256};
 pub use converter::BlobSidecarConverter;
 pub use disk::{DiskFileBlobStore, DiskFileBlobStoreConfig, OpenDiskFileBlobStore};
 pub use mem::InMemoryBlobStore;
@@ -16,6 +16,7 @@ use std::{
         atomic::{AtomicU64, AtomicUsize, Ordering},
         Arc,
     },
+    time::Duration,
 };
 pub use tracker::{BlobStoreCanonTracker, BlobStoreUpdates};
 
@@ -142,6 +143,22 @@ pub trait BlobStore: fmt::Debug + Send + Sync + 'static {
     /// This is intended to be called in the background to clean up any old or unused data, in case
     /// the store uses deferred cleanup: [`DiskFileBlobStore`]
     fn cleanup(&self) -> BlobStoreCleanupStat;
+
+    /// Removes blob files older than `max_age`, up to `max_deletes`, and returns how many were
+    /// removed. The default implementation is a no-op.
+    fn sweep_expired(&self, _max_age: Duration, _max_deletes: usize) -> usize {
+        0
+    }
+
+    /// Removes expired blob files except those in `protected`.
+    fn sweep_expired_except(
+        &self,
+        max_age: Duration,
+        max_deletes: usize,
+        _protected: &B256Set,
+    ) -> usize {
+        self.sweep_expired(max_age, max_deletes)
+    }
 
     /// Retrieves the decoded blob data for the given transaction hash.
     fn get(&self, tx: B256) -> Result<Option<Arc<BlobTransactionSidecarVariant>>, BlobStoreError>;
