@@ -1,7 +1,9 @@
 //! Support for maintaining the state of the transaction pool
 
 use crate::{
-    blobstore::{BlobSidecarConverter, BlobStoreCanonTracker, BlobStoreUpdates},
+    blobstore::{
+        disk::BLOB_SWEEP_MAX_AGE, BlobSidecarConverter, BlobStoreCanonTracker, BlobStoreUpdates,
+    },
     error::PoolError,
     metrics::MaintainPoolMetrics,
     traits::{CanonicalStateUpdate, EthPoolTransaction, TransactionPool, TransactionPoolExt},
@@ -44,6 +46,15 @@ use tracing::{debug, error, info, trace, warn};
 /// Maximum amount of time non-executable transaction are queued.
 pub const MAX_QUEUED_TRANSACTION_LIFETIME: Duration = Duration::from_secs(3 * 60 * 60);
 
+// Retain sidecars for at least 19.2 days at Fermi's 450ms block interval.
+const FINALIZED_BLOCK_OFFSET: u64 = 3_686_400;
+
+/// Minimum interval between blob sweeps.
+const BLOB_SWEEP_MIN_INTERVAL: Duration = Duration::from_secs(10 * 60);
+
+/// Maximum files removed by a single blob sweep.
+const BLOB_SWEEP_MAX_DELETES: usize = 50_000;
+
 /// Additional settings for maintaining the transaction pool
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MaintainPoolConfig {
@@ -61,6 +72,12 @@ pub struct MaintainPoolConfig {
     /// Default: 3 hours
     pub max_tx_lifetime: Duration,
 
+    /// Maximum age of unreferenced blob files.
+    pub blob_sweep_max_age: Duration,
+
+    /// Keep sidecars when stale transactions leave the pool.
+    pub retain_blobs_on_discard: bool,
+
     /// Apply no exemptions to the locally received transactions.
     ///
     /// This includes:
@@ -75,6 +92,8 @@ impl Default for MaintainPoolConfig {
             max_update_depth: 64,
             max_reload_accounts: 100,
             max_tx_lifetime: MAX_QUEUED_TRANSACTION_LIFETIME,
+            blob_sweep_max_age: BLOB_SWEEP_MAX_AGE,
+            retain_blobs_on_discard: false,
             no_local_exemptions: false,
         }
     }
@@ -177,6 +196,9 @@ pub async fn maintain_transaction_pool<N, Client, P, St>(
     // eviction interval for stale non local txs
     let mut stale_eviction_interval = time::interval(config.max_tx_lifetime);
 
+    // periodic blob sweep for orphaned files on disk
+    let mut blob_sweep_interval = time::interval(BLOB_SWEEP_MIN_INTERVAL);
+
     // toggle for the first notification
     let mut first_event = true;
 
@@ -233,18 +255,26 @@ pub async fn maintain_transaction_pool<N, Client, P, St>(
         // check if we have a new finalized block
         if let Some(finalized) =
             last_finalized_block.update(client.finalized_block_number().ok().flatten()) &&
-            let BlobStoreUpdates::Finalized(blobs) =
-                blob_store_tracker.on_finalized_block(finalized)
+            finalized > FINALIZED_BLOCK_OFFSET
         {
-            metrics.inc_deleted_tracked_blobs(blobs.len());
-            // remove all finalized blobs from the blob store
-            pool.delete_blobs(blobs);
-            // and also do periodic cleanup
-            let pool = pool.clone();
-            task_spawner.spawn_blocking_task(async move {
-                debug!(target: "txpool", finalized_block = %finalized, "cleaning up blob store");
-                pool.cleanup_blobs();
-            });
+            debug!(target: "txpool", finalized_block = %finalized, "finalized block");
+            if let BlobStoreUpdates::Finalized(blobs) =
+                blob_store_tracker.on_finalized_block(finalized - FINALIZED_BLOCK_OFFSET)
+            {
+                let num_blobs = blobs.len();
+                metrics.inc_deleted_tracked_blobs(num_blobs);
+                for tx in &blobs {
+                    debug!(target: "txpool::blob", tx_hash = ?tx, reason = "finalized_retention", finalized, cutoff = finalized - FINALIZED_BLOCK_OFFSET, "Blob deletion requested");
+                }
+                // remove all finalized blobs from the blob store
+                pool.delete_blobs(blobs);
+                // and also do periodic cleanup
+                let pool = pool.clone();
+                task_spawner.spawn_blocking_task(async move {
+                    debug!(target: "txpool", finalized_block = %finalized, num_blobs = %num_blobs, "cleaning up blob store");
+                    pool.cleanup_blobs();
+                });
+            }
         }
 
         // outcomes of the futures we are waiting on
@@ -282,7 +312,7 @@ pub async fn maintain_transaction_pool<N, Client, P, St>(
                         (tx.origin.is_external() || config.no_local_exemptions) && now - tx.timestamp > config.max_tx_lifetime
                     })
                     .map(|tx| {
-                        if tx.is_eip4844() {
+                        if tx.is_eip4844() && !config.retain_blobs_on_discard {
                             stale_blobs.push(*tx.hash());
                         }
                         *tx.hash()
@@ -290,7 +320,24 @@ pub async fn maintain_transaction_pool<N, Client, P, St>(
                     .collect();
                 debug!(target: "txpool", count=%stale_txs.len(), "removing stale transactions");
                 pool.remove_transactions(stale_txs);
+                for tx in &stale_blobs {
+                    debug!(target: "txpool::blob", tx_hash = ?tx, reason = "stale_queued", "Blob deletion requested");
+                }
                 pool.delete_blobs(stale_blobs);
+            }
+            _ = blob_sweep_interval.tick() => {
+                let pool = pool.clone();
+                task_spawner.spawn_blocking_task(async move {
+                    let started_at = std::time::Instant::now();
+                    let deleted = pool
+                        .sweep_expired_blobs(config.blob_sweep_max_age, BLOB_SWEEP_MAX_DELETES);
+                    debug!(
+                        target: "txpool",
+                        %deleted,
+                        elapsed = ?started_at.elapsed(),
+                        "swept expired blob files"
+                    );
+                });
             }
         }
         // handle the result of the account reload
@@ -860,12 +907,35 @@ mod tests {
         CoinbaseTipOrdering, EthPooledTransaction, Pool, TransactionOrigin,
     };
     use alloy_eips::eip2718::Decodable2718;
-    use alloy_primitives::{hex, U256};
+    use alloy_primitives::{hex, B256, U256};
     use reth_ethereum_primitives::PooledTransactionVariant;
     use reth_evm_ethereum::EthEvmConfig;
     use reth_fs_util as fs;
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_tasks::Runtime;
+
+    #[test]
+    fn finalized_blob_retention_at_fermi() {
+        let mut tracker = BlobStoreCanonTracker::default();
+        let tx = B256::with_last_byte(1);
+        tracker.add_block(1, [tx]);
+        let minimum_window: u64 = 182 * 24 * 60 * 60 * 1000 / 10 / 450;
+        let retention_window: u64 = 192 * 24 * 60 * 60 * 1000 / 10 / 450;
+
+        assert_eq!(
+            tracker.on_finalized_block((1 + minimum_window).saturating_sub(FINALIZED_BLOCK_OFFSET)),
+            BlobStoreUpdates::None,
+        );
+        assert_eq!(
+            tracker.on_finalized_block(retention_window.saturating_sub(FINALIZED_BLOCK_OFFSET)),
+            BlobStoreUpdates::None,
+        );
+        assert_eq!(
+            tracker
+                .on_finalized_block((1 + retention_window).saturating_sub(FINALIZED_BLOCK_OFFSET)),
+            BlobStoreUpdates::Finalized(vec![tx]),
+        );
+    }
 
     #[test]
     fn changed_acc_entry() {

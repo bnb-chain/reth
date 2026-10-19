@@ -23,7 +23,7 @@ use reth_rpc_eth_types::{
         api::{FromEvmHalt, FromRevert},
         FromEvmError,
     },
-    EthApiError, RpcInvalidTransactionError,
+    BlockOverridesExt, EthApiError, RpcInvalidTransactionError,
 };
 use reth_rpc_server_types::constants::gas_oracle::{CALL_STIPEND_GAS, ESTIMATE_GAS_ERROR_RATIO};
 use revm::{
@@ -34,7 +34,10 @@ use revm::{
 use tracing::trace;
 
 /// Gas execution estimates
-pub trait EstimateCall: Call {
+pub trait EstimateCall: Call
+where
+    reth_evm::BlockEnvFor<Self::Evm>: reth_rpc_eth_types::BlockOverridesExt,
+{
     /// Estimates the gas usage of the `request` with the state.
     ///
     /// This will execute the [`RpcTxReq`] and find the best gas limit via binary search.
@@ -85,11 +88,25 @@ pub trait EstimateCall: Call {
         // Mirrors geth's behavior, see:
         // <https://github.com/ethereum/go-ethereum/pull/30695>
         if let Some(block_overrides) = overrides.block {
-            apply_block_overrides(*block_overrides, &mut db, evm_env.block_env.inner_mut());
+            apply_block_overrides(
+                (*block_overrides).clone(),
+                &mut db,
+                evm_env.block_env.inner_mut(),
+            );
+            // Let chain-specific block environments observe the overrides (no-op for the
+            // standard `BlockEnv`).
+            evm_env
+                .block_env
+                .apply_block_overrides_ext(&block_overrides)
+                .map_err(EthApiError::InvalidParams)?;
         }
 
         // Apply any state overrides if specified.
         if let Some(state_override) = overrides.state {
+            evm_env
+                .block_env
+                .apply_state_overrides_ext(&state_override)
+                .map_err(EthApiError::InvalidParams)?;
             apply_state_overrides(state_override, &mut db).map_err(Self::Error::from_eth_err)?;
         }
 
@@ -316,8 +333,7 @@ pub trait EstimateCall: Call {
         async move {
             let (evm_env, at) = self.evm_env_at(at).await?;
 
-            self.spawn_blocking_io_fut(async move |this| {
-                let state = this.state_at_block_id(at).await?;
+            self.spawn_with_state(Some(at), move |this, state| {
                 EstimateCall::estimate_gas_with(&this, evm_env, request, state, overrides)
             })
             .await

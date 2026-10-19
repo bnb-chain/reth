@@ -938,6 +938,8 @@ where
     N: FullNodeComponents,
     N::Provider: ChainSpecProvider<ChainSpec: EthereumHardforks>,
     EthB: EthApiBuilder<N>,
+    reth_evm::BlockEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+        reth_rpc_eth_types::BlockOverridesExt,
     EB: EngineApiBuilder<N>,
     EVB: EngineValidatorBuilder<N>,
     RpcMiddleware: RethRpcMiddleware,
@@ -1243,6 +1245,8 @@ where
     N: FullNodeComponents,
     <N as FullNodeTypes>::Provider: ChainSpecProvider<ChainSpec: EthereumHardforks>,
     EthB: EthApiBuilder<N>,
+    reth_evm::BlockEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+        reth_rpc_eth_types::BlockOverridesExt,
     PVB: PayloadValidatorBuilder<N>,
     EB: EngineApiBuilder<N>,
     EVB: EngineValidatorBuilder<N>,
@@ -1273,6 +1277,8 @@ impl<N: FullNodeComponents, EthB, EV, EB, Engine, RpcMiddleware, AuthHttpMiddlew
 where
     Self: NodeAddOns<N, Handle = RpcHandle<N, EthB::EthApi>>,
     EthB: EthApiBuilder<N>,
+    reth_evm::BlockEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+        reth_rpc_eth_types::BlockOverridesExt,
 {
     type EthApi = EthB::EthApi;
 
@@ -1320,7 +1326,11 @@ impl<'a, N: FullNodeComponents<Types: NodeTypes<ChainSpec: Hardforks + EthereumH
 }
 
 /// A `EthApi` that knows how to build `eth` namespace API from [`FullNodeComponents`].
-pub trait EthApiBuilder<N: FullNodeComponents>: Default + Send + 'static {
+pub trait EthApiBuilder<N: FullNodeComponents>: Default + Send + 'static
+where
+    reth_evm::BlockEnvFor<<Self::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+        reth_rpc_eth_types::BlockOverridesExt,
+{
     /// The Ethapi implementation this builder will build.
     type EthApi: FullEthApiServer<Provider = N::Provider, Pool = N::Pool>;
 
@@ -1345,6 +1355,8 @@ impl<N, EthB, PVB, EB, EVB, RpcMiddleware, AuthHttpMiddleware> EngineValidatorAd
 where
     N: FullNodeComponents,
     EthB: EthApiBuilder<N>,
+    reth_evm::BlockEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+        reth_rpc_eth_types::BlockOverridesExt,
     PVB: Send,
     EB: EngineApiBuilder<N>,
     EVB: EngineValidatorBuilder<N>,

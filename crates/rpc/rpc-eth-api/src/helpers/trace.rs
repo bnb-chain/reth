@@ -19,7 +19,10 @@ use revm_inspectors::tracing::{TracingInspector, TracingInspectorConfig};
 use std::sync::Arc;
 
 /// Executes CPU heavy tasks.
-pub trait Trace: LoadState<Error: FromEvmError<Self::Evm>> + Call {
+pub trait Trace: LoadState<Error: FromEvmError<Self::Evm>> + Call
+where
+    reth_evm::BlockEnvFor<Self::Evm>: reth_rpc_eth_types::BlockOverridesExt,
+{
     /// Executes the [`TxEnvFor`] with [`reth_evm::EvmEnv`] against the given [`StateCacheDb`]
     /// without committing state changes.
     fn inspect<'a>(

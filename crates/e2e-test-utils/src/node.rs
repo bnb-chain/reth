@@ -89,6 +89,8 @@ where
         AddOns::EthApi: EthApiSpec<Provider: BlockReader<Block = BlockTy<Node::Types>>>
             + EthTransactions
             + TraceExt,
+        reth_evm::BlockEnvFor<<AddOns::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+            reth_rpc_eth_types::BlockOverridesExt,
     {
         let mut chain = Vec::with_capacity(length as usize);
         for i in 0..length {

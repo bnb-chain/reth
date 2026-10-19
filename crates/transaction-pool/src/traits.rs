@@ -88,6 +88,7 @@ use std::{
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
+    time::Duration,
 };
 use tokio::sync::mpsc::Receiver;
 
@@ -797,6 +798,11 @@ pub trait TransactionPoolExt: TransactionPool {
 
     /// Maintenance function to cleanup blobs that are no longer needed.
     fn cleanup_blobs(&self);
+
+    /// Removes expired blob files and returns how many were deleted.
+    fn sweep_expired_blobs(&self, _max_age: Duration, _max_deletes: usize) -> usize {
+        0
+    }
 }
 
 /// Extension for [`TransactionPool`] that exposes the pool's underlying [`TransactionValidator`].

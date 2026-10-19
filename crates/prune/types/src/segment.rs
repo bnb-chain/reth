@@ -43,6 +43,8 @@ pub enum PruneSegment {
     MerkleChangeSets,
     /// Prune segment responsible for bodies (transactions in static files).
     Bodies,
+    /// Prune segment responsible for historical headers in static files.
+    HeaderHistory,
 }
 
 #[cfg(test)]
@@ -67,9 +69,10 @@ impl PruneSegment {
         match self {
             Self::SenderRecovery | Self::TransactionLookup => 0,
             Self::Receipts | Self::Bodies => MINIMUM_DISTANCE,
-            Self::ContractLogs | Self::AccountHistory | Self::StorageHistory => {
-                MINIMUM_UNWIND_SAFE_DISTANCE
-            }
+            Self::ContractLogs |
+            Self::AccountHistory |
+            Self::StorageHistory |
+            Self::HeaderHistory => MINIMUM_UNWIND_SAFE_DISTANCE,
             #[expect(deprecated)]
             #[expect(clippy::match_same_arms)]
             Self::Headers | Self::Transactions | Self::MerkleChangeSets => 0,
@@ -84,6 +87,11 @@ impl PruneSegment {
     /// Returns true if this is [`Self::StorageHistory`].
     pub const fn is_storage_history(&self) -> bool {
         matches!(self, Self::StorageHistory)
+    }
+
+    /// Returns true if this is [`Self::HeaderHistory`].
+    pub const fn is_header_history(&self) -> bool {
+        matches!(self, Self::HeaderHistory)
     }
 }
 
