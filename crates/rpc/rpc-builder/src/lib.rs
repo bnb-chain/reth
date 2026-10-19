@@ -341,6 +341,7 @@ where
     )
     where
         EthApi: FullEthApiServer<Provider = Provider, Pool = Pool>,
+        reth_evm::BlockEnvFor<EthApi::Evm>: reth_rpc_eth_types::BlockOverridesExt,
         Payload: PayloadTypes,
     {
         let config = module_config.config.clone().unwrap_or_default();
@@ -364,6 +365,7 @@ where
     ) -> RpcRegistryInner<Provider, Pool, Network, EthApi, EvmConfig, Consensus>
     where
         EthApi: FullEthApiServer<Provider = Provider, Pool = Pool>,
+        reth_evm::BlockEnvFor<EthApi::Evm>: reth_rpc_eth_types::BlockOverridesExt,
     {
         let Self { provider, pool, network, executor, consensus, evm_config, .. } = self;
         let executor =
@@ -391,6 +393,7 @@ where
     ) -> TransportRpcModules<()>
     where
         EthApi: FullEthApiServer<Provider = Provider, Pool = Pool>,
+        reth_evm::BlockEnvFor<EthApi::Evm>: reth_rpc_eth_types::BlockOverridesExt,
     {
         if module_config.is_empty() {
             TransportRpcModules::default()
@@ -695,6 +698,7 @@ where
     pub fn register_ots(&mut self) -> &mut Self
     where
         EthApi: TraceExt + EthTransactions<Primitives = N>,
+        reth_evm::BlockEnvFor<EthApi::Evm>: reth_rpc_eth_types::BlockOverridesExt,
     {
         let otterscan_api = self.otterscan_api();
         self.modules.insert(RethRpcModule::Ots, otterscan_api.into_rpc().into());
@@ -709,6 +713,7 @@ where
     pub fn register_debug(&mut self) -> &mut Self
     where
         EthApi: EthTransactions + TraceExt,
+        reth_evm::BlockEnvFor<EthApi::Evm>: reth_rpc_eth_types::BlockOverridesExt,
     {
         let debug_api = self.debug_api();
         self.modules.insert(RethRpcModule::Debug, debug_api.into_rpc().into());
@@ -723,6 +728,7 @@ where
     pub fn register_trace(&mut self) -> &mut Self
     where
         EthApi: TraceExt,
+        reth_evm::BlockEnvFor<EthApi::Evm>: reth_rpc_eth_types::BlockOverridesExt,
     {
         let trace_api = self.trace_api();
         self.modules.insert(RethRpcModule::Trace, trace_api.into_rpc().into());
@@ -804,6 +810,7 @@ where
     pub fn bundle_api(&self) -> EthBundle<EthApi>
     where
         EthApi: EthTransactions + LoadPendingBlock + Call,
+        reth_evm::BlockEnvFor<EthApi::Evm>: reth_rpc_eth_types::BlockOverridesExt,
     {
         let eth_api = self.eth_api().clone();
         EthBundle::new(eth_api, self.blocking_pool_guard.clone())
@@ -862,6 +869,7 @@ where
     Pool: TransactionPool + Clone + 'static,
     Network: NetworkInfo + Peers + Clone + 'static,
     EthApi: FullEthApiServer,
+    reth_evm::BlockEnvFor<EthApi::Evm>: reth_rpc_eth_types::BlockOverridesExt,
     EvmConfig: ConfigureEvm<Primitives = N> + 'static,
     Consensus: FullConsensus<N> + Clone + 'static,
 {

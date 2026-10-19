@@ -23,6 +23,7 @@ where
     EthApi: EthApiSpec<Provider: BlockReader<Block = BlockTy<Node::Types>>>
         + EthTransactions
         + TraceExt,
+    reth_evm::BlockEnvFor<EthApi::Evm>: reth_rpc_eth_types::BlockOverridesExt,
 {
     /// Injects a raw transaction into the node tx pool via RPC server
     pub async fn inject_tx(&self, raw_tx: Bytes) -> Result<B256, EthApi::Error> {

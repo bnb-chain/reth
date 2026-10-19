@@ -23,6 +23,7 @@ use reth_transaction_pool::{
 impl<N, Rpc> EthTransactions for EthApi<N, Rpc>
 where
     N: RpcNodeCore,
+    reth_evm::BlockEnvFor<N::Evm>: reth_rpc_eth_types::BlockOverridesExt,
     EthApiError: FromEvmError<N::Evm>,
     Rpc: RpcConvert<Primitives = N::Primitives, Error = EthApiError>,
 {

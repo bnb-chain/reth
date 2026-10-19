@@ -1,6 +1,6 @@
 use crate::segments::{
-    user::ReceiptsByLogs, AccountHistory, Bodies, Segment, SenderRecovery, StorageHistory,
-    TransactionLookup, UserReceipts,
+    user::ReceiptsByLogs, AccountHistory, Bodies, HeaderHistory, Segment, SenderRecovery,
+    StorageHistory, TransactionLookup, UserReceipts,
 };
 use reth_db_api::{table::Value, transaction::DbTxMut};
 use reth_primitives_traits::NodePrimitives;
@@ -70,6 +70,7 @@ where
             receipts,
             account_history,
             storage_history,
+            header_history,
             bodies_history,
             receipts_log_filter,
         } = prune_modes;
@@ -93,6 +94,8 @@ where
             )
             // Sender recovery
             .segment_opt(sender_recovery.map(SenderRecovery::new))
+            // Prune headers after segments that may read them.
+            .segment_opt(header_history.map(HeaderHistory::new))
     }
 }
 

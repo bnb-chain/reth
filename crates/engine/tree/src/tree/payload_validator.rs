@@ -1060,7 +1060,7 @@ where
         let execution_start = Instant::now();
 
         // Execute all transactions and finalize
-        let (executor, senders) = self.execute_transactions(
+        let (executor, senders, streamed_receipts) = self.execute_transactions(
             executor,
             transaction_count,
             handle.iter_transactions(),
@@ -1068,7 +1068,6 @@ where
             &executed_tx_index,
             has_bal,
         )?;
-        drop(receipt_tx);
 
         // Finish execution and get the result
         let post_exec_start = Instant::now();
@@ -1076,6 +1075,18 @@ where
             .in_scope(|| executor.finish())
             .map(|(evm, result)| (evm.into_db(), result))?;
         self.metrics.record_post_execution(post_exec_start.elapsed());
+
+        // Some executors defer transactions to post-execution and only append their receipts in
+        // `finish()`. BSC does this for system transactions: they are stashed during the loop and
+        // executed in `apply_post_execution_changes`, so their receipts do not exist yet above.
+        // `receipts_len` was taken from the block's `transaction_count`, which counts them — so
+        // dropping the sender before `finish()` left the background task one receipt short of what
+        // it was told to expect, and it discarded a completed root ("received incomplete receipts,
+        // execution likely aborted"). Stream the tail before closing the channel.
+        for (index, receipt) in result.receipts.iter().enumerate().skip(streamed_receipts) {
+            let _ = receipt_tx.send(IndexedReceipt::new(index, receipt.clone()));
+        }
+        drop(receipt_tx);
 
         // Merge transitions into bundle state
         debug_span!(target: "engine::tree", "merge_transitions")
@@ -1216,7 +1227,7 @@ where
         receipt_tx: &crossbeam_channel::Sender<IndexedReceipt<N::Receipt>>,
         executed_tx_index: &AtomicUsize,
         has_bal: bool,
-    ) -> Result<(E, Vec<Address>), BlockExecutionError>
+    ) -> Result<(E, Vec<Address>, usize), BlockExecutionError>
     where
         E: BlockExecutor<Receipt = N::Receipt, Evm: alloy_evm::Evm<DB = &'a mut State<DB>>>,
         Tx: alloy_evm::block::ExecutableTx<E> + alloy_evm::RecoveredTx<InnerTx>,
@@ -1293,7 +1304,7 @@ where
 
         drop(exec_span);
 
-        Ok((executor, senders))
+        Ok((executor, senders, last_sent_len))
     }
 
     /// Validates the block after execution.
