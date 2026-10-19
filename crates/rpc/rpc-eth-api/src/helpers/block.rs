@@ -60,16 +60,15 @@ fn resolved_validators_threshold(
             "{value} neither within the range [1,{}] nor the range [-3,-1]",
             active_validator_count.unwrap_or(0)
         ))),
-        value
-            if active_validator_count
-                .is_some_and(|validator_count| value > validator_count as i64) =>
-        {
-            Err(EthApiError::InvalidParams(format!(
-                "{value} neither within the range [1,{}] nor the range [-3,-1]",
-                active_validator_count.unwrap_or(0)
-            )))
+        value => {
+            let validator_count = active_validator_count.ok_or_else(missing_validator_count)?;
+            match usize::try_from(value) {
+                Ok(threshold) if threshold <= validator_count => Ok(threshold),
+                _ => Err(EthApiError::InvalidParams(format!(
+                    "{value} neither within the range [1,{validator_count}] nor the range [-3,-1]"
+                ))),
+            }
         }
-        value => Ok(value as usize),
     }
 }
 
@@ -282,7 +281,10 @@ pub trait EthBlocks: LoadBlock<RpcConvert: RpcConvert<Primitives = Self::Primiti
             }
 
             let mut cursor = latest_header;
-            let mut seen_signers = HashSet::with_capacity(threshold.max(1));
+            // The inclusive lookback can collect at most this many distinct signers,
+            // even if the validator-count callback reports an unexpectedly large set.
+            let capacity = threshold.clamp(1, MAX_VALIDATOR_LOOKBACK + 1);
+            let mut seen_signers = HashSet::with_capacity(capacity);
             let mut probabilistic_finalized = fast_finalized_header.number();
             for i in 0..=MAX_VALIDATOR_LOOKBACK {
                 seen_signers.insert(cursor.beneficiary());
@@ -620,6 +622,41 @@ mod tests {
         assert_eq!(resolved_validators_threshold(4, Some(validator_count)).unwrap(), 4);
         assert!(resolved_validators_threshold(10, Some(validator_count)).is_err());
         assert!(resolved_validators_threshold(-4, Some(validator_count)).is_err());
+    }
+
+    #[test]
+    fn finalized_threshold_requires_validator_count() {
+        for value in [-3, -2, -1, 1, 5, 64, 1_i64 << 32, i64::MAX] {
+            let err = resolved_validators_threshold(value, None).unwrap_err();
+            assert!(matches!(err, EthApiError::InvalidParams(_)));
+            assert_eq!(err.to_string(), format!(
+                "Unable to derive validator-count from request value {value} without chain validator set"
+            ));
+        }
+    }
+
+    #[test]
+    fn finalized_threshold_checks_explicit_bounds() {
+        for count in [0, 4, 21] {
+            for value in [i64::MIN, -4, 0, count as i64 + 1, 1_i64 << 32, i64::MAX] {
+                assert!(
+                    matches!(
+                        resolved_validators_threshold(value, Some(count)),
+                        Err(EthApiError::InvalidParams(_))
+                    ),
+                    "value={value}, count={count}"
+                );
+            }
+            for value in 1..=count {
+                assert_eq!(
+                    resolved_validators_threshold(value as i64, Some(count)).unwrap(),
+                    value
+                );
+            }
+        }
+        for value in [-3, -2, -1] {
+            assert_eq!(resolved_validators_threshold(value, Some(0)).unwrap(), 0);
+        }
     }
 
     fn header(number: u64, beneficiary: u8) -> (u64, Address) {
