@@ -1966,7 +1966,7 @@ version = "3.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dee98b0db6a962de883bf5d20362dee4d7ca0d12fe39a7c6c73c844e1cd7c1f"
 dependencies = [
- "darling 0.23.0",
+ "darling 0.21.3",
  "ident_case",
  "prettyplease",
  "proc-macro2",
@@ -2468,7 +2468,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "117725a109d387c937a1533ce01b450cbde6b88abceea8473c4d7a85853cda3c"
 dependencies = [
  "lazy_static",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2974,7 +2974,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ab67060fc6b8ef687992d439ca0fa36e7ed17e9a0b16b25b601e8757df720de"
 dependencies = [
  "data-encoding",
- "syn 1.0.109",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -3428,7 +3428,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5172,7 +5172,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6249,7 +6249,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -7971,7 +7971,7 @@ dependencies = [
 [[package]]
 name = "reth-codecs"
 version = "0.6.0"
-source = "git+https://github.com/bnb-chain/reth-core?branch=feat%2Ffrom-consensus-header-with-td#631833f5625ba70b2a07d53901cd2c37a01705bf"
+source = "git+https://github.com/bnb-chain/reth-core?branch=develop#8565a2e23bfcdaaa871c5ef2ab27abd97cd0f45e"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -7991,7 +7991,7 @@ dependencies = [
 [[package]]
 name = "reth-codecs-derive"
 version = "0.6.0"
-source = "git+https://github.com/bnb-chain/reth-core?branch=feat%2Ffrom-consensus-header-with-td#631833f5625ba70b2a07d53901cd2c37a01705bf"
+source = "git+https://github.com/bnb-chain/reth-core?branch=develop#8565a2e23bfcdaaa871c5ef2ab27abd97cd0f45e"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -9710,7 +9710,7 @@ dependencies = [
 [[package]]
 name = "reth-primitives-traits"
 version = "0.6.0"
-source = "git+https://github.com/bnb-chain/reth-core?branch=feat%2Ffrom-consensus-header-with-td#631833f5625ba70b2a07d53901cd2c37a01705bf"
+source = "git+https://github.com/bnb-chain/reth-core?branch=develop#8565a2e23bfcdaaa871c5ef2ab27abd97cd0f45e"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -10238,7 +10238,7 @@ dependencies = [
 [[package]]
 name = "reth-rpc-traits"
 version = "0.6.0"
-source = "git+https://github.com/bnb-chain/reth-core?branch=feat%2Ffrom-consensus-header-with-td#631833f5625ba70b2a07d53901cd2c37a01705bf"
+source = "git+https://github.com/bnb-chain/reth-core?branch=develop#8565a2e23bfcdaaa871c5ef2ab27abd97cd0f45e"
 dependencies = [
  "alloy-consensus",
  "alloy-network",
@@ -10791,7 +10791,7 @@ dependencies = [
 [[package]]
 name = "reth-zstd-compressors"
 version = "0.6.0"
-source = "git+https://github.com/bnb-chain/reth-core?branch=feat%2Ffrom-consensus-header-with-td#631833f5625ba70b2a07d53901cd2c37a01705bf"
+source = "git+https://github.com/bnb-chain/reth-core?branch=develop#8565a2e23bfcdaaa871c5ef2ab27abd97cd0f45e"
 dependencies = [
  "zstd",
 ]
@@ -11373,7 +11373,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -11432,7 +11432,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs 0.26.11",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -11453,7 +11453,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs 1.0.7",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -12345,7 +12345,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -13608,7 +13608,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
