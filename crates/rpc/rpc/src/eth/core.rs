@@ -642,6 +642,142 @@ mod tests {
         .build()
     }
 
+    #[tokio::test]
+    async fn finalized_rpc_validates_threshold_with_readable_headers() {
+        use reth_chain_state::{ExecutedBlock, NewCanonicalChain};
+        use reth_primitives_traits::{RecoveredBlock, SealedHeader};
+        use reth_provider::{
+            providers::BlockchainProvider, test_utils::create_test_provider_factory,
+        };
+        use std::sync::Arc;
+
+        let factory = create_test_provider_factory();
+        let mut blocks: Vec<ExecutedBlock> = Vec::new();
+        let mut parent_hash = B256::ZERO;
+        for number in 0..=5 {
+            let block = Block {
+                header: Header {
+                    number,
+                    parent_hash,
+                    beneficiary: alloy_primitives::Address::repeat_byte((number % 4) as u8),
+                    ..Default::default()
+                },
+                body: BlockBody::default(),
+            };
+            parent_hash = block.header.hash_slow();
+            blocks.push(ExecutedBlock {
+                recovered_block: Arc::new(RecoveredBlock::new_unhashed(block, Vec::new())),
+                ..Default::default()
+            });
+        }
+        let latest = SealedHeader::seal_slow(blocks[5].recovered_block.header().clone());
+        let finalized = SealedHeader::seal_slow(blocks[0].recovered_block.header().clone());
+        let provider = BlockchainProvider::with_latest(factory, latest).unwrap();
+        provider
+            .canonical_in_memory_state()
+            .update_chain(NewCanonicalChain::Commit { new: blocks });
+        provider.canonical_in_memory_state().set_finalized(finalized);
+        for tag in [BlockNumberOrTag::Latest, BlockNumberOrTag::Finalized] {
+            assert!(provider.sealed_header_by_id(tag.into()).unwrap().is_some());
+        }
+
+        // Include both the default builder and an installed callback that returns None.
+        for count in [None, Some(None), Some(Some(0)), Some(Some(4))] {
+            let builder = EthApiBuilder::new(
+                provider.clone(),
+                testing_pool(),
+                NoopNetwork::default(),
+                EthEvmConfig::new(provider.chain_spec()),
+            );
+            let api = if let Some(count) = count {
+                builder.with_current_validators_len(move || count).build()
+            } else {
+                builder.build()
+            };
+            for value in [-3, -2, -1, 0, 1, 4, 5, 64, 1_i64 << 32, i64::MAX] {
+                let header = EthApiServer::finalized_header(&api, value).await;
+                let valid = count.flatten().is_some_and(|n| {
+                    (-3..=-1).contains(&value) || (value > 0 && value <= n as i64)
+                });
+                if valid {
+                    let expected = if count == Some(Some(0)) {
+                        0
+                    } else {
+                        match value {
+                            -1 => 4,
+                            -2 => 3,
+                            -3 | 4 => 2,
+                            1 => 5,
+                            _ => unreachable!(),
+                        }
+                    };
+                    let header = header.unwrap().unwrap();
+                    assert_eq!(header.inner.number, expected);
+                    assert_eq!(
+                        header,
+                        EthApiServer::header_by_number(&api, expected.into())
+                            .await
+                            .unwrap()
+                            .unwrap()
+                    );
+                    for full in [false, true] {
+                        let block = EthApiServer::finalized_block(&api, value, full)
+                            .await
+                            .unwrap()
+                            .unwrap();
+                        assert_eq!(block.header.inner.number, expected);
+                        assert_eq!(
+                            block,
+                            EthApiServer::block_by_number(&api, expected.into(), full)
+                                .await
+                                .unwrap()
+                                .unwrap()
+                        );
+                    }
+                } else {
+                    let error = header.unwrap_err();
+                    assert_eq!(error.code(), INVALID_PARAMS_CODE);
+                    if count.flatten().is_none() && value != 0 {
+                        assert!(error.message().contains("Unable to derive validator-count"));
+                    }
+                    for full in [false, true] {
+                        let block_error =
+                            EthApiServer::finalized_block(&api, value, full).await.unwrap_err();
+                        assert_eq!(block_error, error);
+                    }
+                }
+            }
+        }
+
+        // A faulty callback can still report a huge set. Exercise the real allocation
+        // and traversal with a valid huge threshold; this must use bounded memory.
+        let api = EthApiBuilder::new(
+            provider.clone(),
+            testing_pool(),
+            NoopNetwork::default(),
+            EthEvmConfig::new(provider.chain_spec()),
+        )
+        .with_current_validators_len(|| Some(usize::MAX))
+        .build();
+        let value = i64::try_from(usize::MAX).unwrap_or(i64::MAX);
+        assert_eq!(
+            EthApiServer::finalized_header(&api, value).await.unwrap().unwrap().inner.number,
+            1
+        );
+        for full in [false, true] {
+            assert_eq!(
+                EthApiServer::finalized_block(&api, value, full)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .header
+                    .inner
+                    .number,
+                1
+            );
+        }
+    }
+
     // Function to prepare the EthApi with mock data
     fn prepare_eth_api(
         newest_block: u64,
