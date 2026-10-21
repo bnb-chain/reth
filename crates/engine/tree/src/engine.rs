@@ -16,7 +16,7 @@ use std::{
     fmt::Display,
     task::{ready, Context, Poll},
 };
-use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::{mpsc::UnboundedReceiver, oneshot};
 
 /// A [`ChainHandler`] that advances the chain based on incoming requests (CL engine API).
 ///
@@ -245,6 +245,18 @@ pub enum EngineApiRequest<T: PayloadTypes, N: NodePrimitives> {
     Beacon(BeaconEngineMessage<T>),
     /// Request to insert an already executed block, e.g. via payload building.
     InsertExecutedBlock(BuiltPayloadExecutedBlock<N>),
+    /// Asks whether the engine knows the block with this hash, answered after every request
+    /// sent before it on the same channel has been handled.
+    ///
+    /// [`Self::InsertExecutedBlock`] does not report its outcome and skips a block whose height
+    /// is already canonical. Sending this right after it tells the sender whether that block was
+    /// kept, before it issues a forkchoice update that targets it.
+    IsBlockKnown {
+        /// Hash of the block to look up.
+        hash: B256,
+        /// Receives `true` if the block is in the engine tree or on the persisted chain.
+        tx: oneshot::Sender<bool>,
+    },
 }
 
 impl<T: PayloadTypes, N: NodePrimitives> Display for EngineApiRequest<T, N> {
@@ -254,6 +266,7 @@ impl<T: PayloadTypes, N: NodePrimitives> Display for EngineApiRequest<T, N> {
             Self::InsertExecutedBlock(payload) => {
                 write!(f, "InsertExecutedBlock({:?})", payload.recovered_block.num_hash())
             }
+            Self::IsBlockKnown { hash, .. } => write!(f, "IsBlockKnown({hash})"),
         }
     }
 }
