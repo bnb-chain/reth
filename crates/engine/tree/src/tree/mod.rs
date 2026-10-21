@@ -1768,6 +1768,17 @@ where
                             ConsensusEngineEvent::CanonicalBlockAdded(block, now.elapsed()),
                         ));
                     }
+                    EngineApiRequest::IsBlockKnown { hash, tx } => {
+                        let known = self.state.tree_state.contains_hash(&hash) ||
+                            match self.provider.block_number(hash) {
+                                Ok(number) => number.is_some(),
+                                Err(err) => {
+                                    warn!(target: "engine::tree", %err, %hash, "Failed to look up block for IsBlockKnown");
+                                    false
+                                }
+                            };
+                        let _ = tx.send(known);
+                    }
                     EngineApiRequest::Beacon(request) => {
                         match request {
                             BeaconEngineMessage::ForkchoiceUpdated { state, payload_attrs, tx } => {
