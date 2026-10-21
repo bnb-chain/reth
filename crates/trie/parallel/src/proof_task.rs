@@ -30,6 +30,7 @@
 //! ```
 
 use crate::{
+    diagnostics::{Progress, RootTaskDiagnostics, Stage},
     error::StateRootTaskError,
     value_encoder::{AsyncAccountValueEncoder, ValueEncoderStats},
 };
@@ -134,6 +135,7 @@ impl AvailabilitySheet {
 /// channels, and workers shut down gracefully when all handles are dropped.
 #[derive(Debug, Clone)]
 pub struct ProofWorkerHandle {
+    diagnostics: Arc<RootTaskDiagnostics>,
     /// Direct sender to storage worker pool
     storage_work_tx: CrossbeamSender<StorageWorkerJob>,
     /// Direct sender to account worker pool
@@ -179,6 +181,31 @@ impl ProofWorkerHandle {
             + Sync
             + 'static,
     {
+        Self::new_with_diagnostics(
+            runtime,
+            task_ctx,
+            halve_workers,
+            proof_result_tx,
+            RootTaskDiagnostics::new("other"),
+        )
+    }
+
+    /// Spawns worker sessions with shared task progress.
+    pub fn new_with_diagnostics<Factory>(
+        runtime: &Runtime,
+        mut task_ctx: ProofTaskCtx<Factory>,
+        halve_workers: bool,
+        proof_result_tx: ProofResultSender,
+        diagnostics: Arc<RootTaskDiagnostics>,
+    ) -> Self
+    where
+        Factory: DatabaseProviderROFactory<Provider: TrieCursorFactory + HashedCursorFactory>
+            + Clone
+            + Send
+            + Sync
+            + 'static,
+    {
+        task_ctx.diagnostics = Some(diagnostics.clone());
         let (storage_work_tx, storage_work_rx) = unbounded::<StorageWorkerJob>();
         let (account_work_tx, account_work_rx) = unbounded::<AccountWorkerJob>();
         let cached_storage_roots = Arc::<DashMap<_, _>>::default();
@@ -189,6 +216,7 @@ impl ProofWorkerHandle {
         let account_worker_count =
             runtime.proof_account_worker_pool().current_num_threads() / divisor;
 
+        diagnostics.requested_workers(storage_worker_count, account_worker_count);
         let storage_availability = Arc::new(AvailabilitySheet::new(storage_worker_count));
         let account_availability = Arc::new(AvailabilitySheet::new(account_worker_count));
 
@@ -197,6 +225,8 @@ impl ProofWorkerHandle {
             storage_worker_count,
             account_worker_count,
             halve_workers,
+            root_task_id = diagnostics.id(),
+            origin = diagnostics.origin(),
             "Spawning proof worker pools"
         );
 
@@ -208,10 +238,13 @@ impl ProofWorkerHandle {
         let storage_roots = cached_storage_roots.clone();
         let storage_result_tx = proof_result_tx.clone();
         let storage_parent_span = tracing::Span::current();
+        let storage_diagnostics = diagnostics.clone();
         runtime.spawn_blocking_named("storage-workers", move || {
+            let _session = storage_diagnostics.enter(Stage::StorageSessionStarted, Stage::StorageSessionExited);
             let worker_id = AtomicUsize::new(0);
             storage_rt.proof_storage_worker_pool().broadcast(storage_worker_count, |_| {
                 let worker_id = worker_id.fetch_add(1, Ordering::Relaxed);
+                let _worker_progress = storage_diagnostics.worker(Progress::StorageWorkersStarted, Progress::StorageWorkersExited);
                 let span = debug_span!(target: "trie::proof_task", parent: storage_parent_span.clone(), "storage_worker", ?worker_id);
                 let _guard = span.enter();
 
@@ -254,10 +287,13 @@ impl ProofWorkerHandle {
         let account_avail = account_availability.clone();
         let account_result_tx = proof_result_tx;
         let account_parent_span = tracing::Span::current();
+        let account_diagnostics = diagnostics.clone();
         runtime.spawn_blocking_named("account-workers", move || {
+            let _session = account_diagnostics.enter(Stage::AccountSessionStarted, Stage::AccountSessionExited);
             let worker_id = AtomicUsize::new(0);
             account_rt.proof_account_worker_pool().broadcast(account_worker_count, |_| {
                 let worker_id = worker_id.fetch_add(1, Ordering::Relaxed);
+                let _worker_progress = account_diagnostics.worker(Progress::AccountWorkersStarted, Progress::AccountWorkersExited);
                 let span = debug_span!(target: "trie::proof_task", parent: account_parent_span.clone(), "account_worker", ?worker_id);
                 let _guard = span.enter();
 
@@ -297,6 +333,7 @@ impl ProofWorkerHandle {
         });
 
         Self {
+            diagnostics,
             storage_work_tx,
             account_work_tx,
             storage_availability,
@@ -314,6 +351,11 @@ impl ProofWorkerHandle {
     /// Returns `true` if more than one account worker is currently idle.
     pub fn has_multiple_idle_account_workers(&self) -> bool {
         self.account_availability.has_multiple_idle()
+    }
+
+    /// Returns progress shared with this worker session.
+    pub const fn diagnostics(&self) -> &Arc<RootTaskDiagnostics> {
+        &self.diagnostics
     }
 
     /// Returns the number of pending storage tasks in the queue.
@@ -391,6 +433,7 @@ impl ProofWorkerHandle {
 /// Data used for initializing cursor factories that is shared across all proof worker instances.
 #[derive(Clone, Debug)]
 pub struct ProofTaskCtx<Factory> {
+    diagnostics: Option<Arc<RootTaskDiagnostics>>,
     /// The factory for creating state providers.
     factory: Factory,
     /// Maximum random jitter to apply before each proof computation (trie-debug only).
@@ -403,6 +446,7 @@ impl<Factory> ProofTaskCtx<Factory> {
     pub const fn new(factory: Factory) -> Self {
         Self {
             factory,
+            diagnostics: None,
             #[cfg(feature = "trie-debug")]
             proof_jitter: None,
         }
@@ -671,11 +715,19 @@ where
 
         // Initially mark this worker as available.
         self.availability.mark_idle(self.worker_id);
+        if let Some(d) = &self.task_ctx.diagnostics {
+            d.increment(Progress::StorageWorkersReady);
+        }
 
         let mut total_idle_time = Duration::ZERO;
         let mut idle_start = Instant::now();
 
         while let Ok(job) = self.work_rx.recv() {
+            let _progress = self
+                .task_ctx
+                .diagnostics
+                .as_ref()
+                .map(|d| d.worker(Progress::StorageJobsStarted, Progress::StorageJobsExited));
             total_idle_time += idle_start.elapsed();
 
             // Mark worker as busy.
@@ -921,12 +973,20 @@ where
 
         // Count this worker as available only after successful initialization.
         self.availability.mark_idle(self.worker_id);
+        if let Some(d) = &self.task_ctx.diagnostics {
+            d.increment(Progress::AccountWorkersReady);
+        }
 
         let mut total_idle_time = Duration::ZERO;
         let mut idle_start = Instant::now();
         let mut value_encoder_stats_cache = ValueEncoderStats::default();
 
         while let Ok(job) = self.work_rx.recv() {
+            let _progress = self
+                .task_ctx
+                .diagnostics
+                .as_ref()
+                .map(|d| d.worker(Progress::AccountJobsStarted, Progress::AccountJobsExited));
             total_idle_time += idle_start.elapsed();
 
             // Mark worker as busy.

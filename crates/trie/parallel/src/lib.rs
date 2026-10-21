@@ -23,3 +23,6 @@ pub(crate) mod value_encoder;
 /// Proof task manager metrics.
 #[cfg(feature = "metrics")]
 pub mod proof_task_metrics;
+
+/// Lightweight state-root lifecycle diagnostics.
+pub mod diagnostics;

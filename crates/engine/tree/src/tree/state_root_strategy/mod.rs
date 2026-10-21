@@ -79,7 +79,10 @@ use reth_trie::{
     hashed_cursor::HashedCursorFactory, trie_cursor::TrieCursorFactory, updates::TrieUpdates,
     HashedPostState,
 };
-use reth_trie_parallel::proof_task::{ProofResultMessage, ProofTaskCtx, ProofWorkerHandle};
+use reth_trie_parallel::{
+    diagnostics::{RootTaskDiagnostics, RootTaskResult, Stage},
+    proof_task::{ProofResultMessage, ProofTaskCtx, ProofWorkerHandle},
+};
 pub use reth_trie_parallel::{
     error::StateRootTaskError,
     state_root_task::{
@@ -531,6 +534,7 @@ impl DefaultStateRootStrategy {
             + 'static,
     {
         let StateRootTaskOptions {
+            origin,
             parent_header,
             preserved_sparse_trie,
             transaction_count,
@@ -542,13 +546,23 @@ impl DefaultStateRootStrategy {
         let (proof_result_tx, proof_result_rx) =
             crossbeam_channel::unbounded::<ProofResultMessage>();
 
+        let diagnostics = RootTaskDiagnostics::for_block(
+            origin,
+            parent_header.number().saturating_add(1),
+            parent_header.hash(),
+        );
         let task_ctx = ProofTaskCtx::new(multiproof_provider_factory);
         #[cfg(feature = "trie-debug")]
         let task_ctx = task_ctx.with_proof_jitter(config.proof_jitter());
         let halve_workers = transaction_count
             .is_some_and(|count| count <= Self::SMALL_BLOCK_PROOF_WORKER_TX_THRESHOLD);
-        let proof_handle =
-            ProofWorkerHandle::new(executor, task_ctx, halve_workers, proof_result_tx.clone());
+        let proof_handle = ProofWorkerHandle::new_with_diagnostics(
+            executor,
+            task_ctx,
+            halve_workers,
+            proof_result_tx.clone(),
+            diagnostics.clone(),
+        );
 
         let (state_root_tx, state_root_rx) = mpsc::channel();
         let (hashed_state_tx, hashed_state_rx) = mpsc::channel();
@@ -576,12 +590,13 @@ impl DefaultStateRootStrategy {
             },
         );
 
-        StateRootHandle::new(
+        StateRootHandle::new_with_diagnostics(
             parent_state_root,
             updates_tx,
             cancel_guard,
             state_root_rx,
             hashed_state_rx,
+            diagnostics,
         )
     }
 
@@ -610,8 +625,10 @@ impl DefaultStateRootStrategy {
         let trie_metrics = self.metrics.clone();
         let executor = executor.clone();
 
+        let diagnostics = proof_worker_handle.diagnostics().clone();
         let parent_span = Span::current();
         executor.clone().spawn_blocking_named("sparse-trie", move || {
+            let _lifecycle = diagnostics.enter(Stage::RootStarted, Stage::RootExited);
             reth_tasks::once!(increase_thread_priority);
 
             let parent_hash = parent_header.hash();
@@ -623,11 +640,14 @@ impl DefaultStateRootStrategy {
             let _enter = debug_span!(
                 target: "engine::tree::payload_processor",
                 parent: parent_span,
-                "sparse_trie_task"
+                "sparse_trie_task",
+                root_task_id = diagnostics.id(),
+                origin = diagnostics.origin()
             )
             .entered();
 
             let new_sparse_state_trie = || {
+                reth_metrics::metrics::counter!("trie.diagnostics.cache_initializations_total", "origin" => diagnostics.origin(), "result" => "fresh").increment(1);
                 debug!(
                     target: "engine::tree::payload_processor",
                     "Creating new sparse trie - no preserved trie available"
@@ -647,18 +667,21 @@ impl DefaultStateRootStrategy {
                     let start = Instant::now();
                     let preserved_anchor_hash = preserved.anchor_hash();
                     let preserved = preserved.into_trie_for(parent_state_root);
+                    reth_metrics::metrics::histogram!("trie.diagnostics.cache_wait_seconds", "origin" => diagnostics.origin()).record(start.elapsed().as_secs_f64());
                     trie_metrics
                         .sparse_trie_cache_wait_duration_histogram
                         .record(start.elapsed().as_secs_f64());
 
                     match preserved {
                         Ok(Some(trie)) => {
+                            reth_metrics::metrics::counter!("trie.diagnostics.cache_initializations_total", "origin" => diagnostics.origin(), "result" => "reused").increment(1);
                             sparse_trie_anchor_hash = preserved_anchor_hash;
                             reused_preserved_sparse_trie = true;
                             trie
                         }
                         Ok(None) => new_sparse_state_trie(),
                         Err(err) => {
+                            diagnostics.returned(RootTaskResult::Failed);
                             let _ =
                                 state_root_tx.send(Err(StateRootTaskError::Other(err.to_string())));
                             return;
@@ -683,6 +706,11 @@ impl DefaultStateRootStrategy {
             );
 
             let result = task.run();
+            diagnostics.returned(match &result {
+                Ok(_) => RootTaskResult::Success,
+                Err(StateRootTaskError::Canceled) => RootTaskResult::Cancelled,
+                Err(_) => RootTaskResult::Failed,
+            });
             let task_result = result.as_ref().ok().cloned();
 
             // Publish a handle before sending the result so the next block can inspect the
@@ -703,6 +731,7 @@ impl DefaultStateRootStrategy {
             };
 
             if state_root_tx.send(result).is_err() {
+                diagnostics.mark(Stage::ReceiverDropped);
                 // A continuation task can take the pending trie during the narrow window between
                 // publishing it and detecting the abandoned receiver here. Returning drops the
                 // completer, so the taker wakes with `ProducerDropped` and its state-root consumer
@@ -800,6 +829,7 @@ where
         overlay_manager,
         multiproof_provider_factory,
         StateRootTaskOptions {
+            origin: "miner",
             parent_header,
             preserved_sparse_trie: None,
             transaction_count,
@@ -818,6 +848,7 @@ struct SparseTrieTaskOptions<N: NodePrimitives> {
 }
 
 struct StateRootTaskOptions<'a, N: NodePrimitives> {
+    origin: &'static str,
     parent_header: SealedHeader<N::BlockHeader>,
     preserved_sparse_trie: Option<PreservedSparseTrie>,
     transaction_count: Option<usize>,
@@ -923,6 +954,7 @@ where
             overlay_manager,
             overlay_factory.clone(),
             StateRootTaskOptions {
+                origin: "import",
                 parent_header: parent_header.clone(),
                 preserved_sparse_trie,
                 transaction_count: Some(env.transaction_count),
@@ -999,6 +1031,7 @@ where
                 ctx.overlay_manager,
                 overlay_factory,
                 StateRootTaskOptions {
+                    origin: "builder",
                     parent_header,
                     preserved_sparse_trie,
                     // Tx count unknown at FCU time (block built incrementally): full proof workers.
@@ -1092,10 +1125,14 @@ where
         executor: &reth_tasks::Runtime,
         provider_builder: StateProviderBuilder<N, P>,
         output: Arc<BlockExecutionOutput<N::Receipt>>,
+        diagnostics: Arc<RootTaskDiagnostics>,
     ) -> ProviderResult<SerialFallbackRx> {
+        diagnostics.mark(Stage::FallbackPreparing);
         let provider = provider_builder.build()?;
         let (fallback_tx, fallback_rx) = mpsc::channel();
+        diagnostics.mark(Stage::FallbackSubmitted);
         executor.spawn_blocking_named("serial-root", move || {
+            let _lifecycle = diagnostics.enter(Stage::FallbackStarted, Stage::FallbackExited);
             let result = (|| {
                 let hashed_state = Arc::new(provider.hashed_post_state(&output.state)?);
                 let (root, updates) =
@@ -1208,6 +1245,7 @@ where
         output: Arc<BlockExecutionOutput<N::Receipt>>,
         _hashed_state: &LazyHashedPostState,
     ) -> ProviderResult<StateRootJobOutcome> {
+        self.handle.diagnostics().mark(Stage::WaitStarted);
         if self.timeout.is_none() {
             return match self.handle.state_root() {
                 Ok(outcome) => self.verified_sparse_outcome(block, &output, outcome),
@@ -1228,15 +1266,17 @@ where
                     &self.executor,
                     self.provider_builder.clone(),
                     output.clone(),
+                    self.handle.diagnostics().clone(),
                 )?
             }
             Err(RecvTimeoutError::Timeout) => {
-                warn!(target: "engine::tree::state_root_strategy", ?timeout, "State root task timed out, racing serial fallback");
+                self.handle.diagnostics().timeout();
                 self.metrics.state_root_task_timeout_total.increment(1);
                 Self::serial_fallback(
                     &self.executor,
                     self.provider_builder.clone(),
                     output.clone(),
+                    self.handle.diagnostics().clone(),
                 )?
             }
             Err(RecvTimeoutError::Disconnected) => {
@@ -1245,6 +1285,7 @@ where
                     &self.executor,
                     self.provider_builder.clone(),
                     output.clone(),
+                    self.handle.diagnostics().clone(),
                 )?
             }
         };
@@ -1253,6 +1294,7 @@ where
             if let Ok(Ok(outcome)) = task_rx.try_recv() {
                 let outcome = self.sparse_outcome(block, &output, outcome);
                 if outcome.state_root == block.header().state_root() {
+                    self.handle.diagnostics().mark(Stage::ParallelWon);
                     return Ok(outcome)
                 }
                 // A wrong task root falls through to the serial fallback already racing below.
@@ -1266,6 +1308,7 @@ where
 
             match fallback_rx.try_recv() {
                 Ok(Ok((state_root, trie_updates, hashed_state))) => {
+                    self.handle.diagnostics().mark(Stage::FallbackWon);
                     self.metrics.state_root_task_fallback_success_total.increment(1);
                     return Ok(StateRootJobOutcome::new(state_root, Arc::new(trie_updates))
                         .with_hashed_state(Some(hashed_state)))
@@ -1565,6 +1608,7 @@ mod tests {
                 overlay_manager.overlay_builder(genesis_hash),
             ),
             StateRootTaskOptions {
+                origin: "test",
                 parent_header: SealedHeader::new(Default::default(), genesis_hash),
                 preserved_sparse_trie: None,
                 transaction_count: Some(env.transaction_count),

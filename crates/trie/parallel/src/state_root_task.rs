@@ -7,7 +7,10 @@
 //! that await its result. The per-block strategy abstraction that decides whether and how the
 //! task runs lives in `reth-engine-tree` under `tree::state_root_strategy`.
 
-use crate::error::StateRootTaskError;
+use crate::{
+    diagnostics::{Progress, RootTaskDiagnostics, Stage},
+    error::StateRootTaskError,
+};
 use alloy_evm::block::OnStateHook;
 use alloy_primitives::{keccak256, map::B256Map, B256};
 use reth_trie::{
@@ -58,6 +61,8 @@ pub struct StateRootComputeOutcome {
 /// Created by the engine's state-root strategy.
 #[derive(Debug)]
 pub struct StateRootHandle {
+    /// Progress shared with background workers.
+    diagnostics: Arc<RootTaskDiagnostics>,
     /// The state root that the cached sparse trie is anchored at (parent block's state root).
     cached_trie_state_root: B256,
     /// Best-effort hint capability, taken once by prewarm wiring.
@@ -89,8 +94,34 @@ impl StateRootHandle {
         >,
         hashed_state_rx: std::sync::mpsc::Receiver<Arc<HashedPostState>>,
     ) -> Self {
-        let sink: Arc<dyn StateRootSink> = Arc::new(SparseTrieStateRootSink::new(updates_tx));
+        Self::new_with_diagnostics(
+            cached_trie_state_root,
+            updates_tx,
+            cancel_guard,
+            state_root_rx,
+            hashed_state_rx,
+            RootTaskDiagnostics::new("other"),
+        )
+    }
+
+    /// Creates a handle sharing progress with its worker pipeline.
+    pub fn new_with_diagnostics(
+        cached_trie_state_root: B256,
+        updates_tx: crossbeam_channel::Sender<StateRootMessage>,
+        mut cancel_guard: StateRootTaskCancelGuard,
+        state_root_rx: std::sync::mpsc::Receiver<
+            Result<StateRootComputeOutcome, StateRootTaskError>,
+        >,
+        hashed_state_rx: std::sync::mpsc::Receiver<Arc<HashedPostState>>,
+        diagnostics: Arc<RootTaskDiagnostics>,
+    ) -> Self {
+        cancel_guard.1 = Some(diagnostics.clone());
+        let sink: Arc<dyn StateRootSink> = Arc::new(SparseTrieStateRootSink {
+            sender: updates_tx,
+            diagnostics: diagnostics.clone(),
+        });
         Self {
+            diagnostics,
             cached_trie_state_root,
             hint: Some(StateRootHintStream::new(Arc::clone(&sink))),
             authoritative: Some(StateRootUpdateStream::new(sink)),
@@ -98,6 +129,11 @@ impl StateRootHandle {
             state_root_rx: Some(state_root_rx),
             hashed_state_rx: Some(hashed_state_rx),
         }
+    }
+
+    /// Returns progress without retaining any channels or providers.
+    pub const fn diagnostics(&self) -> &Arc<RootTaskDiagnostics> {
+        &self.diagnostics
     }
 
     /// Returns the state root that the cached sparse trie is anchored at.
@@ -196,13 +232,25 @@ impl StateRootHandle {
 /// dropping disconnects the channel, which the task treats as the consumer abandoning the
 /// computation (for example on a timeout fallback or when a payload job is dropped unused).
 #[derive(Debug)]
-pub struct StateRootTaskCancelGuard(#[allow(dead_code)] crossbeam_channel::Sender<()>);
+pub struct StateRootTaskCancelGuard(
+    Option<crossbeam_channel::Sender<()>>,
+    Option<Arc<RootTaskDiagnostics>>,
+);
+
+impl Drop for StateRootTaskCancelGuard {
+    fn drop(&mut self) {
+        drop(self.0.take());
+        if let Some(d) = &self.1 {
+            d.mark(Stage::ConsumerDropped);
+        }
+    }
+}
 
 impl StateRootTaskCancelGuard {
     /// Creates a guard and the receiver a task watches for cancellation.
     pub fn channel() -> (Self, crossbeam_channel::Receiver<()>) {
         let (tx, rx) = crossbeam_channel::bounded(0);
-        (Self(tx), rx)
+        (Self(Some(tx), None), rx)
     }
 }
 
@@ -464,13 +512,8 @@ impl Drop for StateRootUpdateHook {
 
 #[derive(Debug, Clone)]
 struct SparseTrieStateRootSink {
+    diagnostics: Arc<RootTaskDiagnostics>,
     sender: crossbeam_channel::Sender<StateRootMessage>,
-}
-
-impl SparseTrieStateRootSink {
-    const fn new(sender: crossbeam_channel::Sender<StateRootMessage>) -> Self {
-        Self { sender }
-    }
 }
 
 impl StateRootSink for SparseTrieStateRootSink {
@@ -479,15 +522,21 @@ impl StateRootSink for SparseTrieStateRootSink {
     }
 
     fn on_state_update(&self, state: EvmState) {
-        let _ = self.sender.send(StateRootMessage::StateUpdate(state));
+        if self.sender.send(StateRootMessage::StateUpdate(state)).is_ok() {
+            self.diagnostics.increment(Progress::UpdatesSent);
+        }
     }
 
     fn on_hashed_state_update(&self, state: HashedPostState) {
-        let _ = self.sender.send(StateRootMessage::HashedStateUpdate(state));
+        if self.sender.send(StateRootMessage::HashedStateUpdate(state)).is_ok() {
+            self.diagnostics.increment(Progress::UpdatesSent);
+        }
     }
 
     fn on_updates_finished(&self) {
-        let _ = self.sender.send(StateRootMessage::FinishedStateUpdates);
+        if self.sender.send(StateRootMessage::FinishedStateUpdates).is_ok() {
+            self.diagnostics.marker(Progress::FinishSentUs);
+        }
     }
 }
 

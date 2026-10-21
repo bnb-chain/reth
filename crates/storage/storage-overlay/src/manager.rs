@@ -43,6 +43,7 @@ use tracing::{debug, trace};
 /// overlays keyed by `(anchor_hash, tip_hash)`.
 #[derive(Clone)]
 pub struct OverlayManager<N: NodePrimitives = EthPrimitives> {
+    diagnostic_origin: &'static str,
     blocks: Arc<DashMap<B256, ExecutedBlock<N>>>,
     overlays: Arc<DashMap<OverlayCacheKey, OverlayCacheEntry>>,
     changeset_cache: ChangesetCache,
@@ -67,6 +68,7 @@ struct StateTrieOverlayMetrics {
 impl<N: NodePrimitives> Default for OverlayManager<N> {
     fn default() -> Self {
         Self {
+            diagnostic_origin: "engine",
             blocks: Default::default(),
             overlays: Default::default(),
             changeset_cache: Default::default(),
@@ -91,10 +93,18 @@ impl<N: NodePrimitives> OverlayManager<N> {
     /// Create a new [`OverlayManager`] backed by the given worker pool.
     #[cfg(feature = "rayon")]
     pub fn new(worker_pool: Arc<WorkerPool>) -> Self {
+        Self::new_with_diagnostic_origin(worker_pool, "engine")
+    }
+
+    /// Creates a manager with diagnostic attribution. Only use fixed component names.
+    #[cfg(feature = "rayon")]
+    pub fn new_with_diagnostic_origin(worker_pool: Arc<WorkerPool>, origin: &'static str) -> Self {
+        reth_metrics::metrics::counter!("trie.diagnostics.overlay_managers_total", "origin" => origin).increment(1);
         Self {
+            diagnostic_origin: origin,
             blocks: Default::default(),
             overlays: Default::default(),
-            changeset_cache: Default::default(),
+            changeset_cache: ChangesetCache::new_with_diagnostic_origin(origin),
             preserved_sparse_trie: Default::default(),
             worker_pool: Some(worker_pool),
             metrics: Default::default(),
@@ -358,6 +368,7 @@ impl<N: NodePrimitives> OverlayManager<N> {
             hash = parent_hash;
         }
         span.record("block_count", blocks.len());
+        reth_metrics::metrics::histogram!("trie.diagnostics.overlay_blocks", "origin" => self.diagnostic_origin).record(blocks.len() as f64);
         let parent_input = blocks.first().and_then(|block| {
             let parent_hash = block.recovered_block().parent_hash();
             (parent_hash != anchor_hash)
@@ -393,6 +404,7 @@ impl<N: NodePrimitives> OverlayManager<N> {
             }
             Entry::Vacant(entry) => {
                 self.metrics.overlay_cache_fills.increment(1);
+                reth_metrics::metrics::counter!("trie.diagnostics.overlay_cache_total", "origin" => self.diagnostic_origin, "result" => "fill").increment(1);
                 let waiter = Arc::new(OverlayWaiter::new());
                 entry.insert(OverlayCacheEntry::Computing(Arc::clone(&waiter)));
                 CacheAction::Compute(waiter)
@@ -403,7 +415,9 @@ impl<N: NodePrimitives> OverlayManager<N> {
             CacheAction::Ready(input) => Ok(input),
             CacheAction::Wait(waiter) => Ok(waiter.wait()),
             CacheAction::Compute(waiter) => {
+                let started = std::time::Instant::now();
                 let input = self.compute_overlay(compute_input, anchor_hash, span);
+                reth_metrics::metrics::histogram!("trie.diagnostics.overlay_compute_wall_seconds", "origin" => self.diagnostic_origin).record(started.elapsed().as_secs_f64());
                 waiter.finish(Arc::clone(&input));
 
                 if let Entry::Occupied(mut entry) = self.overlays.entry(key) {
@@ -425,6 +439,7 @@ impl<N: NodePrimitives> OverlayManager<N> {
 
     fn record_overlay_cache_reuse(&self, span: &tracing::Span) {
         self.metrics.overlay_cache_reuses.increment(1);
+        reth_metrics::metrics::counter!("trie.diagnostics.overlay_cache_total", "origin" => self.diagnostic_origin, "result" => "reuse").increment(1);
         span.record("cache_reused", true);
     }
 

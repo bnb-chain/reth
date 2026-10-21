@@ -1,5 +1,6 @@
 //! Sparse Trie task related functionality.
 
+use reth_trie_parallel::diagnostics::{Progress, RootTaskDiagnostics, Stage};
 use std::sync::Arc;
 
 use super::{evm_state_to_hashed_post_state, StateRootComputeOutcome, StateRootMessage};
@@ -149,9 +150,10 @@ where
 
         let parent_span = tracing::Span::current();
         let hashing_metrics = metrics.clone();
+        let diagnostics = proof_worker_handle.diagnostics().clone();
         executor.spawn_blocking_named("trie-hashing", move || {
             let _span = trace_span!(parent: parent_span, "run_hashing_task").entered();
-            Self::run_hashing_task(updates, hashed_state_tx, hashing_metrics)
+            Self::run_hashing_task(updates, hashed_state_tx, hashing_metrics, diagnostics)
         });
 
         Self {
@@ -193,7 +195,9 @@ where
         updates: CrossbeamReceiver<StateRootMessage>,
         hashed_state_tx: CrossbeamSender<SparseTrieTaskMessage>,
         metrics: SparseTrieTaskMetrics,
+        diagnostics: Arc<RootTaskDiagnostics>,
     ) {
+        let _lifecycle = diagnostics.enter(Stage::HashingStarted, Stage::HashingExited);
         let mut total_idle_time = std::time::Duration::ZERO;
         let mut idle_start = Instant::now();
 
@@ -205,14 +209,17 @@ where
                     SparseTrieTaskMessage::PrefetchProofs(targets)
                 }
                 StateRootMessage::StateUpdate(state) => {
+                    diagnostics.increment(Progress::UpdatesHashed);
                     let _span = trace_span!(target: "engine::tree::payload_processor::sparse_trie", "hashing_state_update", n = state.len()).entered();
                     let hashed = evm_state_to_hashed_post_state(state);
                     SparseTrieTaskMessage::HashedState(hashed)
                 }
                 StateRootMessage::FinishedStateUpdates => {
+                    diagnostics.marker(Progress::FinishHashedUs);
                     SparseTrieTaskMessage::FinishedStateUpdates
                 }
                 StateRootMessage::HashedStateUpdate(state) => {
+                    diagnostics.increment(Progress::UpdatesHashed);
                     SparseTrieTaskMessage::HashedState(state)
                 }
             };
@@ -366,6 +373,15 @@ where
         self.metrics.sparse_trie_final_update_duration_histogram.record(end.duration_since(start));
         self.metrics.sparse_trie_total_duration_histogram.record(end.duration_since(now));
 
+        let origin = self.proof_worker_handle.diagnostics().origin();
+        for (cache, result, count) in [
+            ("account", "hit", self.account_cache_hits),
+            ("account", "miss", self.account_cache_misses),
+            ("storage", "hit", self.storage_cache_hits),
+            ("storage", "miss", self.storage_cache_misses),
+        ] {
+            reth_metrics::metrics::counter!("trie.diagnostics.cache_lookups_total", "origin" => origin, "cache" => cache, "result" => result).increment(count);
+        }
         self.metrics.sparse_trie_account_cache_hits.record(self.account_cache_hits as f64);
         self.metrics.sparse_trie_account_cache_misses.record(self.account_cache_misses as f64);
         self.metrics.sparse_trie_storage_cache_hits.record(self.storage_cache_hits as f64);
@@ -458,10 +474,12 @@ where
                 None
             }
             SparseTrieTaskMessage::HashedState(hashed_state) => {
+                self.proof_worker_handle.diagnostics().increment(Progress::UpdatesReceived);
                 self.on_hashed_state_update(hashed_state);
                 None
             }
             SparseTrieTaskMessage::FinishedStateUpdates => {
+                self.proof_worker_handle.diagnostics().marker(Progress::FinishReceivedUs);
                 let hashed_state = Arc::new(core::mem::take(&mut self.final_hashed_state));
                 let _ = self.final_hashed_state_tx.take().unwrap().send(Arc::clone(&hashed_state));
                 self.finished_state_updates = true;
@@ -559,6 +577,7 @@ where
         &mut self,
         message: ProofResultMessage,
     ) -> Result<DecodedMultiProofV2, StateRootTaskError> {
+        self.proof_worker_handle.diagnostics().increment(Progress::ProofBatchesReceived);
         let result = message.result?;
         debug_assert!(
             self.in_flight_proof_batches > 0,
@@ -888,6 +907,9 @@ where
                 }) {
                     Ok(()) => {
                         self.in_flight_proof_batches += 1;
+                        self.proof_worker_handle
+                            .diagnostics()
+                            .increment(Progress::ProofBatchesSent);
                     }
                     Err(e) => {
                         error!("failed to dispatch account multiproof: {e:?}");
@@ -1157,6 +1179,7 @@ mod tests {
                 updates_rx,
                 hashed_state_tx,
                 SparseTrieTaskMetrics::default(),
+                RootTaskDiagnostics::new("test"),
             );
         });
 

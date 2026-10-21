@@ -3,7 +3,7 @@
 use core::fmt;
 
 use reth_metrics::{
-    metrics::{Counter, Histogram},
+    metrics::{Counter, Gauge, Histogram},
     Metrics,
 };
 use std::time::Duration;
@@ -70,6 +70,10 @@ impl Drop for IncCounterOnDrop {
 #[derive(Metrics, Clone)]
 #[metrics(scope = "executor.named_worker")]
 pub(crate) struct WorkerThreadMetrics {
+    /// Tasks accepted but not yet started, including tasks whose queue wait is still censored.
+    pub(crate) queued_tasks: Gauge,
+    /// Tasks currently executing on this named worker.
+    pub(crate) active_tasks: Gauge,
     /// Time spent queued before a named worker starts executing the task.
     queue_wait_duration_seconds: Histogram,
     /// Time spent executing a task on a named worker.

@@ -10514,6 +10514,7 @@ dependencies = [
  "futures-util",
  "libc",
  "metrics",
+ "metrics-exporter-prometheus",
  "parking_lot",
  "pin-project",
  "rayon",
