@@ -33,7 +33,16 @@ use tracing::info;
 
 /// `reth db migrate-v2` command
 #[derive(Debug, Parser)]
-pub struct Command;
+pub struct Command {
+    /// Resume a previously-interrupted migration.
+    ///
+    /// Skips the changeset/receipt migration and metadata flip (assumed already done) and
+    /// jumps straight to clearing recomputable MDBX tables, resetting stage checkpoints,
+    /// and compacting the database. Use this when a prior `migrate-v2` run was killed after
+    /// `StorageSettings` was flipped to v2 but before the MDBX cleanup finished.
+    #[arg(long)]
+    pub resume: bool,
+}
 
 impl Command {
     /// Execute the full v1 → v2 migration:
@@ -51,6 +60,10 @@ impl Command {
             Receipt: reth_db_api::table::Value + reth_codecs::Compact,
         >,
     {
+        if self.resume {
+            return Self::execute_resume(provider_factory);
+        }
+
         // === Phase 0: Preflight ===
         info!(target: "reth::cli", "Starting v1 → v2 storage migration");
 
@@ -114,6 +127,41 @@ impl Command {
         // The caller will reopen the environment and run the pipeline.
         // We return here — the pipeline step is handled in mod.rs after
         // reopening the database with the compacted copy.
+        info!(target: "reth::cli", "Migration complete. You should now restart the node and let it run the pipeline to rebuild the remaining data.");
+        Ok(())
+    }
+
+    /// Resume a previously-interrupted migration.
+    ///
+    /// Assumes phases 1–3 (changeset/receipt migration + metadata flip) already succeeded
+    /// and only the MDBX cleanup + compaction remained. Verifies the on-disk state matches
+    /// that assumption before doing destructive work.
+    fn execute_resume<N: CliNodeTypes>(
+        provider_factory: ProviderFactory<NodeTypesWithDBAdapter<N, DatabaseEnv>>,
+    ) -> eyre::Result<()> {
+        info!(target: "reth::cli", "Resuming v1 → v2 storage migration");
+
+        let provider = provider_factory.provider()?;
+        let current_settings = provider.storage_settings()?;
+        if !current_settings.is_some_and(|s| s.is_v2()) {
+            eyre::bail!(
+                "--resume requires StorageSettings to already be v2 (set by a prior run). \
+                 Current settings indicate the migration has not progressed far enough to resume; \
+                 re-run `db migrate-v2` without --resume."
+            );
+        }
+        drop(provider);
+
+        Self::clear_recomputable_tables(&provider_factory)?;
+
+        let db_path = provider_factory.db_ref().path();
+        Self::compact_mdbx(provider_factory.db_ref())?;
+
+        drop(provider_factory);
+
+        let compact_path = db_path.with_file_name("db_compact");
+        Self::swap_compacted_db(&db_path, &compact_path)?;
+
         info!(target: "reth::cli", "Migration complete. You should now restart the node and let it run the pipeline to rebuild the remaining data.");
         Ok(())
     }
