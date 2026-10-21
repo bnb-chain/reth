@@ -20,7 +20,11 @@ concurrency:
 jobs:
   test:
     name: e2e-testsuite
-    runs-on: ubuntu-latest
+    # org larger runner (16 vCPU / 64 GB). The e2e testsuite starts several
+    # full nodes in one process and drives them through the engine API; on the
+    # 4-core ubuntu-latest the nodes contend for cores, block production stalls,
+    # and runs trip the 90 minute timeout below.
+    runs-on: runner-linux-x64-16core
     env:
       RUST_BACKTRACE: 1
     timeout-minutes: 90
