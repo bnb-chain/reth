@@ -65,7 +65,9 @@ impl WorkerThread {
         let metrics = self.metrics.clone();
         let queued_at = Instant::now();
 
+        let mut observation = QueueObservation::new(metrics.clone());
         let task: BoxedTask = Box::new(move || {
+            observation.start();
             let started_at = Instant::now();
             metrics.record_queue_wait(started_at.saturating_duration_since(queued_at));
             let _decrement_pending = DecrementPendingOnDrop(pending);
@@ -93,7 +95,9 @@ impl WorkerThread {
         let metrics = self.metrics.clone();
         let queued_at = Instant::now();
 
+        let mut observation = QueueObservation::new(metrics.clone());
         let task: BoxedTask = Box::new(move || {
+            observation.start();
             let started_at = Instant::now();
             metrics.record_queue_wait(started_at.saturating_duration_since(queued_at));
             let _decrement_pending = DecrementPendingOnDrop(pending);
@@ -107,6 +111,32 @@ impl WorkerThread {
         }
 
         Some(result_rx)
+    }
+}
+
+/// Accounts for queued and active work even if sending fails or a closure panics.
+struct QueueObservation {
+    metrics: WorkerThreadMetrics,
+    started: bool,
+}
+impl QueueObservation {
+    fn new(metrics: WorkerThreadMetrics) -> Self {
+        metrics.queued_tasks.increment(1.0);
+        Self { metrics, started: false }
+    }
+    fn start(&mut self) {
+        self.metrics.queued_tasks.decrement(1.0);
+        self.metrics.active_tasks.increment(1.0);
+        self.started = true;
+    }
+}
+impl Drop for QueueObservation {
+    fn drop(&mut self) {
+        if self.started {
+            self.metrics.active_tasks.decrement(1.0);
+        } else {
+            self.metrics.queued_tasks.decrement(1.0);
+        }
     }
 }
 
@@ -293,5 +323,46 @@ mod tests {
 
         let third = map.try_spawn_on("busy-worker", || 3).expect("worker should be idle");
         assert_eq!(third.await.unwrap(), 3);
+    }
+    #[test]
+    fn queued_and_active_gauges_survive_drop_and_panic() {
+        use metrics_exporter_prometheus::PrometheusBuilder;
+        let recorder = PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        metrics::with_local_recorder(&recorder, || {
+            let metrics = WorkerThreadMetrics::new("diagnostic-test");
+            drop(QueueObservation::new(metrics.clone()));
+            let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                let mut guard = QueueObservation::new(metrics);
+                guard.start();
+                panic!("simulated task failure");
+            }));
+        });
+        let rendered = handle.render();
+        for name in ["queued_tasks", "active_tasks"] {
+            let prefix = format!("executor_named_worker_{name}{{");
+            let line = rendered
+                .lines()
+                .find(|l| l.starts_with(&prefix))
+                .unwrap_or_else(|| panic!("{rendered}"));
+            assert_eq!(line.split_whitespace().last(), Some("0"));
+        }
+    }
+
+    #[tokio::test]
+    async fn channel_owner_release_allows_next_named_session_to_start() {
+        let map = WorkerMap::new();
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (owner, until_closed) = std::sync::mpsc::channel::<()>();
+        let first = map.spawn_on("dependency-test", move || {
+            entered_tx.send(()).unwrap();
+            assert!(until_closed.recv().is_err());
+        });
+        entered_rx.await.unwrap();
+        let mut next = map.spawn_on("dependency-test", || 7);
+        assert!(matches!(next.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
+        drop(owner);
+        first.await.unwrap();
+        assert_eq!(next.await.unwrap(), 7);
     }
 }

@@ -185,7 +185,13 @@ impl ChangesetCache {
     /// The cache has no capacity limit and relies on explicit eviction
     /// via the `evict()` method to manage memory usage.
     pub(crate) fn new() -> Self {
-        Self { inner: Arc::new(RwLock::new(ChangesetCacheInner::new())) }
+        Self::new_with_diagnostic_origin("engine")
+    }
+
+    pub(crate) fn new_with_diagnostic_origin(origin: &'static str) -> Self {
+        let mut inner = ChangesetCacheInner::new();
+        inner.diagnostic_origin = origin;
+        Self { inner: Arc::new(RwLock::new(inner)) }
     }
 
     /// Evicts changesets for blocks below the given block number.
@@ -485,6 +491,7 @@ impl ChangesetRangeKey {
 /// - `size`: Current number of cached blocks
 #[derive(Debug)]
 struct ChangesetCacheInner {
+    diagnostic_origin: &'static str,
     /// Cache entries keyed by inclusive block range plus the range's canonical end hash.
     entries: HashMap<ChangesetRangeKey, Arc<TrieUpdatesSorted>>,
 
@@ -527,17 +534,24 @@ impl ChangesetCacheInner {
     /// The cache has no capacity limit and relies on explicit eviction
     /// via the `evict()` method to manage memory usage.
     fn new() -> Self {
-        Self { entries: HashMap::new(), range_starts: BTreeMap::new(), metrics: Default::default() }
+        Self {
+            diagnostic_origin: "engine",
+            entries: HashMap::new(),
+            range_starts: BTreeMap::new(),
+            metrics: Default::default(),
+        }
     }
 
     fn get(&self, key: &ChangesetRangeKey) -> Option<Arc<TrieUpdatesSorted>> {
         match self.entries.get(key) {
             Some(changesets) => {
                 self.metrics.hits.increment(1);
+                reth_metrics::metrics::counter!("trie.diagnostics.changeset_cache_total", "origin" => self.diagnostic_origin, "result" => "hits").increment(1);
                 Some(Arc::clone(changesets))
             }
             None => {
                 self.metrics.misses.increment(1);
+                reth_metrics::metrics::counter!("trie.diagnostics.changeset_cache_total", "origin" => self.diagnostic_origin, "result" => "misses").increment(1);
                 None
             }
         }
