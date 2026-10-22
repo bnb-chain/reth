@@ -682,8 +682,8 @@ reth-metrics = { path = "crates/metrics" }
 
 # Preserve BSC header total difficulty and sealed-header replacement on reth-core 0.8.2.
 [patch.crates-io]
-reth-rpc-traits = { git = "https://github.com/bnb-chain/reth-core", rev = "a29dd4ef7ce3d7de8b6965f8e3571a8922a614ce" }
-reth-primitives-traits = { git = "https://github.com/bnb-chain/reth-core", rev = "a29dd4ef7ce3d7de8b6965f8e3571a8922a614ce" }
-reth-codecs = { git = "https://github.com/bnb-chain/reth-core", rev = "a29dd4ef7ce3d7de8b6965f8e3571a8922a614ce" }
-reth-codecs-derive = { git = "https://github.com/bnb-chain/reth-core", rev = "a29dd4ef7ce3d7de8b6965f8e3571a8922a614ce" }
-reth-zstd-compressors = { git = "https://github.com/bnb-chain/reth-core", rev = "a29dd4ef7ce3d7de8b6965f8e3571a8922a614ce" }
+reth-rpc-traits = { git = "https://github.com/bnb-chain/reth-core", rev = "a55d2d5a31624f2a6c15ff370a2588a5f4a5bc2a" }
+reth-primitives-traits = { git = "https://github.com/bnb-chain/reth-core", rev = "a55d2d5a31624f2a6c15ff370a2588a5f4a5bc2a" }
+reth-codecs = { git = "https://github.com/bnb-chain/reth-core", rev = "a55d2d5a31624f2a6c15ff370a2588a5f4a5bc2a" }
+reth-codecs-derive = { git = "https://github.com/bnb-chain/reth-core", rev = "a55d2d5a31624f2a6c15ff370a2588a5f4a5bc2a" }
+reth-zstd-compressors = { git = "https://github.com/bnb-chain/reth-core", rev = "a55d2d5a31624f2a6c15ff370a2588a5f4a5bc2a" }
