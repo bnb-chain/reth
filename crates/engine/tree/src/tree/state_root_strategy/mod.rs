@@ -1761,6 +1761,71 @@ mod tests {
     }
 
     #[test]
+    fn import_completes_while_isolated_miner_update_stream_stays_open() {
+        let factory = create_test_provider_factory_with_chain_spec(Arc::new(ChainSpec::default()));
+        let genesis_hash = init_genesis(&factory).unwrap();
+        let provider = BlockchainProvider::new(factory).unwrap();
+        let miner_runtime = reth_tasks::Runtime::test();
+        let import_runtime = reth_tasks::Runtime::test();
+        let miner_overlay = OverlayManager::<EthPrimitives>::new_with_diagnostic_origin(
+            miner_runtime.state_trie_overlay_worker_pool(),
+            "miner",
+        );
+        let import_overlay = OverlayManager::<EthPrimitives>::new_with_diagnostic_origin(
+            import_runtime.state_trie_overlay_worker_pool(),
+            "import",
+        );
+        let parent = SealedHeader::new(alloy_consensus::Header::default(), genesis_hash);
+        let mut miner = spawn_payload_builder_state_root(
+            &miner_runtime,
+            &miner_overlay,
+            OverlayStateProviderFactory::new(
+                provider.clone(),
+                miner_overlay.overlay_builder(genesis_hash),
+            ),
+            parent.clone(),
+            Some(1),
+            &TreeConfig::default(),
+            None,
+        );
+        // Keep the authoritative update stream open: the miner cannot finish its root.
+        let miner_hook = miner.take_execution_hook();
+        let (mut import, _pending_trie_rx) = DefaultStateRootStrategy::default().spawn_state_root(
+            &import_runtime,
+            OverlayStateProviderFactory::new(
+                provider,
+                import_overlay.overlay_builder(genesis_hash),
+            ),
+            StateRootTaskOptions {
+                origin: "import",
+                parent_header: parent,
+                preserved_sparse_trie: None,
+                transaction_count: Some(1),
+                gas_used: None,
+                config: &TreeConfig::default(),
+                pending_sparse_trie_prune_blocks: None,
+            },
+        );
+        let updates = create_mock_state_updates(2, 2);
+        let mut hook = import.take_execution_hook();
+        for update in updates {
+            hook.on_state(update);
+        }
+        drop(hook);
+        let result = import.take_state_root_rx().recv_timeout(std::time::Duration::from_secs(5));
+        // Cancel the miner before assertions so a failed test also releases every session.
+        drop(miner);
+        drop(miner_hook);
+        drop(import);
+        for runtime in [&miner_runtime, &import_runtime] {
+            for name in ["sparse-trie", "trie-hashing", "account-workers", "storage-workers"] {
+                runtime.spawn_blocking_named(name, || {}).get();
+            }
+        }
+        assert!(result.expect("import was blocked behind the miner").is_ok());
+    }
+
+    #[test]
     fn payload_builder_trie_matches_serial_root_and_can_be_reused() {
         reth_tracing::init_test_tracing();
 

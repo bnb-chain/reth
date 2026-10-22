@@ -33,10 +33,10 @@ struct WorkerThread {
 
 impl WorkerThread {
     /// Spawns a new worker thread with the given name.
-    fn new(name: &'static str) -> Self {
+    fn new(name: &'static str, namespace: Option<&'static str>) -> Self {
         let (tx, mut rx) = mpsc::unbounded_channel::<BoxedTask>();
         let handle = thread::Builder::new()
-            .name(name.to_string())
+            .name(namespace.map_or_else(|| name.to_string(), |ns| format!("{ns}-{name}")))
             .spawn(move || {
                 while let Some(task) = rx.blocking_recv() {
                     let _ = std::panic::catch_unwind(AssertUnwindSafe(task));
@@ -46,7 +46,7 @@ impl WorkerThread {
 
         Self {
             tx,
-            metrics: WorkerThreadMetrics::new(name),
+            metrics: WorkerThreadMetrics::new(name, namespace),
             pending: Arc::new(AtomicUsize::new(0)),
             handle: Some(handle),
         }
@@ -179,6 +179,7 @@ impl Drop for RecordTaskDurationOnDrop {
 /// that name. Workers are created lazily on first use.
 pub(crate) struct WorkerMap {
     workers: DashMap<&'static str, WorkerThread>,
+    namespace: Option<&'static str>,
 }
 
 impl Default for WorkerMap {
@@ -190,7 +191,11 @@ impl Default for WorkerMap {
 impl WorkerMap {
     /// Creates a new empty `WorkerMap`.
     pub(crate) fn new() -> Self {
-        Self { workers: DashMap::new() }
+        Self::with_namespace(None)
+    }
+
+    pub(crate) fn with_namespace(namespace: Option<&'static str>) -> Self {
+        Self { workers: DashMap::new(), namespace }
     }
 
     /// Spawns a closure on the dedicated worker thread for the given name.
@@ -203,7 +208,8 @@ impl WorkerMap {
         F: FnOnce() -> R + Send + 'static,
         R: Send + 'static,
     {
-        let worker = self.workers.entry(name).or_insert_with(|| WorkerThread::new(name));
+        let worker =
+            self.workers.entry(name).or_insert_with(|| WorkerThread::new(name, self.namespace));
         worker.spawn(f)
     }
 
@@ -219,7 +225,8 @@ impl WorkerMap {
         F: FnOnce() -> R + Send + 'static,
         R: Send + 'static,
     {
-        let worker = self.workers.entry(name).or_insert_with(|| WorkerThread::new(name));
+        let worker =
+            self.workers.entry(name).or_insert_with(|| WorkerThread::new(name, self.namespace));
         worker.try_spawn(f)
     }
 }
@@ -335,12 +342,34 @@ mod tests {
         assert_eq!(third.await.unwrap(), 3);
     }
     #[test]
+    fn namespaced_worker_metrics_do_not_merge_with_import() {
+        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        metrics::with_local_recorder(&recorder, || {
+            let import = WorkerThreadMetrics::new("sparse-trie", None);
+            let miner = WorkerThreadMetrics::new("sparse-trie", Some("miner"));
+            import.active_tasks.set(1.0);
+            miner.active_tasks.set(2.0);
+        });
+        let rendered = handle.render();
+        let lines: Vec<_> = rendered
+            .lines()
+            .filter(|line| line.starts_with("executor_named_worker_active_tasks{"))
+            .collect();
+        assert_eq!(lines.len(), 2, "{rendered}");
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("runtime=\"miner\"") && line.ends_with(" 2")));
+        assert!(lines.iter().any(|line| !line.contains("runtime=") && line.ends_with(" 1")));
+    }
+
+    #[test]
     fn queued_and_active_gauges_survive_drop_and_panic() {
         use metrics_exporter_prometheus::PrometheusBuilder;
         let recorder = PrometheusBuilder::new().build_recorder();
         let handle = recorder.handle();
         metrics::with_local_recorder(&recorder, || {
-            let metrics = WorkerThreadMetrics::new("diagnostic-test");
+            let metrics = WorkerThreadMetrics::new("diagnostic-test", None);
             drop(QueueObservation::new(metrics.clone()));
             let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
                 let mut guard = QueueObservation::new(metrics);

@@ -373,8 +373,10 @@ where
     pub(super) fn run(&mut self) -> Result<StateRootComputeOutcome, StateRootTaskError> {
         let now = Instant::now();
 
-        let mut total_idle_time = std::time::Duration::ZERO;
-        let mut idle_start = Instant::now();
+        let mut idle = RootWaitObservation::new(
+            self.metrics.sparse_trie_idle_time_seconds.clone(),
+            self.proof_worker_handle.diagnostics().origin(),
+        );
         let mut done = false;
         let mut finalized_hashed_state = None;
 
@@ -382,11 +384,12 @@ where
         // processed. Only producers hold update senders, so the channel closing before the
         // marker means they died without finishing the stream.
         while !self.finished_state_updates {
+            idle.waiting_since = Some(Instant::now());
             let mut t = Instant::now();
             crossbeam_channel::select_biased! {
                 recv(self.updates) -> message => {
                     let wake = Instant::now();
-                    total_idle_time += wake.duration_since(idle_start);
+                    idle.woke();
                     self.metrics
                         .sparse_trie_channel_wait_duration_histogram
                         .record(wake.duration_since(t));
@@ -401,7 +404,7 @@ where
                 }
                 recv(self.proof_worker_handle.results()) -> message => {
                     let wake = Instant::now();
-                    total_idle_time += wake.duration_since(idle_start);
+                    idle.woke();
                     self.metrics
                         .sparse_trie_channel_wait_duration_histogram
                         .record(wake.duration_since(t));
@@ -414,7 +417,7 @@ where
                 },
                 recv(self.storage_done_rx) -> message => {
                     let wake = Instant::now();
-                    total_idle_time += wake.duration_since(idle_start);
+                    idle.woke();
                     self.metrics
                         .sparse_trie_channel_wait_duration_histogram
                         .record(wake.duration_since(t));
@@ -428,7 +431,6 @@ where
             }
 
             done = self.make_progress()?;
-            idle_start = Instant::now();
         }
 
         // Draining phase: the marker is the last message read from the updates channel, so
@@ -436,11 +438,12 @@ where
         // update channel closing when producers drop their senders is not observed here, and late
         // hints are ignored: with all updates known, prefetching has nothing left to help.
         while !done {
+            idle.waiting_since = Some(Instant::now());
             let mut t = Instant::now();
             crossbeam_channel::select_biased! {
                 recv(self.proof_worker_handle.results()) -> message => {
                     let wake = Instant::now();
-                    total_idle_time += wake.duration_since(idle_start);
+                    idle.woke();
                     self.metrics
                         .sparse_trie_channel_wait_duration_histogram
                         .record(wake.duration_since(t));
@@ -453,7 +456,7 @@ where
                 },
                 recv(self.storage_done_rx) -> message => {
                     let wake = Instant::now();
-                    total_idle_time += wake.duration_since(idle_start);
+                    idle.woke();
                     self.metrics
                         .sparse_trie_channel_wait_duration_histogram
                         .record(wake.duration_since(t));
@@ -467,14 +470,13 @@ where
             }
 
             done = self.make_progress()?;
-            idle_start = Instant::now();
         }
 
         debug_assert_eq!(
             self.storage_in_flight, 0,
             "completion must wait for every checked out storage trie"
         );
-        self.metrics.sparse_trie_idle_time_seconds.record(total_idle_time.as_secs_f64());
+        idle.woke();
 
         debug!(target: "engine::root", "All proofs processed, ending calculation");
 
@@ -1661,6 +1663,39 @@ impl PendingTargets {
     fn extend_storage_targets(&mut self, address: &B256, targets: Vec<ProofV2Target>) {
         self.len += targets.len();
         self.targets.storage_targets.entry(*address).or_default().extend(targets);
+    }
+}
+
+/// Records channel waiting even when cancellation or a proof error exits the task early.
+struct RootWaitObservation {
+    total: std::time::Duration,
+    waiting_since: Option<Instant>,
+    histogram: Histogram,
+    diagnostic_histogram: Histogram,
+}
+
+impl RootWaitObservation {
+    fn new(histogram: Histogram, origin: &'static str) -> Self {
+        Self {
+            total: std::time::Duration::ZERO,
+            waiting_since: None,
+            histogram,
+            diagnostic_histogram: metrics::histogram!("trie.diagnostics.root_channel_wait_seconds", "origin" => origin),
+        }
+    }
+
+    fn woke(&mut self) {
+        if let Some(start) = self.waiting_since.take() {
+            self.total += start.elapsed();
+        }
+    }
+}
+
+impl Drop for RootWaitObservation {
+    fn drop(&mut self) {
+        self.woke();
+        self.histogram.record(self.total.as_secs_f64());
+        self.diagnostic_histogram.record(self.total.as_secs_f64());
     }
 }
 
