@@ -82,7 +82,6 @@ impl EngineMessageStore {
                     })?,
                 )?;
             }
-            _ => {}
         };
         Ok(())
     }

@@ -74,11 +74,13 @@ pub struct ActiveSessionHandle<N: NetworkPrimitives> {
     pub(crate) remote_addr: SocketAddr,
     /// The local address of the connection.
     pub(crate) local_addr: Option<SocketAddr>,
+    /// The TCP listening port the peer announced in its `Hello` message, if non-zero.
+    ///
+    /// This is effectively deprecated, but we still keep it around if a peer announced it as it's
+    /// likely still more useful than the ephemeral source port.
+    pub(crate) peer_listen_port: Option<u16>,
     /// The Status message the peer sent for the `eth` handshake
     pub(crate) status: Arc<UnifiedStatus>,
-    /// Current total difficulty, updated when receiving `NewBlock` messages
-    /// This is essential for BSC and other chains that rely on TD
-    pub(crate) current_td: Arc<parking_lot::Mutex<Option<alloy_primitives::U256>>>,
 }
 
 // === impl ActiveSessionHandle ===
@@ -142,44 +144,37 @@ impl<N: NetworkPrimitives> ActiveSessionHandle<N> {
         self.commands.queued_broadcast_items()
     }
 
-    /// Returns the current total difficulty
-    pub fn current_td(&self) -> Option<alloy_primitives::U256> {
-        *self.current_td.lock()
-    }
-
-    /// Updates the current total difficulty
-    pub fn update_td(&self, td: Option<alloy_primitives::U256>) {
-        *self.current_td.lock() = td;
-    }
-
     /// Extracts the [`PeerInfo`] from the session handle.
-    pub(crate) fn peer_info(
-        &self,
-        record: &NodeRecord,
-        kind: PeerKind,
-        best_hash: alloy_primitives::B256,
-        best_number: Option<u64>,
-        best_td: Option<alloy_primitives::U256>,
-    ) -> PeerInfo {
-        // Use session's current_td if available, otherwise fallback to provided best_td
-        let td = self.current_td().or(best_td);
-
+    pub(crate) fn peer_info(&self, record: &NodeRecord, kind: PeerKind) -> PeerInfo {
+        // For inbound connections, the `record` was built from the TCP socket address, which
+        // carries the peer's OS-assigned ephemeral source port (not dialable). If the peer
+        // announced a non-zero listening port in its `Hello` message, prefer that combined with
+        // the connection IP so the resulting enode is actually dialable.
+        let enode = match (self.direction, self.peer_listen_port) {
+            (Direction::Incoming, Some(port)) => NodeRecord::new_with_ports(
+                self.remote_addr.ip(),
+                port,
+                Some(record.udp_port),
+                record.id,
+            )
+            .to_string(),
+            _ => record.to_string(),
+        };
         PeerInfo {
             remote_id: self.remote_id,
             direction: self.direction,
-            enode: record.to_string(),
+            enode,
             enr: None,
             remote_addr: self.remote_addr,
             local_addr: self.local_addr,
             capabilities: self.capabilities.clone(),
             client_version: self.client_version.clone(),
             eth_version: self.version,
+            best_number: self.status.latest_block,
+            best_td: self.status.total_difficulty,
             status: self.status.clone(),
             session_established: self.established,
             kind,
-            best_hash,
-            best_number,
-            best_td: td,
         }
     }
 }
@@ -314,6 +309,10 @@ pub enum PendingSessionEvent<N: NetworkPrimitives> {
         direction: Direction,
         /// The remote node's user agent, usually containing the client name and version
         client_id: String,
+        /// The TCP listening port the peer announced in its `Hello` message, if non-zero.
+        ///
+        /// See `ActiveSessionHandle::peer_listen_port` for context.
+        peer_listen_port: Option<u16>,
     },
     /// Handshake unsuccessful, session was disconnected.
     Disconnected {

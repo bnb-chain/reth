@@ -21,21 +21,13 @@ use reth_storage_api::{
 };
 use reth_transaction_pool::{PoolTransaction, TransactionPool};
 use std::{collections::HashSet, sync::Arc};
-use tracing::{trace, warn};
 
-/// Result type of the fetched block receipts.
-pub type BlockReceiptsResult<N, E> = Result<Option<Vec<RpcReceipt<N>>>, E>;
-/// Result type of the fetched block and its receipts.
-pub type BlockAndReceiptsResult<Eth> = Result<
-    Option<(
-        Arc<RecoveredBlock<<<Eth as RpcNodeCore>::Provider as BlockReader>::Block>>,
-        Arc<Vec<ProviderReceipt<<Eth as RpcNodeCore>::Provider>>>,
-    )>,
-    <Eth as EthApiTypes>::Error,
->;
-
+/// Max blocks to walk back when deriving the probabilistic finalized height for
+/// `eth_getFinalizedBlock`/`eth_getFinalizedHeader`.
 const MAX_VALIDATOR_LOOKBACK: usize = 1000;
 
+/// Resolves the distinct-validator threshold for a `verified_validator_num` request value, per
+/// go-bsc semantics: `-1` = ceil(N/2), `-2` = ceil(2N/3), `-3` = N, `>=1` = explicit threshold.
 fn resolved_validators_threshold(
     verified_validator_num: i64,
     active_validator_count: Option<usize>,
@@ -72,63 +64,20 @@ fn resolved_validators_threshold(
     }
 }
 
+/// Result type of the fetched block receipts.
+pub type BlockReceiptsResult<N, E> = Result<Option<Vec<RpcReceipt<N>>>, E>;
+/// Result type of the fetched block and its receipts.
+pub type BlockAndReceiptsResult<Eth> = Result<
+    Option<(
+        Arc<RecoveredBlock<<<Eth as RpcNodeCore>::Provider as BlockReader>::Block>>,
+        Arc<Vec<ProviderReceipt<<Eth as RpcNodeCore>::Provider>>>,
+    )>,
+    <Eth as EthApiTypes>::Error,
+>;
+
 /// Block related functions for the [`EthApiServer`](crate::EthApiServer) trait in the
 /// `eth_` namespace.
 pub trait EthBlocks: LoadBlock<RpcConvert: RpcConvert<Primitives = Self::Primitives>> {
-    /// Returns the total difficulty at the given header, or `None` if it cannot be determined.
-    ///
-    /// Reads the stored total difficulty for the block, falling back to
-    /// `parent_td + header.difficulty` for blocks that are not in the database yet, such as the
-    /// pending block.
-    ///
-    /// `block_id` is only used for tracing context.
-    fn total_difficulty_for(
-        &self,
-        header: &SealedHeader<ProviderHeader<Self::Provider>>,
-        block_id: BlockId,
-    ) -> Option<U256> {
-        let block_number = header.number();
-        match self.provider().header_td_by_number(block_number) {
-            Ok(Some(td)) => Some(td),
-            Ok(None) | Err(_) => {
-                // Block not in database yet (e.g., pending block)
-                // Calculate TD = parent_td + current_difficulty
-                trace!(target: "rpc::eth", ?block_id, block_number, "Block not in DB, calculating TD from parent");
-
-                let parent_number = block_number.saturating_sub(1);
-                match self.provider().header_td_by_number(parent_number) {
-                    Ok(Some(parent_td)) => {
-                        let current_difficulty = header.difficulty();
-                        let calculated_td = parent_td.saturating_add(current_difficulty);
-
-                        trace!(
-                            target: "rpc::eth",
-                            ?block_id,
-                            block_number,
-                            parent_number,
-                            ?parent_td,
-                            ?current_difficulty,
-                            ?calculated_td,
-                            "Calculated TD from parent"
-                        );
-
-                        Some(calculated_td)
-                    }
-                    _ => {
-                        warn!(
-                            target: "rpc::eth",
-                            ?block_id,
-                            block_number,
-                            parent_number,
-                            "Parent TD not found, returning None"
-                        );
-                        None
-                    }
-                }
-            }
-        }
-    }
-
     /// Returns the block header for the given block id.
     fn rpc_block_header(
         &self,
@@ -139,15 +88,27 @@ pub trait EthBlocks: LoadBlock<RpcConvert: RpcConvert<Primitives = Self::Primiti
     {
         async move {
             let Some(block) = self.recovered_block(block_id).await? else { return Ok(None) };
-            let header = block.clone_sealed_header();
-            // go-bsc's `rpcMarshalHeader` always attaches the total difficulty, so every header
-            // response carries it — unlike `rpcMarshalBlock`, which only does so when transactions
-            // are included. Passing `None` here left `eth_getHeaderByHash`,
-            // `eth_getHeaderByNumber` and `eth_getFinalizedHeader` without the field while
-            // `eth_getBlockByHash` returned it for the very same block.
-            let td = self.total_difficulty_for(&header, block_id);
-            let header = self.converter().convert_header(header, block.rlp_length(), td)?;
+            let sealed_header = block.clone_sealed_header();
+            let td = self.total_difficulty_for(&sealed_header);
+            let header = self.converter().convert_header(sealed_header, block.rlp_length(), td)?;
             Ok(Some(header))
+        }
+    }
+
+    /// Returns the total difficulty at `header`'s height (go-bsc attaches it to block/header
+    /// responses). Falls back to `parent_td + difficulty` for blocks not yet in the DB (pending).
+    fn total_difficulty_for(
+        &self,
+        header: &SealedHeader<ProviderHeader<Self::Provider>>,
+    ) -> Option<U256> {
+        let block_number = header.number();
+        match self.provider().header_td_by_number(block_number) {
+            Ok(Some(td)) => Some(td),
+            _ => {
+                let parent_td =
+                    self.provider().header_td_by_number(block_number.saturating_sub(1)).ok()??;
+                Some(parent_td.saturating_add(header.difficulty()))
+            }
         }
     }
 
@@ -170,7 +131,7 @@ pub trait EthBlocks: LoadBlock<RpcConvert: RpcConvert<Primitives = Self::Primiti
                 full.into(),
                 |tx, tx_info| self.converter().fill(tx, tx_info),
                 |header, size| {
-                    let td = self.total_difficulty_for(&header, block_id);
+                    let td = self.total_difficulty_for(&header);
                     self.converter().convert_header(header, size, td)
                 },
             )?;
@@ -178,78 +139,19 @@ pub trait EthBlocks: LoadBlock<RpcConvert: RpcConvert<Primitives = Self::Primiti
         }
     }
 
-    /// Returns the finalized block header.
+    /// Derives the probabilistic finalized block number for BSC parlia fast finality.
     ///
-    /// BSC compatibility:
-    /// - `verified_validator_num` is required to determine the probabilistic finalized height.
-    ///   Accepted values are:
-    ///   - `-1`: `ceil(number_of_validators / 2)`
-    ///   - `-2`: `ceil(number_of_validators * 2 / 3)`
-    ///   - `-3`: `number_of_validators`
-    ///   - or `>=1`: explicit validator threshold.
-    fn rpc_finalized_header(
-        &self,
-        verified_validator_num: i64,
-    ) -> impl Future<Output = Result<Option<RpcHeader<Self::NetworkTypes>>, Self::Error>> + Send
-    where
-        Self: FullEthApiTypes,
-    {
-        async move {
-            let Some(finalized_block_number) =
-                self.finalized_block_number(verified_validator_num).await?
-            else {
-                return Ok(None);
-            };
-
-            self.rpc_block_header(BlockNumberOrTag::Number(finalized_block_number).into()).await
-        }
-    }
-
-    /// Returns the finalized block.
-    ///
-    /// BSC compatibility:
-    /// - `verified_validator_num` is required to determine the probabilistic finalized height.
-    ///   Accepted values are:
-    ///   - `-1`: `ceil(number_of_validators / 2)`
-    ///   - `-2`: `ceil(number_of_validators * 2 / 3)`
-    ///   - `-3`: `number_of_validators`
-    ///   - or `>=1`: explicit validator threshold.
-    ///
-    /// If `full` is true, the block object will contain all transaction objects, otherwise it will
-    /// only contain the transaction hashes.
-    fn rpc_finalized_block(
-        &self,
-        verified_validator_num: i64,
-        full: bool,
-    ) -> impl Future<Output = Result<Option<RpcBlock<Self::NetworkTypes>>, Self::Error>> + Send
-    where
-        Self: FullEthApiTypes,
-    {
-        async move {
-            let Some(finalized_block_number) =
-                self.finalized_block_number(verified_validator_num).await?
-            else {
-                return Ok(None);
-            };
-            self.rpc_block(BlockNumberOrTag::Number(finalized_block_number).into(), full).await
-        }
-    }
-
-    /// Returns the best-effort finalized block number according to `verified_validator_num`.
-    ///
-    /// BSC compatibility:
-    /// - `verified_validator_num` is required to determine the probabilistic finalized height.
-    ///   Accepted values are:
-    ///   - `-1`: `ceil(number_of_validators / 2)`
-    ///   - `-2`: `ceil(number_of_validators * 2 / 3)`
-    ///   - `-3`: `number_of_validators`
-    ///   - or `>=1`: explicit validator threshold.
+    /// Walks back from the tip counting distinct block signers until `threshold` distinct
+    /// validators are seen (a block is probabilistically final once that many validators have
+    /// built on it), and returns the max of that and the fast-finalized height.
+    /// `verified_validator_num` selects the threshold (see `resolved_validators_threshold`).
     fn finalized_block_number(
         &self,
         verified_validator_num: i64,
     ) -> impl Future<Output = Result<Option<u64>, Self::Error>> + Send
     where
         Self: FullEthApiTypes,
+        Self::Provider: BlockReaderIdExt,
     {
         async move {
             let latest_header = self
@@ -275,7 +177,8 @@ pub trait EthBlocks: LoadBlock<RpcConvert: RpcConvert<Primitives = Self::Primiti
             let lower_bound = fast_finalized_header.number().max(1);
             let active_validator_count = self.current_validators_len();
             let threshold =
-                resolved_validators_threshold(verified_validator_num, active_validator_count)?;
+                resolved_validators_threshold(verified_validator_num, active_validator_count)
+                    .map_err(Self::Error::from_eth_err)?;
             if threshold == 0 {
                 return Ok(Some(fast_finalized_header.number()));
             }
@@ -315,6 +218,45 @@ pub trait EthBlocks: LoadBlock<RpcConvert: RpcConvert<Primitives = Self::Primiti
         }
     }
 
+    /// Returns the finalized block header. Backs `eth_getFinalizedHeader`.
+    fn rpc_finalized_header(
+        &self,
+        verified_validator_num: i64,
+    ) -> impl Future<Output = Result<Option<RpcHeader<Self::NetworkTypes>>, Self::Error>> + Send
+    where
+        Self: FullEthApiTypes,
+        Self::Provider: BlockReaderIdExt,
+    {
+        async move {
+            let Some(finalized_block_number) =
+                self.finalized_block_number(verified_validator_num).await?
+            else {
+                return Ok(None);
+            };
+            self.rpc_block_header(BlockNumberOrTag::Number(finalized_block_number).into()).await
+        }
+    }
+
+    /// Returns the finalized block. Backs `eth_getFinalizedBlock`.
+    fn rpc_finalized_block(
+        &self,
+        verified_validator_num: i64,
+        full: bool,
+    ) -> impl Future<Output = Result<Option<RpcBlock<Self::NetworkTypes>>, Self::Error>> + Send
+    where
+        Self: FullEthApiTypes,
+        Self::Provider: BlockReaderIdExt,
+    {
+        async move {
+            let Some(finalized_block_number) =
+                self.finalized_block_number(verified_validator_num).await?
+            else {
+                return Ok(None);
+            };
+            self.rpc_block(BlockNumberOrTag::Number(finalized_block_number).into(), full).await
+        }
+    }
+
     /// Returns the number transactions in the given block.
     ///
     /// Returns `None` if the block does not exist
@@ -322,39 +264,7 @@ pub trait EthBlocks: LoadBlock<RpcConvert: RpcConvert<Primitives = Self::Primiti
         &self,
         block_id: BlockId,
     ) -> impl Future<Output = Result<Option<usize>, Self::Error>> + Send {
-        async move {
-            // If no pending block from provider, build the pending block locally.
-            if block_id.is_pending() {
-                if let Some(block) =
-                    self.provider().pending_block().map_err(Self::Error::from_eth_err)?
-                {
-                    return Ok(Some(block.body().transaction_count()));
-                }
-
-                // If no pending block from provider, try to get local pending block
-                if let Some(pending) = self.local_pending_block().await? {
-                    return Ok(Some(pending.block.body().transaction_count()));
-                }
-
-                return Ok(None);
-            }
-
-            let block_hash = match self
-                .provider()
-                .block_hash_for_id(block_id)
-                .map_err(Self::Error::from_eth_err)?
-            {
-                Some(block_hash) => block_hash,
-                None => return Ok(None),
-            };
-
-            Ok(self
-                .cache()
-                .get_recovered_block(block_hash)
-                .await
-                .map_err(Self::Error::from_eth_err)?
-                .map(|b| b.body().transaction_count()))
-        }
+        async move { Ok(self.recovered_block(block_id).await?.map(|b| b.body().transaction_count())) }
     }
 
     /// Helper function for `eth_getBlockReceipts`.

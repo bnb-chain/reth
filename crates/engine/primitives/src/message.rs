@@ -1,11 +1,11 @@
 use crate::{
-    error::BeaconForkChoiceUpdateError, BSCEngineMessageError, BeaconOnNewPayloadError,
-    ExecutionPayload, ForkchoiceStatus,
+    error::BeaconForkChoiceUpdateError, BeaconOnNewPayloadError, ExecutionPayload, ForkchoiceStatus,
 };
-use alloy_primitives::{BlockHash, BlockNumber, U256};
+use alloy_eips::eip4895::Withdrawal;
+use alloy_primitives::{Bytes, B256};
 use alloy_rpc_types_engine::{
-    ForkChoiceUpdateResult, ForkchoiceState, ForkchoiceUpdateError, ForkchoiceUpdated, PayloadId,
-    PayloadStatus, PayloadStatusEnum,
+    ExecutionData, ForkChoiceUpdateResult, ForkchoiceState, ForkchoiceUpdateError,
+    ForkchoiceUpdated, PayloadId, PayloadStatus, PayloadStatusEnum,
 };
 use core::{
     fmt::{self, Display},
@@ -80,6 +80,15 @@ impl OnForkChoiceUpdated {
         Self {
             forkchoice_status: ForkchoiceStatus::Invalid,
             fut: Either::Left(futures::future::ready(Err(ForkchoiceUpdateError::InvalidState))),
+        }
+    }
+
+    /// Creates a new instance of `OnForkChoiceUpdated` if the forkchoice update failed because the
+    /// requested reorg to the head block exceeds the supported reorg depth.
+    pub fn too_deep_reorg() -> Self {
+        Self {
+            forkchoice_status: ForkchoiceStatus::Invalid,
+            fut: Either::Left(futures::future::ready(Err(ForkchoiceUpdateError::TooDeepReorg))),
         }
     }
 
@@ -175,16 +184,61 @@ pub struct BigBlockData<ExecutionData> {
     ///
     /// The first entry at index 0 represents the **original unmutated** base block's
     /// `ExecutionData`, which must be used to derive the initial EVM environment.
-    pub env_switches: Vec<(usize, ExecutionData)>,
+    pub env_switches: Vec<ExecutionData>,
     /// Block number → real block hash for blocks covered by previous big blocks in a sequence.
     /// When replaying chained big blocks, the BLOCKHASH opcode needs real hashes for blocks
     /// that were merged into earlier big blocks (and thus not individually persisted).
     pub prior_block_hashes: Vec<(u64, alloy_primitives::B256)>,
+    /// Block number for this big block.
+    pub block_number: u64,
+    /// Merged block access list for this big block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merged_block_access_list: Option<Bytes>,
 }
 
-impl<T> Default for BigBlockData<T> {
-    fn default() -> Self {
-        Self { env_switches: Vec::new(), prior_block_hashes: Vec::new() }
+impl ExecutionPayload for BigBlockData<ExecutionData> {
+    fn parent_hash(&self) -> B256 {
+        self.env_switches[0].parent_hash()
+    }
+
+    fn block_hash(&self) -> B256 {
+        self.env_switches.last().unwrap().block_hash()
+    }
+
+    fn block_number(&self) -> u64 {
+        self.block_number
+    }
+
+    fn withdrawals(&self) -> Option<&Vec<Withdrawal>> {
+        self.env_switches[0].withdrawals()
+    }
+
+    fn block_access_list(&self) -> Option<&Bytes> {
+        self.merged_block_access_list.as_ref()
+    }
+
+    fn parent_beacon_block_root(&self) -> Option<B256> {
+        self.env_switches[0].parent_beacon_block_root()
+    }
+
+    fn timestamp(&self) -> u64 {
+        self.env_switches[0].timestamp()
+    }
+
+    fn gas_used(&self) -> u64 {
+        self.env_switches.iter().map(|data| data.gas_used()).sum()
+    }
+
+    fn gas_limit(&self) -> u64 {
+        self.env_switches.iter().map(|data| data.gas_limit()).sum()
+    }
+
+    fn transaction_count(&self) -> usize {
+        self.env_switches.iter().map(|data| data.transaction_count()).sum()
+    }
+
+    fn slot_number(&self) -> Option<u64> {
+        self.env_switches[0].payload.slot_number()
     }
 }
 
@@ -226,16 +280,6 @@ pub enum BeaconEngineMessage<Payload: PayloadTypes> {
         /// The sender for returning forkchoice updated result.
         tx: oneshot::Sender<RethResult<OnForkChoiceUpdated>>,
     },
-
-    /// BSC specific engine message
-    QueryTd {
-        /// The block number to query the TD of.
-        number: BlockNumber,
-        /// The block hash to query the TD of.
-        hash: BlockHash,
-        /// The sender for returning the TD.
-        tx: oneshot::Sender<RethResult<Option<U256>>>,
-    },
 }
 
 impl<Payload: PayloadTypes> Display for BeaconEngineMessage<Payload> {
@@ -267,9 +311,6 @@ impl<Payload: PayloadTypes> Display for BeaconEngineMessage<Payload> {
                     "ForkchoiceUpdated {{ state: {state:?}, has_payload_attributes: {} }}",
                     payload_attrs.is_some()
                 )
-            }
-            Self::QueryTd { number, hash, .. } => {
-                write!(f, "QueryHeaderWithTd {{ number: {}, hash: {} }}", number, hash)
             }
         }
     }
@@ -360,16 +401,5 @@ where
             tx,
         });
         rx
-    }
-
-    /// Sends a query TD message to the beacon consensus engine and waits for a response.
-    pub async fn query_td(
-        &self,
-        number: BlockNumber,
-        hash: BlockHash,
-    ) -> Result<Option<U256>, BSCEngineMessageError> {
-        let (tx, rx) = oneshot::channel();
-        let _ = self.to_engine.send(BeaconEngineMessage::QueryTd { number, hash, tx });
-        rx.await.map_err(BSCEngineMessageError::internal)?.map_err(BSCEngineMessageError::internal)
     }
 }

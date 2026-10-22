@@ -1,9 +1,9 @@
-use crate::blobstore::{BlobStore, BlobStoreCleanupStat, BlobStoreError};
+use crate::blobstore::{BlobStore, BlobStoreCleanupStat, BlobStoreError, PooledBlobSidecar};
 use alloy_eips::{
     eip4844::{BlobAndProofV1, BlobAndProofV2, BlobCellsAndProofsV1},
-    eip7594::BlobTransactionSidecarVariant,
+    eip7594::{BlobTransactionSidecarVariant, Cell},
 };
-use alloy_primitives::{B128, B256};
+use alloy_primitives::{TxHash, B128, B256};
 use std::sync::Arc;
 
 /// A blobstore implementation that does nothing
@@ -12,18 +12,11 @@ use std::sync::Arc;
 pub struct NoopBlobStore;
 
 impl BlobStore for NoopBlobStore {
-    fn insert(
-        &self,
-        _tx: B256,
-        _data: BlobTransactionSidecarVariant,
-    ) -> Result<(), BlobStoreError> {
+    fn insert(&self, _tx: B256, _data: PooledBlobSidecar) -> Result<(), BlobStoreError> {
         Ok(())
     }
 
-    fn insert_all(
-        &self,
-        _txs: Vec<(B256, BlobTransactionSidecarVariant)>,
-    ) -> Result<(), BlobStoreError> {
+    fn insert_all(&self, _txs: Vec<(B256, PooledBlobSidecar)>) -> Result<(), BlobStoreError> {
         Ok(())
     }
 
@@ -91,6 +84,19 @@ impl BlobStore for NoopBlobStore {
         _indices_bitarray: B128,
     ) -> Result<Vec<Option<BlobCellsAndProofsV1>>, BlobStoreError> {
         Ok(vec![None; versioned_hashes.len()])
+    }
+
+    fn has_versioned_hashes(&self, versioned_hashes: &[B256]) -> Result<Vec<bool>, BlobStoreError> {
+        Ok(vec![false; versioned_hashes.len()])
+    }
+
+    fn get_cells(
+        &self,
+        tx_hash: TxHash,
+        indices_bitarray: B128,
+    ) -> Result<Option<Vec<Cell>>, BlobStoreError> {
+        let _ = (tx_hash, indices_bitarray);
+        Ok(None)
     }
 
     fn data_size_hint(&self) -> Option<usize> {

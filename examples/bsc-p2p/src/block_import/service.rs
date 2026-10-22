@@ -93,7 +93,7 @@ where
 
         Box::pin(async move {
             let sealed_block = block.block.block.clone().seal();
-            let payload = T::block_to_payload(sealed_block);
+            let payload = T::block_to_payload(sealed_block, None);
 
             match engine.new_payload(payload).await {
                 Ok(payload_status) => match payload_status.status {
@@ -402,7 +402,7 @@ mod tests {
     fn create_test_block() -> NewBlockMessage<NewBlock<Block>> {
         let block: reth_ethereum_primitives::Block = Block::default();
         let new_block = NewBlock { block: block.clone(), td: U128::ZERO };
-        NewBlockMessage { hash: block.header.hash_slow(), block: Arc::new(new_block), td: None }
+        NewBlockMessage { hash: block.header.hash_slow(), block: Arc::new(new_block) }
     }
 
     /// Helper function to handle engine messages with specified payload statuses

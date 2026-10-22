@@ -6,13 +6,13 @@ use crate::{
     to_range, BlockHashReader, BlockNumReader, HeaderProvider, ReceiptProvider,
     TransactionsProvider,
 };
-use alloy_consensus::transaction::TransactionMeta;
-use alloy_eips::{eip2718::Encodable2718, BlockHashOrNumber};
-use alloy_primitives::{Address, BlockHash, BlockNumber, TxHash, TxNumber, B256, U256};
+use alloy_consensus::transaction::{TransactionMeta, TxHashRef};
+use alloy_eips::BlockHashOrNumber;
+use alloy_primitives::{Address, BlockHash, BlockNumber, TxHash, TxNumber, B256};
 use reth_chainspec::ChainInfo;
 use reth_db::static_file::{
-    BlockHashMask, HeaderMask, HeaderWithHashMask, ReceiptMask, StaticFileCursor, TDWithHashMask,
-    TotalDifficultyMask, TransactionMask, TransactionSenderMask,
+    BlockHashMask, HeaderMask, HeaderWithHashMask, ReceiptMask, StaticFileCursor, TransactionMask,
+    TransactionSenderMask,
 };
 use reth_db_api::table::{Decompress, Value};
 use reth_node_types::NodePrimitives;
@@ -158,18 +158,6 @@ impl<N: NodePrimitives<BlockHeader: Value>> HeaderProvider for StaticFileJarProv
         self.cursor()?.get_one::<HeaderMask<Self::Header>>(num.into())
     }
 
-    fn header_td(&self, block_hash: &BlockHash) -> ProviderResult<Option<U256>> {
-        Ok(self
-            .cursor()?
-            .get_two::<TDWithHashMask>(block_hash.into())?
-            .filter(|(_, hash)| hash == block_hash)
-            .map(|(td, _)| td.into()))
-    }
-
-    fn header_td_by_number(&self, num: BlockNumber) -> ProviderResult<Option<U256>> {
-        Ok(self.cursor()?.get_one::<TotalDifficultyMask>(num.into())?.map(Into::into))
-    }
-
     fn headers_range(
         &self,
         range: impl RangeBounds<BlockNumber>,
@@ -276,7 +264,7 @@ impl<N: NodePrimitives<SignedTx: Decompress + SignedTransaction>> TransactionsPr
 
         Ok(cursor
             .get_one::<TransactionMask<Self::Transaction>>((&hash).into())?
-            .and_then(|res| (res.trie_hash() == hash).then(|| cursor.number()).flatten()))
+            .and_then(|res| (*res.tx_hash() == hash).then(|| cursor.number()).flatten()))
     }
 
     fn transaction_by_id(&self, num: TxNumber) -> ProviderResult<Option<Self::Transaction>> {

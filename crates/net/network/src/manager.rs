@@ -462,7 +462,8 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
 
     /// Returns a new [`FetchClient`] that can be cloned and shared.
     ///
-    /// The [`FetchClient`] is the entrypoint for sending requests to the network.
+    /// The [`FetchClient`] is the entrypoint for sending requests to the network, including
+    /// `snap/2` requests via its [`SnapClient`](reth_network_p2p::snap::client::SnapClient) impl.
     pub fn fetch_client(&self) -> FetchClient<N> {
         self.swarm.state().fetch_client()
     }
@@ -573,6 +574,8 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
                     response,
                 })
             }
+            PeerRequest::GetCells { request, response } => self
+                .delegate_eth_request(IncomingEthRequest::GetCells { peer_id, request, response }),
             PeerRequest::GetPooledTransactions { request, response } => {
                 self.notify_tx_manager(NetworkTransactionEvent::GetPooledTransactions {
                     peer_id,
@@ -580,6 +583,8 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
                     response,
                 });
             }
+            PeerRequest::GetSnap { request, response } => self
+                .delegate_eth_request(IncomingEthRequest::GetSnap { peer_id, request, response }),
         }
     }
 
@@ -654,17 +659,7 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
             }
             PeerMessage::NewBlock(block) => {
                 self.within_pow_or_disconnect(peer_id, move |this| {
-                    // Extract TD from the NewBlock message
-                    let td = block.td();
-
-                    // Update the session's current TD (important for BSC and other chains)
-                    if let Some(session) = this.swarm.sessions().active_sessions().get(&peer_id) {
-                        session.update_td(td);
-                    }
-
-                    // Update NetworkState's ActivePeer TD
-                    this.swarm.state_mut().on_new_block_with_td(peer_id, block.hash, td);
-
+                    this.swarm.state_mut().on_new_block(peer_id, block.hash);
                     // start block import process
                     this.block_import.on_new_block(peer_id, NewBlockEvent::Block(block));
                 });
@@ -684,7 +679,7 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
                     msg,
                 });
             }
-            PeerMessage::SendTransactions(_) => {
+            PeerMessage::SendTransactions(_) | PeerMessage::SendBroadcastPoolTransactions(_) => {
                 unreachable!("Not emitted by session")
             }
             PeerMessage::BlockRangeUpdated(_) => {}
@@ -700,15 +695,13 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
             NetworkHandleMessage::DiscoveryListener(tx) => {
                 self.swarm.state_mut().discovery_mut().add_listener(tx);
             }
-            NetworkHandleMessage::AnnounceBlock(block, hash, total_difficulty) => {
+            NetworkHandleMessage::AnnounceBlock(block, hash) => {
                 if self.handle.mode().is_stake() {
                     // See [EIP-3675](https://eips.ethereum.org/EIPS/eip-3675#devp2p)
                     warn!(target: "net", "Peer performed block propagation, but it is not supported in proof of stake (EIP-3675)");
-                    return;
+                    return
                 }
-                // Include the total_difficulty when announcing our own block
-                // This is essential for BSC and other chains that rely on TD
-                let msg = NewBlockMessage { hash, block: Arc::new(block), td: total_difficulty };
+                let msg = NewBlockMessage { hash, block: Arc::new(block) };
                 self.swarm.state_mut().announce_new_block(msg);
             }
             NetworkHandleMessage::EthRequest { peer_id, request } => {
@@ -717,12 +710,21 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
             NetworkHandleMessage::SendTransaction { peer_id, msg } => {
                 self.swarm.sessions_mut().send_message(&peer_id, PeerMessage::SendTransactions(msg))
             }
+            NetworkHandleMessage::SendBroadcastPoolTransactions { peer_id, msg } => self
+                .swarm
+                .sessions_mut()
+                .send_message(&peer_id, PeerMessage::SendBroadcastPoolTransactions(msg)),
             NetworkHandleMessage::SendPooledTransactionHashes { peer_id, msg } => self
                 .swarm
                 .sessions_mut()
                 .send_message(&peer_id, PeerMessage::PooledTransactions(msg)),
             NetworkHandleMessage::AddTrustedPeerId(peer_id) => {
                 self.swarm.state_mut().add_trusted_peer_id(peer_id);
+            }
+            NetworkHandleMessage::AddTrustedPeerNode(trusted_peer) => {
+                if !self.swarm.is_shutting_down() {
+                    self.swarm.state_mut().add_trusted_peer_node(trusted_peer);
+                }
             }
             NetworkHandleMessage::AddPeerAddress(peer, kind, addr) => {
                 // only add peer if we are not shutting down
@@ -735,6 +737,12 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
             }
             NetworkHandleMessage::DisconnectPeer(peer_id, reason) => {
                 self.swarm.sessions_mut().disconnect(peer_id, reason);
+            }
+            NetworkHandleMessage::BanPeer(peer_id) => {
+                self.swarm.peers_mut().ban_peer_by_admin(peer_id);
+            }
+            NetworkHandleMessage::UnbanPeer(peer_id) => {
+                self.swarm.peers_mut().unban_peer_by_admin(peer_id);
             }
             NetworkHandleMessage::ConnectPeer(peer_id, kind, addr) => {
                 self.swarm.state_mut().add_and_connect(peer_id, kind, addr);
@@ -1032,20 +1040,11 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
             .active_sessions()
             .iter()
             .filter_map(|(&peer_id, session)| {
-                let (record, kind) = self.swarm.state().peers().peer_by_id(peer_id)?;
-
-                // Get real-time block info from NetworkState
-                let (best_hash, best_number, best_td) =
-                    self.swarm.state().get_peer_best_block(&peer_id).unwrap_or_else(|| {
-                        // Fallback to status from handshake if no real-time data
-                        (
-                            session.status.blockhash,
-                            session.status.latest_block,
-                            session.status.total_difficulty,
-                        )
-                    });
-
-                Some(session.peer_info(&record, kind, best_hash, best_number, best_td))
+                self.swarm
+                    .state()
+                    .peers()
+                    .peer_by_id(peer_id)
+                    .map(|(record, kind)| session.peer_info(&record, kind))
             })
             .collect()
     }
@@ -1054,21 +1053,13 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
     ///
     /// Returns `None` if there's no active session to the peer.
     fn get_peer_info_by_id(&self, peer_id: PeerId) -> Option<PeerInfo> {
-        let session = self.swarm.sessions().active_sessions().get(&peer_id)?;
-        let (record, kind) = self.swarm.state().peers().peer_by_id(peer_id)?;
-
-        // Get real-time block info from NetworkState
-        let (best_hash, best_number, best_td) =
-            self.swarm.state().get_peer_best_block(&peer_id).unwrap_or_else(|| {
-                // Fallback to status from handshake if no real-time data
-                (
-                    session.status.blockhash,
-                    session.status.latest_block,
-                    session.status.total_difficulty,
-                )
-            });
-
-        Some(session.peer_info(&record, kind, best_hash, best_number, best_td))
+        self.swarm.sessions().active_sessions().get(&peer_id).and_then(|session| {
+            self.swarm
+                .state()
+                .peers()
+                .peer_by_id(peer_id)
+                .map(|(record, kind)| session.peer_info(&record, kind))
+        })
     }
 
     /// Returns [`PeerInfo`] for a given peers.
@@ -1198,7 +1189,7 @@ impl<N: NetworkPrimitives> Future for NetworkManager<N> {
         if maybe_more_handle_messages || maybe_more_swarm_events {
             // make sure we're woken up again
             cx.waker().wake_by_ref();
-            return Poll::Pending;
+            return Poll::Pending
         }
 
         this.update_poll_metrics(start, poll_durations);

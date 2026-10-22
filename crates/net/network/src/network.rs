@@ -9,19 +9,19 @@ use parking_lot::Mutex;
 use reth_discv4::{Discv4, NatResolver};
 use reth_discv5::Discv5;
 use reth_eth_wire::{
-    BlockRangeUpdate, DisconnectReason, EthNetworkPrimitives, NetworkPrimitives,
-    NewPooledTransactionHashes, SharedTransactions,
+    BlockRangeUpdate, BroadcastPoolTransactions, DisconnectReason, EthNetworkPrimitives,
+    NetworkPrimitives, NewPooledTransactionHashes, SharedTransactions,
 };
 use reth_ethereum_forks::Head;
 use reth_network_api::{
     events::{NetworkPeersEvents, PeerEvent, PeerEventStream},
     test_utils::{PeersHandle, PeersHandleProvider},
-    BlockDownloaderProvider, DiscoveryEvent, NetworkError, NetworkEvent,
+    BlockDownloaderProvider, CellCustody, DiscoveryEvent, NetworkError, NetworkEvent,
     NetworkEventListenerProvider, NetworkInfo, NetworkStatus, PeerInfo, PeerRequest, Peers,
     PeersInfo,
 };
 use reth_network_p2p::sync::{NetworkSyncUpdater, SyncState, SyncStateProvider};
-use reth_network_peers::{NodeRecord, PeerId};
+use reth_network_peers::{NodeRecord, PeerId, TrustedPeer};
 use reth_network_types::{PeerAddr, PeerKind, Reputation, ReputationChangeKind};
 use reth_tokio_util::{EventSender, EventStream};
 use secp256k1::SecretKey;
@@ -78,6 +78,7 @@ impl<N: NetworkPrimitives> NetworkHandle<N> {
             is_syncing: Arc::new(AtomicBool::new(false)),
             initial_sync_done: Arc::new(AtomicBool::new(false)),
             chain_id,
+            cell_custody: CellCustody::default(),
             tx_gossip_disabled,
             discv4,
             discv5,
@@ -116,15 +117,8 @@ impl<N: NetworkPrimitives> NetworkHandle<N> {
     /// Caution: in `PoS` this is a noop because new blocks are no longer announced over devp2p.
     /// Instead they are sent to the node by CL and can be requested over devp2p.
     /// Broadcasting new blocks is considered a protocol violation.
-    ///
-    /// For BSC and other `PoW`-based chains, the `total_difficulty` parameter is essential.
-    pub fn announce_block(
-        &self,
-        block: N::NewBlockPayload,
-        hash: B256,
-        total_difficulty: Option<alloy_primitives::U256>,
-    ) {
-        self.send_message(NetworkHandleMessage::AnnounceBlock(block, hash, total_difficulty))
+    pub fn announce_block(&self, block: N::NewBlockPayload, hash: B256) {
+        self.send_message(NetworkHandleMessage::AnnounceBlock(block, hash))
     }
 
     /// Sends a [`PeerRequest`] to the given peer's session.
@@ -143,6 +137,15 @@ impl<N: NetworkPrimitives> NetworkHandle<N> {
             peer_id,
             msg: SharedTransactions(msg),
         })
+    }
+
+    /// Send cached full pool transactions to the peer.
+    pub(crate) fn send_broadcast_pool_transactions(
+        &self,
+        peer_id: PeerId,
+        msg: BroadcastPoolTransactions,
+    ) {
+        self.send_message(NetworkHandleMessage::SendBroadcastPoolTransactions { peer_id, msg })
     }
 
     /// Send eth message to the peer.
@@ -327,6 +330,10 @@ impl<N: NetworkPrimitives> Peers for NetworkHandle<N> {
         self.send_message(NetworkHandleMessage::AddTrustedPeerId(peer));
     }
 
+    fn add_trusted_peer_node(&self, peer: TrustedPeer) {
+        self.send_message(NetworkHandleMessage::AddTrustedPeerNode(peer));
+    }
+
     /// Sends a message to the [`NetworkManager`](crate::NetworkManager) to add a peer to the known
     /// set, with the given kind.
     fn add_peer_kind(
@@ -382,6 +389,17 @@ impl<N: NetworkPrimitives> Peers for NetworkHandle<N> {
         self.send_message(NetworkHandleMessage::DisconnectPeer(peer, Some(reason)))
     }
 
+    /// Sends a message to the [`NetworkManager`](crate::NetworkManager) to ban the given peer and
+    /// disconnect an active non-trusted session if one exists.
+    fn ban_peer(&self, peer: PeerId) {
+        self.send_message(NetworkHandleMessage::BanPeer(peer))
+    }
+
+    /// Sends a message to the [`NetworkManager`](crate::NetworkManager) to unban the given peer.
+    fn unban_peer(&self, peer: PeerId) {
+        self.send_message(NetworkHandleMessage::UnbanPeer(peer))
+    }
+
     /// Sends a message to the [`NetworkManager`](crate::NetworkManager) to connect to the given
     /// peer.
     ///
@@ -434,6 +452,10 @@ impl<N: NetworkPrimitives> NetworkInfo for NetworkHandle<N> {
         self.inner.chain_id.load(Ordering::Relaxed)
     }
 
+    fn cell_custody(&self) -> &CellCustody {
+        &self.inner.cell_custody
+    }
+
     fn is_syncing(&self) -> bool {
         SyncStateProvider::is_syncing(self)
     }
@@ -450,7 +472,7 @@ impl<N: NetworkPrimitives> SyncStateProvider for NetworkHandle<N> {
     // used to guard the txpool
     fn is_initially_syncing(&self) -> bool {
         if self.inner.initial_sync_done.load(Ordering::Relaxed) {
-            return false;
+            return false
         }
         self.inner.is_syncing.load(Ordering::Relaxed)
     }
@@ -509,6 +531,8 @@ struct NetworkInner<N: NetworkPrimitives = EthNetworkPrimitives> {
     initial_sync_done: Arc<AtomicBool>,
     /// The chain id
     chain_id: Arc<AtomicU64>,
+    /// Shared blob cell custody bitmap.
+    cell_custody: CellCustody,
     /// Whether to disable transaction gossip
     tx_gossip_disabled: bool,
     /// The instance of the discv4 service
@@ -532,20 +556,33 @@ pub trait NetworkProtocols: Send + Sync {
 pub(crate) enum NetworkHandleMessage<N: NetworkPrimitives = EthNetworkPrimitives> {
     /// Marks a peer as trusted.
     AddTrustedPeerId(PeerId),
+    /// Adds a trusted peer that may use a hostname, registering it for periodic DNS re-resolution.
+    AddTrustedPeerNode(TrustedPeer),
     /// Adds an address for a peer, including its ID, kind, and socket address.
     AddPeerAddress(PeerId, Option<PeerKind>, PeerAddr),
     /// Removes a peer from the peerset corresponding to the given kind.
     RemovePeer(PeerId, PeerKind),
     /// Disconnects a connection to a peer if it exists, optionally providing a disconnect reason.
     DisconnectPeer(PeerId, Option<DisconnectReason>),
+    /// Bans a peer and disconnects an active non-trusted session if one exists.
+    BanPeer(PeerId),
+    /// Unbans a peer.
+    UnbanPeer(PeerId),
     /// Broadcasts an event to announce a new block to all nodes.
-    AnnounceBlock(N::NewBlockPayload, B256, Option<alloy_primitives::U256>),
+    AnnounceBlock(N::NewBlockPayload, B256),
     /// Sends a list of transactions to the given peer.
     SendTransaction {
         /// The ID of the peer to which the transactions are sent.
         peer_id: PeerId,
         /// The shared transactions to send.
         msg: SharedTransactions<N::BroadcastedTransaction>,
+    },
+    /// Sends cached full pool transactions to the given peer.
+    SendBroadcastPoolTransactions {
+        /// The ID of the peer to which the transactions are sent.
+        peer_id: PeerId,
+        /// The cached pool transactions to send.
+        msg: BroadcastPoolTransactions,
     },
     /// Sends a list of transaction hashes to the given peer.
     SendPooledTransactionHashes {

@@ -4,15 +4,16 @@
 //! to be generic over it.
 
 use crate::{
-    blobstore::BlobStoreError,
+    blobstore::{BlobStore, BlobStoreError, NoopBlobStore},
     error::{InvalidPoolTransactionError, PoolError},
     pool::TransactionListenerKind,
     traits::{BestTransactionsAttributes, GetPooledTransactionLimit, NewBlobSidecar},
     validate::ValidTransaction,
     AddedTransactionOutcome, AllPoolTransactions, AllTransactionsEvents, BestTransactions,
-    BlockInfo, EthPoolTransaction, EthPooledTransaction, NewTransactionEvent, PoolResult, PoolSize,
-    PoolTransaction, PropagatedTransactions, TransactionEvents, TransactionOrigin, TransactionPool,
-    TransactionValidationOutcome, TransactionValidator, ValidPoolTransaction,
+    BlockInfo, EthBlobTransactionSidecar, EthPoolTransaction, EthPooledTransaction,
+    NewTransactionEvent, PoolResult, PoolSize, PoolTransaction, PropagatedTransactions,
+    TransactionEvents, TransactionOrigin, TransactionPool, TransactionValidationOutcome,
+    TransactionValidator, ValidPoolTransaction,
 };
 use alloy_eips::{
     eip1559::ETHEREUM_BLOCK_GAS_LIMIT_30M,
@@ -257,6 +258,12 @@ impl<T: EthPoolTransaction> TransactionPool for NoopTransactionPool<T> {
     {
     }
 
+    fn retain_contains<A>(&self, _announcement: &mut A)
+    where
+        A: HandleMempoolData,
+    {
+    }
+
     fn get(&self, _tx_hash: &TxHash) -> Option<Arc<ValidPoolTransaction<Self::Transaction>>> {
         None
     }
@@ -343,14 +350,6 @@ impl<T: EthPoolTransaction> TransactionPool for NoopTransactionPool<T> {
         Ok(None)
     }
 
-    fn insert_blob(
-        &self,
-        _tx_hash: TxHash,
-        _blob: BlobTransactionSidecarVariant,
-    ) -> Result<(), BlobStoreError> {
-        Ok(())
-    }
-
     fn get_all_blobs(
         &self,
         _tx_hashes: Vec<TxHash>,
@@ -396,6 +395,17 @@ impl<T: EthPoolTransaction> TransactionPool for NoopTransactionPool<T> {
     ) -> Result<Vec<Option<BlobCellsAndProofsV1>>, BlobStoreError> {
         Ok(vec![None; versioned_hashes.len()])
     }
+
+    fn has_blobs_for_versioned_hashes(
+        &self,
+        versioned_hashes: &[B256],
+    ) -> Result<Vec<bool>, BlobStoreError> {
+        Ok(vec![false; versioned_hashes.len()])
+    }
+
+    fn blob_store(&self) -> Box<dyn BlobStore> {
+        Box::new(NoopBlobStore)
+    }
 }
 
 /// A [`TransactionValidator`] that does nothing.
@@ -422,16 +432,10 @@ impl<T: EthPoolTransaction> TransactionValidator for MockTransactionValidator<T>
                 InvalidPoolTransactionError::Underpriced,
             );
         }
-        // Reject blob transactions with zero max_fee_per_blob_gas
-        if transaction.max_fee_per_blob_gas() == Some(0) {
-            return TransactionValidationOutcome::Invalid(
-                transaction,
-                InvalidPoolTransactionError::Eip4844(
-                    crate::error::Eip4844PoolTransactionError::ZeroBlobFee,
-                ),
-            );
-        }
-        let maybe_sidecar = transaction.take_blob().maybe_sidecar().cloned();
+        let maybe_sidecar = match transaction.take_blob() {
+            EthBlobTransactionSidecar::Present(sidecar) => Some(sidecar),
+            _ => None,
+        };
         // we return `balance: U256::MAX` to simulate a valid transaction which will never go into
         // overdraft
         TransactionValidationOutcome::Valid {

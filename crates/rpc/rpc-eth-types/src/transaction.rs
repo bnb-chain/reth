@@ -2,21 +2,13 @@
 //!
 //! Transaction wrapper that labels transaction with its origin.
 
-use alloy_primitives::{Bytes, B256};
+use alloy_consensus::transaction::TxHashRef;
+use alloy_primitives::B256;
 use alloy_rpc_types_eth::TransactionInfo;
 use reth_ethereum_primitives::TransactionSigned;
 use reth_primitives_traits::{NodePrimitives, Recovered, SignedTransaction};
 use reth_rpc_convert::{RpcConvert, RpcTransaction};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-/// Response type for `eth_fillTransaction` RPC method.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FillTransactionResult<T> {
-    /// RLP-encoded transaction bytes
-    pub raw: Bytes,
-    /// Filled transaction object
-    pub tx: T,
-}
 
 /// Represents from where a transaction was fetched.
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -69,7 +61,7 @@ impl<T: SignedTransaction> TransactionSource<T> {
                 base_fee,
             } => {
                 let tx_info = TransactionInfo {
-                    hash: Some(transaction.trie_hash()),
+                    hash: Some(*transaction.tx_hash()),
                     index: Some(index),
                     block_hash: Some(block_hash),
                     block_number: Some(block_number),
@@ -86,7 +78,7 @@ impl<T: SignedTransaction> TransactionSource<T> {
     pub fn split(self) -> (Recovered<T>, TransactionInfo) {
         match self {
             Self::Pool(tx) => {
-                let hash = tx.trie_hash();
+                let hash = *tx.tx_hash();
                 (tx, TransactionInfo { hash: Some(hash), ..Default::default() })
             }
             Self::Block {
@@ -97,7 +89,7 @@ impl<T: SignedTransaction> TransactionSource<T> {
                 block_timestamp,
                 base_fee,
             } => {
-                let hash = transaction.trie_hash();
+                let hash = *transaction.tx_hash();
                 (
                     transaction,
                     TransactionInfo {
@@ -123,12 +115,12 @@ impl<T> From<TransactionSource<T>> for Recovered<T> {
     }
 }
 
-/// Response structure for transaction data and receipt with custom field names
+/// Response for `eth_getTransactionDataAndReceipt` with go-bsc's field names (`txData`/`receipt`).
 #[derive(Debug, Clone)]
 pub struct TransactionDataAndReceipt<TX, RX> {
-    /// Transaction data (corresponds to "txData" in JSON)
+    /// Transaction data (corresponds to `txData` in JSON).
     pub tx_data: Option<TX>,
-    /// Transaction receipt
+    /// Transaction receipt.
     pub receipt: Option<RX>,
 }
 
@@ -196,7 +188,6 @@ where
                             receipt = Some(map.next_value()?);
                         }
                         _ => {
-                            // Ignore unknown fields
                             let _ = map.next_value::<serde::de::IgnoredAny>()?;
                         }
                     }

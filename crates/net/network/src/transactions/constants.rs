@@ -1,28 +1,12 @@
 /* ==================== BROADCAST ==================== */
 
-/// Soft limit for the number of hashes in a
-/// [`NewPooledTransactionHashes`](reth_eth_wire::NewPooledTransactionHashes) broadcast message.
-///
-/// Spec'd at 4096 hashes.
-///
-/// <https://github.com/ethereum/devp2p/blob/master/caps/eth.md#newpooledtransactionhashes-0x08>
-pub const SOFT_LIMIT_COUNT_HASHES_IN_NEW_POOLED_TRANSACTIONS_BROADCAST_MESSAGE: usize = 4096;
+pub use reth_eth_wire_types::SOFT_LIMIT_COUNT_HASHES_IN_NEW_POOLED_TRANSACTIONS_BROADCAST_MESSAGE;
 
 /// Default soft limit for the byte size of a [`Transactions`](reth_eth_wire::Transactions)
 /// broadcast message.
 ///
 /// Default is 128 KiB.
 pub const DEFAULT_SOFT_LIMIT_BYTE_SIZE_TRANSACTIONS_BROADCAST_MESSAGE: usize = 128 * 1024;
-
-/// Max size of a transaction that will be broadcast in full to peers.
-///
-/// Transactions larger than this threshold will only be announced via
-/// [`NewPooledTransactionHashes`](reth_eth_wire::NewPooledTransactionHashes) and must be
-/// explicitly fetched by interested peers. This aligns with the BSC client behavior to reduce
-/// bandwidth usage for large transactions (e.g. contract deployments).
-///
-/// Default is 4096 bytes.
-pub const TX_MAX_BROADCAST_SIZE: usize = 4096;
 
 /* ================ REQUEST-RESPONSE ================ */
 
@@ -45,8 +29,6 @@ pub const SOFT_LIMIT_BYTE_SIZE_POOLED_TRANSACTIONS_RESPONSE: usize = 2 * 1024 * 
 
 /// Constants used by [`TransactionsManager`](super::TransactionsManager).
 pub mod tx_manager {
-    use std::time::Duration;
-
     use super::SOFT_LIMIT_COUNT_HASHES_IN_NEW_POOLED_TRANSACTIONS_BROADCAST_MESSAGE;
 
     /// Default limit for number of transactions to keep track of for a single peer.
@@ -65,20 +47,6 @@ pub mod tx_manager {
     ///
     /// Default is 100 KiB, i.e. 3 200 transaction hashes.
     pub const DEFAULT_MAX_COUNT_BAD_IMPORTS: u32 = 100 * 1024 / 32;
-
-    /// Maximum number of local pending transactions to reannounce on each timer tick.
-    pub const DEFAULT_MAX_COUNT_REANNOUNCED_LOCAL_TRANSACTIONS: usize = 1024;
-
-    /// Interval between checks for local pending transactions that should be reannounced.
-    pub const DEFAULT_REANNOUNCE_LOCAL_TRANSACTIONS_INTERVAL: Duration = Duration::from_secs(60);
-
-    /// Default age threshold for reannouncing local pending transactions.
-    ///
-    /// This effectively disables the feature unless configured otherwise.
-    pub const DEFAULT_REANNOUNCE_TIME: Duration = Duration::from_secs(10 * 365 * 24 * 60 * 60);
-
-    /// Minimum allowed age threshold for reannouncing local pending transactions.
-    pub const MIN_REANNOUNCE_TIME: Duration = DEFAULT_REANNOUNCE_LOCAL_TRANSACTIONS_INTERVAL;
 
     /// Default memory limit (in bytes) for the channel between
     /// [`NetworkManager`](crate::NetworkManager) and

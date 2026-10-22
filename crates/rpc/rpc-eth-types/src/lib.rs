@@ -15,6 +15,7 @@ pub mod block;
 pub mod block_overrides_ext;
 pub mod builder;
 pub mod cache;
+pub mod capabilities;
 pub mod error;
 pub mod fee_history;
 pub mod gas_oracle;
@@ -36,6 +37,7 @@ pub use cache::{
     config::EthStateCacheConfig, db::StateCacheDb, multi_consumer::MultiConsumerLruCache,
     EthStateCache,
 };
+pub use capabilities::{EthCapabilities, EthCapabilitiesHead, EthCapabilitiesResource};
 pub use error::{EthApiError, EthResult, RevertError, RpcInvalidTransactionError, SignError};
 pub use fee_history::{FeeHistoryCache, FeeHistoryCacheConfig, FeeHistoryEntry};
 pub use gas_oracle::{
@@ -44,5 +46,5 @@ pub use gas_oracle::{
 pub use id_provider::EthSubscriptionIdProvider;
 pub use log_filter::LogFilter;
 pub use pending_block::{PendingBlock, PendingBlockEnv, PendingBlockEnvOrigin};
-pub use transaction::{FillTransactionResult, TransactionDataAndReceipt, TransactionSource};
+pub use transaction::{TransactionDataAndReceipt, TransactionSource};
 pub use tx_forward::ForwardConfig;

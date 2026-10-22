@@ -25,13 +25,12 @@ reth-rpc-convert.workspace = true
 reth-tasks = { workspace = true, features = ["rayon"] }
 reth-transaction-pool.workspace = true
 reth-chainspec.workspace = true
-reth-engine-primitives.workspace = true
 reth-rpc-eth-types.workspace = true
 reth-rpc-server-types.workspace = true
 reth-network-api.workspace = true
 reth-node-api.workspace = true
 reth-trie-common = { workspace = true, features = ["eip1186"] }
-rust-eth-triedb.workspace = true
+reth-prune-types.workspace = true
 
 # ethereum
 alloy-evm = { workspace = true, features = ["overrides", "call-util"] }
@@ -64,13 +63,10 @@ serde_json.workspace = true
 tracing.workspace = true
 
 [features]
-io-uring = ["rust-eth-triedb/io-uring"]
 jemalloc = [
-    "rust-eth-triedb/jemalloc",
     "reth-trie-common/jemalloc",
 ]
 asm-keccak = [
-    "rust-eth-triedb/asm-keccak",
     "alloy-evm/asm-keccak",
     "alloy-primitives/asm-keccak",
     "reth-trie-common/asm-keccak",

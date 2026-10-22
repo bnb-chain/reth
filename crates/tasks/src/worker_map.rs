@@ -4,8 +4,17 @@
 //! This is a substitute for `spawn_blocking` that reuses the same OS thread for the same
 //! named task, like a 1-thread thread pool keyed by name.
 
+use crate::metrics::WorkerThreadMetrics;
 use dashmap::DashMap;
-use std::{panic::AssertUnwindSafe, thread};
+use std::{
+    panic::AssertUnwindSafe,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+    thread,
+    time::Instant,
+};
 use tokio::sync::{mpsc, oneshot};
 
 type BoxedTask = Box<dyn FnOnce() + Send + 'static>;
@@ -14,16 +23,20 @@ type BoxedTask = Box<dyn FnOnce() + Send + 'static>;
 struct WorkerThread {
     /// Sender to submit work to this worker's thread.
     tx: mpsc::UnboundedSender<BoxedTask>,
+    /// Metrics labeled with this worker's name.
+    metrics: WorkerThreadMetrics,
+    /// Number of tasks currently running or queued on this worker.
+    pending: Arc<AtomicUsize>,
     /// The OS thread handle. Taken during shutdown to join.
     handle: Option<thread::JoinHandle<()>>,
 }
 
 impl WorkerThread {
     /// Spawns a new worker thread with the given name.
-    fn new(name: &'static str) -> Self {
+    fn new(name: &'static str, namespace: Option<&'static str>) -> Self {
         let (tx, mut rx) = mpsc::unbounded_channel::<BoxedTask>();
         let handle = thread::Builder::new()
-            .name(name.to_string())
+            .name(namespace.map_or_else(|| name.to_string(), |ns| format!("{ns}-{name}")))
             .spawn(move || {
                 while let Some(task) = rx.blocking_recv() {
                     let _ = std::panic::catch_unwind(AssertUnwindSafe(task));
@@ -31,7 +44,126 @@ impl WorkerThread {
             })
             .unwrap_or_else(|e| panic!("failed to spawn worker thread {name:?}: {e}"));
 
-        Self { tx, handle: Some(handle) }
+        Self {
+            tx,
+            metrics: WorkerThreadMetrics::new(name, namespace),
+            pending: Arc::new(AtomicUsize::new(0)),
+            handle: Some(handle),
+        }
+    }
+
+    /// Spawns a closure on this worker.
+    fn spawn<F, R>(&self, f: F) -> oneshot::Receiver<R>
+    where
+        F: FnOnce() -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        self.pending.fetch_add(1, Ordering::AcqRel);
+
+        let (result_tx, result_rx) = oneshot::channel();
+        let pending = self.pending.clone();
+        let metrics = self.metrics.clone();
+        let queued_at = Instant::now();
+
+        let mut observation = QueueObservation::new(metrics.clone());
+        let task: BoxedTask = Box::new(move || {
+            observation.start();
+            let started_at = Instant::now();
+            metrics.record_queue_wait(started_at.saturating_duration_since(queued_at));
+            let _decrement_pending = DecrementPendingOnDrop(pending);
+            let _record_task_duration = RecordTaskDurationOnDrop::new(metrics, started_at);
+            let _ = result_tx.send(f());
+        });
+
+        if self.tx.send(task).is_err() {
+            self.pending.fetch_sub(1, Ordering::AcqRel);
+        }
+
+        result_rx
+    }
+
+    /// Attempts to spawn a closure if this worker has no task running or queued.
+    fn try_spawn<F, R>(&self, f: F) -> Option<oneshot::Receiver<R>>
+    where
+        F: FnOnce() -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        self.pending.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire).ok()?;
+
+        let (result_tx, result_rx) = oneshot::channel();
+        let pending = self.pending.clone();
+        let metrics = self.metrics.clone();
+        let queued_at = Instant::now();
+
+        let mut observation = QueueObservation::new(metrics.clone());
+        let task: BoxedTask = Box::new(move || {
+            observation.start();
+            let started_at = Instant::now();
+            metrics.record_queue_wait(started_at.saturating_duration_since(queued_at));
+            let _decrement_pending = DecrementPendingOnDrop(pending);
+            let _record_task_duration = RecordTaskDurationOnDrop::new(metrics, started_at);
+            let _ = result_tx.send(f());
+        });
+
+        if self.tx.send(task).is_err() {
+            self.pending.fetch_sub(1, Ordering::AcqRel);
+            return None
+        }
+
+        Some(result_rx)
+    }
+}
+
+/// Accounts for queued and active work even if sending fails or a closure panics.
+struct QueueObservation {
+    metrics: WorkerThreadMetrics,
+    started: bool,
+}
+impl QueueObservation {
+    fn new(metrics: WorkerThreadMetrics) -> Self {
+        metrics.queued_tasks.increment(1.0);
+        Self { metrics, started: false }
+    }
+    fn start(&mut self) {
+        self.metrics.queued_tasks.decrement(1.0);
+        self.metrics.active_tasks.increment(1.0);
+        self.started = true;
+    }
+}
+impl Drop for QueueObservation {
+    fn drop(&mut self) {
+        if self.started {
+            self.metrics.active_tasks.decrement(1.0);
+        } else {
+            self.metrics.queued_tasks.decrement(1.0);
+        }
+    }
+}
+
+/// Decrements a worker's pending task count when a task finishes, including after panic.
+struct DecrementPendingOnDrop(Arc<AtomicUsize>);
+
+impl Drop for DecrementPendingOnDrop {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// Records a worker task's run time when the task finishes or unwinds.
+struct RecordTaskDurationOnDrop {
+    metrics: WorkerThreadMetrics,
+    started_at: Instant,
+}
+
+impl RecordTaskDurationOnDrop {
+    const fn new(metrics: WorkerThreadMetrics, started_at: Instant) -> Self {
+        Self { metrics, started_at }
+    }
+}
+
+impl Drop for RecordTaskDurationOnDrop {
+    fn drop(&mut self) {
+        self.metrics.record_task_duration(self.started_at.elapsed());
     }
 }
 
@@ -41,6 +173,7 @@ impl WorkerThread {
 /// that name. Workers are created lazily on first use.
 pub(crate) struct WorkerMap {
     workers: DashMap<&'static str, WorkerThread>,
+    namespace: Option<&'static str>,
 }
 
 impl Default for WorkerMap {
@@ -52,7 +185,11 @@ impl Default for WorkerMap {
 impl WorkerMap {
     /// Creates a new empty `WorkerMap`.
     pub(crate) fn new() -> Self {
-        Self { workers: DashMap::new() }
+        Self::with_namespace(None)
+    }
+
+    pub(crate) fn with_namespace(namespace: Option<&'static str>) -> Self {
+        Self { workers: DashMap::new(), namespace }
     }
 
     /// Spawns a closure on the dedicated worker thread for the given name.
@@ -65,16 +202,26 @@ impl WorkerMap {
         F: FnOnce() -> R + Send + 'static,
         R: Send + 'static,
     {
-        let (result_tx, result_rx) = oneshot::channel();
+        let worker =
+            self.workers.entry(name).or_insert_with(|| WorkerThread::new(name, self.namespace));
+        worker.spawn(f)
+    }
 
-        let task: BoxedTask = Box::new(move || {
-            let _ = result_tx.send(f());
-        });
-
-        let worker = self.workers.entry(name).or_insert_with(|| WorkerThread::new(name));
-        let _ = worker.tx.send(task);
-
-        result_rx
+    /// Attempts to spawn a closure on the dedicated worker thread for the given name.
+    ///
+    /// Returns `None` if the named worker already has a task running or queued.
+    pub(crate) fn try_spawn_on<F, R>(
+        &self,
+        name: &'static str,
+        f: F,
+    ) -> Option<oneshot::Receiver<R>>
+    where
+        F: FnOnce() -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        let worker =
+            self.workers.entry(name).or_insert_with(|| WorkerThread::new(name, self.namespace));
+        worker.try_spawn(f)
     }
 }
 
@@ -162,5 +309,89 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(name, "custom-worker");
+    }
+
+    #[tokio::test]
+    async fn worker_map_try_spawn_busy() {
+        let map = WorkerMap::new();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+
+        let first = map.try_spawn_on("busy-worker", move || {
+            release_rx.recv().unwrap();
+            1
+        });
+        assert!(first.is_some());
+
+        let second = map.try_spawn_on("busy-worker", || 2);
+        assert!(second.is_none(), "busy worker should reject queued work");
+
+        release_tx.send(()).unwrap();
+        assert_eq!(first.unwrap().await.unwrap(), 1);
+
+        let third = map.try_spawn_on("busy-worker", || 3).expect("worker should be idle");
+        assert_eq!(third.await.unwrap(), 3);
+    }
+    #[test]
+    fn namespaced_worker_metrics_do_not_merge_with_import() {
+        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        metrics::with_local_recorder(&recorder, || {
+            let import = WorkerThreadMetrics::new("sparse-trie", None);
+            let miner = WorkerThreadMetrics::new("sparse-trie", Some("miner"));
+            import.active_tasks.set(1.0);
+            miner.active_tasks.set(2.0);
+        });
+        let rendered = handle.render();
+        let lines: Vec<_> = rendered
+            .lines()
+            .filter(|line| line.starts_with("executor_named_worker_active_tasks{"))
+            .collect();
+        assert_eq!(lines.len(), 2, "{rendered}");
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("runtime=\"miner\"") && line.ends_with(" 2")));
+        assert!(lines.iter().any(|line| !line.contains("runtime=") && line.ends_with(" 1")));
+    }
+
+    #[test]
+    fn queued_and_active_gauges_survive_drop_and_panic() {
+        use metrics_exporter_prometheus::PrometheusBuilder;
+        let recorder = PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        metrics::with_local_recorder(&recorder, || {
+            let metrics = WorkerThreadMetrics::new("diagnostic-test", None);
+            drop(QueueObservation::new(metrics.clone()));
+            let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                let mut guard = QueueObservation::new(metrics);
+                guard.start();
+                panic!("simulated task failure");
+            }));
+        });
+        let rendered = handle.render();
+        for name in ["queued_tasks", "active_tasks"] {
+            let prefix = format!("executor_named_worker_{name}{{");
+            let line = rendered
+                .lines()
+                .find(|l| l.starts_with(&prefix))
+                .unwrap_or_else(|| panic!("{rendered}"));
+            assert_eq!(line.split_whitespace().last(), Some("0"));
+        }
+    }
+
+    #[tokio::test]
+    async fn channel_owner_release_allows_next_named_session_to_start() {
+        let map = WorkerMap::new();
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (owner, until_closed) = std::sync::mpsc::channel::<()>();
+        let first = map.spawn_on("dependency-test", move || {
+            entered_tx.send(()).unwrap();
+            assert!(until_closed.recv().is_err());
+        });
+        entered_rx.await.unwrap();
+        let mut next = map.spawn_on("dependency-test", || 7);
+        assert!(matches!(next.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
+        drop(owner);
+        first.await.unwrap();
+        assert_eq!(next.await.unwrap(), 7);
     }
 }

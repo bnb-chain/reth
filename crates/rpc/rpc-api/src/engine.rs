@@ -16,12 +16,11 @@ use alloy_rpc_types_engine::{
     PayloadId, PayloadStatus,
 };
 use alloy_rpc_types_eth::{
-    state::StateOverride, BlockOverrides, EIP1186AccountProofResponse, Log, SyncStatus,
+    state::StateOverride, BlockOverrides, EIP1186AccountProofResponse, Filter, SyncStatus,
 };
 use alloy_serde::JsonStorageKey;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc, RpcModule};
 use reth_engine_primitives::EngineTypes;
-use reth_rpc_eth_api::LogFilter;
 use serde_json::Value;
 
 /// Helper trait for the engine api server.
@@ -134,12 +133,22 @@ pub trait EngineApi<Engine: EngineTypes> {
     /// `slotNumber` field in the `payloadAttributes`, if payload attributes
     /// are provided.
     ///
+    /// `custody_columns` maps to the third positional JSON-RPC parameter, `custodyColumns`,
+    /// the custody-column bitmask used for [EIP-8070] sparse blobpool signaling. It is
+    /// `DATA|null` and must be 16 bytes when set. When calling `engine_forkchoiceUpdatedV4`
+    /// with custody columns but without payload attributes, the second parameter must still
+    /// be supplied as `null`, for example:
+    /// `[forkchoiceState, null, custodyColumns]`.
+    ///
+    /// [EIP-8070]: https://eips.ethereum.org/EIPS/eip-8070
+    ///
     /// See also <https://github.com/ethereum/execution-apis/blob/main/src/engine/amsterdam.md#engine_forkchoiceupdatedv4>
     #[method(name = "forkchoiceUpdatedV4")]
     async fn fork_choice_updated_v4(
         &self,
         fork_choice_state: ForkchoiceState,
         payload_attributes: Option<Engine::PayloadAttributes>,
+        custody_columns: Option<B128>,
     ) -> RpcResult<ForkchoiceUpdated>;
 
     /// See also <https://github.com/ethereum/execution-apis/blob/6709c2a795b707202e93c4f2867fa0bf2640a84f/src/engine/paris.md#engine_getpayloadv1>
@@ -297,6 +306,10 @@ pub trait EngineApi<Engine: EngineTypes> {
     #[method(name = "exchangeCapabilities")]
     async fn exchange_capabilities(&self, capabilities: Vec<String>) -> RpcResult<Vec<String>>;
 
+    /// Report blob availability for the requested blob versioned hashes.
+    #[method(name = "hasBlobs")]
+    async fn has_blobs(&self, versioned_hashes: Vec<B256>) -> RpcResult<Vec<bool>>;
+
     /// Fetch blobs for the consensus layer from the blob store.
     #[method(name = "getBlobsV1")]
     async fn get_blobs_v1(
@@ -348,7 +361,7 @@ pub trait EngineApi<Engine: EngineTypes> {
 /// Specifically for the engine auth server: <https://github.com/ethereum/execution-apis/blob/main/src/engine/common.md#underlying-protocol>
 #[cfg_attr(not(feature = "client"), rpc(server, namespace = "eth"))]
 #[cfg_attr(feature = "client", rpc(server, client, namespace = "eth"))]
-pub trait EngineEthApi<TxReq: RpcObject, B: RpcObject, R: RpcObject> {
+pub trait EngineEthApi<TxReq: RpcObject, B: RpcObject, R: RpcObject, L: RpcObject> {
     /// Returns an object with data about the sync status or false.
     #[method(name = "syncing")]
     fn syncing(&self) -> RpcResult<SyncStatus>;
@@ -397,7 +410,7 @@ pub trait EngineEthApi<TxReq: RpcObject, B: RpcObject, R: RpcObject> {
 
     /// Returns logs matching given filter object.
     #[method(name = "getLogs")]
-    async fn logs(&self, filter: LogFilter) -> RpcResult<Vec<Log>>;
+    async fn logs(&self, filter: Filter) -> RpcResult<Vec<L>>;
 
     /// Returns the account and storage values of the specified account including the Merkle-proof.
     /// This call can be used to verify that the data you are pulling from is not tampered with.
@@ -409,6 +422,14 @@ pub trait EngineEthApi<TxReq: RpcObject, B: RpcObject, R: RpcObject> {
         block_number: Option<BlockId>,
     ) -> RpcResult<EIP1186AccountProofResponse>;
 
+    /// Returns the account and storage values of the specified targets including Merkle proofs.
+    #[method(name = "getMultiProof")]
+    async fn get_multi_proof(
+        &self,
+        targets: Vec<(Address, Vec<B256>)>,
+        block_number: Option<BlockId>,
+    ) -> RpcResult<Vec<EIP1186AccountProofResponse>>;
+
     /// Returns the EIP-7928 block access list for a block by hash.
     #[method(name = "getBlockAccessListByBlockHash")]
     async fn block_access_list_by_block_hash(&self, hash: B256) -> RpcResult<Option<Value>>;
@@ -419,6 +440,10 @@ pub trait EngineEthApi<TxReq: RpcObject, B: RpcObject, R: RpcObject> {
         &self,
         number: BlockNumberOrTag,
     ) -> RpcResult<Option<Value>>;
+
+    /// Returns the EIP-7928 block access list for a block by block id.
+    #[method(name = "getBlockAccessList")]
+    async fn block_access_list(&self, block_id: BlockId) -> RpcResult<Option<Value>>;
 
     /// Returns the EIP-7928 block access list bytes for a block by number.
     #[method(name = "getBlockAccessListRaw")]

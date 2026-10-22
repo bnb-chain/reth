@@ -35,17 +35,15 @@ pub struct DatabaseArgs {
     pub max_size: Option<usize>,
     /// Database page size (e.g., 4KB, 8KB, 16KB).
     ///
-    /// NOTE: Page size can only be set when creating a new database and cannot be changed later.
-    /// The page size must be a power of 2 between 256 bytes and 64KB.
-    /// If not specified, uses the system default (typically 4KB on Linux, 16KB on macOS).
+    /// Specifies the page size used by the MDBX database.
     ///
     /// The page size determines the maximum database size.
     /// MDBX supports up to 2^31 pages, so with the default 4KB page size, the maximum
     /// database size is 8TB. To allow larger databases, increase this value to 8KB or higher.
     ///
-    /// WARNING: Changing page size on an existing database will cause errors.
-    /// Only use this flag when initializing a new node.
-    #[arg(long = "db.page-size", value_parser = parse_byte_size, verbatim_doc_comment)]
+    /// WARNING: This setting is only configurable at database creation; changing
+    /// it later requires re-syncing.
+    #[arg(long = "db.page-size", value_parser = parse_byte_size)]
     pub page_size: Option<usize>,
     /// Database growth step (e.g., 4GB, 4KB)
     #[arg(long = "db.growth-step", value_parser = parse_byte_size)]
@@ -69,6 +67,12 @@ pub struct DatabaseArgs {
     /// performance for history lookups.
     #[arg(long = "db.rocksdb-block-cache-size", value_parser = parse_byte_size)]
     pub rocksdb_block_cache_size: Option<usize>,
+    /// Number of recent blocks to keep in the in-memory BAL store cache.
+    #[arg(long = "db.balstore-cache-size")]
+    pub balstore_cache_size: Option<u64>,
+    /// Disable built-in database metrics.
+    #[arg(long = "db.disable-metrics")]
+    pub disable_metrics: bool,
 }
 
 impl DatabaseArgs {
@@ -93,12 +97,16 @@ impl DatabaseArgs {
             .with_log_level(self.log_level)
             .with_exclusive(self.exclusive)
             .with_max_read_transaction_duration(max_read_transaction_duration)
-            .with_page_size(self.page_size)
             .with_geometry_max_size(self.max_size)
             .with_geometry_page_size(self.page_size)
             .with_growth_step(self.growth_step)
             .with_max_readers(self.max_readers)
             .with_sync_mode(self.sync_mode)
+    }
+
+    /// Returns whether built-in database metrics are enabled.
+    pub const fn metrics_enabled(&self) -> bool {
+        !self.disable_metrics
     }
 }
 
@@ -209,7 +217,7 @@ impl fmt::Display for ByteSize {
 }
 
 /// Value parser function that supports various formats.
-pub fn parse_byte_size(s: &str) -> Result<usize, String> {
+fn parse_byte_size(s: &str) -> Result<usize, String> {
     s.parse::<ByteSize>().map(Into::into)
 }
 
@@ -231,6 +239,16 @@ mod tests {
         let default_args = DatabaseArgs::default();
         let args = CommandParser::<DatabaseArgs>::parse_from(["reth"]).args;
         assert_eq!(args, default_args);
+    }
+
+    #[test]
+    fn test_command_parser_disable_metrics() {
+        let args = CommandParser::<DatabaseArgs>::parse_from(["reth"]).args;
+        assert!(args.metrics_enabled());
+
+        let args = CommandParser::<DatabaseArgs>::parse_from(["reth", "--db.disable-metrics"]).args;
+        assert!(args.disable_metrics);
+        assert!(!args.metrics_enabled());
     }
 
     #[test]
@@ -444,5 +462,16 @@ mod tests {
         let result =
             CommandParser::<DatabaseArgs>::try_parse_from(["reth", "--db.sync-mode", "ultra-fast"]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_command_parser_with_valid_balstore_cache_size() {
+        let cmd = CommandParser::<DatabaseArgs>::try_parse_from([
+            "reth",
+            "--db.balstore-cache-size",
+            "1234",
+        ])
+        .unwrap();
+        assert_eq!(cmd.args.balstore_cache_size, Some(1234));
     }
 }

@@ -3,7 +3,7 @@
 use std::{collections::HashSet, time::Duration};
 
 use reth_net_banlist::{BanList, IpFilter};
-use reth_network_peers::{NodeRecord, PeerId, TrustedPeer};
+use reth_network_peers::{NodeRecord, TrustedPeer};
 
 use crate::{peers::PersistedPeerInfo, BackoffKind, ReputationChangeWeights};
 
@@ -112,6 +112,15 @@ impl Default for ConnectionsConfig {
     }
 }
 
+/// Default mean interval for the jittered peer rotation timer.
+///
+/// The actual fire interval is uniformly random in `[mean * 3/5, mean * 7/5]`. With the default
+/// of 5 minutes that gives a `[3 min, 7 min]` range, matching geth's peer dropper.
+pub const DEFAULT_PEER_ROTATION_INTERVAL: Duration = Duration::from_mins(5);
+
+/// Minimum connection uptime before a peer is eligible for rotation eviction.
+pub const PEER_ROTATION_MIN_UPTIME: Duration = Duration::from_mins(10);
+
 /// Config type for initiating a `PeersManager` instance.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -174,8 +183,12 @@ pub struct PeersConfig {
     ///
     /// This filters out peers from other networks that pollute the discovery table.
     pub enforce_enr_fork_id: bool,
-    /// The node ids of the proxied nodes.
-    pub proxied_node_ids: Vec<PeerId>,
+    /// The node ids of the proxied nodes (BSC).
+    pub proxied_node_ids: Vec<reth_network_peers::PeerId>,
+    /// How often to rotate a random non-protected peer (inbound or outbound) to open a slot for
+    /// new nodes. Set to `None` to disable rotation.
+    #[cfg_attr(feature = "serde", serde(default, with = "humantime_serde"))]
+    pub peer_rotation_interval: Option<Duration>,
 }
 
 impl Default for PeersConfig {
@@ -198,6 +211,7 @@ impl Default for PeersConfig {
             ip_filter: IpFilter::default(),
             enforce_enr_fork_id: false,
             proxied_node_ids: Vec::new(),
+            peer_rotation_interval: Some(DEFAULT_PEER_ROTATION_INTERVAL),
         }
     }
 }
@@ -347,6 +361,13 @@ impl PeersConfig {
         self
     }
 
+    /// Configures the interval at which a random outbound peer is rotated.
+    /// Pass `None` to disable rotation.
+    pub const fn with_peer_rotation_interval(mut self, interval: Option<Duration>) -> Self {
+        self.peer_rotation_interval = interval;
+        self
+    }
+
     /// Returns settings for testing
     #[cfg(any(test, feature = "test-utils"))]
     pub fn test() -> Self {
@@ -354,6 +375,7 @@ impl PeersConfig {
             refill_slots_interval: Duration::from_millis(100),
             backoff_durations: PeerBackoffDurations::test(),
             ban_duration: Duration::from_millis(200),
+            peer_rotation_interval: None,
             ..Default::default()
         }
     }

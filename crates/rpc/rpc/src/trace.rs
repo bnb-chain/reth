@@ -19,7 +19,6 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use jsonrpsee::core::RpcResult;
 use reth_chainspec::{ChainSpecProvider, EthereumHardforks};
-use reth_evm::ConfigureEvm;
 use reth_primitives_traits::{BlockBody, BlockHeader};
 use reth_rpc_api::TraceApiServer;
 use reth_rpc_convert::RpcTxReq;
@@ -129,12 +128,13 @@ where
             .map(<Eth::Pool as TransactionPool>::Transaction::pooled_into_consensus);
 
         let (evm_env, at) = self.eth_api().evm_env_at(block_id.unwrap_or_default()).await?;
-        let tx_env = self.eth_api().evm_config().tx_env(tx);
-
-        let config = TracingInspectorConfig::from_parity_config(&trace_types);
 
         self.eth_api()
-            .spawn_trace_at_with_state(evm_env, tx_env, config, at, move |inspector, res, db| {
+            .spawn_with_state_at_block(at, move |this, mut db| {
+                let mut inspector =
+                    TracingInspector::new(TracingInspectorConfig::from_parity_config(&trace_types));
+                let res = this.inspect(&mut db, evm_env, tx, &mut inspector)?;
+
                 inspector
                     .into_parity_builder()
                     .into_trace_results_with_state(&res, &trace_types, &db)
@@ -366,6 +366,17 @@ where
         let end = to_block.unwrap_or(latest_block);
         if end > latest_block {
             return Err(EthApiError::HeaderNotFound(end.into()).into());
+        }
+
+        // Check if the requested range overlaps with pruned history (EIP-4444)
+        let earliest_block =
+            self.provider().earliest_block_number().map_err(Eth::Error::from_eth_err)?;
+        if start < earliest_block {
+            return Err(EthApiError::PrunedHistoryUnavailable {
+                requested: start,
+                earliest_available: earliest_block,
+            }
+            .into());
         }
 
         if start > end {

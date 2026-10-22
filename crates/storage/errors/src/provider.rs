@@ -7,8 +7,10 @@ use reth_codecs::DecompressError;
 use reth_primitives_traits::{transaction::signed::RecoveryError, GotExpected};
 use reth_prune_types::PruneSegmentError;
 use reth_static_file_types::StaticFileSegment;
-use revm_database_interface::{bal::EvmDatabaseError, DBErrorMarker};
-use revm_state::bal::BalError;
+use revm::{
+    database_interface::{bal::EvmDatabaseError, DBErrorMarker},
+    state::bal::BalError,
+};
 
 /// Provider result type.
 pub type ProviderResult<Ok> = Result<Ok, ProviderError>;
@@ -69,6 +71,31 @@ pub enum ProviderError {
     /// When required header related data was not found but was required.
     #[error("no header found for {_0:?}")]
     HeaderNotFound(BlockHashOrNumber),
+    /// Total difficulty cannot be rebuilt because ancestor headers are absent.
+    ///
+    /// Distinct from a missing TD row: here the chain itself has no history to sum, as after
+    /// `init-state --without-evm`, which inserts the tip before backfilling placeholders.
+    #[error("cannot rebuild total difficulty for block {number}: header {missing} is absent")]
+    TotalDifficultyHistoryIncomplete {
+        /// The block whose total difficulty was requested.
+        number: u64,
+        /// The first ancestor header found to be missing.
+        missing: u64,
+    },
+    /// Total difficulty is missing for a block and the inline rebuild would be too large.
+    ///
+    /// The rebuild runs inside the caller's read transaction and would not finish before
+    /// `--db.read-transaction-timeout`, so it is refused rather than retried forever.
+    #[error(
+        "total difficulty missing for block {number} and rebuilding it would span {span} blocks; \
+         stop the node and run `db rebuild-td` to repair the HeaderTerminalDifficulties table"
+    )]
+    TotalDifficultyRebuildTooLarge {
+        /// The block whose total difficulty could not be resolved.
+        number: u64,
+        /// How many blocks the rebuild would have had to walk.
+        span: u64,
+    },
     /// The specific transaction identified by hash or id is missing.
     #[error("no transaction found for {_0:?}")]
     TransactionNotFound(HashOrNumber),
@@ -122,18 +149,6 @@ pub enum ProviderError {
         requested: BlockNumber,
         /// The earliest available block number.
         earliest_available: BlockNumber,
-    },
-    /// Historical state at the requested block may be inconsistent because pipeline sync is in
-    /// progress. The Execution stage has advanced `PlainState` beyond the history index coverage,
-    /// so the `InPlainState` fallback would return data from a future block.
-    #[error("historical state at block #{block} is inconsistent during pipeline sync: execution tip is #{execution_tip} but history index only covers up to #{history_tip}")]
-    HistoryStateInconsistent {
-        /// The block number being queried.
-        block: BlockNumber,
-        /// Block number up to which the Execution stage has committed `PlainState`.
-        execution_tip: BlockNumber,
-        /// Block number up to which the history index has been built.
-        history_tip: BlockNumber,
     },
     /// Provider does not support this particular request.
     #[error("this provider does not support this request")]

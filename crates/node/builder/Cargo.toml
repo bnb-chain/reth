@@ -49,11 +49,11 @@ reth-rpc-eth-types.workspace = true
 reth-rpc-layer.workspace = true
 reth-stages.workspace = true
 reth-static-file.workspace = true
+reth-storage-overlay = { workspace = true, features = ["rayon"] }
 reth-tasks = { workspace = true, features = ["rayon"] }
 reth-tokio-util.workspace = true
-reth-tracing.workspace = true
+reth-tracing = { workspace = true, features = ["std"] }
 reth-transaction-pool.workspace = true
-reth-trie-db = { workspace = true, features = ["metrics"] }
 reth-basic-payload-builder.workspace = true
 reth-node-ethstats.workspace = true
 
@@ -81,10 +81,8 @@ jsonrpsee.workspace = true
 fdlimit.workspace = true
 rayon.workspace = true
 serde_json.workspace = true
-metrics.workspace = true
 
 ## triedb
-rust-eth-triedb.workspace = true
 
 # tracing
 tracing.workspace = true
@@ -99,9 +97,7 @@ reth-evm-ethereum = { workspace = true, features = ["test-utils"] }
 
 [features]
 default = []
-io-uring = ["rust-eth-triedb/io-uring"]
 jemalloc = [
-    "rust-eth-triedb/jemalloc",
     "reth-db-common/jemalloc",
     "reth-engine-tree/jemalloc",
     "reth-node-core/jemalloc",
@@ -109,10 +105,8 @@ jemalloc = [
     "reth-provider/jemalloc",
     "reth-rpc/jemalloc",
     "reth-stages/jemalloc",
-    "reth-trie-db/jemalloc",
 ]
 asm-keccak = [
-    "rust-eth-triedb/asm-keccak",
     "alloy-primitives/asm-keccak",
     "reth-db-common/asm-keccak",
     "reth-engine-tree/asm-keccak",
@@ -121,7 +115,6 @@ asm-keccak = [
     "reth-provider/asm-keccak",
     "reth-rpc/asm-keccak",
     "reth-stages/asm-keccak",
-    "reth-trie-db/asm-keccak",
 ]
 js-tracer = [
     "reth-rpc/js-tracer",
@@ -143,7 +136,6 @@ test-utils = [
     "reth-db-api/test-utils",
     "reth-provider/test-utils",
     "reth-transaction-pool/test-utils",
-    "reth-trie-db/test-utils",
     "reth-evm-ethereum/test-utils",
     "reth-node-ethereum/test-utils",
     "reth-primitives-traits/test-utils",

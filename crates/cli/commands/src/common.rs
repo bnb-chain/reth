@@ -27,7 +27,8 @@ use reth_provider::{
         BlockchainProvider, NodeTypesForProvider, RocksDBProvider, StaticFileProvider,
         StaticFileProviderBuilder,
     },
-    ProviderFactory, StaticFileProviderFactory, StorageSettings,
+    BalConfig, BalStoreHandle, InMemoryBalStore, ProviderFactory, StaticFileProviderFactory,
+    StorageSettings,
 };
 use reth_stages::{sets::DefaultStages, Pipeline, PipelineTarget};
 use reth_static_file::StaticFileProducer;
@@ -128,7 +129,7 @@ impl<C: ChainSpecParser> EnvironmentArgs<C> {
         info!(target: "reth::cli", ?db_path, ?sf_path, "Opening storage");
         let genesis_block_number = self.chain.genesis().number.unwrap_or_default();
         let (db, sfp) = match access {
-            AccessRights::RW => (
+            AccessRights::RW | AccessRights::RwInconsistent => (
                 init_db(db_path, self.db.database_args())?,
                 StaticFileProviderBuilder::read_write(sf_path)
                     .with_metrics()
@@ -178,11 +179,11 @@ impl<C: ChainSpecParser> EnvironmentArgs<C> {
         Ok(Environment { config, provider_factory, data_dir })
     }
 
-    /// Returns a [`ProviderFactory`] after executing consistency checks.
+    /// Returns a [`ProviderFactory`] after executing consistency checks unless `access` permits
+    /// inconsistent storage.
     ///
-    /// If it's a read-write environment and an issue is found, it will attempt to heal (including a
-    /// pipeline unwind). Otherwise, it will print out a warning, advising the user to restart the
-    /// node to heal.
+    /// Checked read-write access heals inconsistencies (including a pipeline unwind), while checked
+    /// read-only access warns that the node must be restarted to heal.
     fn create_provider_factory<N: CliNodeTypes>(
         &self,
         config: &Config,
@@ -195,6 +196,11 @@ impl<C: ChainSpecParser> EnvironmentArgs<C> {
     where
         C: ChainSpecParser<ChainSpec = N::ChainSpec>,
     {
+        let balstore_cache_size =
+            self.db.balstore_cache_size.unwrap_or(BalConfig::DEFAULT_IN_MEMORY_RETENTION_DISTANCE);
+        let bal_store = BalStoreHandle::new(InMemoryBalStore::new(
+            BalConfig::with_in_memory_retention_distance(balstore_cache_size),
+        ));
         let factory = ProviderFactory::<NodeTypesWithDBAdapter<N, DatabaseEnv>>::new(
             db,
             self.chain.clone(),
@@ -203,10 +209,11 @@ impl<C: ChainSpecParser> EnvironmentArgs<C> {
             runtime,
         )?
         .with_prune_modes(config.prune.segments.clone())
-        .with_minimum_pruning_distance(config.prune.minimum_pruning_distance);
+        .with_minimum_pruning_distance(config.prune.minimum_pruning_distance)
+        .with_bal_store(bal_store);
 
         // Check for consistency between database and static files.
-        if !access.is_read_only_inconsistent() &&
+        if !access.skips_consistency_check() &&
             let Some(unwind_target) =
                 factory.static_file_provider().check_consistency(&factory.provider()?)?
         {
@@ -270,6 +277,8 @@ pub struct Environment<N: NodeTypes> {
 pub enum AccessRights {
     /// Read-write access
     RW,
+    /// Read-write access with possibly inconsistent data
+    RwInconsistent,
     /// Read-only access
     RO,
     /// Read-only access with possibly inconsistent data
@@ -279,13 +288,18 @@ pub enum AccessRights {
 impl AccessRights {
     /// Returns `true` if it requires read-write access to the environment.
     pub const fn is_read_write(&self) -> bool {
-        matches!(self, Self::RW)
+        matches!(self, Self::RW | Self::RwInconsistent)
     }
 
     /// Returns `true` if it requires read-only access to the environment with possibly inconsistent
     /// data.
     pub const fn is_read_only_inconsistent(&self) -> bool {
         matches!(self, Self::RoInconsistent)
+    }
+
+    /// Returns `true` if storage consistency checks should be skipped.
+    pub const fn skips_consistency_check(&self) -> bool {
+        matches!(self, Self::RwInconsistent | Self::RoInconsistent)
     }
 }
 
@@ -351,4 +365,21 @@ where
     Comp: CliNodeComponents<N>,
 {
     type Components = Comp;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AccessRights;
+
+    #[test]
+    fn inconsistent_access_rights_skip_consistency_checks() {
+        assert!(AccessRights::RwInconsistent.is_read_write());
+        assert!(AccessRights::RwInconsistent.skips_consistency_check());
+        assert!(!AccessRights::RW.skips_consistency_check());
+
+        assert!(!AccessRights::RoInconsistent.is_read_write());
+        assert!(AccessRights::RoInconsistent.is_read_only_inconsistent());
+        assert!(AccessRights::RoInconsistent.skips_consistency_check());
+        assert!(!AccessRights::RO.skips_consistency_check());
+    }
 }

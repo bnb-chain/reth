@@ -1,7 +1,7 @@
 use alloy_eips::{BlockId, BlockNumberOrTag};
 use alloy_primitives::{Address, Bytes, B256, U256, U64};
 use alloy_rpc_types_eth::{
-    state::StateOverride, BlockOverrides, EIP1186AccountProofResponse, Log, SyncStatus,
+    state::StateOverride, BlockOverrides, EIP1186AccountProofResponse, Filter, SyncStatus,
 };
 use alloy_serde::JsonStorageKey;
 use jsonrpsee::core::RpcResult as Result;
@@ -11,7 +11,7 @@ use reth_rpc_convert::RpcTxReq;
 /// Re-export for convenience
 pub use reth_rpc_engine_api::EngineApi;
 use reth_rpc_eth_api::{
-    EngineEthFilter, FullEthApiTypes, LogFilter, QueryLimits, RpcBlock, RpcHeader, RpcReceipt,
+    EngineEthFilter, FullEthApiTypes, QueryLimits, RpcBlock, RpcHeader, RpcLog, RpcReceipt,
     RpcTransaction,
 };
 use serde_json::Value;
@@ -44,6 +44,7 @@ impl<Eth, EthFilter>
         RpcTxReq<Eth::NetworkTypes>,
         RpcBlock<Eth::NetworkTypes>,
         RpcReceipt<Eth::NetworkTypes>,
+        RpcLog<Eth::NetworkTypes>,
     > for EngineEthApi<Eth, EthFilter>
 where
     Eth: EthApiServer<
@@ -54,7 +55,7 @@ where
             RpcHeader<Eth::NetworkTypes>,
             TxTy<Eth::Primitives>,
         > + FullEthApiTypes,
-    EthFilter: EngineEthFilter,
+    EthFilter: EngineEthFilter<RpcLog<Eth::NetworkTypes>>,
 {
     /// Handler for: `eth_syncing`
     fn syncing(&self) -> Result<SyncStatus> {
@@ -134,7 +135,7 @@ where
     }
 
     /// Handler for `eth_getLogs`
-    async fn logs(&self, filter: LogFilter) -> Result<Vec<Log>> {
+    async fn logs(&self, filter: Filter) -> Result<Vec<RpcLog<Eth::NetworkTypes>>> {
         self.eth_filter.logs(filter, QueryLimits::no_limits()).instrument(engine_span!()).await
     }
 
@@ -148,6 +149,15 @@ where
         self.eth.get_proof(address, keys, block_number).instrument(engine_span!()).await
     }
 
+    /// Handler for `eth_getMultiProof`
+    async fn get_multi_proof(
+        &self,
+        targets: Vec<(Address, Vec<B256>)>,
+        block_number: Option<BlockId>,
+    ) -> Result<Vec<EIP1186AccountProofResponse>> {
+        self.eth.get_multi_proof(targets, block_number).instrument(engine_span!()).await
+    }
+
     /// Handler for `eth_getBlockAccessListByBlockHash`
     async fn block_access_list_by_block_hash(&self, hash: B256) -> Result<Option<Value>> {
         self.eth.block_access_list_by_block_hash(hash).instrument(engine_span!()).await
@@ -159,6 +169,11 @@ where
         block_number: BlockNumberOrTag,
     ) -> Result<Option<Value>> {
         self.eth.block_access_list_by_block_number(block_number).instrument(engine_span!()).await
+    }
+
+    /// Handler for `eth_getBlockAccessList`
+    async fn block_access_list(&self, block_id: BlockId) -> Result<Option<Value>> {
+        self.eth.block_access_list(block_id).instrument(engine_span!()).await
     }
 
     /// Handler for `getBlockAccessListRaw`

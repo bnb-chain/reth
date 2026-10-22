@@ -12,7 +12,7 @@ workspace = true
 
 [dependencies]
 # reth
-reth-chain-state = { workspace = true, features = ["rayon"] }
+reth-chain-state.workspace = true
 reth-chainspec = { workspace = true, optional = true }
 reth-consensus.workspace = true
 reth-db.workspace = true
@@ -28,20 +28,16 @@ reth-primitives-traits = { workspace = true, features = ["rayon", "dashmap"] }
 reth-ethereum-primitives.workspace = true
 reth-provider.workspace = true
 reth-prune.workspace = true
-reth-revm = { workspace = true, features = ["optional-balance-check"] }
+reth-revm = { workspace = true, features = ["optional-balance-check", "optional-no-base-fee"] }
 reth-stages-api.workspace = true
+reth-storage-overlay = { workspace = true, features = ["rayon"] }
 reth-tasks = { workspace = true, features = ["rayon"] }
 reth-trie-parallel.workspace = true
 reth-trie-sparse = { workspace = true, features = ["std", "metrics"] }
 reth-trie.workspace = true
 reth-trie-common.workspace = true
-reth-trie-db.workspace = true
 
 # triedb
-rust-eth-triedb.workspace = true
-rust-eth-triedb-common.workspace = true
-rust-eth-triedb-pathdb.workspace = true
-rust-eth-triedb-state-trie.workspace = true
 
 # alloy
 alloy-evm.workspace = true
@@ -53,10 +49,10 @@ alloy-rlp.workspace = true
 alloy-rpc-types-engine.workspace = true
 
 revm.workspace = true
-revm-primitives.workspace = true
 
 # common
 futures.workspace = true
+parking_lot.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "macros"] }
 moka = { workspace = true, features = ["sync"] }
@@ -71,7 +67,6 @@ schnellru.workspace = true
 rayon.workspace = true
 tracing.workspace = true
 derive_more.workspace = true
-parking_lot.workspace = true
 crossbeam-channel.workspace = true
 
 # optional deps for test-utils
@@ -86,6 +81,7 @@ serde_json = { workspace = true, optional = true }
 reth-evm-ethereum = { workspace = true, features = ["test-utils"] }
 reth-chain-state = { workspace = true, features = ["test-utils"] }
 reth-chainspec.workspace = true
+reth-db = { workspace = true, features = ["test-utils"] }
 reth-db-common.workspace = true
 reth-ethereum-consensus.workspace = true
 metrics-util = { workspace = true, features = ["debugging"] }
@@ -101,9 +97,6 @@ reth-tracing.workspace = true
 reth-node-ethereum.workspace = true
 reth-e2e-test-utils.workspace = true
 
-# revm
-revm-state.workspace = true
-
 assert_matches.workspace = true
 eyre.workspace = true
 serde_json.workspace = true
@@ -112,23 +105,13 @@ rand.workspace = true
 rand_08.workspace = true
 
 [features]
-io-uring = ["rust-eth-triedb/io-uring"]
 jemalloc = [
-    "rust-eth-triedb/jemalloc",
-    "rust-eth-triedb-common/jemalloc",
-    "rust-eth-triedb-pathdb/jemalloc",
-    "rust-eth-triedb-state-trie/jemalloc",
     "reth-db-common/jemalloc",
     "reth-provider/jemalloc",
     "reth-stages?/jemalloc",
     "reth-trie-common/jemalloc",
-    "reth-trie-db/jemalloc",
 ]
 asm-keccak = [
-    "rust-eth-triedb/asm-keccak",
-    "rust-eth-triedb-common/asm-keccak",
-    "rust-eth-triedb-pathdb/asm-keccak",
-    "rust-eth-triedb-state-trie/asm-keccak",
     "alloy-evm/asm-keccak",
     "alloy-primitives/asm-keccak",
     "reth-db-common/asm-keccak",
@@ -136,9 +119,7 @@ asm-keccak = [
     "reth-provider/asm-keccak",
     "reth-stages?/asm-keccak",
     "reth-trie-common/asm-keccak",
-    "reth-trie-db/asm-keccak",
     "revm/asm-keccak",
-    "revm-primitives/asm-keccak",
 ]
 test-utils = [
     "reth-chain-state/test-utils",
@@ -159,14 +140,13 @@ test-utils = [
     "reth-tracing",
     "reth-trie/test-utils",
     "reth-trie-common/test-utils",
-    "reth-trie-db/test-utils",
     "reth-trie-sparse/test-utils",
     "reth-trie-parallel/test-utils",
     "reth-ethereum-primitives/test-utils",
     "reth-node-ethereum/test-utils",
-    "reth-evm-ethereum/test-utils",
     "reth-tasks/test-utils",
     "reth-execution-cache/test-utils",
+    "reth-evm-ethereum/test-utils",
 ]
 trie-debug = [
     "reth-trie-sparse/trie-debug",

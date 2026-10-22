@@ -29,9 +29,8 @@ pub use helpers::config::EthConfigApiServer;
 pub use node::{RpcNodeCore, RpcNodeCoreExt};
 pub use pubsub::EthPubSubApiServer;
 pub use reth_rpc_convert::*;
-pub use reth_rpc_eth_types::{
-    error::{AsEthApiError, FromEthApiError, FromEvmError, IntoEthApiError},
-    LogFilter,
+pub use reth_rpc_eth_types::error::{
+    AsEthApiError, FromEthApiError, FromEvmError, IntoEthApiError,
 };
 pub use types::{EthApiTypes, FullEthApiTypes, RpcBlock, RpcHeader, RpcReceipt, RpcTransaction};
 

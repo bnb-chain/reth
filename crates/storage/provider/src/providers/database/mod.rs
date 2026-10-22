@@ -6,8 +6,8 @@ use crate::{
     to_range,
     traits::{BlockSource, ReceiptProvider},
     BalProvider, BalStoreHandle, BlockHashReader, BlockNumReader, BlockReader, ChainSpecProvider,
-    DatabaseProviderFactory, EitherWriterDestination, HashedPostStateProvider, HeaderProvider,
-    HeaderSyncGapProvider, MetadataProvider, ProviderError, PruneCheckpointReader,
+    DatabaseProviderFactory, EitherWriterDestination, HeaderProvider, HeaderSyncGapProvider,
+    InMemoryBalStore, MetadataProvider, ProviderError, PruneCheckpointReader,
     RocksDBProviderFactory, StageCheckpointReader, StateProviderBox, StaticFileProviderFactory,
     StaticFileWriter, TransactionVariant, TransactionsProvider,
 };
@@ -33,9 +33,7 @@ use reth_storage_api::{
     NodePrimitivesProvider, StorageSettings, StorageSettingsCache, TryIntoHistoricalStateProvider,
 };
 use reth_storage_errors::provider::ProviderResult;
-use reth_trie::HashedPostState;
-use reth_trie_db::ChangesetCache;
-use revm_database::BundleState;
+use reth_storage_overlay::OverlayManager;
 use std::{
     ops::{RangeBounds, RangeInclusive},
     path::Path,
@@ -47,17 +45,17 @@ use std::{
 use tracing::{info, instrument, trace, warn};
 
 mod provider;
-pub use provider::{
-    CommitOrder, DatabaseProvider, DatabaseProviderRO, DatabaseProviderRW, SaveBlocksMode,
-};
+pub use provider::{CommitOrder, DatabaseProvider, DatabaseProviderRO, DatabaseProviderRW};
+
+mod save_blocks;
+pub use save_blocks::SaveBlocksInput;
 
 use super::ProviderNodeTypes;
-use reth_trie::KeccakKeyHasher;
-
 mod builder;
 pub use builder::{ProviderFactoryBuilder, ReadOnlyConfig};
 
 mod metrics;
+pub use metrics::DatabaseProviderMetrics;
 
 mod chain;
 pub use chain::*;
@@ -88,14 +86,16 @@ pub struct ProviderFactory<N: NodeTypesWithDB> {
     storage_settings: Arc<RwLock<StorageSettings>>,
     /// `RocksDB` provider
     rocksdb_provider: RocksDBProvider,
-    /// Changeset cache for trie unwinding
-    changeset_cache: ChangesetCache,
+    /// Manager for state trie overlays and cached changesets.
+    overlay_manager: OverlayManager<N::Primitives>,
     /// Store for block access lists.
     bal_store: BalStoreHandle,
     /// Task runtime for spawning parallel I/O work.
     runtime: reth_tasks::Runtime,
     /// Minimum distance from tip required before pruning can occur.
     minimum_pruning_distance: u64,
+    /// Database provider metrics shared by providers created from this factory.
+    database_provider_metrics: Arc<DatabaseProviderMetrics>,
     /// State for on-demand syncing of `RocksDB` secondary and static file indexes.
     ///
     /// Only set for read-only factories. Can be disabled if there is no concurrent read-write
@@ -134,6 +134,8 @@ impl<N: ProviderNodeTypes> ProviderFactory<N> {
         //
         // Both factory and all providers it creates should share these cached settings.
         let legacy_settings = StorageSettings::v1();
+        let database_provider_metrics = Arc::new(DatabaseProviderMetrics::default());
+        let overlay_manager = OverlayManager::default();
         let storage_settings = DatabaseProvider::<_, N>::new(
             db.tx()?,
             chain_spec.clone(),
@@ -142,9 +144,10 @@ impl<N: ProviderNodeTypes> ProviderFactory<N> {
             Default::default(),
             Arc::new(RwLock::new(legacy_settings)),
             rocksdb_provider.clone(),
-            ChangesetCache::new(),
+            overlay_manager.clone(),
             runtime.clone(),
             db.path(),
+            database_provider_metrics.clone(),
         )
         .storage_settings()?
         .unwrap_or(legacy_settings);
@@ -157,10 +160,11 @@ impl<N: ProviderNodeTypes> ProviderFactory<N> {
             storage: Default::default(),
             storage_settings: Arc::new(RwLock::new(storage_settings)),
             rocksdb_provider,
-            changeset_cache: ChangesetCache::new(),
-            bal_store: BalStoreHandle::default(),
+            overlay_manager,
+            bal_store: BalStoreHandle::new(InMemoryBalStore::default()),
             runtime,
             minimum_pruning_distance: MINIMUM_UNWIND_SAFE_DISTANCE,
+            database_provider_metrics,
             read_only_sync: None,
         })
     }
@@ -190,10 +194,21 @@ impl<N: NodeTypesWithDB> ProviderFactory<N> {
         self
     }
 
-    /// Sets the changeset cache for an existing [`ProviderFactory`].
-    pub fn with_changeset_cache(mut self, changeset_cache: ChangesetCache) -> Self {
-        self.changeset_cache = changeset_cache;
+    /// Sets the BAL store for an existing [`ProviderFactory`].
+    pub fn with_bal_store(mut self, bal_store: BalStoreHandle) -> Self {
+        self.bal_store = bal_store;
         self
+    }
+
+    /// Sets the overlay manager for an existing [`ProviderFactory`].
+    pub fn with_overlay_manager(mut self, overlay_manager: OverlayManager<N::Primitives>) -> Self {
+        self.overlay_manager = overlay_manager;
+        self
+    }
+
+    /// Returns the shared overlay manager.
+    pub(crate) const fn overlay_manager(&self) -> &OverlayManager<N::Primitives> {
+        &self.overlay_manager
     }
 
     /// Sets the minimum pruning distance for an existing [`ProviderFactory`].
@@ -385,9 +400,10 @@ impl<N: ProviderNodeTypes> ProviderFactory<N> {
             self.storage.clone(),
             self.storage_settings.clone(),
             self.rocksdb_provider.clone(),
-            self.changeset_cache.clone(),
+            self.overlay_manager.clone(),
             self.runtime.clone(),
             self.db.path(),
+            self.database_provider_metrics.clone(),
         )
         .with_minimum_pruning_distance(self.minimum_pruning_distance))
     }
@@ -407,9 +423,10 @@ impl<N: ProviderNodeTypes> ProviderFactory<N> {
                 self.storage.clone(),
                 self.storage_settings.clone(),
                 self.rocksdb_provider.clone(),
-                self.changeset_cache.clone(),
+                self.overlay_manager.clone(),
                 self.runtime.clone(),
                 self.db.path(),
+                self.database_provider_metrics.clone(),
             )
             .with_reader_txn_tracker(self.db.clone())
             .with_minimum_pruning_distance(self.minimum_pruning_distance),
@@ -434,9 +451,10 @@ impl<N: ProviderNodeTypes> ProviderFactory<N> {
             self.storage.clone(),
             self.storage_settings.clone(),
             self.rocksdb_provider.clone(),
-            self.changeset_cache.clone(),
+            self.overlay_manager.clone(),
             self.runtime.clone(),
             self.db.path(),
+            self.database_provider_metrics.clone(),
         )
         .with_reader_txn_tracker(self.db.clone())
         .with_minimum_pruning_distance(self.minimum_pruning_distance))
@@ -590,7 +608,7 @@ impl<N: NodeTypesWithDB> NodePrimitivesProvider for ProviderFactory<N> {
     type Primitives = N::Primitives;
 }
 
-impl<N: NodeTypesWithDB> BalProvider for ProviderFactory<N> {
+impl<N: ProviderNodeTypes> BalProvider for ProviderFactory<N> {
     fn bal_store(&self) -> &BalStoreHandle {
         &self.bal_store
     }
@@ -644,17 +662,12 @@ impl<N: ProviderNodeTypes> HeaderProvider for ProviderFactory<N> {
 
     fn header_by_number(&self, num: BlockNumber) -> ProviderResult<Option<Self::Header>> {
         if self.is_genesis(num) {
-            if let Some(header) = self.static_file_provider.header_by_number(num)? {
+            if let Some(header) = self.caught_up_static_file_provider()?.header_by_number(num)? {
                 return Ok(Some(header))
             }
             return self.provider()?.header_by_number(num)
         }
-        self.static_file_provider.get_with_static_file_or_database(
-            StaticFileSegment::Headers,
-            num,
-            |static_file| static_file.header_by_number(num),
-            || self.provider()?.header_by_number(num),
-        )
+        self.caught_up_static_file_provider()?.header_by_number(num)
     }
 
     fn header_td(&self, hash: &BlockHash) -> ProviderResult<Option<U256>> {
@@ -677,17 +690,12 @@ impl<N: ProviderNodeTypes> HeaderProvider for ProviderFactory<N> {
         number: BlockNumber,
     ) -> ProviderResult<Option<SealedHeader<Self::Header>>> {
         if self.is_genesis(number) {
-            if let Some(header) = self.static_file_provider.sealed_header(number)? {
+            if let Some(header) = self.caught_up_static_file_provider()?.sealed_header(number)? {
                 return Ok(Some(header))
             }
             return self.provider()?.sealed_header(number)
         }
-        self.static_file_provider.get_with_static_file_or_database(
-            StaticFileSegment::Headers,
-            number,
-            |static_file| static_file.sealed_header(number),
-            || self.provider()?.sealed_header(number),
-        )
+        self.caught_up_static_file_provider()?.sealed_header(number)
     }
 
     fn sealed_headers_range(
@@ -709,17 +717,12 @@ impl<N: ProviderNodeTypes> HeaderProvider for ProviderFactory<N> {
 impl<N: ProviderNodeTypes> BlockHashReader for ProviderFactory<N> {
     fn block_hash(&self, number: u64) -> ProviderResult<Option<B256>> {
         if self.is_genesis(number) {
-            if let Some(hash) = self.static_file_provider.block_hash(number)? {
+            if let Some(hash) = self.caught_up_static_file_provider()?.block_hash(number)? {
                 return Ok(Some(hash))
             }
             return self.provider()?.block_hash(number)
         }
-        self.static_file_provider.get_with_static_file_or_database(
-            StaticFileSegment::Headers,
-            number,
-            |static_file| static_file.block_hash(number),
-            || self.provider()?.block_hash(number),
-        )
+        self.caught_up_static_file_provider()?.block_hash(number)
     }
 
     fn canonical_hashes_range(
@@ -983,12 +986,6 @@ impl<N: ProviderNodeTypes> PruneCheckpointReader for ProviderFactory<N> {
     }
 }
 
-impl<N: ProviderNodeTypes> HashedPostStateProvider for ProviderFactory<N> {
-    fn hashed_post_state(&self, bundle_state: &BundleState) -> HashedPostState {
-        HashedPostState::from_bundle_state::<KeccakKeyHasher>(bundle_state.state())
-    }
-}
-
 impl<N: ProviderNodeTypes> MetadataProvider for ProviderFactory<N> {
     fn get_metadata(&self, key: &str) -> ProviderResult<Option<Vec<u8>>> {
         self.provider()?.get_metadata(key)
@@ -1008,10 +1005,11 @@ where
             storage,
             storage_settings,
             rocksdb_provider,
-            changeset_cache,
+            overlay_manager,
             bal_store,
             runtime,
             minimum_pruning_distance,
+            database_provider_metrics: _,
             read_only_sync,
         } = self;
         f.debug_struct("ProviderFactory")
@@ -1022,7 +1020,7 @@ where
             .field("storage", &storage)
             .field("storage_settings", &*storage_settings.read())
             .field("rocksdb_provider", &rocksdb_provider)
-            .field("changeset_cache", &changeset_cache)
+            .field("overlay_manager", &overlay_manager)
             .field("bal_store", &bal_store)
             .field("runtime", &runtime)
             .field("minimum_pruning_distance", &minimum_pruning_distance)
@@ -1044,10 +1042,11 @@ impl<N: NodeTypesWithDB> Clone for ProviderFactory<N> {
             storage: self.storage.clone(),
             storage_settings: self.storage_settings.clone(),
             rocksdb_provider: self.rocksdb_provider.clone(),
-            changeset_cache: self.changeset_cache.clone(),
+            overlay_manager: self.overlay_manager.clone(),
             bal_store: self.bal_store.clone(),
             runtime: self.runtime.clone(),
             minimum_pruning_distance: self.minimum_pruning_distance,
+            database_provider_metrics: self.database_provider_metrics.clone(),
             read_only_sync: self.read_only_sync.clone(),
         }
     }

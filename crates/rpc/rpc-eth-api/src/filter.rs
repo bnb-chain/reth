@@ -1,7 +1,7 @@
 //! `eth_` RPC API for filtering.
 
 use alloy_json_rpc::RpcObject;
-use alloy_rpc_types_eth::{FilterChanges, FilterId, Log, PendingTransactionFilterKind};
+use alloy_rpc_types_eth::{Filter, FilterChanges, FilterId, PendingTransactionFilterKind};
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use reth_rpc_eth_types::LogFilter;
 use std::future::Future;
@@ -9,10 +9,10 @@ use std::future::Future;
 /// Rpc Interface for poll-based ethereum filter API.
 #[cfg_attr(not(feature = "client"), rpc(server, namespace = "eth"))]
 #[cfg_attr(feature = "client", rpc(server, client, namespace = "eth"))]
-pub trait EthFilterApi<T: RpcObject> {
+pub trait EthFilterApi<T: RpcObject, L: RpcObject> {
     /// Creates a new filter and returns its id.
     #[method(name = "newFilter")]
-    async fn new_filter(&self, filter: LogFilter) -> RpcResult<FilterId>;
+    async fn new_filter(&self, filter: Filter) -> RpcResult<FilterId>;
 
     /// Creates a new block filter and returns its id.
     #[method(name = "newBlockFilter")]
@@ -27,19 +27,23 @@ pub trait EthFilterApi<T: RpcObject> {
 
     /// Returns all filter changes since last poll.
     #[method(name = "getFilterChanges")]
-    async fn filter_changes(&self, id: FilterId) -> RpcResult<FilterChanges<T>>;
+    async fn filter_changes(&self, id: FilterId) -> RpcResult<FilterChanges<T, L>>;
 
     /// Returns all logs matching given filter (in a range 'from' - 'to').
     #[method(name = "getFilterLogs")]
-    async fn filter_logs(&self, id: FilterId) -> RpcResult<Vec<Log>>;
+    async fn filter_logs(&self, id: FilterId) -> RpcResult<Vec<L>>;
 
     /// Uninstalls filter.
     #[method(name = "uninstallFilter")]
     async fn uninstall_filter(&self, id: FilterId) -> RpcResult<bool>;
 
     /// Returns logs matching given filter object.
+    ///
+    /// Takes a [`LogFilter`] so the number of topic positions in the request is preserved and the
+    /// geth topic-position rule can be enforced during selection (a filter naming N positions only
+    /// matches logs carrying >= N topics).
     #[method(name = "getLogs")]
-    async fn logs(&self, filter: LogFilter) -> RpcResult<Vec<Log>>;
+    async fn logs(&self, filter: LogFilter) -> RpcResult<Vec<L>>;
 }
 
 /// Limits for logs queries
@@ -60,11 +64,11 @@ impl QueryLimits {
 
 /// Rpc Interface for poll-based ethereum filter API, implementing only the `eth_getLogs` method.
 /// Used for the engine API, with possibility to specify [`QueryLimits`].
-pub trait EngineEthFilter: Send + Sync + 'static {
+pub trait EngineEthFilter<L: RpcObject>: Send + Sync + 'static {
     /// Returns logs matching given filter object.
     fn logs(
         &self,
-        filter: LogFilter,
+        filter: Filter,
         limits: QueryLimits,
-    ) -> impl Future<Output = RpcResult<Vec<Log>>> + Send;
+    ) -> impl Future<Output = RpcResult<Vec<L>>> + Send;
 }
