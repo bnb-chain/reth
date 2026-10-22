@@ -1,4 +1,4 @@
-# Documentation jobs.
+# Documentation and mdbook related jobs.
 
 name: book
 
@@ -12,21 +12,13 @@ on:
 
 env:
   RUSTC_WRAPPER: "sccache"
-  PINNED_NIGHTLY: nightly-2026-01-22
+  PINNED_NIGHTLY: nightly-2026-07-23
 
 jobs:
   build:
-    runs-on: ${{ github.repository == 'paradigmxyz/reth' && 'depot-ubuntu-latest-8' || 'ubuntu-latest' }}
-    permissions:
-      id-token: write
-      contents: read
+    runs-on: ubuntu-latest
     timeout-minutes: 90
-    env:
-      # Include the system trust store containing Aegis's CA for Bun and Node.
-      NODE_EXTRA_CA_CERTS: /etc/ssl/certs/ca-certificates.crt
     steps:
-      - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@d5402286a7abdfb7232173b3228d56473feb8a66 # 2026-09-29T02-04-45Z-d5402286
       - name: Checkout
         uses: actions/checkout@v6
 
@@ -45,11 +37,14 @@ jobs:
           npx playwright install --with-deps chromium
 
       - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.PINNED_NIGHTLY }}
+
+      - uses: mozilla-actions/sccache-action@v0.0.9
+
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y liburing-dev pkg-config libclang-dev
-        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@d5402286a7abdfb7232173b3228d56473feb8a66 # 2026-09-29T02-04-45Z-d5402286
-        with:
-          toolchain: nightly
 
       - name: Build docs
         run: cd docs/vocs && bash scripts/build-cargo-docs.sh
@@ -93,7 +88,7 @@ jobs:
 
   #   timeout-minutes: 60
 
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+  #   steps:
+  #     - name: Deploy to GitHub Pages
+  #       id: deployment
+  #       uses: actions/deploy-pages@v4
