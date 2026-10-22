@@ -7,13 +7,13 @@ use crate::{
         StateRootProgress, StorageRootProgress,
     },
     stats::TrieTracker,
-    trie_cursor::{TrieCursor, TrieCursorFactory, TrieStorageCursor},
+    trie_cursor::{TrieCursor, TrieCursorFactory, TrieCursorIter, TrieStorageCursor},
     updates::{StorageTrieUpdates, TrieUpdates},
     walker::TrieWalker,
     HashBuilder, Nibbles, TRIE_ACCOUNT_RLP_MAX_SIZE,
 };
 use alloy_consensus::EMPTY_ROOT_HASH;
-use alloy_primitives::{keccak256, Address, B256, U256};
+use alloy_primitives::{keccak256, map::B256Map, Address, B256, U256};
 use alloy_rlp::{BufMut, Encodable};
 use alloy_trie::proof::AddedRemovedKeys;
 use reth_execution_errors::{StateRootError, StorageRootError};
@@ -73,6 +73,9 @@ impl<T, H> StateRoot<T, H> {
     }
 
     /// Configures the state root walker to visit all children of changed branch paths.
+    ///
+    /// When updates are retained, also removes stored descendants hidden by a changed branch's
+    /// tree mask. Regenerated branch updates take precedence over these deletions.
     pub const fn with_walk_all_changed_branch_children(mut self, enabled: bool) -> Self {
         self.walk_all_changed_branch_children = enabled;
         self
@@ -266,7 +269,7 @@ where
             // no intermediate state, create new hash builder and node iter for state root
             // calculation
             let hash_builder = HashBuilder::default().with_updates(retain_updates);
-            let walker = TrieWalker::state_trie(trie_cursor, self.prefix_sets.account_prefix_set)
+            let walker = TrieWalker::state_trie(trie_cursor, self.prefix_sets.account_prefix_set)?
                 .with_walk_all_changed_branch_children(self.walk_all_changed_branch_children)
                 .with_deletions_retained(retain_updates);
             let node_iter = TrieNodeIter::state_trie(walker, hashed_account_cursor);
@@ -352,9 +355,28 @@ where
 
         let root = hash_builder.root();
 
+        let mut destroyed_storage_trie_nodes = B256Map::default();
+        if retain_updates && !self.prefix_sets.destroyed_accounts.is_empty() {
+            let mut storage_trie_cursor = match storage_trie_cursor {
+                Some(cursor) => cursor,
+                None => self.trie_cursor_factory.storage_trie_cursor(B256::ZERO)?,
+            };
+
+            for hashed_address in &self.prefix_sets.destroyed_accounts {
+                storage_trie_cursor.set_hashed_address(*hashed_address);
+                let nodes = TrieCursorIter::new(&mut storage_trie_cursor)
+                    .map(|node| node.map(|(path, _)| path))
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                if !nodes.is_empty() {
+                    destroyed_storage_trie_nodes.insert(*hashed_address, nodes);
+                }
+            }
+        }
+
         let removed_keys = account_node_iter.walker.take_removed_keys();
         let StateRootContext { mut trie_updates, hashed_entries_walked, .. } = storage_ctx;
-        trie_updates.finalize(hash_builder, removed_keys, self.prefix_sets.destroyed_accounts);
+        trie_updates.finalize(hash_builder, removed_keys, destroyed_storage_trie_nodes);
 
         let stats = tracker.finish();
 
@@ -567,6 +589,9 @@ impl<T, H> StorageRoot<T, H> {
     }
 
     /// Configures the storage root walker to visit all children of changed branch paths.
+    ///
+    /// When updates are retained, also removes stored descendants hidden by a changed branch's
+    /// tree mask. Regenerated branch updates take precedence over these deletions.
     pub const fn with_walk_all_changed_branch_children(mut self, enabled: bool) -> Self {
         self.walk_all_changed_branch_children = enabled;
         self
@@ -772,7 +797,7 @@ where
             (!retain_updates || prefix_set.is_empty()) &&
             hashed_storage_cursor.is_storage_empty()?
         {
-            Span::current().record("storage_root", format!("{EMPTY_ROOT_HASH:?}"));
+            Span::current().record("storage_root", tracing::field::debug(EMPTY_ROOT_HASH));
             return Ok(StorageRootProgress::Complete(
                 EMPTY_ROOT_HASH,
                 0,
@@ -801,7 +826,7 @@ where
             }
             None => {
                 let hash_builder = HashBuilder::default().with_updates(retain_updates);
-                let walker = TrieWalker::storage_trie(trie_cursor, prefix_set)
+                let walker = TrieWalker::storage_trie(trie_cursor, prefix_set)?
                     .with_walk_all_changed_branch_children(walk_all_changed_branch_children)
                     .with_deletions_retained(retain_updates);
                 let node_iter = TrieNodeIter::storage_trie(walker, hashed_storage_cursor);
@@ -850,7 +875,7 @@ where
         }
 
         let root = hash_builder.root();
-        Span::current().record("storage_root", format!("{root:?}"));
+        Span::current().record("storage_root", tracing::field::debug(root));
 
         let removed_keys = storage_node_iter.walker.take_removed_keys();
         trie_updates.finalize(hash_builder, removed_keys);

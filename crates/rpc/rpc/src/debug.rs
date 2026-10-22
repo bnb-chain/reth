@@ -1,8 +1,8 @@
-use alloy_consensus::{constants::KECCAK_EMPTY, transaction::TxHashRef, BlockHeader};
+use alloy_consensus::{transaction::TxHashRef, BlockHeader};
 use alloy_eips::{eip2718::Encodable2718, BlockId, BlockNumberOrTag};
 use alloy_evm::{env::BlockEnvironment, Evm};
 use alloy_genesis::ChainConfig;
-use alloy_primitives::{hex::decode, uint, Address, Bytes, B256, U64};
+use alloy_primitives::{hex::decode, uint, Address, Bytes, B256, U256, U64};
 use alloy_rlp::{Decodable, Encodable};
 use alloy_rpc_types::BlockTransactionsKind;
 use alloy_rpc_types_debug::ExecutionWitness;
@@ -10,13 +10,14 @@ use alloy_rpc_types_eth::{
     state::EvmOverrides, Account, AccountInfo, BlockError, Bundle, Index, StateContext,
 };
 use alloy_rpc_types_trace::geth::{
-    BlockTraceResult, GethDebugTracingCallOptions, GethDebugTracingOptions, GethTrace, TraceResult,
+    ChainBlockTraceResult, GethDebugTracingCallOptions, GethDebugTracingOptions, GethTrace,
+    TraceResult,
 };
 use async_trait::async_trait;
 use futures::Stream;
-use jsonrpsee::core::RpcResult;
+use jsonrpsee::{core::RpcResult, PendingSubscriptionSink, SubscriptionMessage};
 use parking_lot::RwLock;
-use reth_chainspec::{ChainSpecProvider, EthChainSpec, EthereumHardforks};
+use reth_chainspec::{ChainSpecProvider, EthereumHardforks};
 use reth_engine_primitives::ConsensusEngineEvent;
 use reth_errors::RethError;
 use reth_evm::{block::BlockExecutor, execute::Executor, ConfigureEvm, EvmEnvFor};
@@ -28,16 +29,16 @@ use reth_rpc_api::DebugApiServer;
 use reth_rpc_convert::RpcTxReq;
 use reth_rpc_eth_api::{
     helpers::{EthTransactions, TraceExt},
-    FromEthApiError, FromEvmError, RpcConvert, RpcNodeCore,
+    AsEthApiError, FromEthApiError, FromEvmError, RpcConvert, RpcNodeCore,
 };
 use reth_rpc_eth_types::{BlockOverridesExt, EthApiError, StateCacheDb};
 use reth_rpc_server_types::{result::internal_rpc_err, ToRpcResult};
 use reth_storage_api::{
     BlockIdReader, BlockReaderIdExt, HashedPostStateProvider, HeaderProvider, ProviderBlock,
-    ReceiptProviderIdExt, StateProviderFactory, StateRootProvider, StorageRootProvider,
-    TransactionVariant,
+    ReceiptProviderIdExt, StateProviderBox, StateProviderFactory, StateRootProvider,
+    StorageRootProvider, TransactionVariant,
 };
-use reth_tasks::{pool::BlockingTaskGuard, Runtime};
+use reth_tasks::{cancel::is_cancelled, pool::BlockingTaskGuard, Runtime};
 use reth_transaction_pool::TransactionPool;
 use reth_trie_common::{
     root::storage_root_unsorted, updates::TrieUpdates, ExecutionWitnessMode, HashedPostState,
@@ -49,6 +50,11 @@ use serde::{Deserialize, Serialize};
 use std::{collections::VecDeque, sync::Arc};
 use tokio::sync::{AcquireError, OwnedSemaphorePermit};
 use tokio_stream::StreamExt;
+#[cfg(feature = "js-tracer")]
+use {
+    alloy_rpc_types_trace::geth::GethDebugTracerType,
+    revm_inspectors::tracing::js::JsInspectorInterrupt, std::time::Duration,
+};
 
 /// `debug` API implementation.
 ///
@@ -72,6 +78,7 @@ where
         let inner = Arc::new(DebugApiInner {
             eth_api,
             blocking_task_guard,
+            task_spawner: executor.clone(),
             bad_block_store: bad_block_store.clone(),
         });
 
@@ -132,6 +139,9 @@ where
                 let mut evm =
                     eth_api.evm_config().evm_with_env_and_inspector(&mut db, evm_env, inspector);
                 while let Some((index, tx)) = transactions.next() {
+                    if is_cancelled() {
+                        return Err(EthApiError::InternalEthError.into())
+                    }
                     let tx_env = eth_api.evm_config().tx_env(tx);
 
                     let res = evm.transact(tx_env.clone()).map_err(Eth::Error::from_evm_err)?;
@@ -160,6 +170,95 @@ where
                     }
                 }
 
+                Ok(results)
+            })
+            .await
+    }
+
+    /// Traces a block for `traceChain`, preserving transaction-level tracing failures in the
+    /// subscription result instead of failing the entire range.
+    async fn trace_chain_block(
+        &self,
+        block: Arc<RecoveredBlock<ProviderBlock<Eth::Provider>>>,
+        opts: GethDebugTracingOptions,
+    ) -> Result<Vec<Option<TraceResult>>, Eth::Error> {
+        let evm_env = self.eth_api().evm_env_for_header(block.sealed_block().sealed_header())?;
+
+        self.eth_api()
+            .spawn_with_state_at_block(block.parent_hash(), move |eth_api, mut db| {
+                let tx_count = block.body().transactions().len();
+                let mut results = Vec::with_capacity(tx_count);
+
+                eth_api.apply_pre_execution_changes(&block, &mut db)?;
+
+                let block_env = evm_env.block_env.clone();
+                let mut transactions = block.transactions_recovered().enumerate().peekable();
+                let inspector = match DebugInspector::new(opts) {
+                    Ok(inspector) => inspector,
+                    Err(err) => {
+                        if let Some((_, tx)) = transactions.peek() {
+                            results.push(Some(TraceResult::Error {
+                                error: err.to_string(),
+                                tx_hash: Some(*tx.tx_hash()),
+                            }));
+                        }
+                        results.resize(tx_count, None);
+                        return Ok(results)
+                    }
+                };
+                let mut evm =
+                    eth_api.evm_config().evm_with_env_and_inspector(&mut db, evm_env, inspector);
+
+                while let Some((index, tx)) = transactions.next() {
+                    let tx_hash = *tx.tx_hash();
+                    let tx_env = eth_api.evm_config().tx_env(tx);
+                    let res = match evm.transact(tx_env.clone()) {
+                        Ok(res) => res,
+                        Err(err) => {
+                            results.push(Some(TraceResult::Error {
+                                error: err.to_string(),
+                                tx_hash: Some(tx_hash),
+                            }));
+                            break
+                        }
+                    };
+
+                    let (db, inspector, _) = evm.components_mut();
+                    let result = match inspector.get_result(
+                        Some(TransactionContext {
+                            block_hash: Some(block.hash()),
+                            tx_hash: Some(tx_hash),
+                            tx_index: Some(index),
+                        }),
+                        &tx_env,
+                        &block_env,
+                        &res,
+                        db,
+                    ) {
+                        Ok(result) => result,
+                        Err(err) => {
+                            results.push(Some(TraceResult::Error {
+                                error: err.to_string(),
+                                tx_hash: Some(tx_hash),
+                            }));
+                            break
+                        }
+                    };
+
+                    results.push(Some(TraceResult::Success { result, tx_hash: Some(tx_hash) }));
+                    if let Some((_, next_tx)) = transactions.peek() {
+                        if let Err(err) = inspector.fuse() {
+                            results.push(Some(TraceResult::Error {
+                                error: err.to_string(),
+                                tx_hash: Some(*next_tx.tx_hash()),
+                            }));
+                            break
+                        }
+                        db.commit(res.state);
+                    }
+                }
+
+                results.resize(tx_count, None);
                 Ok(results)
             })
             .await
@@ -226,13 +325,17 @@ where
         tx_hash: B256,
         opts: GethDebugTracingOptions,
     ) -> Result<GethTrace, Eth::Error> {
-        let (transaction, block) = match self.eth_api().transaction_and_block(tx_hash).await? {
-            None => return Err(EthApiError::TracingTransactionNotFound.into()),
-            Some(res) => res,
-        };
+        let (transaction, block, bal) =
+            match self.eth_api().transaction_and_block_and_maybe_bal(tx_hash).await? {
+                None => return Err(EthApiError::TracingTransactionNotFound.into()),
+                Some(res) => res,
+            };
 
-        self.eth_api()
-            .spawn_with_state_at_block(block.parent_hash(), move |eth_api, mut db| {
+        let interrupt = JsTraceInterrupt::new(&opts)?;
+        let tracer_interrupt = interrupt.clone();
+        let trace = self.eth_api().spawn_with_state_at_block(
+            block.parent_hash(),
+            move |eth_api, mut db| {
                 // configure env for the target transaction
                 let (tx, tx_info) = transaction.split();
 
@@ -242,7 +345,8 @@ where
                     tx_info.index.expect("transaction_and_block only returns block transactions")
                         as usize;
 
-                let mut inspector = DebugInspector::new(opts).map_err(Eth::Error::from_eth_err)?;
+                let mut inspector = tracer_interrupt
+                    .attach(DebugInspector::new(opts).map_err(Eth::Error::from_eth_err)?);
                 let tx_env = eth_api.evm_config().tx_env(&tx);
                 let (res, evm_env) = eth_api.inspect_transaction_in_block(
                     &block,
@@ -250,6 +354,7 @@ where
                     &mut inspector,
                     index,
                     tx_env.clone(),
+                    bal.as_deref(),
                 )?;
 
                 let trace = inspector
@@ -267,8 +372,9 @@ where
                     .map_err(Eth::Error::from_eth_err)?;
 
                 Ok(trace)
-            })
-            .await
+            },
+        );
+        interrupt.run(trace).await
     }
 
     /// The `debug_traceCall` method lets you run an `eth_call` within the context of the given
@@ -302,11 +408,14 @@ where
                 .await;
         }
 
+        let interrupt = JsTraceInterrupt::new(&tracing_options)?;
+        let tracer_interrupt = interrupt.clone();
         let this = self.clone();
-        self.eth_api()
-            .spawn_with_call_at(call, at, overrides, move |db, evm_env, tx_env| {
-                let mut inspector =
-                    DebugInspector::new(tracing_options).map_err(Eth::Error::from_eth_err)?;
+        let trace =
+            self.eth_api().spawn_with_call_at(call, at, overrides, move |db, evm_env, tx_env| {
+                let mut inspector = tracer_interrupt.attach(
+                    DebugInspector::new(tracing_options).map_err(Eth::Error::from_eth_err)?,
+                );
                 let res = this.eth_api().inspect(
                     &mut *db,
                     evm_env.clone(),
@@ -317,8 +426,14 @@ where
                     .get_result(None, &tx_env, &evm_env.block_env, &res, db)
                     .map_err(Eth::Error::from_eth_err)?;
                 Ok(trace)
-            })
-            .await
+            });
+        interrupt.run(trace).await.map_err(|err| match err.as_err() {
+            Some(EthApiError::HeaderNotFound(id)) if *id == at => {
+                // Unknown blocks use -32000: https://github.com/ethereum/execution-apis/pull/855
+                EthApiError::TracingBlockNotFound(at).into()
+            }
+            _ => err,
+        })
     }
 
     /// Helper method to execute `debug_trace_call` at a specific transaction index within a block.
@@ -333,11 +448,11 @@ where
         overrides: EvmOverrides,
     ) -> Result<GethTrace, Eth::Error> {
         // Get the target block to check transaction count
-        let block = self
+        let (block, bal) = self
             .eth_api()
-            .recovered_block(block_id)
+            .recovered_block_and_maybe_bal(block_id)
             .await?
-            .ok_or(EthApiError::HeaderNotFound(block_id))?;
+            .ok_or(EthApiError::TracingBlockNotFound(block_id))?;
 
         if tx_index >= block.transaction_count() {
             // tx_index out of bounds
@@ -349,19 +464,27 @@ where
             .into())
         }
 
+        // state overrides commit changes to the database, which an attached BAL would take read
+        // precedence over, so only position via BAL if there are none
+        let bal = bal.filter(|_| !overrides.has_state());
+
         let evm_env = self.eth_api().evm_env_for_header(block.sealed_block().sealed_header())?;
 
-        self.eth_api()
-            .spawn_with_state_at_block(block.parent_hash(), move |eth_api, mut db| {
-                // 1. replay the required number of transactions
-                eth_api.replay_block_until(&mut db, &block, tx_index)?;
+        let interrupt = JsTraceInterrupt::new(&tracing_options)?;
+        let tracer_interrupt = interrupt.clone();
+        let trace = self.eth_api().spawn_with_state_at_block(
+            block.parent_hash(),
+            move |eth_api, mut db| {
+                // 1. position the state before the transaction at the index
+                eth_api.replay_block_until(&mut db, &block, tx_index, bal.as_deref())?;
 
                 // 2. now execute the trace call on this state
                 let (evm_env, tx_env) =
                     eth_api.prepare_call_env(evm_env, call, &mut db, overrides)?;
 
-                let mut inspector =
-                    DebugInspector::new(tracing_options).map_err(Eth::Error::from_eth_err)?;
+                let mut inspector = tracer_interrupt.attach(
+                    DebugInspector::new(tracing_options).map_err(Eth::Error::from_eth_err)?,
+                );
                 let res =
                     eth_api.inspect(&mut db, evm_env.clone(), tx_env.clone(), &mut inspector)?;
                 let trace = inspector
@@ -369,8 +492,9 @@ where
                     .map_err(Eth::Error::from_eth_err)?;
 
                 Ok(trace)
-            })
-            .await
+            },
+        );
+        interrupt.run(trace).await
     }
 
     /// The `debug_traceCallMany` method lets you run an `eth_callMany` within the context of the
@@ -425,8 +549,10 @@ where
                 if replay_block_txs {
                     // only need to replay the transactions in the block if not all transactions are
                     // to be replayed
-                    // Execute all transactions until index
-                    eth_api.replay_block_until(&mut db, &block, num_txs)?;
+                    // Execute all transactions until index. No BAL positioning here: bundle
+                    // transactions commit state on top, and an attached BAL would take read
+                    // precedence over the committed changes
+                    eth_api.replay_block_until(&mut db, &block, num_txs, None)?;
                 }
 
                 // After replay, preserve override metadata in the env cloned for each call.
@@ -449,6 +575,9 @@ where
 
                     let mut transactions = transactions.into_iter().peekable();
                     while let Some(tx) = transactions.next() {
+                        if is_cancelled() {
+                            return Err(EthApiError::InternalEthError.into())
+                        }
                         // apply state overrides only once, before the first transaction
                         let state_overrides = state_overrides.take();
                         let overrides = EvmOverrides::new(state_overrides, block_overrides.clone());
@@ -535,13 +664,15 @@ where
                 let mut witness = None;
                 let _ = block_executor
                     .execute_with_state_closure(&block, |statedb: &State<_>| {
-                        witness =
-                            Some(ExecutionWitnessRecord::new(statedb).into_execution_witness(
-                                &statedb.database.database.0,
-                                eth_api.provider(),
-                                block_number,
-                                mode,
-                            ));
+                        witness = Some(
+                            ExecutionWitnessRecord::new(statedb)
+                                .into_execution_witness::<StateProviderBox, _>(
+                                    &statedb.database.database,
+                                    eth_api.provider(),
+                                    block_number,
+                                    mode,
+                                ),
+                        );
                     })
                     .map_err(|err| EthApiError::Internal(err.into()))?;
 
@@ -612,6 +743,9 @@ where
                 executor.apply_pre_execution_changes().map_err(Eth::Error::from_eth_err)?;
 
                 for tx in block.transactions_recovered().take(tx_index + 1) {
+                    if is_cancelled() {
+                        return Err(EthApiError::InternalEthError.into())
+                    }
                     executor.execute_transaction(tx).map_err(Eth::Error::from_eth_err)?;
                 }
                 drop(executor);
@@ -627,9 +761,6 @@ where
         let account = db.basic(address).map_err(Eth::Error::from_eth_err)?;
         let Some(account) = account else { return Ok(None) };
 
-        let balance = account.balance;
-        let nonce = account.nonce;
-        let code_hash = account.code_hash;
         let (hashed_storage, status) = db
             .cache
             .accounts
@@ -650,17 +781,18 @@ where
             db.database.storage_root(address, hashed_storage).map_err(Eth::Error::from_eth_err)?
         };
 
-        Ok(Some(Account { balance, nonce, code_hash, storage_root }))
+        Ok(Some(reth_primitives_traits::Account::from(account).into_trie_account(storage_root)))
     }
 
     /// Retrieves the account's balance, nonce, and code from the given state.
+    #[allow(clippy::needless_update)]
     fn account_info<DB>(db: &mut DB, address: Address) -> Result<AccountInfo, Eth::Error>
     where
         DB: Database,
         EthApiError: From<DB::Error>,
     {
         let account = db.basic(address).map_err(Eth::Error::from_eth_err)?.unwrap_or_default();
-        let code = if account.code_hash == KECCAK_EMPTY {
+        let code = if account.is_empty_code_hash() {
             Default::default()
         } else if let Some(code) = account.code {
             code.original_bytes()
@@ -668,7 +800,16 @@ where
             db.code_by_hash(account.code_hash).map_err(Eth::Error::from_eth_err)?.original_bytes()
         };
 
-        Ok(AccountInfo { balance: account.balance, nonce: account.nonce, code })
+        Ok(AccountInfo {
+            balance: account.balance,
+            nonce: account.nonce,
+            code,
+            #[cfg(feature = "account-ext")]
+            extension: reth_primitives_traits::AccountExtension::from_shared(
+                account.extension.into_shared(),
+            ),
+            ..Default::default()
+        })
     }
 
     /// Returns the code associated with a given hash at the specified block ID. If no code is
@@ -725,6 +866,9 @@ where
                 let mut roots = Vec::with_capacity(block.body().transactions().len());
                 let mut evm = eth_api.evm_config().evm_with_env(&mut db, evm_env);
                 for tx in block.transactions_recovered() {
+                    if is_cancelled() {
+                        return Err(EthApiError::InternalEthError.into())
+                    }
                     let tx_env = eth_api.evm_config().tx_env(tx);
                     evm.transact_commit(tx_env).map_err(Eth::Error::from_evm_err)?;
 
@@ -842,7 +986,7 @@ where
         }
 
         for entry in entries {
-            let rlp = alloy_rlp::encode(entry.block.sealed_block()).into();
+            let rlp = Bytes::from(alloy_rlp::encode(entry.block.sealed_block()));
             let hash = entry.block.hash();
 
             let block = entry
@@ -850,7 +994,9 @@ where
                 .clone_into_rpc_block(
                     BlockTransactionsKind::Full,
                     |tx, tx_info| self.eth_api().converter().fill(tx, tx_info),
-                    |header, size| self.eth_api().converter().convert_header(header, size, None),
+                    |header, block_size| {
+                        self.eth_api().converter().convert_header(header, Some(block_size), None)
+                    },
                 )
                 .map_err(|err| Eth::Error::from(err).into())?;
 
@@ -872,13 +1018,137 @@ where
         Ok(())
     }
 
-    /// Handler for `debug_traceChain`
-    async fn debug_trace_chain(
+    /// Handler for `debug_subscribe("traceChain", ...)`.
+    async fn debug_subscribe(
         &self,
-        _start_exclusive: BlockNumberOrTag,
-        _end_inclusive: BlockNumberOrTag,
-    ) -> RpcResult<Vec<BlockTraceResult>> {
-        Err(internal_rpc_err("unimplemented"))
+        pending: PendingSubscriptionSink,
+        subscription: String,
+        start_exclusive: BlockNumberOrTag,
+        end_inclusive: BlockNumberOrTag,
+        opts: Option<GethDebugTracingOptions>,
+    ) -> jsonrpsee::core::SubscriptionResult {
+        if subscription != "traceChain" {
+            pending
+                .reject(EthApiError::InvalidParams(format!(
+                    "unsupported debug subscription: {subscription}"
+                )))
+                .await;
+            return Ok(())
+        }
+
+        let start_id = BlockId::Number(start_exclusive);
+        let start = match self.eth_api().recovered_block(start_id).await {
+            Ok(Some(block)) => block,
+            Ok(None) => {
+                pending.reject(EthApiError::TracingBlockNotFound(start_id)).await;
+                return Ok(())
+            }
+            Err(err) => {
+                pending.reject(err).await;
+                return Ok(())
+            }
+        };
+        let end_id = BlockId::Number(end_inclusive);
+        let end = match self.eth_api().recovered_block(end_id).await {
+            Ok(Some(block)) => block,
+            Ok(None) => {
+                pending.reject(EthApiError::TracingBlockNotFound(end_id)).await;
+                return Ok(())
+            }
+            Err(err) => {
+                pending.reject(err).await;
+                return Ok(())
+            }
+        };
+
+        if start.number() >= end.number() {
+            pending
+                .reject(EthApiError::InvalidParams(format!(
+                    "end block (#{}) needs to come after start block (#{})",
+                    end.number(),
+                    start.number()
+                )))
+                .await;
+            return Ok(())
+        }
+
+        let sink = pending.accept().await?;
+        let this = self.clone();
+        let task_spawner = self.inner.task_spawner.clone();
+        task_spawner.spawn_task(async move {
+            let end_number = end.number();
+            let opts = opts.unwrap_or_default();
+
+            for number in (start.number() + 1)..=end_number {
+                if sink.is_closed() {
+                    break
+                }
+
+                let block_id = BlockId::number(number);
+                let block = match this.eth_api().recovered_block(block_id).await {
+                    Ok(Some(block)) => block,
+                    Ok(None) => {
+                        tracing::warn!(target: "rpc::debug", %number, "Chain tracing block not found");
+                        break
+                    }
+                    Err(err) => {
+                        tracing::warn!(target: "rpc::debug", %number, %err, "Failed to load chain tracing block");
+                        break
+                    }
+                };
+                let permit = tokio::select! {
+                    _ = sink.closed() => break,
+                    permit = this.acquire_trace_permit() => match permit {
+                        Ok(permit) => permit,
+                        Err(err) => {
+                            tracing::debug!(target: "rpc::debug", %err, "Failed to acquire trace permit");
+                            break
+                        }
+                    }
+                };
+                if sink.is_closed() {
+                    break
+                }
+                let traces = match this.trace_chain_block(block.clone(), opts.clone()).await {
+                    Ok(traces) => traces,
+                    Err(err) => {
+                        tracing::warn!(target: "rpc::debug", %number, %err, "Failed to trace chain block");
+                        break
+                    }
+                };
+                drop(permit);
+
+                if traces.is_empty() && number != end_number {
+                    continue
+                }
+                let result = ChainBlockTraceResult {
+                    block: U256::from(number),
+                    hash: block.hash(),
+                    traces,
+                };
+                let message = match SubscriptionMessage::new(
+                    sink.method_name(),
+                    sink.subscription_id(),
+                    &result,
+                ) {
+                    Ok(message) => message,
+                    Err(err) => {
+                        tracing::warn!(target: "rpc::debug", %number, %err, "Failed to serialize chain trace");
+                        break
+                    }
+                };
+                if sink.send(message).await.is_err() {
+                    break
+                }
+            }
+
+            // Dropping jsonrpsee's final sink unregisters the subscription without notifying the
+            // client that this finite stream completed. Retain it so the subscription remains
+            // explicitly unsubscribable until the client unsubscribes or disconnects.
+            sink.closed().await;
+        });
+
+        Ok(())
     }
 
     /// Handler for `debug_traceBlock`
@@ -1011,7 +1281,7 @@ where
     }
 
     async fn debug_chain_config(&self) -> RpcResult<ChainConfig> {
-        Ok(self.provider().chain_spec().genesis().config.clone())
+        Ok(crate::chain_config::chain_config(&*self.provider().chain_spec()))
     }
 
     async fn debug_chaindb_property(&self, _property: String) -> RpcResult<()> {
@@ -1217,6 +1487,8 @@ struct DebugApiInner<Eth: RpcNodeCore> {
     eth_api: Eth,
     // restrict the number of concurrent calls to blocking calls
     blocking_task_guard: BlockingTaskGuard,
+    /// Spawns long-running subscription tasks.
+    task_spawner: Runtime,
     /// Cache for bad blocks.
     bad_block_store: BadBlockStore<BlockTy<Eth::Primitives>>,
 }
@@ -1277,23 +1549,213 @@ impl<B: BlockTrait> Default for BadBlockStore<B> {
     }
 }
 
+/// Default timeout of a JS tracer, matching geth.
+#[cfg(feature = "js-tracer")]
+const DEFAULT_JS_TRACER_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Interrupts a JS tracer once its request is dropped or its timeout expires.
+///
+/// Built-in tracers can't be interrupted, so for them this does nothing.
+#[derive(Clone, Debug, Default)]
+struct JsTraceInterrupt {
+    #[cfg(feature = "js-tracer")]
+    js: Option<(JsInspectorInterrupt, Duration)>,
+}
+
+impl JsTraceInterrupt {
+    /// Creates an interrupt if `opts` selects a JS tracer, using its `timeout` or geth's default.
+    #[cfg_attr(
+        not(feature = "js-tracer"),
+        expect(unused_variables, reason = "only JS tracers can be interrupted")
+    )]
+    fn new(opts: &GethDebugTracingOptions) -> Result<Self, EthApiError> {
+        #[cfg(feature = "js-tracer")]
+        if let Some(GethDebugTracerType::JsTracer(_)) = &opts.tracer {
+            let timeout = match &opts.timeout {
+                Some(timeout) => humantime::parse_duration(timeout).map_err(|err| {
+                    EthApiError::InvalidParams(format!("invalid tracer timeout {timeout:?}: {err}"))
+                })?,
+                None => DEFAULT_JS_TRACER_TIMEOUT,
+            };
+            return Ok(Self { js: Some((JsInspectorInterrupt::new(), timeout)) })
+        }
+        Ok(Self::default())
+    }
+
+    /// Lets this interrupt stop `inspector` if it's a JS tracer.
+    #[cfg_attr(
+        not(feature = "js-tracer"),
+        expect(clippy::missing_const_for_fn, reason = "only JS tracers can be interrupted")
+    )]
+    fn attach(&self, inspector: DebugInspector) -> DebugInspector {
+        #[cfg(feature = "js-tracer")]
+        if let Some((interrupt, _)) = &self.js {
+            return match inspector {
+                DebugInspector::Js(js) => {
+                    DebugInspector::Js(Box::new(js.with_interrupt(interrupt.clone())))
+                }
+                inspector => inspector,
+            }
+        }
+        inspector
+    }
+
+    /// Awaits `trace`, interrupting the tracer if the returned future is dropped or the timeout
+    /// expires.
+    ///
+    /// The interrupt is armed before the future is first polled, so dropping it unpolled still
+    /// stops a trace that is already running on a blocking task.
+    #[cfg_attr(
+        not(feature = "js-tracer"),
+        expect(
+            clippy::manual_async_fn,
+            clippy::redundant_async_block,
+            reason = "only JS tracers can be interrupted"
+        )
+    )]
+    fn run<T, E: FromEthApiError>(
+        &self,
+        trace: impl Future<Output = Result<T, E>>,
+    ) -> impl Future<Output = Result<T, E>> {
+        #[cfg(feature = "js-tracer")]
+        let js = self.js.as_ref().map(|(interrupt, timeout)| (interrupt.drop_guard(), *timeout));
+        async move {
+            #[cfg(feature = "js-tracer")]
+            if let Some((_interrupt_on_drop, timeout)) = js {
+                return tokio::time::timeout(timeout, trace)
+                    .await
+                    .map_err(|_| E::from_eth_err(EthApiError::ExecutionTimedOut(timeout)))?
+            }
+            trace.await
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{eth::helpers::types::EthRpcConverter, EthApi};
     use alloy_primitives::{keccak256, U256};
+    use reth_chainspec::ChainSpec;
     use reth_db_api::{tables, transaction::DbTxMut};
+    use reth_evm_ethereum::EthEvmConfig;
+    use reth_network_api::noop::NoopNetwork;
     use reth_primitives_traits::StorageEntry;
-    use reth_provider::test_utils::create_test_provider_factory;
+    use reth_provider::test_utils::{create_test_provider_factory, NoopProvider};
+    use reth_rpc_eth_api::EthApiServer;
+    use reth_transaction_pool::test_utils::testing_pool;
     use revm::{
         database::{states::StorageSlot, AccountStatus, BundleAccount, BundleState},
         state::AccountInfo as RevmAccountInfo,
     };
 
+    #[tokio::test]
+    async fn trace_call_out_of_range_block_error() {
+        let eth_api = EthApi::<_, EthRpcConverter<ChainSpec>>::builder(
+            NoopProvider::default(),
+            testing_pool(),
+            NoopNetwork::default(),
+            EthEvmConfig::mainnet(),
+        )
+        .build();
+        let debug_api = DebugApi::new(
+            eth_api.clone(),
+            BlockingTaskGuard::new(1),
+            &Runtime::test(),
+            futures::stream::empty(),
+        );
+        let block_id = BlockId::number(0xfffffffff);
+        for tx_index in [None, Some(0)] {
+            let mut opts: GethDebugTracingCallOptions =
+                serde_json::from_value(serde_json::json!({ "tracer": "callTracer" })).unwrap();
+            opts.tx_index = tx_index;
+            let err = DebugApiServer::debug_trace_call(
+                &debug_api,
+                Default::default(),
+                Some(block_id),
+                Some(opts),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(err.code(), -32000);
+            assert!(err.message().contains("not found"));
+        }
+
+        let err = EthApiServer::call(&eth_api, Default::default(), Some(block_id), None, None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), -32001);
+    }
+
+    #[cfg(feature = "js-tracer")]
+    fn js_tracer_opts(timeout: Option<&str>) -> GethDebugTracingOptions {
+        GethDebugTracingOptions {
+            tracer: Some(GethDebugTracerType::JsTracer(
+                "{ fault: function() {}, result: function() { return null; } }".into(),
+            )),
+            timeout: timeout.map(Into::into),
+            ..Default::default()
+        }
+    }
+
+    #[cfg(feature = "js-tracer")]
+    #[test]
+    fn js_trace_interrupt_stops_attached_js_tracer() {
+        use revm::{
+            context::TxEnv,
+            context_interface::result::EVMError,
+            database::{CacheDB, EmptyDB},
+            primitives::TxKind,
+            InspectEvm, MainBuilder, MainContext,
+        };
+
+        let opts = js_tracer_opts(None);
+        let interrupt = JsTraceInterrupt::new(&opts).unwrap();
+        let inspector = interrupt.attach(DebugInspector::new(opts).unwrap());
+        interrupt.js.as_ref().unwrap().0.interrupt();
+
+        let mut evm = revm::Context::mainnet()
+            .with_db(CacheDB::<EmptyDB>::default())
+            .build_mainnet_with_inspector(inspector);
+        let result = evm.inspect_tx(TxEnv {
+            gas_limit: 1_000_000,
+            kind: TxKind::Call(Address::with_last_byte(1)),
+            ..Default::default()
+        });
+        assert!(
+            matches!(&result, Err(EVMError::Custom(msg)) if msg == "JavaScript tracing interrupted"),
+            "{result:?}"
+        );
+    }
+
+    #[cfg(feature = "js-tracer")]
+    #[tokio::test]
+    async fn js_trace_interrupt_times_out_and_interrupts_tracer() {
+        let interrupt = JsTraceInterrupt::new(&js_tracer_opts(Some("10ms"))).unwrap();
+        let err =
+            interrupt.run(std::future::pending::<Result<(), EthApiError>>()).await.unwrap_err();
+        assert!(
+            matches!(err, EthApiError::ExecutionTimedOut(timeout) if timeout == Duration::from_millis(10))
+        );
+        assert!(interrupt.js.unwrap().0.is_interrupted());
+    }
+
+    #[cfg(feature = "js-tracer")]
+    #[test]
+    fn js_trace_interrupt_interrupts_tracer_when_dropped_unpolled() {
+        let interrupt = JsTraceInterrupt::new(&js_tracer_opts(None)).unwrap();
+        let (tracer_interrupt, _) = interrupt.js.clone().unwrap();
+        let trace = interrupt.run(std::future::pending::<Result<(), EthApiError>>());
+        assert!(!tracer_interrupt.is_interrupted());
+        drop(trace);
+        assert!(tracer_interrupt.is_interrupted());
+    }
+
     #[test]
     fn hashed_post_state_zeroes_destroyed_account_parent_storage() {
         let factory = create_test_provider_factory();
         let address = Address::with_last_byte(1);
-        let old_slot = U256::from(1);
+        let old_slot = U256::ONE;
         let new_slot = U256::from(2);
         let old_value = U256::from(10);
         let new_value = U256::from(20);
@@ -1327,7 +1789,6 @@ mod tests {
         let hashed_state = provider.hashed_post_state(&bundle_state).unwrap();
         let storage = &hashed_state.storages[&hashed_address];
 
-        assert!(!storage.wiped);
         assert_eq!(storage.storage[&hashed_old_slot], U256::ZERO);
         assert_eq!(storage.storage[&hashed_new_slot], new_value);
     }

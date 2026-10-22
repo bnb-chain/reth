@@ -11,12 +11,15 @@
 
 extern crate alloc;
 
+// Used directly only by the `eip1186` feature and tests.
+use alloy_consensus as _;
+
 mod execution_witness;
 pub use execution_witness::ExecutionWitnessMode;
 
 /// Lazy initialization wrapper for trie data.
 mod trie_data;
-pub use trie_data::{ComputedTrieData, LazyTrieData, SortedTrieData};
+pub use trie_data::{LazyTrieData, SortedTrieData};
 
 /// In-memory hashed state.
 mod hashed_state;
@@ -63,6 +66,9 @@ pub use trie::{BranchNodeMasks, BranchNodeMasksMap, ProofTrieNode};
 mod trie_node_v2;
 pub use trie_node_v2::*;
 
+/// Merkle Patricia trie range-proof verification.
+pub mod range_proof;
+
 /// The implementation of a container for storing intermediate changes to a trie.
 /// The container indicates when the trie has been modified.
 pub mod prefix_set;
@@ -79,8 +85,6 @@ pub mod ordered_root;
 
 /// Buffer for trie updates.
 pub mod updates;
-
-pub mod added_removed_keys;
 
 /// Utilities used by other modules in this crate.
 mod utils;

@@ -21,6 +21,7 @@ use reth_chainspec::{ChainInfo, EthChainSpec};
 use reth_db::{init_db, mdbx::DatabaseArguments, DatabaseEnv};
 use reth_db_api::{database::Database, models::StoredBlockBodyIndices};
 use reth_errors::{RethError, RethResult};
+use reth_execution_types::RecoveredBlockAndExecutionOutput;
 use reth_node_types::{
     BlockTy, HeaderTy, NodeTypesWithDB, NodeTypesWithDBAdapter, ReceiptTy, TxTy,
 };
@@ -30,7 +31,7 @@ use reth_stages_types::{PipelineTarget, StageCheckpoint, StageId};
 use reth_static_file_types::StaticFileSegment;
 use reth_storage_api::{
     BlockBodyIndicesProvider, ChainStateBlockReader, ChainStateBlockWriter, DBProvider,
-    NodePrimitivesProvider, StorageSettings, StorageSettingsCache, TryIntoHistoricalStateProvider,
+    NodePrimitivesProvider, StorageSettings, StorageSettingsCache,
 };
 use reth_storage_errors::provider::ProviderResult;
 use reth_storage_overlay::OverlayManager;
@@ -467,29 +468,6 @@ impl<N: ProviderNodeTypes> ProviderFactory<N> {
         Ok(Box::new(LatestStateProvider::new(self.database_provider_ro()?)))
     }
 
-    /// Storage provider for state at that given block
-    pub fn history_by_block_number(
-        &self,
-        block_number: BlockNumber,
-    ) -> ProviderResult<StateProviderBox> {
-        let state_provider = self.provider()?.try_into_history_at_block(block_number)?;
-        trace!(target: "providers::db", ?block_number, "Returning historical state provider for block number");
-        Ok(state_provider)
-    }
-
-    /// Storage provider for state at that given block hash
-    pub fn history_by_block_hash(&self, block_hash: BlockHash) -> ProviderResult<StateProviderBox> {
-        let provider = self.provider()?;
-
-        let block_number = provider
-            .block_number(block_hash)?
-            .ok_or(ProviderError::BlockHashNotFound(block_hash))?;
-
-        let state_provider = provider.try_into_history_at_block(block_number)?;
-        trace!(target: "providers::db", ?block_number, %block_hash, "Returning historical state provider for block hash");
-        Ok(state_provider)
-    }
-
     /// Asserts that the static files and database are consistent. If not,
     /// returns [`ProviderError::MustUnwind`] with the appropriate unwind
     /// target. May also return any [`ProviderError`] that
@@ -773,13 +751,13 @@ impl<N: ProviderNodeTypes> BlockReader for ProviderFactory<N> {
         self.provider()?.block(id)
     }
 
-    fn pending_block(&self) -> ProviderResult<Option<RecoveredBlock<Self::Block>>> {
+    fn pending_block(&self) -> ProviderResult<Option<Arc<RecoveredBlock<Self::Block>>>> {
         self.provider()?.pending_block()
     }
 
     fn pending_block_and_receipts(
         &self,
-    ) -> ProviderResult<Option<(RecoveredBlock<Self::Block>, Vec<Self::Receipt>)>> {
+    ) -> ProviderResult<Option<RecoveredBlockAndExecutionOutput<Self::Block, Self::Receipt>>> {
         self.provider()?.pending_block_and_receipts()
     }
 
@@ -1057,10 +1035,14 @@ mod tests {
     use super::*;
     use crate::{
         providers::{StaticFileProvider, StaticFileWriter},
-        test_utils::{blocks::TEST_BLOCK, create_test_provider_factory, MockNodeTypesWithDB},
+        test_utils::{
+            blocks::TEST_BLOCK, create_test_provider_factory,
+            create_test_provider_factory_with_genesis_block_number, MockNodeTypesWithDB,
+        },
         BlockHashReader, BlockNumReader, BlockWriter, DBProvider, HeaderProvider,
-        HeaderSyncGapProvider, TransactionsProvider,
+        HeaderSyncGapProvider, StageCheckpointWriter, TransactionsProvider,
     };
+    use alloy_eips::BlockNumHash;
     use alloy_primitives::{TxNumber, B256};
     use assert_matches::assert_matches;
     use reth_chainspec::ChainSpecBuilder;
@@ -1068,12 +1050,13 @@ mod tests {
         mdbx::DatabaseArguments,
         test_utils::{create_test_rocksdb_dir, create_test_static_files_dir, ERROR_TEMPDIR},
     };
-    use reth_db_api::{tables, transaction::DbTxMut};
+    use reth_db_api::{models::SnapAttempt, tables, transaction::DbTxMut};
     use reth_primitives_traits::SignerRecoverable;
     use reth_prune_types::{PruneMode, PruneModes};
     use reth_static_file_types::{
         SegmentHeader, SegmentRangeInclusive, DEFAULT_BLOCKS_PER_STATIC_FILE,
     };
+    use reth_storage_api::MetadataWriter;
     use reth_storage_errors::provider::ProviderError;
     use reth_testing_utils::generators::{self, random_block, random_header, BlockParams};
     use std::{ops::RangeInclusive, sync::Arc};
@@ -1173,6 +1156,72 @@ mod tests {
     }
 
     #[test]
+    fn block_range_readers_reject_expired_history() {
+        use crate::BlockReader;
+        use reth_static_file_types::{SegmentHeader, SegmentRangeInclusive, StaticFileSegment};
+
+        let factory = create_test_provider_factory();
+        let mut rng = generators::rng();
+        let provider_rw = factory.provider_rw().unwrap();
+        let mut parent = None;
+        for number in 0..6 {
+            let block = random_block(
+                &mut rng,
+                number,
+                BlockParams { parent, tx_count: Some(1), ..Default::default() },
+            );
+            parent = Some(block.hash());
+            provider_rw.insert_block(&block.try_recover().unwrap()).unwrap();
+        }
+        provider_rw.commit().unwrap();
+
+        // history below block 3 has been expired
+        let static_provider = factory.static_file_provider();
+        {
+            let mut writer =
+                static_provider.latest_writer(StaticFileSegment::Transactions).unwrap();
+            let header = writer.user_header().clone();
+            *writer.user_header_mut() = SegmentHeader::new(
+                header.expected_block_range(),
+                Some(SegmentRangeInclusive::new(3, 5)),
+                header.tx_range(),
+                StaticFileSegment::Transactions,
+            );
+            writer.inner().set_dirty();
+            writer.commit().unwrap();
+        }
+        static_provider.initialize_index().unwrap();
+        assert_eq!(static_provider.earliest_history_height(), 3);
+
+        let provider = factory.provider().unwrap();
+        // single block lookups already reject expired blocks
+        assert_matches!(
+            provider.block(1.into()),
+            Err(ProviderError::BlockExpired { requested: 1, earliest_available: 3 })
+        );
+        assert_matches!(
+            provider.recovered_block(1.into(), Default::default()),
+            Err(ProviderError::BlockExpired { requested: 1, earliest_available: 3 })
+        );
+        // and so must the range readers instead of returning blocks with stripped bodies
+        assert_matches!(
+            provider.block_range(1..=4),
+            Err(ProviderError::BlockExpired { requested: 1, earliest_available: 3 })
+        );
+        assert_matches!(
+            provider.block_with_senders_range(1..=4),
+            Err(ProviderError::BlockExpired { requested: 1, earliest_available: 3 })
+        );
+        assert_matches!(
+            provider.recovered_block_range(1..=4),
+            Err(ProviderError::BlockExpired { requested: 1, earliest_available: 3 })
+        );
+        // ranges within the available history keep working
+        assert_eq!(provider.block_range(3..=5).unwrap().len(), 3);
+        assert_eq!(provider.recovered_block_range(3..=5).unwrap().len(), 3);
+    }
+
+    #[test]
     fn insert_block_with_prune_modes() {
         let block = TEST_BLOCK.clone();
 
@@ -1267,5 +1316,179 @@ mod tests {
         let local_head = provider.local_tip_header(checkpoint).unwrap();
 
         assert_eq!(local_head, head);
+    }
+
+    #[test]
+    fn anchored_static_files_resume_after_the_pivot() {
+        let factory = create_test_provider_factory();
+        factory.set_storage_settings_cache(StorageSettings::v2());
+        let provider = factory.database_provider_rw().unwrap();
+        provider.anchor_pruned_static_files(10).unwrap();
+        provider.commit().unwrap();
+
+        let static_files = factory.static_file_provider();
+        for segment in StaticFileSegment::iter().filter(|segment| !segment.is_headers()) {
+            assert_eq!(static_files.get_highest_static_file_block(segment), Some(10), "{segment}");
+        }
+    }
+
+    #[test]
+    fn anchored_static_files_expire_history_below_the_pivot() {
+        let factory = create_test_provider_factory();
+        factory.set_storage_settings_cache(StorageSettings::v2());
+        let provider = factory.database_provider_rw().unwrap();
+        provider.anchor_pruned_static_files(10).unwrap();
+        provider.commit().unwrap();
+
+        let static_files = factory.static_file_provider();
+        assert_eq!(static_files.earliest_history_height(), 10);
+        assert_matches!(
+            factory.provider().unwrap().block(5.into()),
+            Err(ProviderError::BlockExpired { requested: 5, earliest_available: 10 })
+        );
+
+        static_files.initialize_index().unwrap();
+        assert_eq!(static_files.earliest_history_height(), 10);
+    }
+
+    #[test]
+    fn anchoring_static_files_requires_storage_v2() {
+        let factory = create_test_provider_factory();
+        factory.set_storage_settings_cache(StorageSettings::v1());
+        let provider = factory.database_provider_rw().unwrap();
+        assert!(provider.anchor_pruned_static_files(10).is_err());
+
+        let static_files = factory.static_file_provider();
+        for segment in StaticFileSegment::iter().filter(|segment| !segment.is_headers()) {
+            assert_eq!(static_files.get_highest_static_file_block(segment), None, "{segment}");
+        }
+    }
+
+    #[test]
+    fn rejected_unwind_below_the_anchor_leaves_the_database_untouched() {
+        for segment in StaticFileSegment::iter().filter(|segment| !segment.is_headers()) {
+            let factory = create_test_provider_factory();
+            factory.set_storage_settings_cache(StorageSettings::v2());
+            let provider = factory.database_provider_rw().unwrap();
+            provider.anchor_pruned_static_files(10).unwrap();
+            provider.save_stage_checkpoint(StageId::Execution, StageCheckpoint::new(10)).unwrap();
+            provider.commit().unwrap();
+
+            // An unwind must fail before its updated MDBX checkpoint can be committed.
+            let provider = factory.unwind_provider_rw().unwrap();
+            provider.save_stage_checkpoint(StageId::Execution, StageCheckpoint::new(5)).unwrap();
+            let queued = {
+                let static_files = factory.static_file_provider();
+                let mut writer = static_files.latest_writer(segment).unwrap();
+                match segment {
+                    StaticFileSegment::Transactions => writer.prune_transactions(0, 5),
+                    StaticFileSegment::Receipts => writer.prune_receipts(0, 5),
+                    StaticFileSegment::TransactionSenders => writer.prune_transaction_senders(0, 5),
+                    StaticFileSegment::AccountChangeSets => writer.prune_account_changesets(5),
+                    StaticFileSegment::StorageChangeSets => writer.prune_storage_changesets(5),
+                    StaticFileSegment::Headers => unreachable!(),
+                }
+            };
+            assert!(queued.and_then(|()| provider.commit()).is_err(), "{segment}");
+
+            let provider = factory.provider().unwrap();
+            assert_eq!(
+                provider.get_stage_checkpoint(StageId::Execution).unwrap(),
+                Some(StageCheckpoint::new(10)),
+                "{segment}"
+            );
+            assert_eq!(factory.static_file_provider().check_consistency(&provider).unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn a_sync_the_database_cannot_continue_is_refused() {
+        let factory = create_test_provider_factory();
+        factory.set_storage_settings_cache(StorageSettings::v2());
+
+        // Without snap state, either sync may run.
+        let provider = factory.database_provider_ro().unwrap();
+        assert!(provider.ensure_sync_mode(false).is_ok());
+        assert!(provider.ensure_sync_mode(true).is_ok());
+        drop(provider);
+
+        let unfinished = SnapAttempt::start(
+            None,
+            BlockNumHash::new(10, B256::repeat_byte(1)),
+            B256::repeat_byte(2),
+        );
+        let mut abandoned = unfinished;
+        abandoned.abandon();
+        let mut verified = unfinished;
+        verified.verify();
+
+        // Only snap finishes or replaces what an unverified attempt left in the state tables.
+        for attempt in [unfinished, abandoned] {
+            let provider = factory.database_provider_rw().unwrap();
+            provider.write_snap_attempt(&attempt).unwrap();
+            provider.commit().unwrap();
+
+            let provider = factory.database_provider_ro().unwrap();
+            assert!(matches!(
+                provider.ensure_sync_mode(false).err(),
+                Some(ProviderError::SnapStateRequiresSnapSync { attempt: 0 })
+            ));
+            assert!(provider.ensure_sync_mode(true).is_ok());
+        }
+
+        // A verified attempt leaves the pipeline free to continue above the pivot.
+        let provider = factory.database_provider_rw().unwrap();
+        provider.write_snap_attempt(&verified).unwrap();
+        provider.commit().unwrap();
+        assert!(factory.database_provider_ro().unwrap().ensure_sync_mode(false).is_ok());
+    }
+
+    #[test]
+    fn the_legacy_layout_refuses_snap_until_execution_passes_genesis() {
+        // Databases from before stored settings fall back to the legacy layout.
+        let factory = create_test_provider_factory_with_genesis_block_number(5);
+        let provider = factory.database_provider_rw().unwrap();
+        provider.save_stage_checkpoint(StageId::Execution, StageCheckpoint::new(5)).unwrap();
+        provider.commit().unwrap();
+
+        // A fresh database would snap sync into a layout snap can't write.
+        assert!(matches!(
+            factory.database_provider_ro().unwrap().ensure_sync_mode(true).err(),
+            Some(ProviderError::SnapStorageLayoutUnsupported)
+        ));
+
+        // Executed state keeps the staged pipeline, so its layout doesn't matter.
+        let provider = factory.database_provider_rw().unwrap();
+        provider.save_stage_checkpoint(StageId::Execution, StageCheckpoint::new(42)).unwrap();
+        provider.commit().unwrap();
+        assert!(factory.database_provider_ro().unwrap().ensure_sync_mode(true).is_ok());
+
+        // An unverified attempt is finished by snap whatever executed, so the layout matters again.
+        let provider = factory.database_provider_rw().unwrap();
+        provider
+            .write_snap_attempt(&SnapAttempt::start(
+                None,
+                BlockNumHash::new(10, B256::repeat_byte(1)),
+                B256::repeat_byte(2),
+            ))
+            .unwrap();
+        provider.commit().unwrap();
+        assert!(matches!(
+            factory.database_provider_ro().unwrap().ensure_sync_mode(true).err(),
+            Some(ProviderError::SnapStorageLayoutUnsupported)
+        ));
+    }
+
+    #[test]
+    fn a_database_without_an_execution_checkpoint_needs_the_snap_layout() {
+        // Startup checks run after genesis, so a missing checkpoint counts as nothing executed.
+        let factory = create_test_provider_factory();
+        assert!(matches!(
+            factory.database_provider_ro().unwrap().ensure_sync_mode(true).err(),
+            Some(ProviderError::SnapStorageLayoutUnsupported)
+        ));
+
+        factory.set_storage_settings_cache(StorageSettings::v2());
+        assert!(factory.database_provider_ro().unwrap().ensure_sync_mode(true).is_ok());
     }
 }

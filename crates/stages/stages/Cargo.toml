@@ -48,6 +48,7 @@ reth-trie-common.workspace = true
 
 reth-testing-utils = { workspace = true, optional = true }
 
+alloy-eip7928.workspace = true
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
 alloy-consensus.workspace = true

@@ -413,16 +413,16 @@ impl Drop for ServiceGuard {
 mod tests {
     use super::*;
     use alloy_eips::NumHash;
-    use alloy_primitives::{BlockHash, BlockNumber, Bytes, B256, U256};
+    use alloy_primitives::{Address, BlockHash, BlockNumber, Bytes, B256, U256};
     use reth_chain_state::{test_utils::TestBlockBuilder, ExecutedBlock};
     use reth_db_common::init::init_genesis;
     use reth_exex_types::FinishedExExHeight;
     use reth_provider::{
-        providers::{ProviderFactoryBuilder, ReadOnlyConfig},
+        providers::{BlockchainProvider, ProviderFactoryBuilder, ReadOnlyConfig},
         test_utils::{create_test_provider_factory, MockNodeTypes},
-        AccountReader, BalConfig, BalNotificationStream, BalStore, BalStoreHandle,
-        ChainSpecProvider, HeaderProvider, InMemoryBalStore, ProviderError, ProviderResult, RawBal,
-        StorageSettingsCache, TryIntoHistoricalStateProvider,
+        AccountReader, BalConfig, BalStore, BalStoreHandle, ChainSpecProvider, HeaderProvider,
+        InMemoryBalStore, ProviderError, ProviderResult, RawBal, StateProviderFactory,
+        StorageSettingsCache,
     };
     use reth_prune::Pruner;
     use reth_prune_types::PruneMode;
@@ -539,10 +539,6 @@ mod tests {
         fn get_by_hashes(&self, block_hashes: &[BlockHash]) -> ProviderResult<Vec<Option<Bytes>>> {
             Ok(vec![None; block_hashes.len()])
         }
-
-        fn bal_stream(&self) -> BalNotificationStream {
-            BalStoreHandle::noop().bal_stream()
-        }
     }
 
     #[test]
@@ -564,6 +560,43 @@ mod tests {
 
         assert_eq!(block_hash, result.last_block.hash);
         assert_eq!(result.last_state_trie_block, result.last_block);
+    }
+
+    #[test]
+    fn test_save_blocks_flushes_bal_store() {
+        use reth_provider::{RocksDBBalStore, RocksDBProviderFactory};
+
+        reth_tracing::init_test_tracing();
+        let provider = create_test_provider_factory();
+        let bal_store = BalStoreHandle::new(RocksDBBalStore::new(provider.rocksdb_provider()));
+        let provider = provider.with_bal_store(bal_store);
+        init_genesis(&provider).unwrap();
+
+        let mut test_block_builder = TestBlockBuilder::eth();
+        let executed = test_block_builder.get_executed_block_with_number(1, B256::random());
+        let num_hash = executed.recovered_block().num_hash();
+        let raw_bal = Bytes::from_static(&[0xc0]);
+
+        provider.bal_store().insert(num_hash, RawBal::new(raw_bal.clone())).unwrap();
+
+        let (_finished_exex_height_tx, finished_exex_height_rx) =
+            tokio::sync::watch::channel(FinishedExExHeight::NoExExs);
+        let pruner =
+            Pruner::new_with_factory(provider.clone(), vec![], 5, 0, None, finished_exex_height_rx);
+        let (sync_metrics_tx, _sync_metrics_rx) = unbounded_channel();
+        let handle = PersistenceHandle::<EthPrimitives>::spawn_service(
+            provider.clone(),
+            pruner,
+            sync_metrics_tx,
+        );
+        let (tx, rx) = crossbeam_channel::bounded(1);
+
+        handle.save_blocks(full_save_input(vec![executed]), tx).unwrap();
+
+        let result = rx.recv_timeout(std::time::Duration::from_secs(10)).expect("test timed out");
+        assert_eq!(result.last_block, num_hash);
+        let persisted_store = RocksDBBalStore::new(provider.rocksdb_provider());
+        assert_eq!(persisted_store.get_by_hash(num_hash.hash).unwrap(), Some(raw_bal));
     }
 
     #[test]
@@ -615,7 +648,7 @@ mod tests {
         reth_tracing::init_test_tracing();
 
         let provider_factory = create_test_provider_factory();
-        let tracked_addr = alloy_primitives::Address::from([0xBE; 20]);
+        let tracked_addr = Address::repeat_byte(0xBE);
 
         // Phase 1: Establish baseline history for blocks 0..20.
         let rocksdb = provider_factory.rocksdb_provider();
@@ -690,6 +723,9 @@ mod tests {
         provider_rw.save_blocks(&input).unwrap();
         provider_rw.commit().unwrap();
 
+        let primary = BlockchainProvider::new(provider_factory.clone()).unwrap();
+        let secondary_blockchain = BlockchainProvider::new(secondary.clone()).unwrap();
+
         // Secondary catches up and sees all 3 blocks.
         // Hold this provider (and its MDBX RO tx) across the reorg to test snapshot isolation.
         let pre_reorg_provider = secondary.provider().unwrap();
@@ -701,14 +737,14 @@ mod tests {
 
         // Check the primary can read its own historical state.
         {
-            let primary_state_at_1 = provider_factory.history_by_block_number(1).unwrap();
+            let primary_state_at_1 = primary.history_by_block_number(1).unwrap();
             let primary_account = primary_state_at_1.basic_account(&signer).unwrap();
             assert!(primary_account.is_some(), "primary: signer must exist at block 1");
         }
 
         // Verify historical state at block 1 is accessible via changesets on the secondary.
         {
-            let state_at_1 = secondary.history_by_block_number(1).unwrap();
+            let state_at_1 = secondary_blockchain.history_by_block_number(1).unwrap();
             let account_at_1 = state_at_1.basic_account(&signer).unwrap();
             assert!(account_at_1.is_some(), "signer account must exist at block 1");
             let account_at_1 = account_at_1.unwrap();
@@ -728,6 +764,8 @@ mod tests {
         let balance_after_reorg_block2 =
             balance_after_block1 - single_cost * U256::from(txs_in_block_b2);
         let nonce_after_reorg_block2 = nonce_after_block1 + txs_in_block_b2;
+
+        let state_at_1 = secondary_blockchain.history_by_block_number(1).unwrap();
 
         // Spawn the reorg on a background thread because `commit_unwind` calls
         // `wait_for_pre_commit_readers()` which blocks until the secondary's held
@@ -765,25 +803,24 @@ mod tests {
             "pre-reorg provider must still see block 1"
         );
 
-        // The held RO tx must still be able to read historical state at block 1 via
-        // changesets, even though the reorg thread is about to rewrite block 2's data.
-        // Consuming pre_reorg_provider here also unblocks the reorg commit.
-        let state_at_1 = pre_reorg_provider.try_into_history_at_block(1).unwrap();
+        // The held overlay-backed provider must still read historical state at block 1, even
+        // though the reorg thread is about to rewrite block 2's data.
         let account = state_at_1.basic_account(&signer).unwrap();
         assert!(
             account.is_some(),
-            "pre-reorg RO tx must still read signer at block 1 during reorg"
+            "pre-reorg state provider must still read signer at block 1 during reorg"
         );
         let account = account.unwrap();
         assert_eq!(
             account.balance, balance_after_block1,
-            "pre-reorg RO tx: signer balance at block 1 during reorg"
+            "pre-reorg state provider: signer balance at block 1 during reorg"
         );
         assert_eq!(
             account.nonce, nonce_after_block1,
-            "pre-reorg RO tx: signer nonce at block 1 during reorg"
+            "pre-reorg state provider: signer nonce at block 1 during reorg"
         );
         drop(state_at_1);
+        drop(pre_reorg_provider);
         reorg_handle.join().expect("reorg thread panicked");
 
         // A new provider catches up and sees the reorged chain.
@@ -803,7 +840,8 @@ mod tests {
         );
 
         // Verify historical state at block 1 is still accessible after the reorg.
-        let state_at_1 = secondary.history_by_block_number(1).unwrap();
+        let secondary_blockchain = BlockchainProvider::new(secondary).unwrap();
+        let state_at_1 = secondary_blockchain.history_by_block_number(1).unwrap();
         let account_at_1 = state_at_1.basic_account(&signer).unwrap();
         assert!(account_at_1.is_some(), "signer account must exist at block 1 after reorg");
         let account_at_1 = account_at_1.unwrap();
@@ -817,7 +855,7 @@ mod tests {
         );
 
         // Verify the latest state (at block 2) reflects the reorged execution.
-        let state_at_2 = secondary.history_by_block_number(2).unwrap();
+        let state_at_2 = secondary_blockchain.history_by_block_number(2).unwrap();
         let account_at_2 = state_at_2.basic_account(&signer).unwrap();
         assert!(account_at_2.is_some(), "signer account must exist at block 2 after reorg");
         let account_at_2 = account_at_2.unwrap();

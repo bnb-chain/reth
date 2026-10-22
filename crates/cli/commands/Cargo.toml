@@ -62,6 +62,7 @@ reth-discv5.workspace = true
 # triedb
 
 # ethereum
+alloy-eip7928.workspace = true
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
@@ -91,7 +92,7 @@ tokio-stream.workspace = true
 reqwest = { workspace = true, features = ["blocking"] }
 url.workspace = true
 metrics.workspace = true
-blake3.workspace = true
+blake3 = { workspace = true, features = ["rayon"] }
 rayon.workspace = true
 
 # io
@@ -149,6 +150,7 @@ arbitrary = [
     "reth-db/arbitrary",
     "reth-chainspec/arbitrary",
     "alloy-chains/arbitrary",
+    "alloy-eip7928/arbitrary",
     "alloy-eips/arbitrary",
     "alloy-primitives/arbitrary",
     "reth-codecs/test-utils",

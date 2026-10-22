@@ -47,8 +47,9 @@ impl StateProviderTest {
 }
 
 impl AccountReader for StateProviderTest {
+    #[allow(clippy::clone_on_copy)]
     fn basic_account(&self, address: &Address) -> ProviderResult<Option<Account>> {
-        Ok(self.accounts.get(address).map(|(_, acc)| *acc))
+        Ok(self.accounts.get(address).map(|(_, acc)| acc.clone()))
     }
 }
 
@@ -138,6 +139,14 @@ impl StateProofProvider for StateProviderTest {
         _input: TrieInput,
         _targets: MultiProofTargets,
     ) -> ProviderResult<MultiProof> {
+        unimplemented!("proof generation is not supported")
+    }
+
+    fn multiproof_v2(
+        &self,
+        _targets: reth_trie::MultiProofTargetsV2,
+        _requires_masks: bool,
+    ) -> ProviderResult<reth_trie::DecodedMultiProofV2> {
         unimplemented!("proof generation is not supported")
     }
 

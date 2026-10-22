@@ -1,5 +1,5 @@
 use crate::{DatabaseHashedCursorFactory, DatabaseTrieCursorFactory};
-use alloy_primitives::{keccak256, map::B256Map, BlockNumber, B256};
+use alloy_primitives::{keccak256, map::B256Map, Address, BlockNumber, B256};
 use reth_db_api::{
     models::{AccountBeforeTx, BlockNumberAddress},
     transaction::DbTx,
@@ -102,7 +102,7 @@ pub trait DatabaseStateRoot<'a, TX>: Sized {
     /// let mut hashed_state = HashedPostState::default();
     /// hashed_state.accounts.insert(
     ///     [0x11; 32].into(),
-    ///     Some(Account { nonce: 1, balance: U256::from(10), bytecode_hash: None }),
+    ///     Some(Account { nonce: 1, balance: U256::from(10), ..Default::default() }),
     /// );
     ///
     /// // Calculate the state root
@@ -307,11 +307,21 @@ impl DatabaseHashedPostState for HashedPostStateSorted {
 
         if start < end {
             let end_inclusive = end.saturating_sub(1);
+            // Rows are ordered by `BlockNumberAddress`, so all slots of one account arrive
+            // consecutively and the address hash can be reused across them.
+            let mut last_address: Option<(Address, B256)> = None;
             for (BlockNumberAddress((_, address)), storage) in
                 provider.storage_changesets_range(start..=end_inclusive)?
             {
                 if seen_storage_keys.insert((address, storage.key)) {
-                    let hashed_address = keccak256(address);
+                    let hashed_address = match last_address {
+                        Some((last, hashed)) if last == address => hashed,
+                        _ => {
+                            let hashed = keccak256(address);
+                            last_address = Some((address, hashed));
+                            hashed
+                        }
+                    };
                     storages
                         .entry(hashed_address)
                         .or_default()
@@ -325,7 +335,7 @@ impl DatabaseHashedPostState for HashedPostStateSorted {
             .into_iter()
             .map(|(address, mut slots)| {
                 slots.sort_unstable_by_key(|(slot, _)| *slot);
-                (address, HashedStorageSorted { storage_slots: slots, wiped: false })
+                (address, HashedStorageSorted { storage_slots: slots })
             })
             .collect();
 
@@ -373,13 +383,13 @@ mod tests {
 
         let mut hashed_state = HashedPostState::default();
         hashed_state.accounts.insert(
-            B256::from(U256::from(1)),
-            Some(Account { nonce: 1, balance: U256::from(10), bytecode_hash: None }),
+            B256::with_last_byte(1),
+            Some(Account { nonce: 1, balance: U256::from(10), ..Default::default() }),
         );
-        hashed_state.accounts.insert(B256::from(U256::from(2)), None);
+        hashed_state.accounts.insert(B256::with_last_byte(2), None);
         hashed_state.storages.insert(
-            B256::from(U256::from(1)),
-            HashedStorage::from_iter([(B256::from(U256::from(3)), U256::from(30))]),
+            B256::with_last_byte(1),
+            HashedStorage::from_iter([(B256::with_last_byte(3), U256::from(30))]),
         );
 
         let sorted = hashed_state.into_sorted();
@@ -430,8 +440,8 @@ mod tests {
 
         let address1 = Address::with_last_byte(1);
         let address2 = Address::with_last_byte(2);
-        let slot1 = B256::from(U256::from(11));
-        let slot2 = B256::from(U256::from(22));
+        let slot1 = B256::with_last_byte(11);
+        let slot2 = B256::with_last_byte(22);
 
         // Account changesets: only first occurrence per address should be kept.
         provider
@@ -488,7 +498,7 @@ mod tests {
         assert_eq!(sorted.accounts.len(), 2);
         let hashed_addr1 = keccak256(address1);
         let account1 = sorted.accounts.iter().find(|(addr, _)| *addr == hashed_addr1).unwrap();
-        assert_eq!(account1.1.unwrap().nonce, 1);
+        assert_eq!(account1.1.as_ref().unwrap().nonce, 1);
 
         // Ordering guarantees - accounts sorted by hashed address
         assert!(sorted.accounts.windows(2).all(|w| w[0].0 <= w[1].0));
@@ -537,8 +547,8 @@ mod tests {
         let address1 = Address::with_last_byte(1);
         let address2 = Address::with_last_byte(2);
 
-        let plain_slot1 = B256::from(U256::from(11));
-        let plain_slot2 = B256::from(U256::from(22));
+        let plain_slot1 = B256::with_last_byte(11);
+        let plain_slot2 = B256::with_last_byte(22);
         let hashed_slot1 = keccak256(plain_slot1);
         let hashed_slot2 = keccak256(plain_slot2);
 
@@ -611,7 +621,7 @@ mod tests {
         let hashed_addr2 = keccak256(address2);
 
         let account1 = sorted.accounts.iter().find(|(addr, _)| *addr == hashed_addr1).unwrap();
-        assert_eq!(account1.1.unwrap().nonce, 1);
+        assert_eq!(account1.1.as_ref().unwrap().nonce, 1);
 
         let account2 = sorted.accounts.iter().find(|(addr, _)| *addr == hashed_addr2).unwrap();
         assert!(account2.1.is_none());
@@ -640,8 +650,8 @@ mod tests {
 
         let address1 = Address::with_last_byte(1);
         let address2 = Address::with_last_byte(2);
-        let plain_slot1 = B256::from(U256::from(11));
-        let plain_slot2 = B256::from(U256::from(22));
+        let plain_slot1 = B256::with_last_byte(11);
+        let plain_slot2 = B256::with_last_byte(22);
 
         provider
             .tx_ref()
@@ -704,11 +714,11 @@ mod tests {
 
         let account1 =
             sorted.accounts.iter().find(|(addr, _)| *addr == expected_hashed_addr1).unwrap();
-        assert_eq!(account1.1.unwrap().nonce, 10);
+        assert_eq!(account1.1.as_ref().unwrap().nonce, 10);
 
         let account2 =
             sorted.accounts.iter().find(|(addr, _)| *addr == expected_hashed_addr2).unwrap();
-        assert_eq!(account2.1.unwrap().nonce, 20);
+        assert_eq!(account2.1.as_ref().unwrap().nonce, 20);
 
         assert!(sorted.accounts.windows(2).all(|w| w[0].0 <= w[1].0));
 

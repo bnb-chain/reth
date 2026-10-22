@@ -70,9 +70,12 @@ impl WorkerThread {
             observation.start();
             let started_at = Instant::now();
             metrics.record_queue_wait(started_at.saturating_duration_since(queued_at));
-            let _decrement_pending = DecrementPendingOnDrop(pending);
-            let _record_task_duration = RecordTaskDurationOnDrop::new(metrics, started_at);
-            let _ = result_tx.send(f());
+            let result = {
+                let _decrement_pending = DecrementPendingOnDrop(pending);
+                let _record_task_duration = RecordTaskDurationOnDrop::new(metrics, started_at);
+                f()
+            };
+            let _ = result_tx.send(result);
         });
 
         if self.tx.send(task).is_err() {
@@ -100,9 +103,12 @@ impl WorkerThread {
             observation.start();
             let started_at = Instant::now();
             metrics.record_queue_wait(started_at.saturating_duration_since(queued_at));
-            let _decrement_pending = DecrementPendingOnDrop(pending);
-            let _record_task_duration = RecordTaskDurationOnDrop::new(metrics, started_at);
-            let _ = result_tx.send(f());
+            let result = {
+                let _decrement_pending = DecrementPendingOnDrop(pending);
+                let _record_task_duration = RecordTaskDurationOnDrop::new(metrics, started_at);
+                f()
+            };
+            let _ = result_tx.send(result);
         });
 
         if self.tx.send(task).is_err() {
@@ -223,7 +229,11 @@ impl Drop for WorkerMap {
         for (_, mut w) in std::mem::take(&mut self.workers) {
             // Drop sender so the thread's recv loop exits, then join.
             drop(w.tx);
-            if let Some(handle) = w.handle.take() {
+            // A task can own the last reference to this map and drop it on its own worker, which
+            // cannot join itself. That thread exits on its own once the task returns.
+            if let Some(handle) = w.handle.take() &&
+                handle.thread().id() != thread::current().id()
+            {
                 let _ = handle.join();
             }
         }
@@ -364,5 +374,22 @@ mod tests {
         drop(owner);
         first.await.unwrap();
         assert_eq!(next.await.unwrap(), 7);
+    }
+
+    #[test]
+    fn worker_map_last_owner_dropped_on_worker() {
+        let map = Arc::new(WorkerMap::new());
+        let owner = Arc::clone(&map);
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+
+        let done = map.spawn_on("last-owner", move || {
+            release_rx.recv().unwrap();
+            // Drops the last reference to the map on the worker it would join.
+            drop(owner);
+        });
+
+        drop(map);
+        release_tx.send(()).unwrap();
+        done.blocking_recv().expect("dropping the map on its own worker should not panic");
     }
 }

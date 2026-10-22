@@ -76,7 +76,7 @@ pub trait HeaderConverter<Consensus, Rpc>: Send + Sync + Unpin + Clone + 'static
     fn convert_header(
         &self,
         header: SealedHeader<Consensus>,
-        block_size: usize,
+        block_size: Option<usize>,
         total_difficulty: Option<U256>,
     ) -> Result<Rpc, Self::Err>;
 }
@@ -92,7 +92,7 @@ where
     fn convert_header(
         &self,
         header: SealedHeader<Consensus>,
-        block_size: usize,
+        block_size: Option<usize>,
         total_difficulty: Option<U256>,
     ) -> Result<Rpc, Self::Err> {
         Ok(Rpc::from_consensus_header_with_td(header, block_size, total_difficulty))
@@ -101,14 +101,14 @@ where
 
 impl<Consensus, Rpc, F> HeaderConverter<Consensus, Rpc> for F
 where
-    F: Fn(SealedHeader<Consensus>, usize) -> Rpc + Send + Sync + Unpin + Clone + 'static,
+    F: Fn(SealedHeader<Consensus>, Option<usize>) -> Rpc + Send + Sync + Unpin + Clone + 'static,
 {
     type Err = Infallible;
 
     fn convert_header(
         &self,
         header: SealedHeader<Consensus>,
-        block_size: usize,
+        block_size: Option<usize>,
         total_difficulty: Option<U256>,
     ) -> Result<Rpc, Self::Err> {
         // Closure-based converters don't carry total difficulty.
@@ -202,7 +202,7 @@ pub trait RpcConvert: Send + Sync + Unpin + Debug + DynClone + 'static {
     fn convert_header(
         &self,
         header: SealedHeaderFor<Self::Primitives>,
-        block_size: usize,
+        block_size: Option<usize>,
         total_difficulty: Option<U256>,
     ) -> Result<RpcHeader<Self::Network>, Self::Error>;
 }
@@ -713,8 +713,7 @@ where
         > + Send
         + Sync
         + Unpin
-        + Clone
-        + Debug,
+        + Clone,
     Header: HeaderConverter<HeaderTy<N>, RpcHeader<Network>>,
     Map: TxInfoMapper<TxTy<N>> + Clone + Debug + Unpin + Send + Sync + 'static,
     SimTx: SimTxConverter<RpcTxReq<Network>, TxTy<N>>,
@@ -783,7 +782,7 @@ where
     fn convert_header(
         &self,
         header: SealedHeaderFor<Self::Primitives>,
-        block_size: usize,
+        block_size: Option<usize>,
         total_difficulty: Option<U256>,
     ) -> Result<RpcHeader<Self::Network>, Self::Error> {
         Ok(self.header_converter.convert_header(header, block_size, total_difficulty)?)

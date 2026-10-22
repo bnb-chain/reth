@@ -71,7 +71,7 @@ pub trait EthSubscriptions:
                 .filter_map(|block| {
                     match converter.convert_header(
                         block.clone_sealed_header(),
-                        block.rlp_length(),
+                        Some(block.rlp_length()),
                         None,
                     ) {
                         Ok(header) => Some(header),
