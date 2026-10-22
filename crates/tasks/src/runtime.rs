@@ -844,12 +844,22 @@ impl Runtime {
 #[derive(Debug, Clone)]
 pub struct RuntimeBuilder {
     config: RuntimeConfig,
+    worker_namespace: Option<&'static str>,
 }
 
 impl RuntimeBuilder {
     /// Create a new builder with the given configuration.
     pub const fn new(config: RuntimeConfig) -> Self {
-        Self { config }
+        Self { config, worker_namespace: None }
+    }
+
+    /// Distinguishes dedicated runtimes in worker thread names and metrics.
+    ///
+    /// Use a fixed, low-cardinality name (for example `miner`). Without a namespace,
+    /// existing thread names and metric labels are preserved.
+    pub const fn with_worker_namespace(mut self, namespace: &'static str) -> Self {
+        self.worker_namespace = Some(namespace);
+        self
     }
 
     /// Build the [`Runtime`].
@@ -861,6 +871,7 @@ impl RuntimeBuilder {
     pub fn build(self) -> Result<Runtime, RuntimeBuildError> {
         debug!(?self.config, "Building runtime");
         let config = self.config;
+        let namespace = self.worker_namespace;
 
         let (owned_runtime, handle) = match &config.tokio {
             TokioConfig::Owned { worker_threads, thread_keep_alive, thread_name } => {
@@ -900,24 +911,34 @@ impl RuntimeBuilder {
             let rpc_threads = config.rayon.rpc_threads.unwrap_or(default_threads);
 
             let cpu_pool = build_pool_with_panic_handler(
-                rayon::ThreadPoolBuilder::new()
-                    .num_threads(default_threads)
-                    .thread_name(|i| format!("cpu-{i:02}")),
+                rayon::ThreadPoolBuilder::new().num_threads(default_threads).thread_name(
+                    move |i| {
+                        format!(
+                            "{}cpu-{i:02}",
+                            namespace.map_or(String::new(), |ns| format!("{ns}-"))
+                        )
+                    },
+                ),
             )?;
 
             let rpc_raw = build_pool_with_panic_handler(
-                rayon::ThreadPoolBuilder::new()
-                    .num_threads(rpc_threads)
-                    .thread_name(|i| format!("rpc-{i:02}")),
+                rayon::ThreadPoolBuilder::new().num_threads(rpc_threads).thread_name(move |i| {
+                    format!("{}rpc-{i:02}", namespace.map_or(String::new(), |ns| format!("{ns}-")))
+                }),
             )?;
             let rpc_pool = BlockingTaskPool::new(rpc_raw);
 
             let storage_threads =
                 config.rayon.storage_threads.unwrap_or(DEFAULT_STORAGE_POOL_THREADS);
             let storage_pool = build_pool_with_panic_handler(
-                rayon::ThreadPoolBuilder::new()
-                    .num_threads(storage_threads)
-                    .thread_name(|i| format!("storage-{i:02}")),
+                rayon::ThreadPoolBuilder::new().num_threads(storage_threads).thread_name(
+                    move |i| {
+                        format!(
+                            "{}storage-{i:02}",
+                            namespace.map_or(String::new(), |ns| format!("{ns}-"))
+                        )
+                    },
+                ),
             )?;
 
             let blocking_guard = BlockingTaskGuard::new(config.rayon.max_blocking_tasks);
@@ -925,26 +946,31 @@ impl RuntimeBuilder {
             let proof_storage_worker_threads =
                 config.rayon.proof_storage_worker_threads.unwrap_or(default_threads * 2);
             let proof_storage_worker_pool =
-                WorkerPool::new(proof_storage_worker_threads, "proof-strg");
+                WorkerPool::with_namespace(proof_storage_worker_threads, "proof-strg", namespace);
 
             let proof_account_worker_threads =
                 config.rayon.proof_account_worker_threads.unwrap_or(default_threads * 2);
             let proof_account_worker_pool =
-                WorkerPool::new(proof_account_worker_threads, "proof-acct");
+                WorkerPool::with_namespace(proof_account_worker_threads, "proof-acct", namespace);
 
             let prewarming_threads = config.rayon.prewarming_threads.unwrap_or(default_threads);
-            let prewarming_pool = WorkerPool::new(prewarming_threads, "prewarm");
+            let prewarming_pool =
+                WorkerPool::with_namespace(prewarming_threads, "prewarm", namespace);
 
             let bal_streaming_threads =
                 config.rayon.bal_streaming_threads.unwrap_or(default_threads);
-            let bal_streaming_pool = WorkerPool::new(bal_streaming_threads, "bal-stream");
+            let bal_streaming_pool =
+                WorkerPool::with_namespace(bal_streaming_threads, "bal-stream", namespace);
 
             let state_trie_overlay_worker_threads = config
                 .rayon
                 .state_trie_overlay_worker_threads
                 .unwrap_or(DEFAULT_STATE_TRIE_OVERLAY_WORKER_THREADS);
-            let state_trie_overlay_worker_pool =
-                Arc::new(WorkerPool::new(state_trie_overlay_worker_threads, "state-ovly"));
+            let state_trie_overlay_worker_pool = Arc::new(WorkerPool::with_namespace(
+                state_trie_overlay_worker_threads,
+                "state-ovly",
+                namespace,
+            ));
 
             debug!(
                 default_threads,
@@ -1005,7 +1031,7 @@ impl RuntimeBuilder {
             bal_streaming_pool,
             #[cfg(feature = "rayon")]
             state_trie_overlay_worker_pool,
-            worker_map: WorkerMap::new(),
+            worker_map: WorkerMap::with_namespace(namespace),
             task_manager_handle: Mutex::new(Some(task_manager_handle)),
         };
 
@@ -1081,6 +1107,59 @@ mod tests {
         let name = rx.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(name, "critical-os-test");
         handle.join().unwrap();
+    }
+
+    #[test]
+    fn isolated_runtime_progresses_while_miner_waits_for_input() {
+        let miner = RuntimeBuilder::new(Runtime::test_config())
+            .with_worker_namespace("miner")
+            .build()
+            .unwrap();
+        let import = Runtime::test();
+        let (entered, started) = std::sync::mpsc::channel();
+        let (release, finish) = std::sync::mpsc::channel::<()>();
+        let mining = miner.spawn_blocking_named("sparse-trie", move || {
+            entered.send(thread::current().name().unwrap().to_owned()).unwrap();
+            let _ = finish.recv();
+        });
+        assert_eq!(started.recv_timeout(Duration::from_secs(5)).unwrap(), "miner-sparse-trie");
+        let (done, imported) = std::sync::mpsc::channel();
+        let importing = import.spawn_blocking_named("sparse-trie", move || {
+            done.send(thread::current().name().unwrap().to_owned()).unwrap();
+        });
+        let result = imported.recv_timeout(Duration::from_secs(5));
+        // Release before asserting, so even a regression cannot hang runtime teardown.
+        drop(release);
+        mining.get();
+        importing.get();
+        assert_eq!(result.unwrap(), "sparse-trie");
+    }
+
+    #[cfg(feature = "rayon")]
+    #[test]
+    fn isolated_runtime_has_distinct_proof_and_overlay_workers() {
+        let miner = RuntimeBuilder::new(Runtime::test_config())
+            .with_worker_namespace("miner")
+            .build()
+            .unwrap();
+        let import = Runtime::test();
+        for (mining, importing, name) in [
+            (miner.proof_account_worker_pool(), import.proof_account_worker_pool(), "proof-acct"),
+            (miner.proof_storage_worker_pool(), import.proof_storage_worker_pool(), "proof-strg"),
+            (
+                miner.state_trie_overlay_worker_pool().as_ref(),
+                import.state_trie_overlay_worker_pool().as_ref(),
+                "state-ovly",
+            ),
+        ] {
+            let names = std::sync::Mutex::new(Vec::new());
+            mining.broadcast(2, |_| {
+                names.lock().unwrap().push(thread::current().name().unwrap().to_owned())
+            });
+            assert!(names.lock().unwrap().iter().all(|n| n.starts_with(&format!("miner-{name}"))));
+            importing
+                .broadcast(2, |_| assert!(thread::current().name().unwrap().starts_with(name)));
+        }
     }
 
     #[test]

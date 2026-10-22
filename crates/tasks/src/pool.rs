@@ -178,6 +178,7 @@ pub struct WorkerPool {
     metrics: OnceLock<WorkerPoolMetrics>,
     num_threads: usize,
     thread_name_prefix: &'static str,
+    namespace: Option<&'static str>,
 }
 
 impl WorkerPool {
@@ -186,17 +187,36 @@ impl WorkerPool {
     /// The underlying rayon pool is not created until the first method that requires it is called.
     /// Thread names follow the pattern `"{prefix}-{index:02}"`.
     pub const fn new(num_threads: usize, thread_name_prefix: &'static str) -> Self {
-        Self { pool: OnceLock::new(), metrics: OnceLock::new(), num_threads, thread_name_prefix }
+        Self::with_namespace(num_threads, thread_name_prefix, None)
+    }
+
+    /// Creates a pool with a fixed runtime label and thread-name prefix.
+    pub(crate) const fn with_namespace(
+        num_threads: usize,
+        thread_name_prefix: &'static str,
+        namespace: Option<&'static str>,
+    ) -> Self {
+        Self {
+            pool: OnceLock::new(),
+            metrics: OnceLock::new(),
+            num_threads,
+            thread_name_prefix,
+            namespace,
+        }
     }
 
     /// Returns a reference to the underlying rayon pool, creating it on first access.
     fn pool(&self) -> &rayon::ThreadPool {
         self.pool.get_or_init(|| {
             let prefix = self.thread_name_prefix;
+            let namespace = self.namespace;
             build_pool_with_panic_handler(
-                rayon::ThreadPoolBuilder::new()
-                    .num_threads(self.num_threads)
-                    .thread_name(move |i| format!("{prefix}-{i:02}")),
+                rayon::ThreadPoolBuilder::new().num_threads(self.num_threads).thread_name(
+                    move |i| match namespace {
+                        Some(ns) => format!("{ns}-{prefix}-{i:02}"),
+                        None => format!("{prefix}-{i:02}"),
+                    },
+                ),
             )
             .unwrap_or_else(|err| panic!("failed to build {prefix} worker pool: {err}"))
         })
@@ -204,7 +224,7 @@ impl WorkerPool {
 
     /// Returns metrics for this worker pool.
     fn metrics(&self) -> &WorkerPoolMetrics {
-        self.metrics.get_or_init(|| WorkerPoolMetrics::new(self.thread_name_prefix))
+        self.metrics.get_or_init(|| WorkerPoolMetrics::new(self.thread_name_prefix, self.namespace))
     }
 
     /// Returns `true` if the underlying rayon pool has been initialized.

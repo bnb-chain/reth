@@ -82,8 +82,11 @@ pub(crate) struct WorkerThreadMetrics {
 
 impl WorkerThreadMetrics {
     /// Create metrics for the named worker.
-    pub(crate) fn new(worker: &'static str) -> Self {
-        Self::new_with_labels(&[("worker", worker)])
+    pub(crate) fn new(worker: &'static str, namespace: Option<&'static str>) -> Self {
+        match namespace {
+            Some(namespace) => Self::new_with_labels(&[("worker", worker), ("runtime", namespace)]),
+            None => Self::new_with_labels(&[("worker", worker)]),
+        }
     }
 
     /// Record how long a task waited for this worker.
@@ -111,8 +114,11 @@ pub(crate) struct WorkerPoolMetrics {
 #[cfg(feature = "rayon")]
 impl WorkerPoolMetrics {
     /// Create metrics for the worker pool.
-    pub(crate) fn new(pool: &'static str) -> Self {
-        Self::new_with_labels(&[("pool", pool)])
+    pub(crate) fn new(pool: &'static str, namespace: Option<&'static str>) -> Self {
+        match namespace {
+            Some(namespace) => Self::new_with_labels(&[("pool", pool), ("runtime", namespace)]),
+            None => Self::new_with_labels(&[("pool", pool)]),
+        }
     }
 
     /// Record how long an outer job waited for this pool.
