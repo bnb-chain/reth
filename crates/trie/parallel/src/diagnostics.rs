@@ -411,6 +411,7 @@ fn should_sample(now: u64, next: &AtomicU64) -> bool {
 }
 
 // High bits identify a 30-second window; the low byte counts emitted lines (max 32).
+#[allow(deprecated)] // Keep compatibility with the workspace MSRV.
 fn allow_log(now: u64, budget: &AtomicU64) -> bool {
     let window = (now / 30) << 8;
     budget

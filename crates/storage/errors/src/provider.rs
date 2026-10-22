@@ -215,6 +215,35 @@ pub enum ProviderError {
         /// The block number to which the database must be unwound.
         unwind_to: BlockNumber,
     },
+    /// A persisted snap attempt record this build cannot read.
+    #[error(
+        "snap attempt record version {found:?} is not supported, this build writes {supported}"
+    )]
+    UnsupportedSnapAttemptVersion {
+        /// Version found on disk, absent when the record carries no numeric version.
+        found: Option<u64>,
+        /// Version this build writes.
+        supported: u32,
+    },
+    /// Snap sync was selected on a database that predates the hashed state layout it downloads
+    /// into.
+    #[error("snap sync requires the hashed state layout, which this database predates")]
+    SnapStorageLayoutUnsupported,
+    /// State a snap attempt is still downloading was about to be marked complete.
+    #[error("snap attempt {attempt} has not verified the downloaded state")]
+    UnverifiedSnapState {
+        /// Attempt that owns the unverified state.
+        attempt: u64,
+    },
+    /// The staged pipeline was selected on a database holding state a snap attempt left
+    /// unverified, which only snap can finish or replace.
+    #[error(
+        "snap attempt {attempt} left unverified state, restart with snap sync or wipe the database"
+    )]
+    SnapStateRequiresSnapSync {
+        /// Attempt that owns the unverified state.
+        attempt: u64,
+    },
     /// Any other error type wrapped into a cloneable [`AnyError`].
     #[error(transparent)]
     Other(#[from] AnyError),
@@ -249,7 +278,7 @@ impl ProviderError {
     /// Returns true if this type is a [`ProviderError::Other`] of that error
     /// type. Returns false otherwise.
     pub fn is_other<T: core::error::Error + 'static>(&self) -> bool {
-        self.as_other().map(|err| err.is::<T>()).unwrap_or(false)
+        self.as_other().is_some_and(|err| err.is::<T>())
     }
 }
 

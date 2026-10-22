@@ -3,7 +3,10 @@ use crate::{
     changesets_utils::StorageRevertsIter,
     providers::{
         database::{chain::ChainStorage, metrics, DatabaseProviderMetrics},
-        rocksdb::{PendingRocksDBBatches, RocksDBProvider, RocksDBWriteCtx},
+        rocksdb::{
+            OwnedRocksReadSnapshot, PendingRocksDBBatches, RocksDBProvider, RocksDBWriteCtx,
+            RocksReadSnapshot,
+        },
         static_file::{StaticFileWriteCtx, StaticFileWriter},
         NodeTypesForProvider, StaticFileProvider,
     },
@@ -14,11 +17,10 @@ use crate::{
     AccountReader, BlockBodyWriter, BlockExecutionWriter, BlockHashReader, BlockNumReader,
     BlockReader, BlockWriter, BundleStateInit, ChainStateBlockReader, ChainStateBlockWriter,
     DBProvider, DbTxProvider, EitherReader, EitherWriter, EitherWriterDestination, HashingWriter,
-    HeaderProvider, HeaderSyncGapProvider, HistoricalStateProvider, HistoricalStateProviderRef,
-    HistoryWriter, LatestStateProvider, LatestStateProviderRef, OriginalValuesKnown,
-    PersistenceFrontiers, ProviderError, PruneCheckpointReader, PruneCheckpointWriter,
-    RawRocksDBBatch, RevertsInit, RocksBatchArg, RocksDBProviderFactory, StageCheckpointReader,
-    StateProviderBox, StateWriter, StaticFileProviderFactory, StatsReader, StorageReader,
+    HeaderProvider, HeaderSyncGapProvider, HistoryWriter, LatestStateProviderRef,
+    OriginalValuesKnown, PersistenceFrontiers, ProviderError, PruneCheckpointReader,
+    PruneCheckpointWriter, RawRocksDBBatch, RevertsInit, RocksBatchArg, RocksDBProviderFactory,
+    StageCheckpointReader, StateWriter, StaticFileProviderFactory, StatsReader, StorageReader,
     StorageTrieWriter, TransactionVariant, TransactionsProvider, TransactionsProviderExt,
     TrieWriter,
 };
@@ -50,7 +52,10 @@ use reth_db_api::{
     transaction::{DbTx, DbTxMut},
     BlockNumberList,
 };
-use reth_execution_types::{BlockExecutionOutput, BlockExecutionResult, Chain, ExecutionOutcome};
+use reth_execution_types::{
+    BlockExecutionOutput, BlockExecutionResult, Chain, ExecutionOutcome,
+    RecoveredBlockAndExecutionOutput,
+};
 use reth_node_types::{BlockTy, BodyTy, HeaderTy, NodeTypes, ReceiptTy, TxTy};
 use reth_primitives_traits::{
     Account, Block as _, BlockBody as _, Bytecode, FastInstant as Instant, RecoveredBlock,
@@ -62,15 +67,15 @@ use reth_prune_types::{
 use reth_stages_types::{FinishCheckpoint, StageCheckpoint, StageId};
 use reth_static_file_types::StaticFileSegment;
 use reth_storage_api::{
-    BlockBodyIndicesProvider, BlockBodyReader, MetadataProvider, MetadataWriter,
-    NodePrimitivesProvider, StateProvider, StateReader, StateWriteConfig, StorageChangeSetReader,
-    StoragePath, StorageSettingsCache, TryIntoHistoricalStateProvider, WriteStateInput,
+    BlockBodyIndicesProvider, BlockBodyReader, HistoryInfo, HistoryReader, MetadataProvider,
+    MetadataWriter, NodePrimitivesProvider, StateProvider, StateWriteConfig,
+    StorageChangeSetReader, StoragePath, StorageSettingsCache, WriteStateInput,
 };
 use reth_storage_errors::provider::{ProviderResult, StaticFileWriterError};
 use reth_storage_overlay::OverlayManager;
 use reth_trie::{
     updates::{StorageTrieUpdatesSorted, TrieUpdatesSorted},
-    ComputedTrieData, HashedPostStateSorted,
+    HashedPostStateSorted, SortedTrieData,
 };
 use reth_trie_db::{DatabaseStorageTrieCursor, TrieTableAdapter};
 use revm::database::states::{
@@ -83,7 +88,7 @@ use std::{
     fmt::Debug,
     ops::{Deref, DerefMut, Range, RangeBounds, RangeInclusive},
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
 use tracing::{debug, instrument, trace};
 
@@ -139,7 +144,7 @@ impl<DB: Database, N: NodeTypes> AsRef<DatabaseProvider<<DB as Database>::TXMut,
     }
 }
 
-impl<DB: Database, N: NodeTypes + 'static> DatabaseProviderRW<DB, N> {
+impl<DB: Database, N: NodeTypes> DatabaseProviderRW<DB, N> {
     /// Commit database transaction and static file if it exists.
     pub fn commit(self) -> ProviderResult<()> {
         self.0.commit()
@@ -202,6 +207,12 @@ pub struct DatabaseProvider<TX, N: NodeTypes> {
     storage_settings: Arc<RwLock<StorageSettings>>,
     /// `RocksDB` provider
     rocksdb_provider: RocksDBProvider,
+    /// `RocksDB` snapshot shared by all history lookups made through this provider.
+    ///
+    /// It lives as long as the provider, next to the MDBX read transaction, and pins the
+    /// `RocksDB` versions its cached iterators were created on for that long; see
+    /// [`Self::history_rocksdb_snapshot`].
+    rocksdb_history_snapshot: OnceLock<Option<OwnedRocksReadSnapshot>>,
     /// Manager for state trie overlays and cached changesets.
     overlay_manager: OverlayManager<N::Primitives>,
     /// Task runtime for spawning parallel I/O work.
@@ -307,57 +318,6 @@ impl<TX: DbTx + 'static, N: NodeTypes> DatabaseProvider<TX, N> {
         Box::new(LatestStateProviderRef::new(self))
     }
 
-    /// Storage provider for state at that given block hash
-    pub fn history_by_block_hash<'a>(
-        &'a self,
-        block_hash: BlockHash,
-    ) -> ProviderResult<Box<dyn StateProvider + 'a>> {
-        let block_number =
-            self.block_number(block_hash)?.ok_or(ProviderError::BlockHashNotFound(block_hash))?;
-        self.history_by_block_number(block_number)
-    }
-
-    /// Storage provider for state at that given block number
-    pub fn history_by_block_number<'a>(
-        &'a self,
-        mut block_number: BlockNumber,
-    ) -> ProviderResult<Box<dyn StateProvider + 'a>> {
-        if block_number == self.best_block_number().unwrap_or_default() &&
-            block_number == self.last_block_number().unwrap_or_default()
-        {
-            return Ok(Box::new(LatestStateProviderRef::new(self)))
-        }
-
-        // +1 as the changeset that we want is the one that was applied after this block.
-        block_number += 1;
-
-        let account_history_prune_checkpoint =
-            self.get_prune_checkpoint(PruneSegment::AccountHistory)?;
-        let storage_history_prune_checkpoint =
-            self.get_prune_checkpoint(PruneSegment::StorageHistory)?;
-
-        let mut state_provider =
-            HistoricalStateProviderRef::new(self, block_number, self.overlay_manager.clone());
-        // If we pruned account or storage history, we can't return state on every historical block.
-        // Instead, we should cap it at the latest prune checkpoint for corresponding prune segment.
-        if let Some(prune_checkpoint_block_number) =
-            account_history_prune_checkpoint.and_then(|checkpoint| checkpoint.block_number)
-        {
-            state_provider = state_provider.with_lowest_available_account_history_block_number(
-                prune_checkpoint_block_number + 1,
-            );
-        }
-        if let Some(prune_checkpoint_block_number) =
-            storage_history_prune_checkpoint.and_then(|checkpoint| checkpoint.block_number)
-        {
-            state_provider = state_provider.with_lowest_available_storage_history_block_number(
-                prune_checkpoint_block_number + 1,
-            );
-        }
-
-        Ok(Box::new(state_provider))
-    }
-
     #[cfg(feature = "test-utils")]
     /// Sets the prune modes for provider.
     pub fn set_prune_modes(&mut self, prune_modes: PruneModes) {
@@ -441,6 +401,7 @@ impl<TX: DbTxMut, N: NodeTypes> DatabaseProvider<TX, N> {
             overlay_manager,
             runtime,
             db_path,
+            rocksdb_history_snapshot: OnceLock::new(),
             pending_rocksdb_batches: Default::default(),
             commit_order,
             minimum_pruning_distance: MINIMUM_UNWIND_SAFE_DISTANCE,
@@ -825,14 +786,8 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
             // This reduces cursor open/close overhead from N calls to 1.
             if save_mode.with_state() && !state_trie_blocks.is_empty() {
                 let start = Instant::now();
-                let batch = state_trie_blocks
-                    .iter()
-                    .map(|block| block.trie_data.get().sorted.hashed_state.as_ref())
-                    .collect::<Vec<_>>();
-                let mask = state_trie_masking_blocks
-                    .iter()
-                    .map(|block| block.trie_data.get().sorted.hashed_state.as_ref())
-                    .collect::<Vec<_>>();
+                let batch = ExecutedBlock::hashed_state_refs(state_trie_blocks);
+                let mask = ExecutedBlock::hashed_state_refs(state_trie_masking_blocks);
                 let merged_hashed_state =
                     HashedPostStateSorted::disjointed_merge_batch(&batch, &mask);
                 if !merged_hashed_state.is_empty() {
@@ -841,33 +796,10 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
                 timings.write_hashed_state += start.elapsed();
 
                 let start = Instant::now();
-                let batch = state_trie_blocks
-                    .iter()
-                    .map(|block| block.trie_data.get().sorted.trie_updates.as_ref())
-                    .collect::<Vec<_>>();
-                let mask = state_trie_masking_blocks
-                    .iter()
-                    .map(|block| block.trie_data.get().sorted.trie_updates.as_ref())
-                    .collect::<Vec<_>>();
-                // Sparse-trie streaming emits node updates, while the serial state-root path,
-                // including fallback, can emit a whole storage-trie wipe. `disjointed_merge_batch`
-                // rejects wipes, so use the ordered merge. Persisting updates shadowed by the
-                // masking suffix is redundant but safe: the in-memory overlay still takes
-                // precedence.
-                //
-                // With a revm release containing bluealloy/revm#3863, post-Cancun selfdestructs
-                // will no longer result in `storage.is_deleted` in serial trie updates. The flag
-                // remains valid `save_blocks` input when processing pre-Cancun historical data.
-                let contains_storage_wipe = batch.iter().chain(&mask).any(|updates| {
-                    updates.storage_tries_ref().values().any(|storage| storage.is_deleted)
-                });
-                let merged_trie = if contains_storage_wipe {
-                    TrieUpdatesSorted::merge_batch(
-                        state_trie_blocks.iter().rev().map(|block| block.trie_updates()),
-                    )
-                } else {
-                    Arc::new(TrieUpdatesSorted::disjointed_merge_batch(&batch, &mask))
-                };
+                let batch = ExecutedBlock::trie_updates_refs(state_trie_blocks);
+                let mask = ExecutedBlock::trie_updates_refs(state_trie_masking_blocks);
+                let merged_trie =
+                    Arc::new(TrieUpdatesSorted::disjointed_merge_batch(&batch, &mask));
                 if !merged_trie.is_empty() {
                     self.write_trie_updates_sorted(&merged_trie)?;
                 }
@@ -998,6 +930,16 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
     /// This includes calculating the resulted state root and comparing it with the parent block
     /// state root.
     pub fn unwind_trie_state_from(&self, from: BlockNumber) -> ProviderResult<()> {
+        let finish =
+            self.get_stage_checkpoint(reth_stages_types::StageId::Finish)?.ok_or_else(|| {
+                ProviderError::InsufficientChangesets { requested: from, available: 0..=0 }
+            })?;
+
+        // Calculate changesets before modifying hashed state used to reconstruct historical tries.
+        let trie_revert = self
+            .overlay_manager
+            .get_or_compute_cached_changesets_range(self, from..=finish.block_number)?;
+
         let changed_accounts = self.account_changesets_range(from..)?;
 
         // Unwind account hashes.
@@ -1014,20 +956,6 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
         // Unwind storage history indices.
         self.unwind_storage_history_indices(changed_storages.iter().copied())?;
 
-        // Unwind accounts/storages trie tables using the revert.
-        // Get the database tip block number
-        let db_tip_block = self
-            .get_stage_checkpoint(reth_stages_types::StageId::Finish)?
-            .as_ref()
-            .map(|chk| chk.block_number)
-            .ok_or_else(|| ProviderError::InsufficientChangesets {
-                requested: from,
-                available: 0..=0,
-            })?;
-
-        let trie_revert = self
-            .overlay_manager
-            .get_or_compute_cached_changesets_range(self, from..=db_tip_block)?;
         self.write_trie_updates_sorted(&trie_revert)?;
 
         Ok(())
@@ -1068,58 +996,6 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
             bytecodes_cursor.upsert(hash, &bytecode)?;
         }
         Ok(())
-    }
-}
-
-impl<TX: DbTx + 'static, N: NodeTypes> TryIntoHistoricalStateProvider for DatabaseProvider<TX, N> {
-    fn try_into_history_at_block(
-        self,
-        mut block_number: BlockNumber,
-    ) -> ProviderResult<StateProviderBox> {
-        let best_block = self.best_block_number().unwrap_or_default();
-
-        // Reject requests for blocks beyond the best block
-        if block_number > best_block {
-            return Err(ProviderError::BlockNotExecuted {
-                requested: block_number,
-                executed: best_block,
-            });
-        }
-
-        // If requesting state at the best block, use the latest state provider
-        if block_number == best_block {
-            return Ok(Box::new(LatestStateProvider::new(self)));
-        }
-
-        // +1 as the changeset that we want is the one that was applied after this block.
-        block_number += 1;
-
-        let account_history_prune_checkpoint =
-            self.get_prune_checkpoint(PruneSegment::AccountHistory)?;
-        let storage_history_prune_checkpoint =
-            self.get_prune_checkpoint(PruneSegment::StorageHistory)?;
-        let overlay_manager = self.overlay_manager.clone();
-
-        let mut state_provider = HistoricalStateProvider::new(self, block_number, overlay_manager);
-
-        // If we pruned account or storage history, we can't return state on every historical block.
-        // Instead, we should cap it at the latest prune checkpoint for corresponding prune segment.
-        if let Some(prune_checkpoint_block_number) =
-            account_history_prune_checkpoint.and_then(|checkpoint| checkpoint.block_number)
-        {
-            state_provider = state_provider.with_lowest_available_account_history_block_number(
-                prune_checkpoint_block_number + 1,
-            );
-        }
-        if let Some(prune_checkpoint_block_number) =
-            storage_history_prune_checkpoint.and_then(|checkpoint| checkpoint.block_number)
-        {
-            state_provider = state_provider.with_lowest_available_storage_history_block_number(
-                prune_checkpoint_block_number + 1,
-            );
-        }
-
-        Ok(Box::new(state_provider))
     }
 }
 
@@ -1213,6 +1089,7 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> DatabaseProvider<TX, N> {
             overlay_manager,
             runtime,
             db_path,
+            rocksdb_history_snapshot: OnceLock::new(),
             pending_rocksdb_batches: Default::default(),
             commit_order: CommitOrder::Normal,
             minimum_pruning_distance: MINIMUM_UNWIND_SAFE_DISTANCE,
@@ -1331,6 +1208,16 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> DatabaseProvider<TX, N> {
             return Ok(Vec::new())
         }
 
+        // like the single block lookups, reject ranges that reach into expired history instead
+        // of assembling blocks whose bodies are no longer available
+        let earliest_available = self.static_file_provider.earliest_history_height();
+        if *range.start() < earliest_available {
+            return Err(ProviderError::BlockExpired {
+                requested: *range.start(),
+                earliest_available,
+            })
+        }
+
         let len = range.end().saturating_sub(*range.start()) as usize + 1;
         let mut blocks = Vec::with_capacity(len);
 
@@ -1418,7 +1305,8 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> DatabaseProvider<TX, N> {
     /// Populate a [`BundleStateInit`] and [`RevertsInit`] using cursors over the
     /// [`tables::PlainAccountState`] and [`tables::PlainStorageState`] tables, based on the given
     /// storage and account changesets.
-    fn populate_bundle_state(
+    #[allow(clippy::clone_on_copy)]
+    pub(crate) fn populate_bundle_state(
         &self,
         account_changeset: Vec<(u64, AccountBeforeTx)>,
         storage_changeset: Vec<(BlockNumberAddress, StorageEntry)>,
@@ -1443,11 +1331,11 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> DatabaseProvider<TX, N> {
             match state.entry(address) {
                 hash_map::Entry::Vacant(entry) => {
                     let new_info = get_account(address)?;
-                    entry.insert((old_info, new_info, HashMap::default()));
+                    entry.insert((old_info.clone(), new_info, HashMap::default()));
                 }
                 hash_map::Entry::Occupied(mut entry) => {
                     // overwrite old account state.
-                    entry.get_mut().0 = old_info;
+                    entry.get_mut().0 = old_info.clone();
                 }
             }
             // insert old info into reverts.
@@ -1461,7 +1349,7 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> DatabaseProvider<TX, N> {
             let account_state = match state.entry(address) {
                 hash_map::Entry::Vacant(entry) => {
                     let present_info = get_account(address)?;
-                    entry.insert((present_info, present_info, HashMap::default()))
+                    entry.insert((present_info.clone(), present_info, HashMap::default()))
                 }
                 hash_map::Entry::Occupied(entry) => entry.into_mut(),
             };
@@ -1535,20 +1423,6 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> DatabaseProvider<TX, N> {
             },
         )
     }
-
-    fn populate_bundle_state_with_provider(
-        &self,
-        account_changeset: Vec<(u64, AccountBeforeTx)>,
-        storage_changeset: Vec<(BlockNumberAddress, StorageEntry)>,
-        state_provider: impl StateProvider,
-    ) -> ProviderResult<(BundleStateInit, RevertsInit)> {
-        self.populate_bundle_state(
-            account_changeset,
-            storage_changeset,
-            |address| state_provider.basic_account(&address),
-            |address, storage_key| state_provider.storage(address, storage_key),
-        )
-    }
 }
 
 impl<TX: DbTxMut + DbTx + 'static, N: NodeTypes> DatabaseProvider<TX, N> {
@@ -1607,6 +1481,101 @@ impl<TX: DbTxMut + DbTx + 'static, N: NodeTypes> DatabaseProvider<TX, N> {
         }
 
         Ok(())
+    }
+
+    /// Deletes the transaction, receipt, sender and changeset static files and restarts each
+    /// segment after `pivot`, so the next block appended is `pivot + 1`. Headers are kept.
+    ///
+    /// Each segment gets an empty file anchored at `pivot`. Blocks below it read as expired history
+    /// although the pruner never ran, and `pivot` itself reads as missing since nothing is stored
+    /// for it.
+    ///
+    /// CAUTION: destructive. The files are deleted immediately, while the anchor is written on
+    /// commit. The caller moves the stage and prune checkpoints to `pivot` in the same commit and
+    /// must be able to resume if the process stops between the static file and database commits.
+    /// Errors unless storage v2 is enabled.
+    pub fn anchor_pruned_static_files(&self, pivot: BlockNumber) -> ProviderResult<()> {
+        if !self.cached_storage_settings().storage_v2 {
+            return Err(ProviderError::other(StaticFileWriterError::new(
+                "pruned anchor requires storage v2",
+            )))
+        }
+        let static_files = self.static_file_provider();
+        for segment in StaticFileSegment::iter().filter(|segment| !segment.is_headers()) {
+            static_files.delete_segment(segment)?;
+            static_files.get_writer(pivot, segment)?.initialize_pruned_anchor(pivot)?;
+        }
+        // The pivot's own body is never stored, so reads of `pivot` find nothing while blocks
+        // below it are reported as expired.
+        static_files.set_earliest_history_height(pivot);
+        Ok(())
+    }
+}
+
+impl<TX: DbTx, N: NodeTypes> DatabaseProvider<TX, N> {
+    /// Rejects advances of either the Finish block number or its state/trie frontier while a
+    /// persisted snap attempt is unverified. A missing partial frontier equals the block
+    /// number, so clearing it can advance state even when the block number stays put or rewinds.
+    /// Updates that advance neither frontier are allowed.
+    fn ensure_finish_may_advance(&self, proposed: &StageCheckpoint) -> ProviderResult<()> {
+        let current = self.get_stage_checkpoint(StageId::Finish)?.unwrap_or_default();
+        let state_trie_frontier = |checkpoint: &StageCheckpoint| {
+            checkpoint
+                .finish_stage_checkpoint()
+                .and_then(|finish| finish.partial_state_trie())
+                .unwrap_or(checkpoint.block_number)
+        };
+        if proposed.block_number <= current.block_number &&
+            state_trie_frontier(proposed) <= state_trie_frontier(&current)
+        {
+            return Ok(())
+        }
+        match self.snap_attempt()? {
+            Some(attempt) if !attempt.is_verified() => {
+                Err(ProviderError::UnverifiedSnapState { attempt: attempt.id().into() })
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Refuses snap sync on a database without the hashed state layout it downloads into.
+    pub fn ensure_snap_sync_layout(&self) -> ProviderResult<()> {
+        if self.cached_storage_settings().use_hashed_state() {
+            Ok(())
+        } else {
+            Err(ProviderError::SnapStorageLayoutUnsupported)
+        }
+    }
+
+    /// Returns whether snap sync bootstraps this database: an attempt is left to finish or
+    /// replace, or nothing has executed past genesis.
+    ///
+    /// Call this after genesis is initialized: until then the cached settings fall back to the
+    /// legacy layout and no execution checkpoint exists.
+    pub fn snap_bootstraps(&self) -> ProviderResult<bool> {
+        if let Some(attempt) = self.snap_attempt()? {
+            return Ok(!attempt.is_verified())
+        }
+        let genesis = self.chain_spec().genesis_header().number();
+        Ok(self
+            .get_stage_checkpoint(StageId::Execution)?
+            .is_none_or(|checkpoint| checkpoint.block_number == genesis))
+    }
+
+    /// Refuses a database the selected sync can't continue: snap needs the hashed state layout
+    /// when it bootstraps, and only snap can finish or replace an unverified snap attempt.
+    ///
+    /// Call this after genesis is initialized, see [`Self::snap_bootstraps`].
+    pub fn ensure_sync_mode(&self, snap_enabled: bool) -> ProviderResult<()> {
+        if snap_enabled {
+            return if self.snap_bootstraps()? { self.ensure_snap_sync_layout() } else { Ok(()) }
+        }
+        match self.snap_attempt()? {
+            Some(attempt) if !attempt.is_verified() => {
+                Err(ProviderError::SnapStateRequiresSnapSync { attempt: attempt.id().into() })
+            }
+            _ => Ok(()),
+        }
     }
 }
 
@@ -1812,40 +1781,63 @@ impl<TX: DbTx, N: NodeTypes> ChangeSetReader for DatabaseProvider<TX, N> {
     }
 }
 
-impl<Tx: DbTx + 'static, N: NodeTypesForProvider> StateReader for DatabaseProvider<Tx, N> {
-    type Receipt = ReceiptTy<N>;
+impl<TX: DbTx + 'static, N: NodeTypes> DatabaseProvider<TX, N> {
+    /// Returns the `RocksDB` snapshot used for history lookups, creating it on first use.
+    ///
+    /// A reading provider serves a single request, so one snapshot is created for all of its
+    /// history lookups instead of one per lookup. The snapshot also caches the raw iterator of
+    /// each history column family, which is what makes repeated lookups cheap. The storage
+    /// settings are read once here as well, so a lookup does not take the settings lock.
+    ///
+    /// The snapshot and its iterators pin the `RocksDB` snapshot and the SST files and memtables
+    /// they were created on until the provider is dropped, the same way the provider's MDBX read
+    /// transaction pins its pages. Provider lifetimes are request or job scoped, and a provider
+    /// whose MDBX transaction hits the read-transaction timeout errors on every later read and is
+    /// dropped by its caller, so that timeout bounds the `RocksDB` retention as well.
+    fn history_rocksdb_snapshot(&self) -> Option<&RocksReadSnapshot<'_>> {
+        self.rocksdb_history_snapshot
+            .get_or_init(|| {
+                self.cached_storage_settings()
+                    .storage_v2
+                    .then(|| self.rocksdb_provider.owned_snapshot())
+            })
+            .as_ref()
+            .map(OwnedRocksReadSnapshot::as_snapshot)
+    }
+}
 
-    fn get_state(
+impl<TX: DbTx + 'static, N: NodeTypes> HistoryReader for DatabaseProvider<TX, N> {
+    fn account_history_info(
         &self,
-        block: BlockNumber,
-    ) -> ProviderResult<Option<ExecutionOutcome<Self::Receipt>>> {
-        let Some(block_body) = self.block_body_indices(block)? else { return Ok(None) };
+        address: Address,
+        block_number: BlockNumber,
+        lowest_available_block_number: Option<BlockNumber>,
+    ) -> ProviderResult<HistoryInfo> {
+        let visible_tip = self.best_block_number()?;
+        let mut reader = EitherReader::new_accounts_history(self, self.history_rocksdb_snapshot())?;
+        reader
+            .account_history_info(address, block_number, lowest_available_block_number, visible_tip)
+            .map(Into::into)
+    }
 
-        let from_transaction_num = block_body.first_tx_num();
-        let to_transaction_num = block_body.last_tx_num();
-
-        let account_changeset = self.account_changesets_range(block..=block)?;
-        let storage_changeset = self.storage_changeset(block)?;
-
-        let Some(block_hash) = self.block_hash(block)? else { return Ok(None) };
-        let state_provider = self.history_by_block_hash(block_hash)?;
-        let (state, reverts) = self.populate_bundle_state_with_provider(
-            account_changeset,
-            storage_changeset,
-            state_provider,
-        )?;
-
-        let receipts = self.receipts_by_tx_range(from_transaction_num..=to_transaction_num)?;
-
-        Ok(Some(ExecutionOutcome::new_init(
-            state,
-            reverts,
-            // We skip new contracts since we never delete them from the database
-            Vec::new(),
-            vec![receipts],
-            block,
-            Vec::new(),
-        )))
+    fn storage_history_info(
+        &self,
+        address: Address,
+        storage_key: B256,
+        block_number: BlockNumber,
+        lowest_available_block_number: Option<BlockNumber>,
+    ) -> ProviderResult<HistoryInfo> {
+        let visible_tip = self.best_block_number()?;
+        let mut reader = EitherReader::new_storages_history(self, self.history_rocksdb_snapshot())?;
+        reader
+            .storage_history_info(
+                address,
+                storage_key,
+                block_number,
+                lowest_available_block_number,
+                visible_tip,
+            )
+            .map(Into::into)
     }
 }
 
@@ -2132,13 +2124,13 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> BlockReader for DatabaseProvid
         Ok(None)
     }
 
-    fn pending_block(&self) -> ProviderResult<Option<RecoveredBlock<Self::Block>>> {
+    fn pending_block(&self) -> ProviderResult<Option<Arc<RecoveredBlock<Self::Block>>>> {
         Ok(None)
     }
 
     fn pending_block_and_receipts(
         &self,
-    ) -> ProviderResult<Option<(RecoveredBlock<Self::Block>, Vec<Self::Receipt>)>> {
+    ) -> ProviderResult<Option<RecoveredBlockAndExecutionOutput<Self::Block, Self::Receipt>>> {
         Ok(None)
     }
 
@@ -2530,13 +2522,16 @@ impl<TX: DbTx, N: NodeTypes> StageCheckpointReader for DatabaseProvider<TX, N> {
     }
 }
 
-impl<TX: DbTxMut, N: NodeTypes> StageCheckpointWriter for DatabaseProvider<TX, N> {
+impl<TX: DbTxMut + DbTx, N: NodeTypes> StageCheckpointWriter for DatabaseProvider<TX, N> {
     /// Save stage checkpoint.
     fn save_stage_checkpoint(
         &self,
         id: StageId,
         checkpoint: StageCheckpoint,
     ) -> ProviderResult<()> {
+        if id.is_finish() {
+            self.ensure_finish_may_advance(&checkpoint)?;
+        }
         Ok(self.tx.put::<tables::StageCheckpoints>(id.to_string(), checkpoint)?)
     }
 
@@ -2555,6 +2550,13 @@ impl<TX: DbTxMut, N: NodeTypes> StageCheckpointWriter for DatabaseProvider<TX, N
         block_number: BlockNumber,
         drop_stage_checkpoint: bool,
     ) -> ProviderResult<()> {
+        let current = self.get_stage_checkpoint(StageId::Finish)?.unwrap_or_default();
+        let proposed = StageCheckpoint {
+            block_number,
+            ..if drop_stage_checkpoint { Default::default() } else { current }
+        };
+        self.ensure_finish_may_advance(&proposed)?;
+
         // iterate over all existing stages in the table and update its progress.
         let mut cursor = self.tx.cursor_write::<tables::StageCheckpoints>()?;
         for stage_id in StageId::ALL {
@@ -2867,7 +2869,7 @@ impl<TX: DbTxMut + DbTx + 'static, N: NodeTypesForProvider> StateWriter
                 for PlainStorageRevert { address, wiped, storage_revert } in storage_changes {
                     let mut storage = storage_revert
                         .into_iter()
-                        .map(|(k, v)| (B256::from(k.to_be_bytes()), v))
+                        .map(|(k, v)| (B256::from(k), v))
                         .collect::<Vec<_>>();
                     // sort storage slots by key.
                     storage.par_sort_unstable_by_key(|a| a.0);
@@ -3004,10 +3006,6 @@ impl<TX: DbTxMut + DbTx + 'static, N: NodeTypesForProvider> StateWriter
         let mut hashed_storage_cursor =
             self.tx_ref().cursor_dup_write::<tables::HashedStorages>()?;
         for (hashed_address, storage) in sorted_storages {
-            if storage.is_wiped() && hashed_storage_cursor.seek_exact(*hashed_address)?.is_some() {
-                hashed_storage_cursor.delete_current_duplicates()?;
-            }
-
             for (hashed_slot, value) in storage.storage_slots_ref() {
                 let entry = StorageEntry { key: *hashed_slot, value: *value };
 
@@ -3056,10 +3054,7 @@ impl<TX: DbTxMut + DbTx + 'static, N: NodeTypesForProvider> StateWriter
         }
 
         // get transaction receipts
-        let from_transaction_num = self
-            .block_body_indices(block)?
-            .map(|b| b.next_tx_num())
-            .ok_or(ProviderError::BlockBodyIndicesNotFound(block))?;
+        let from_transaction_num = self.next_tx_num_after_block(block)?;
 
         let storage_range = BlockNumberAddress::range(range.clone());
         let storage_changeset = if self.cached_storage_settings().storage_v2 {
@@ -3474,6 +3469,7 @@ impl<TX: DbTxMut + DbTx + 'static, N: NodeTypes> StorageTrieWriter for DatabaseP
 }
 
 impl<TX: DbTxMut + DbTx + 'static, N: NodeTypes> HashingWriter for DatabaseProvider<TX, N> {
+    #[allow(clippy::clone_on_copy)]
     fn unwind_account_hashing<'a>(
         &self,
         changesets: impl Iterator<Item = &'a (BlockNumber, AccountBeforeTx)>,
@@ -3483,7 +3479,7 @@ impl<TX: DbTxMut + DbTx + 'static, N: NodeTypes> HashingWriter for DatabaseProvi
         // changes are applied in the correct order.
         let hashed_accounts = changesets
             .into_iter()
-            .map(|(_, e)| (keccak256(e.address), e.info))
+            .map(|(_, e)| (keccak256(e.address), e.info.clone()))
             .collect::<Vec<_>>()
             .into_iter()
             .rev()
@@ -3823,7 +3819,7 @@ impl<TX: DbTxMut + DbTx + 'static, N: NodeTypesForProvider> BlockWriter
                 },
                 state: Default::default(),
             }),
-            ComputedTrieData::default(),
+            SortedTrieData::default(),
         );
 
         self.save_blocks_inner(
@@ -3915,10 +3911,7 @@ impl<TX: DbTxMut + DbTx + 'static, N: NodeTypesForProvider> BlockWriter
             .prune_headers(highest_static_file_block.saturating_sub(block))?;
 
         // First transaction to be removed
-        let unwind_tx_from = self
-            .block_body_indices(block)?
-            .map(|b| b.next_tx_num())
-            .ok_or(ProviderError::BlockBodyIndicesNotFound(block))?;
+        let unwind_tx_from = self.next_tx_num_after_block(block)?;
 
         // Last transaction to be removed
         let unwind_tx_to = self
@@ -3957,10 +3950,7 @@ impl<TX: DbTxMut + DbTx + 'static, N: NodeTypesForProvider> BlockWriter
         self.storage.writer().remove_block_bodies_above(self, block)?;
 
         // First transaction to be removed
-        let unwind_tx_from = self
-            .block_body_indices(block)?
-            .map(|b| b.next_tx_num())
-            .ok_or(ProviderError::BlockBodyIndicesNotFound(block))?;
+        let unwind_tx_from = self.next_tx_num_after_block(block)?;
 
         self.remove::<tables::BlockBodyIndices>(block + 1..)?;
         self.remove::<tables::TransactionBlocks>(unwind_tx_from..)?;
@@ -4020,7 +4010,7 @@ impl<TX: DbTxMut + DbTx + 'static, N: NodeTypesForProvider> BlockWriter
                 for (address, account_revert) in block_reverts {
                     account_transitions.entry(*address).or_default().push(block_number);
                     for storage_key in account_revert.storage.keys() {
-                        let key = B256::from(storage_key.to_be_bytes());
+                        let key = B256::from(*storage_key);
                         storage_transitions.entry((*address, key)).or_default().push(block_number);
                     }
                 }
@@ -4075,6 +4065,14 @@ impl<TX: DbTxMut + DbTx + 'static, N: NodeTypesForProvider> BlockWriter
         debug!(target: "providers::db", range = ?first_number..=last_block_number, actions = ?durations_recorder.actions, "Appended blocks");
 
         Ok(())
+    }
+
+    fn clear_transaction_lookup(&self) -> ProviderResult<()> {
+        if self.cached_storage_settings().storage_v2 {
+            self.rocksdb_provider.clear::<tables::TransactionHashNumbers>()
+        } else {
+            self.tx.clear::<tables::TransactionHashNumbers>().map_err(Into::into)
+        }
     }
 }
 
@@ -4159,7 +4157,7 @@ impl<TX: DbTxMut, N: NodeTypes> ChainStateBlockWriter for DatabaseProvider<TX, N
     }
 }
 
-impl<TX: DbTx + 'static, N: NodeTypes + 'static> DbTxProvider for DatabaseProvider<TX, N> {
+impl<TX: DbTx + 'static, N: NodeTypes> DbTxProvider for DatabaseProvider<TX, N> {
     type Tx = TX;
 
     fn tx(&self) -> &Self::Tx {
@@ -4167,7 +4165,7 @@ impl<TX: DbTx + 'static, N: NodeTypes + 'static> DbTxProvider for DatabaseProvid
     }
 }
 
-impl<TX: DbTx + 'static, N: NodeTypes + 'static> DBProvider for DatabaseProvider<TX, N> {
+impl<TX: DbTx + 'static, N: NodeTypes> DBProvider for DatabaseProvider<TX, N> {
     fn tx_mut(&mut self) -> &mut Self::Tx {
         &mut self.tx
     }
@@ -4261,14 +4259,12 @@ mod tests {
         map::{AddressMap, B256Map},
         U256,
     };
-    #[cfg(feature = "partial-persistence")]
-    use reth_chain_state::test_utils::TestBlockBuilder;
-    use reth_chain_state::ExecutedBlock;
+    use reth_chain_state::{test_utils::TestBlockBuilder, ExecutedBlock};
     use reth_db_api::models::StorageSettings;
     use reth_ethereum_primitives::Receipt;
     use reth_execution_types::{AccountRevertInit, BlockExecutionOutput, BlockExecutionResult};
     use reth_primitives_traits::SealedBlock;
-    use reth_storage_api::{MetadataProvider, MetadataWriter};
+    use reth_storage_api::{DatabaseProviderFactory, MetadataWriter};
     use reth_testing_utils::generators::{self, random_block, BlockParams};
     use reth_trie::{
         HashedPostState, KeccakKeyHasher, Nibbles, SortedTrieData, StoredNibbles,
@@ -4355,6 +4351,117 @@ mod tests {
     }
 
     #[test]
+    fn snap_attempt_guards_finish_checkpoint_writers() {
+        use alloy_eips::BlockNumHash;
+        use reth_db_api::models::SnapAttempt;
+
+        let factory = create_test_provider_factory();
+        let provider = factory.database_provider_rw().unwrap();
+        provider.update_pipeline_stages(5, false).unwrap();
+        let mut attempt = SnapAttempt::start(
+            None,
+            BlockNumHash::new(10, B256::repeat_byte(1)),
+            B256::repeat_byte(2),
+        );
+        provider.write_snap_attempt(&attempt).unwrap();
+        provider.commit().unwrap();
+
+        let provider = factory.database_provider_rw().unwrap();
+        let refused = provider.save_stage_checkpoint(StageId::Finish, StageCheckpoint::new(10));
+        assert!(matches!(refused, Err(ProviderError::UnverifiedSnapState { attempt: 0 })));
+        let refused = provider.update_pipeline_stages(10, false);
+        assert!(matches!(refused, Err(ProviderError::UnverifiedSnapState { attempt: 0 })));
+        for stage in [StageId::Finish, StageId::Headers] {
+            assert_eq!(provider.get_stage_checkpoint(stage).unwrap().unwrap().block_number, 5);
+        }
+
+        // Rewinding claims nothing about the downloaded state, through either writer.
+        provider.update_pipeline_stages(4, true).unwrap();
+        provider.save_stage_checkpoint(StageId::Finish, StageCheckpoint::new(3)).unwrap();
+        assert_eq!(
+            provider.get_stage_checkpoint(StageId::Finish).unwrap().unwrap().block_number,
+            3
+        );
+
+        // Abandoned leftovers are still not complete state.
+        attempt.abandon();
+        provider.write_snap_attempt(&attempt).unwrap();
+        let refused = provider.save_stage_checkpoint(StageId::Finish, StageCheckpoint::new(10));
+        assert!(matches!(refused, Err(ProviderError::UnverifiedSnapState { attempt: 0 })));
+
+        // Header progress does not claim the downloaded state is complete.
+        provider.save_stage_checkpoint(StageId::Headers, StageCheckpoint::new(10)).unwrap();
+        attempt.verify();
+        provider.write_snap_attempt(&attempt).unwrap();
+        provider.save_stage_checkpoint(StageId::Finish, StageCheckpoint::new(10)).unwrap();
+        provider.update_pipeline_stages(11, false).unwrap();
+        provider.commit().unwrap();
+
+        let provider = factory.database_provider_ro().unwrap();
+        assert_eq!(
+            provider.get_stage_checkpoint(StageId::Finish).unwrap().unwrap().block_number,
+            11
+        );
+    }
+
+    #[test]
+    fn snap_attempt_guards_partial_state_trie_advances() {
+        use alloy_eips::BlockNumHash;
+        use reth_db_api::models::SnapAttempt;
+
+        for abandoned in [false, true] {
+            let factory = create_test_provider_factory();
+            let provider = factory.database_provider_rw().unwrap();
+            provider.update_pipeline_stages(100, false).unwrap();
+            let checkpoint = StageCheckpoint::new(100)
+                .with_finish_stage_checkpoint(FinishCheckpoint { partial_state_trie: Some(50) });
+            provider.save_stage_checkpoint(StageId::Finish, checkpoint).unwrap();
+            let mut attempt = SnapAttempt::start(None, BlockNumHash::default(), B256::ZERO);
+            if abandoned {
+                attempt.abandon();
+            }
+            provider.write_snap_attempt(&attempt).unwrap();
+
+            for block in [100, 90] {
+                let result =
+                    provider.save_stage_checkpoint(StageId::Finish, StageCheckpoint::new(block));
+                assert!(matches!(result, Err(ProviderError::UnverifiedSnapState { .. })));
+                let result = provider.update_pipeline_stages(block, true);
+                assert!(matches!(result, Err(ProviderError::UnverifiedSnapState { .. })));
+                for stage in [StageId::Finish, StageId::Headers] {
+                    assert_eq!(
+                        provider.get_stage_checkpoint(stage).unwrap().unwrap().block_number,
+                        100
+                    );
+                }
+                assert_eq!(
+                    provider.get_stage_checkpoint(StageId::Finish).unwrap(),
+                    Some(checkpoint)
+                );
+            }
+
+            let advanced = StageCheckpoint::new(100)
+                .with_finish_stage_checkpoint(FinishCheckpoint { partial_state_trie: Some(60) });
+            assert!(matches!(
+                provider.save_stage_checkpoint(StageId::Finish, advanced),
+                Err(ProviderError::UnverifiedSnapState { .. })
+            ));
+
+            // Retaining the partial frontier does not claim additional state progress.
+            provider.update_pipeline_stages(90, false).unwrap();
+            let rewind = StageCheckpoint::new(80)
+                .with_finish_stage_checkpoint(FinishCheckpoint { partial_state_trie: Some(40) });
+            provider.save_stage_checkpoint(StageId::Finish, rewind).unwrap();
+            provider.update_pipeline_stages(30, true).unwrap();
+
+            attempt.verify();
+            provider.write_snap_attempt(&attempt).unwrap();
+            provider.save_stage_checkpoint(StageId::Finish, advanced).unwrap();
+            provider.update_pipeline_stages(100, true).unwrap();
+        }
+    }
+
+    #[test]
     fn test_receipts_by_block_range_empty_range() {
         let factory = create_test_provider_factory();
         let provider = factory.provider().unwrap();
@@ -4364,22 +4471,6 @@ mod tests {
         let end = 9u64;
         let result = provider.receipts_by_block_range(start..=end).unwrap();
         assert_eq!(result, Vec::<Vec<reth_ethereum_primitives::Receipt>>::new());
-    }
-
-    #[test]
-    fn metadata_can_be_deleted() {
-        let factory = create_test_provider_factory();
-        let key = "metadata-delete-test";
-
-        let provider_rw = factory.provider_rw().unwrap();
-        provider_rw.write_metadata(key, vec![1]).unwrap();
-        provider_rw.commit().unwrap();
-        assert_eq!(factory.provider().unwrap().get_metadata(key).unwrap(), Some(vec![1]));
-
-        let provider_rw = factory.provider_rw().unwrap();
-        provider_rw.delete_metadata(key).unwrap();
-        provider_rw.commit().unwrap();
-        assert_eq!(factory.provider().unwrap().get_metadata(key).unwrap(), None);
     }
 
     #[test]
@@ -4464,14 +4555,10 @@ mod tests {
                 StateWriteConfig::default(),
             )
             .unwrap();
-        for i in 0..3 {
-            provider_rw.insert_block(&data.blocks[i].0).unwrap();
+        for (block, outcome) in data.blocks.iter().take(3) {
+            provider_rw.insert_block(block).unwrap();
             provider_rw
-                .write_state(
-                    &data.blocks[i].1,
-                    crate::OriginalValuesKnown::No,
-                    StateWriteConfig::default(),
-                )
+                .write_state(outcome, crate::OriginalValuesKnown::No, StateWriteConfig::default())
                 .unwrap();
         }
         provider_rw.commit().unwrap();
@@ -4503,14 +4590,10 @@ mod tests {
             .unwrap();
 
         // insert blocks 1-3 with receipts
-        for i in 0..3 {
-            provider_rw.insert_block(&data.blocks[i].0).unwrap();
+        for (block, outcome) in data.blocks.iter().take(3) {
+            provider_rw.insert_block(block).unwrap();
             provider_rw
-                .write_state(
-                    &data.blocks[i].1,
-                    crate::OriginalValuesKnown::No,
-                    StateWriteConfig::default(),
-                )
+                .write_state(outcome, crate::OriginalValuesKnown::No, StateWriteConfig::default())
                 .unwrap();
         }
         provider_rw.commit().unwrap();
@@ -4539,14 +4622,10 @@ mod tests {
                 StateWriteConfig::default(),
             )
             .unwrap();
-        for i in 0..3 {
-            provider_rw.insert_block(&data.blocks[i].0).unwrap();
+        for (block, outcome) in data.blocks.iter().take(3) {
+            provider_rw.insert_block(block).unwrap();
             provider_rw
-                .write_state(
-                    &data.blocks[i].1,
-                    crate::OriginalValuesKnown::No,
-                    StateWriteConfig::default(),
-                )
+                .write_state(outcome, crate::OriginalValuesKnown::No, StateWriteConfig::default())
                 .unwrap();
         }
         provider_rw.commit().unwrap();
@@ -4609,14 +4688,10 @@ mod tests {
                 StateWriteConfig::default(),
             )
             .unwrap();
-        for i in 0..3 {
-            provider_rw.insert_block(&data.blocks[i].0).unwrap();
+        for (block, outcome) in data.blocks.iter().take(3) {
+            provider_rw.insert_block(block).unwrap();
             provider_rw
-                .write_state(
-                    &data.blocks[i].1,
-                    crate::OriginalValuesKnown::No,
-                    StateWriteConfig::default(),
-                )
+                .write_state(outcome, crate::OriginalValuesKnown::No, StateWriteConfig::default())
                 .unwrap();
         }
         provider_rw.commit().unwrap();
@@ -4698,8 +4773,8 @@ mod tests {
         }
 
         // Pre-populate storage tries with data
-        let storage_address1 = B256::from([1u8; 32]);
-        let storage_address2 = B256::from([2u8; 32]);
+        let storage_address1 = B256::repeat_byte(1u8);
+        let storage_address2 = B256::repeat_byte(2u8);
         {
             let tx = provider_rw.tx_ref();
             let mut storage_cursor = tx.cursor_dup_write::<tables::StoragesTrie>().unwrap();
@@ -4721,14 +4796,14 @@ mod tests {
                 )
                 .unwrap();
 
-            // Add storage nodes for address2 (will be wiped)
+            // Add storage nodes for address2.
             storage_cursor
                 .upsert(
                     storage_address2,
                     &StorageTrieEntry {
                         nibbles: StoredNibblesSubKey(Nibbles::from_nibbles([0xa, 0xb])),
                         node: BranchNodeCompact::new(
-                            0b1100_1100_1100_1100, // will be wiped
+                            0b1100_1100_1100_1100,
                             0b0000_0000_0000_0000,
                             0b0000_0000_0000_0000,
                             vec![],
@@ -4743,7 +4818,7 @@ mod tests {
                     &StorageTrieEntry {
                         nibbles: StoredNibblesSubKey(Nibbles::from_nibbles([0xc, 0xd])),
                         node: BranchNodeCompact::new(
-                            0b0011_1100_0011_1100, // will be wiped
+                            0b0011_1100_0011_1100,
                             0b0000_0000_0000_0000,
                             0b0000_0000_0000_0000,
                             vec![],
@@ -4781,7 +4856,6 @@ mod tests {
 
         // Create sorted storage trie updates
         let storage_trie1 = StorageTrieUpdatesSorted {
-            is_deleted: false,
             storage_nodes: vec![
                 (
                     Nibbles::from_nibbles([0x1, 0x0]),
@@ -4798,8 +4872,10 @@ mod tests {
         };
 
         let storage_trie2 = StorageTrieUpdatesSorted {
-            is_deleted: true, // Wipe all storage for this address
-            storage_nodes: vec![],
+            storage_nodes: vec![
+                (Nibbles::from_nibbles([0xa, 0xb]), None),
+                (Nibbles::from_nibbles([0xc, 0xd]), None),
+            ],
         };
 
         let mut storage_tries = B256Map::default();
@@ -4811,9 +4887,9 @@ mod tests {
         // Write the sorted trie updates
         let num_entries = provider_rw.write_trie_updates_sorted(&trie_updates).unwrap();
 
-        // We should have 2 account insertions + 1 account deletion + 1 storage insertion + 1
-        // storage deletion = 5
-        assert_eq!(num_entries, 5);
+        // We should have 2 account insertions + 1 account deletion + 1 storage insertion + 3
+        // storage deletions = 7
+        assert_eq!(num_entries, 7);
 
         // Verify account trie updates were written correctly
         let tx = provider_rw.tx_ref();
@@ -4860,18 +4936,17 @@ mod tests {
             "Remaining entry should be [0x1, 0x0]"
         );
 
-        // Check storage for address2 was wiped
+        // Check storage for address2 was removed
         let storage_entries2: Vec<_> = storage_cursor
             .walk_dup(Some(storage_address2), None)
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert_eq!(storage_entries2.len(), 0, "Storage address2 should be empty after wipe");
+        assert_eq!(storage_entries2.len(), 0, "Storage address2 should be empty after removal");
 
         provider_rw.commit().unwrap();
     }
 
-    #[cfg(feature = "partial-persistence")]
     #[test]
     fn test_save_blocks_only_masks_trie_with_deferred_blocks() {
         use reth_trie::{
@@ -4913,19 +4988,10 @@ mod tests {
                 (masked_account, Some(Account { nonce: 1, ..Default::default() })),
             ],
             B256Map::from_iter([
-                (
-                    kept_storage,
-                    HashedStorageSorted {
-                        wiped: false,
-                        storage_slots: vec![(kept_slot, U256::from(1))],
-                    },
-                ),
+                (kept_storage, HashedStorageSorted { storage_slots: vec![(kept_slot, U256::ONE)] }),
                 (
                     masked_storage,
-                    HashedStorageSorted {
-                        wiped: false,
-                        storage_slots: vec![(masked_slot, U256::from(2))],
-                    },
+                    HashedStorageSorted { storage_slots: vec![(masked_slot, U256::from(2))] },
                 ),
             ]),
         );
@@ -4938,14 +5004,12 @@ mod tests {
                 (
                     kept_storage,
                     StorageTrieUpdatesSorted {
-                        is_deleted: false,
                         storage_nodes: vec![(kept_storage_node, Some(branch(0b1010)))],
                     },
                 ),
                 (
                     masked_storage,
                     StorageTrieUpdatesSorted {
-                        is_deleted: false,
                         storage_nodes: vec![(masked_storage_node, Some(branch(0b0101)))],
                     },
                 ),
@@ -4955,7 +5019,7 @@ mod tests {
         let full_persist_block = ExecutedBlock::new(
             Arc::clone(&full_persist_base.recovered_block),
             Arc::clone(&full_persist_base.execution_output),
-            ComputedTrieData::new(
+            SortedTrieData::new(
                 Arc::new(full_persist_hashed_state),
                 Arc::new(full_persist_trie_updates),
             ),
@@ -4965,10 +5029,7 @@ mod tests {
             vec![(masked_account, Some(Account { nonce: 3, ..Default::default() }))],
             B256Map::from_iter([(
                 masked_storage,
-                HashedStorageSorted {
-                    wiped: false,
-                    storage_slots: vec![(masked_slot, U256::from(4))],
-                },
+                HashedStorageSorted { storage_slots: vec![(masked_slot, U256::from(4))] },
             )]),
         );
         let deferred_trie_updates = TrieUpdatesSorted::new(
@@ -4976,7 +5037,6 @@ mod tests {
             B256Map::from_iter([(
                 masked_storage,
                 StorageTrieUpdatesSorted {
-                    is_deleted: false,
                     storage_nodes: vec![(masked_storage_node, Some(branch(0b1100)))],
                 },
             )]),
@@ -4984,7 +5044,7 @@ mod tests {
         let deferred_trie_block = ExecutedBlock::new(
             Arc::clone(&deferred_trie_base.recovered_block),
             Arc::clone(&deferred_trie_base.execution_output),
-            ComputedTrieData::new(
+            SortedTrieData::new(
                 Arc::new(deferred_trie_hashed_state),
                 Arc::new(deferred_trie_updates),
             ),
@@ -5093,7 +5153,6 @@ mod tests {
         assert_eq!(masked_entries[0].1.nibbles.0, masked_storage_node);
     }
 
-    #[cfg(feature = "partial-persistence")]
     #[test]
     fn test_save_blocks_merges_storage_wipe_in_multi_block_batch() {
         use reth_trie::{
@@ -5118,7 +5177,6 @@ mod tests {
                 B256Map::from_iter([(
                     address,
                     StorageTrieUpdatesSorted {
-                        is_deleted: false,
                         storage_nodes: vec![(storage_path, Some(BranchNodeCompact::default()))],
                     },
                 )]),
@@ -5130,14 +5188,14 @@ mod tests {
             vec![],
             B256Map::from_iter([(
                 address,
-                StorageTrieUpdatesSorted { is_deleted: true, storage_nodes: vec![] },
+                StorageTrieUpdatesSorted { storage_nodes: vec![(storage_path, None)] },
             )]),
         );
         let wipe_block = &blocks[2];
         blocks[2] = ExecutedBlock::new(
             Arc::clone(&wipe_block.recovered_block),
             Arc::clone(&wipe_block.execution_output),
-            ComputedTrieData::new(Arc::new(HashedPostStateSorted::default()), Arc::new(wipe)),
+            SortedTrieData::new(Arc::new(HashedPostStateSorted::default()), Arc::new(wipe)),
         );
 
         let provider_rw = factory.provider_rw().unwrap();
@@ -5159,10 +5217,8 @@ mod tests {
         assert!(storage_entries.is_empty());
     }
 
-    #[cfg(feature = "partial-persistence")]
     #[test]
     fn test_save_blocks_batches_transient_storage_wipe() {
-        use alloy_primitives::map::B256Set;
         use reth_trie::{updates::TrieUpdates, HashBuilder, HashedPostStateSorted};
 
         let factory = create_test_provider_factory();
@@ -5176,22 +5232,22 @@ mod tests {
         save_genesis(&provider_rw, &genesis).unwrap();
         provider_rw.commit().unwrap();
 
-        // A contract created and self-destructed in the same transaction leaves an empty whole-
-        // storage wipe in the trie updates, even though the account never reaches persisted state.
+        // A contract created and self-destructed in the same transaction has no persisted
+        // storage nodes to delete, so its deletion must be harmless in a multi-block batch.
         let ephemeral_account = B256::with_last_byte(0x57);
         let hashed_state = HashedPostStateSorted::default();
         let mut trie_updates = TrieUpdates::default();
         trie_updates.finalize(
             HashBuilder::default(),
             Default::default(),
-            B256Set::from_iter([ephemeral_account]),
+            B256Map::from_iter([(ephemeral_account, Vec::new())]),
         );
         let trie_updates = trie_updates.into_sorted();
-        assert!(trie_updates.storage_tries_ref()[&ephemeral_account].is_deleted);
+        assert!(trie_updates.storage_tries_ref()[&ephemeral_account].storage_nodes.is_empty());
         let selfdestruct_block = ExecutedBlock::new(
             Arc::clone(&blocks[2].recovered_block),
             Arc::clone(&blocks[2].execution_output),
-            ComputedTrieData::new(Arc::new(hashed_state), Arc::new(trie_updates)),
+            SortedTrieData::new(Arc::new(hashed_state), Arc::new(trie_updates)),
         );
 
         let provider_rw = factory.provider_rw().unwrap();
@@ -5210,7 +5266,6 @@ mod tests {
         assert_eq!(checkpoint.block_number, 3);
     }
 
-    #[cfg(feature = "partial-persistence")]
     #[test]
     fn test_save_blocks_partial_cycles_do_not_duplicate_static_file_writes() {
         let factory = create_test_provider_factory();
@@ -5259,7 +5314,50 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "partial-persistence")]
+    #[test]
+    fn unwind_restores_trie_nodes_masked_above_the_frontier() {
+        let factory = create_test_provider_factory();
+        let blocks = TestBlockBuilder::eth().get_executed_blocks(0..11).collect::<Vec<_>>();
+        let provider = factory.provider_rw().unwrap();
+        for block in &blocks {
+            provider.insert_block(block.recovered_block()).unwrap();
+        }
+        for block in &blocks[6..] {
+            factory.overlay_manager().insert_block(block.clone());
+        }
+        provider
+            .save_stage_checkpoint(
+                StageId::Finish,
+                StageCheckpoint::new(10)
+                    .with_finish_stage_checkpoint(FinishCheckpoint { partial_state_trie: Some(5) }),
+            )
+            .unwrap();
+        let address = Address::with_last_byte(1);
+        // Block 9 deletes storage that existed at block 4. Its masking leaves the trie tables
+        // empty despite the persisted frontier being block 5; the changeset restores that storage.
+        provider
+            .tx_ref()
+            .put::<tables::AccountChangeSets>(
+                9,
+                AccountBeforeTx { address, info: Some(Account { nonce: 1, ..Default::default() }) },
+            )
+            .unwrap();
+        for slot in 0..257 {
+            provider
+                .tx_ref()
+                .put::<tables::StorageChangeSets>(
+                    BlockNumberAddress((9, address)),
+                    StorageEntry { key: B256::from(U256::from(slot)), value: U256::from(1) },
+                )
+                .unwrap();
+        }
+        provider.commit().unwrap();
+        let provider = factory.provider_rw().unwrap();
+        assert_eq!(provider.tx_ref().entries::<tables::StoragesTrie>().unwrap(), 0);
+        provider.unwind_trie_state_from(9).unwrap();
+        assert!(provider.tx_ref().entries::<tables::StoragesTrie>().unwrap() > 0);
+    }
+
     #[test]
     fn remove_block_and_execution_above_returns_persistence_frontiers() {
         let factory = create_test_provider_factory();
@@ -5271,6 +5369,10 @@ mod tests {
         let provider_rw = factory.provider_rw().unwrap();
         save_genesis(&provider_rw, &genesis).unwrap();
         provider_rw.commit().unwrap();
+
+        for block in &blocks[2..] {
+            factory.overlay_manager().insert_block(block.clone());
+        }
 
         let provider_rw = factory.provider_rw().unwrap();
         let input = SaveBlocksInput::new(blocks, 0, 0, 4, 2);
@@ -5432,44 +5534,6 @@ mod tests {
     }
 
     #[test]
-    fn test_try_into_history_rejects_unexecuted_blocks() {
-        use reth_storage_api::TryIntoHistoricalStateProvider;
-
-        let factory = create_test_provider_factory();
-
-        // Insert genesis block to have some data
-        let data = BlockchainTestData::default();
-        let provider_rw = factory.provider_rw().unwrap();
-        provider_rw.insert_block(&data.genesis.try_recover().unwrap()).unwrap();
-        provider_rw
-            .write_state(
-                &ExecutionOutcome { first_block: 0, receipts: vec![vec![]], ..Default::default() },
-                crate::OriginalValuesKnown::No,
-                StateWriteConfig::default(),
-            )
-            .unwrap();
-        provider_rw.commit().unwrap();
-
-        // Get a fresh provider - Execution checkpoint is 0, no receipts written beyond genesis
-        let provider = factory.provider().unwrap();
-
-        // Requesting historical state for block 0 (executed) should succeed
-        let result = provider.try_into_history_at_block(0);
-        assert!(result.is_ok(), "Block 0 should be available");
-
-        // Get another provider and request state for block 100 (not executed)
-        let provider = factory.provider().unwrap();
-        let result = provider.try_into_history_at_block(100);
-
-        // Should fail with BlockNotExecuted error
-        match result {
-            Err(ProviderError::BlockNotExecuted { requested: 100, .. }) => {}
-            Err(e) => panic!("Expected BlockNotExecuted error, got: {e:?}"),
-            Ok(_) => panic!("Expected error, got Ok"),
-        }
-    }
-
-    #[test]
     fn test_unwind_storage_hashing_with_hashed_state() {
         let factory = create_test_provider_factory();
         let storage_settings = StorageSettings::v2();
@@ -5539,7 +5603,7 @@ mod tests {
                 .tx
                 .cursor_write::<tables::PlainAccountState>()
                 .unwrap()
-                .upsert(address, &Account { nonce: 0, balance: U256::ZERO, bytecode_hash: None })
+                .upsert(address, &Account::default())
                 .unwrap();
             provider_rw.commit().unwrap();
         }
@@ -5552,8 +5616,8 @@ mod tests {
         state_init.insert(
             address,
             (
-                Some(Account { nonce: 0, balance: U256::ZERO, bytecode_hash: None }),
-                Some(Account { nonce: 1, balance: U256::ZERO, bytecode_hash: None }),
+                Some(Account::default()),
+                Some(Account { nonce: 1, ..Default::default() }),
                 storage_map,
             ),
         );
@@ -5563,7 +5627,7 @@ mod tests {
         block_reverts.insert(
             address,
             (
-                Some(Some(Account { nonce: 0, balance: U256::ZERO, bytecode_hash: None })),
+                Some(Some(Account::default())),
                 vec![StorageEntry { key: slot_key, value: U256::ZERO }],
             ),
         );
@@ -5725,8 +5789,7 @@ mod tests {
     }
 
     #[test]
-    fn test_write_state_and_historical_read_hashed() {
-        use reth_storage_api::StateProvider;
+    fn test_write_state_hashed() {
         use reth_trie::{HashedPostState, KeccakKeyHasher};
         use revm::{database::BundleState, state::AccountInfo};
 
@@ -5825,12 +5888,6 @@ mod tests {
         let account_cs = sf.account_block_changeset(1).unwrap();
         assert!(!account_cs.is_empty());
         assert_eq!(account_cs[0].address, address);
-
-        let historical_value =
-            HistoricalStateProviderRef::new(&*provider_rw, 0, OverlayManager::default())
-                .storage(address, slot_key)
-                .unwrap();
-        assert_eq!(historical_value, None);
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5855,7 +5912,7 @@ mod tests {
 
         let genesis = SealedBlock::<reth_ethereum_primitives::Block>::from_sealed_parts(
             SealedHeader::new(
-                Header { number: 0, difficulty: U256::from(1), ..Default::default() },
+                Header { number: 0, difficulty: U256::ONE, ..Default::default() },
                 B256::ZERO,
             ),
             Default::default(),
@@ -5872,7 +5929,7 @@ mod tests {
                 },
                 state: Default::default(),
             }),
-            ComputedTrieData::default(),
+            SortedTrieData::default(),
         );
         let provider_rw = factory.provider_rw().unwrap();
         save_genesis(&provider_rw, &genesis_executed).unwrap();
@@ -5921,7 +5978,7 @@ mod tests {
             let header = Header {
                 number: block_num,
                 parent_hash,
-                difficulty: U256::from(1),
+                difficulty: U256::ONE,
                 ..Default::default()
             };
             let block = SealedBlock::<reth_ethereum_primitives::Block>::seal_parts(
@@ -5941,9 +5998,7 @@ mod tests {
                     },
                     state: bundle,
                 }),
-                ComputedTrieData {
-                    sorted: SortedTrieData::new(Arc::new(hashed_state), Default::default()),
-                },
+                SortedTrieData::new(Arc::new(hashed_state), Default::default()),
             );
             blocks.push(executed);
         }
@@ -6163,10 +6218,7 @@ mod tests {
                 .tx
                 .cursor_write::<tables::HashedAccounts>()
                 .unwrap()
-                .upsert(
-                    hashed_address,
-                    &Account { nonce: 0, balance: U256::ZERO, bytecode_hash: None },
-                )
+                .upsert(hashed_address, &Account::default())
                 .unwrap();
             provider_rw.commit().unwrap();
         }
@@ -6271,7 +6323,7 @@ mod tests {
         factory.set_storage_settings_cache(StorageSettings::v2());
 
         let address = Address::with_last_byte(1);
-        let slot_key = B256::from(U256::from(42));
+        let slot_key = B256::with_last_byte(42);
 
         {
             let rocksdb = factory.rocksdb_provider();

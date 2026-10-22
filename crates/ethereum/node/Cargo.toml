@@ -34,14 +34,22 @@ reth-rpc-server-types.workspace = true
 reth-node-api.workspace = true
 reth-node-core.workspace = true
 reth-chainspec.workspace = true
-reth-revm = { workspace = true, features = ["std"] }
+reth-revm = { workspace = true, features = ["std", "witness"] }
 reth-rpc-eth-types.workspace = true
 reth-engine-local.workspace = true
 reth-engine-primitives = { workspace = true, features = ["std"] }
 reth-payload-primitives.workspace = true
+reth-tasks.workspace = true
+reth-trie-common.workspace = true
+reth-errors.workspace = true
+reth-snap-sync.workspace = true
+reth-stages.workspace = true
+reth-engine-tree.workspace = true
+reth-network-p2p.workspace = true
 # ethereum
 alloy-consensus.workspace = true
 alloy-eips.workspace = true
+alloy-rlp.workspace = true
 alloy-primitives.workspace = true
 jsonrpsee.workspace = true
 alloy-network.workspace = true
@@ -50,6 +58,7 @@ alloy-rpc-types-engine = { workspace = true, features = ["ssz"] }
 
 # async
 tokio = { workspace = true, features = ["sync"] }
+tokio-util.workspace = true
 
 # revm with required ethereum features
 # Note: this must be kept to ensure all features are properly enabled/forwarded
@@ -59,6 +68,7 @@ revm = { workspace = true, features = ["secp256k1", "blst", "c-kzg", "memory_lim
 eyre.workspace = true
 ethereum_ssz.workspace = true
 ethereum_ssz_derive.workspace = true
+futures.workspace = true
 http-body-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -71,6 +81,9 @@ reth-e2e-test-utils.workspace = true
 reth-tasks.workspace = true
 reth-testing-utils.workspace = true
 reth-stages-types.workspace = true
+reth-downloaders.workspace = true
+reth-eth-wire-types.workspace = true
+reth-network-peers.workspace = true
 tempfile.workspace = true
 jsonrpsee-core.workspace = true
 
@@ -82,7 +95,6 @@ alloy-sol-types.workspace = true
 alloy-contract.workspace = true
 alloy-rpc-types-beacon = { workspace = true, features = ["ssz"] }
 
-futures.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
 rand.workspace = true
@@ -92,9 +104,24 @@ alloy-rpc-types-trace.workspace = true
 similar-asserts.workspace = true
 reqwest.workspace = true
 reth-rpc-layer.workspace = true
+reth-stages-api = { workspace = true, features = ["test-utils"] }
+reth-prune.workspace = true
+reth-static-file.workspace = true
+reth-consensus.workspace = true
 
 [features]
 default = []
+account-ext = [
+    "reth-provider/account-ext",
+    "revm/account-ext",
+    "alloy-genesis/account-ext",
+    "alloy-rpc-types-eth/account-ext",
+    "reth-primitives-traits/account-ext",
+    "reth-revm/account-ext",
+    "reth-stages-types/account-ext",
+    "reth-rpc/account-ext",
+    "reth-rpc-eth-api/account-ext",
+]
 jit = ["reth-evm-ethereum/jit"]
 gmp = ["reth-evm-ethereum/gmp"]
 asm-keccak = [
@@ -105,6 +132,9 @@ asm-keccak = [
     "reth-node-builder/asm-keccak",
     "reth-rpc/asm-keccak",
     "reth-rpc-eth-api/asm-keccak",
+    "reth-engine-tree/asm-keccak",
+    "reth-stages/asm-keccak",
+    "reth-trie-common/asm-keccak",
 ]
 keccak-cache-global = [
     "alloy-primitives/keccak-cache-global",
@@ -130,4 +160,11 @@ test-utils = [
     "reth-evm-ethereum/test-utils",
     "reth-stages-types/test-utils",
     "reth-tasks/test-utils",
+    "reth-trie-common/test-utils",
+    "reth-stages/test-utils",
+    "reth-downloaders/test-utils",
+    "reth-network-p2p/test-utils",
+    "reth-consensus/test-utils",
+    "reth-engine-tree/test-utils",
+    "reth-stages-api/test-utils",
 ]

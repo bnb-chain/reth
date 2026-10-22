@@ -4,7 +4,7 @@ use crate::{
     to_range, BlockHashReader, BlockIdReader, BlockNumReader, BlockReader, BlockReaderIdExt,
     BlockSource, ChainSpecProvider, ChangeSetReader, HeaderProvider, ProviderError,
     PruneCheckpointReader, ReceiptProvider, ReceiptProviderIdExt, StageCheckpointReader,
-    StateReader, StaticFileProviderFactory, TransactionVariant, TransactionsProvider,
+    StaticFileProviderFactory, TransactionVariant, TransactionsProvider,
 };
 use alloy_consensus::{
     transaction::{TransactionMeta, TxHashRef},
@@ -15,7 +15,7 @@ use alloy_primitives::{Address, BlockHash, BlockNumber, TxHash, TxNumber, B256};
 use reth_chain_state::{BlockState, CanonicalInMemoryState};
 use reth_chainspec::ChainInfo;
 use reth_db_api::models::{AccountBeforeTx, BlockNumberAddress, StoredBlockBodyIndices};
-use reth_execution_types::ExecutionOutcome;
+use reth_execution_types::RecoveredBlockAndExecutionOutput;
 use reth_node_types::{BlockTy, HeaderTy, ReceiptTy, TxTy};
 use reth_primitives_traits::{
     BlockBody, RecoveredBlock, SealedHeader, SealedOrRecoveredBlock, StorageEntry,
@@ -24,8 +24,8 @@ use reth_prune_types::{PruneCheckpoint, PruneSegment};
 use reth_stages_types::{StageCheckpoint, StageId};
 use reth_static_file_types::StaticFileSegment;
 use reth_storage_api::{
-    BlockBodyIndicesProvider, DatabaseProviderFactory, NodePrimitivesProvider, StateProviderBox,
-    StorageChangeSetReader, TryIntoHistoricalStateProvider,
+    BlockBodyIndicesProvider, DatabaseProviderFactory, NodePrimitivesProvider,
+    StorageChangeSetReader,
 };
 use reth_storage_errors::provider::ProviderResult;
 use revm::database::states::PlainStorageRevert;
@@ -71,6 +71,13 @@ impl<N: ProviderNodeTypes> ConsistentProvider<N> {
         let head_block = state.head_state();
         let storage_provider = storage_provider_factory.database_provider_ro()?;
         Ok(Self { storage_provider, head_block, canonical_in_memory_state: state })
+    }
+
+    /// Consumes this consistent view and returns its database provider snapshot.
+    pub(crate) fn into_database_provider(
+        self,
+    ) -> <ProviderFactory<N> as DatabaseProviderFactory>::Provider {
+        self.storage_provider
     }
 
     // Helper function to convert range bounds
@@ -397,50 +404,6 @@ impl<N: ProviderNodeTypes> ConsistentProvider<N> {
         }
         fetch_from_db(&self.storage_provider)
     }
-
-    /// Consumes the provider and returns a state provider for the specific block hash.
-    pub(crate) fn into_state_provider_at_block_hash(
-        self,
-        block_hash: BlockHash,
-    ) -> ProviderResult<StateProviderBox> {
-        // Resolve block number and verify it's canonical before destructuring self
-        let block_number =
-            self.block_number(block_hash)?.ok_or(ProviderError::BlockHashNotFound(block_hash))?;
-        self.ensure_canonical_block(block_number)?;
-
-        let Self { storage_provider, head_block, .. } = self;
-        if let Some(Some(block_state)) =
-            head_block.as_ref().map(|b| b.block_on_chain(block_hash.into()))
-        {
-            let anchor_hash = block_state.anchor().hash;
-            let block_number = storage_provider
-                .block_number(anchor_hash)?
-                .ok_or(ProviderError::BlockHashNotFound(anchor_hash))?;
-            let latest_historical = storage_provider.try_into_history_at_block(block_number)?;
-            return Ok(Box::new(block_state.state_provider(latest_historical)));
-        }
-        storage_provider.try_into_history_at_block(block_number)
-    }
-}
-
-impl<N: ProviderNodeTypes> ConsistentProvider<N> {
-    /// Ensures that the given block number is canonical (synced)
-    ///
-    /// This is a helper for guarding the `HistoricalStateProvider` against block numbers that are
-    /// out of range and would lead to invalid results, mainly during initial sync.
-    ///
-    /// Verifying the `block_number` would be expensive since we need to lookup sync table
-    /// Instead, we ensure that the `block_number` is within the range of the
-    /// [`Self::best_block_number`] which is updated when a block is synced.
-    #[inline]
-    pub(crate) fn ensure_canonical_block(&self, block_number: BlockNumber) -> ProviderResult<()> {
-        let latest = self.best_block_number()?;
-        if block_number > latest {
-            Err(ProviderError::HeaderNotFound(block_number.into()))
-        } else {
-            Ok(())
-        }
-    }
 }
 
 impl<N: ProviderNodeTypes> NodePrimitivesProvider for ConsistentProvider<N> {
@@ -639,7 +602,7 @@ impl<N: ProviderNodeTypes> BlockReader for ConsistentProvider<N> {
         hash: B256,
         source: BlockSource,
     ) -> ProviderResult<Option<Self::Block>> {
-        if matches!(source, BlockSource::Canonical | BlockSource::Any) &&
+        if source.is_canonical() &&
             let Some(block) = self.get_in_memory_or_storage_by_block(
                 hash.into(),
                 |db_provider| db_provider.find_block_by_hash(hash, BlockSource::Canonical),
@@ -649,7 +612,7 @@ impl<N: ProviderNodeTypes> BlockReader for ConsistentProvider<N> {
             return Ok(Some(block))
         }
 
-        if matches!(source, BlockSource::Pending | BlockSource::Any) {
+        if source.is_pending() {
             return Ok(self
                 .canonical_in_memory_state
                 .pending_block()
@@ -665,7 +628,7 @@ impl<N: ProviderNodeTypes> BlockReader for ConsistentProvider<N> {
         hash: B256,
         source: BlockSource,
     ) -> ProviderResult<Option<SealedOrRecoveredBlock<Self::Block>>> {
-        if matches!(source, BlockSource::Canonical | BlockSource::Any) &&
+        if source.is_canonical() &&
             let Some(block) = self.get_in_memory_or_storage_by_block(
                 hash.into(),
                 |db_provider| {
@@ -681,7 +644,7 @@ impl<N: ProviderNodeTypes> BlockReader for ConsistentProvider<N> {
             return Ok(Some(block))
         }
 
-        if matches!(source, BlockSource::Pending | BlockSource::Any) &&
+        if source.is_pending() &&
             let Some(block_state) = self.canonical_in_memory_state.pending_state()
         {
             let recovered_block = Arc::clone(&block_state.block_ref().recovered_block);
@@ -701,13 +664,13 @@ impl<N: ProviderNodeTypes> BlockReader for ConsistentProvider<N> {
         )
     }
 
-    fn pending_block(&self) -> ProviderResult<Option<RecoveredBlock<Self::Block>>> {
+    fn pending_block(&self) -> ProviderResult<Option<Arc<RecoveredBlock<Self::Block>>>> {
         Ok(self.canonical_in_memory_state.pending_recovered_block())
     }
 
     fn pending_block_and_receipts(
         &self,
-    ) -> ProviderResult<Option<(RecoveredBlock<Self::Block>, Vec<Self::Receipt>)>> {
+    ) -> ProviderResult<Option<RecoveredBlockAndExecutionOutput<Self::Block, Self::Receipt>>> {
         Ok(self.canonical_in_memory_state.pending_block_and_receipts())
     }
 
@@ -1194,10 +1157,9 @@ impl<N: ProviderNodeTypes> StorageChangeSetReader for ConsistentProvider<N> {
                 .flatten()
                 .flat_map(|revert: PlainStorageRevert| {
                     revert.storage_revert.into_iter().map(move |(key, value)| {
-                        let plain_key = B256::from(key.to_be_bytes());
                         (
                             BlockNumberAddress((block_number, revert.address)),
-                            StorageEntry { key: plain_key, value: value.to_previous_value() },
+                            StorageEntry { key: key.into(), value: value.to_previous_value() },
                         )
                     })
                 })
@@ -1250,7 +1212,7 @@ impl<N: ProviderNodeTypes> StorageChangeSetReader for ConsistentProvider<N> {
                         return None
                     }
                     revert.storage_revert.into_iter().find_map(|(key, value)| {
-                        let plain_key = B256::from(key.to_be_bytes());
+                        let plain_key = B256::from(key);
                         (plain_key == storage_key).then(|| StorageEntry {
                             key: plain_key,
                             value: value.to_previous_value(),
@@ -1299,10 +1261,9 @@ impl<N: ProviderNodeTypes> StorageChangeSetReader for ConsistentProvider<N> {
                     .flatten()
                     .flat_map(|revert: PlainStorageRevert| {
                         revert.storage_revert.into_iter().map(move |(key, value)| {
-                            let plain_key = B256::from(key.to_be_bytes());
                             (
                                 BlockNumberAddress((state.number(), revert.address)),
-                                StorageEntry { key: plain_key, value: value.to_previous_value() },
+                                StorageEntry { key: key.into(), value: value.to_previous_value() },
                             )
                         })
                     });
@@ -1484,32 +1445,8 @@ impl<N: ProviderNodeTypes> ChangeSetReader for ConsistentProvider<N> {
     }
 }
 
-impl<N: ProviderNodeTypes> StateReader for ConsistentProvider<N> {
-    type Receipt = ReceiptTy<N>;
-
-    /// Re-constructs the [`ExecutionOutcome`] from in-memory and database state, if necessary.
-    ///
-    /// If data for the block does not exist, this will return [`None`].
-    ///
-    /// NOTE: This cannot be called safely in a loop outside of the blockchain tree thread. This is
-    /// because the [`CanonicalInMemoryState`] could change during a reorg, causing results to be
-    /// inconsistent. Currently this can safely be called within the blockchain tree thread,
-    /// because the tree thread is responsible for modifying the [`CanonicalInMemoryState`] in the
-    /// first place.
-    fn get_state(
-        &self,
-        block: BlockNumber,
-    ) -> ProviderResult<Option<ExecutionOutcome<Self::Receipt>>> {
-        if let Some(state) = self.head_block.as_ref().and_then(|b| b.block_on_chain(block.into())) {
-            let state = state.block_ref().execution_outcome().clone();
-            Ok(Some(ExecutionOutcome::from((state, block))))
-        } else {
-            self.storage_provider.get_state(block)
-        }
-    }
-}
-
 #[cfg(test)]
+#[allow(clippy::clone_on_copy)]
 mod tests {
     use crate::{
         providers::blockchain_provider::BlockchainProvider,
@@ -1817,9 +1754,9 @@ mod tests {
         let (in_memory_changesets, in_memory_state) = random_changeset_range(
             &mut rng,
             &in_memory_blocks,
-            database_state
-                .iter()
-                .map(|(address, (account, storage))| (*address, (*account, storage.clone()))),
+            database_state.iter().map(|(address, (account, storage))| {
+                (*address, (account.clone(), storage.clone()))
+            }),
             0..0,
             0..0,
         );
@@ -1839,7 +1776,7 @@ mod tests {
                     }),
                     database_changesets.iter().map(|block_changesets| {
                         block_changesets.iter().map(|(address, account, _)| {
-                            (*address, Some(Some((*account).into())), [])
+                            (*address, Some(Some((account.clone()).into())), [])
                         })
                     }),
                     Vec::new(),
@@ -1870,7 +1807,7 @@ mod tests {
                                     (address, None, Some(account.into()), Default::default())
                                 }),
                                 [in_memory_changesets.iter().map(|(address, account, _)| {
-                                    (*address, Some(Some((*account).into())), Vec::new())
+                                    (*address, Some(Some((account.clone()).into())), Vec::new())
                                 })],
                                 [],
                             ),
@@ -1924,7 +1861,7 @@ mod tests {
         let account = reth_primitives_traits::Account {
             nonce: 1,
             balance: U256::from(1000),
-            bytecode_hash: None,
+            ..Default::default()
         };
         let slot = U256::from(0x42);
         let slot_b256 = B256::from(slot);
@@ -1947,14 +1884,18 @@ mod tests {
                 .collect(),
             &ExecutionOutcome {
                 bundle: BundleState::new(
-                    [(address, None, Some(account.into()), {
+                    [(address, None, Some(account.clone().into()), {
                         let mut s = HashMap::default();
                         s.insert(slot, (U256::ZERO, U256::from(100)));
                         s
                     })],
                     [
                         Vec::new(),
-                        vec![(address, Some(Some(account.into())), vec![(slot, U256::ZERO)])],
+                        vec![(
+                            address,
+                            Some(Some(account.clone().into())),
+                            vec![(slot, U256::ZERO)],
+                        )],
                     ],
                     [],
                 ),
@@ -1973,9 +1914,7 @@ mod tests {
         provider_rw.commit()?;
 
         let provider = BlockchainProvider::new(factory)?;
-        let consistent_provider = provider.consistent_provider()?;
-
-        let outcome = consistent_provider.get_state(1)?.expect("should return execution outcome");
+        let outcome = provider.get_state(1)?.expect("should return execution outcome");
 
         let state = &outcome.bundle.state;
         let account_state = state.get(&address).expect("should have account in bundle state");
@@ -2009,7 +1948,7 @@ mod tests {
         let account = reth_primitives_traits::Account {
             nonce: 1,
             balance: U256::from(1000),
-            bytecode_hash: None,
+            ..Default::default()
         };
         let slot = U256::from(0x42);
 
@@ -2021,12 +1960,12 @@ mod tests {
                 .collect(),
             &ExecutionOutcome {
                 bundle: BundleState::new(
-                    [(address, None, Some(account.into()), {
+                    [(address, None, Some(account.clone().into()), {
                         let mut s = HashMap::default();
                         s.insert(slot, (U256::ZERO, U256::from(100)));
                         s
                     })],
-                    [[(address, Some(Some(account.into())), vec![(slot, U256::ZERO)])]],
+                    [[(address, Some(Some(account.clone().into())), vec![(slot, U256::ZERO)])]],
                     [],
                 ),
                 first_block: 0,
@@ -2048,7 +1987,7 @@ mod tests {
                 )),
                 execution_output: Arc::new(BlockExecutionOutput {
                     state: BundleState::new(
-                        [(address, None, Some(account.into()), {
+                        [(address, None, Some(account.clone().into()), {
                             let mut s = HashMap::default();
                             s.insert(slot, (U256::from(100), U256::from(200)));
                             s
@@ -2108,7 +2047,7 @@ mod tests {
         let account = reth_primitives_traits::Account {
             nonce: 1,
             balance: U256::from(1000),
-            bytecode_hash: None,
+            ..Default::default()
         };
         let slot = U256::from(0x42);
 
@@ -2120,13 +2059,17 @@ mod tests {
                 .collect(),
             &ExecutionOutcome {
                 bundle: BundleState::new(
-                    [(address, None, Some(account.into()), {
+                    [(address, None, Some(account.clone().into()), {
                         let mut s = HashMap::default();
                         s.insert(slot, (U256::ZERO, U256::from(100)));
                         s
                     })],
                     vec![
-                        vec![(address, Some(Some(account.into())), vec![(slot, U256::ZERO)])],
+                        vec![(
+                            address,
+                            Some(Some(account.clone().into())),
+                            vec![(slot, U256::ZERO)],
+                        )],
                         vec![],
                     ],
                     [],
@@ -2150,7 +2093,7 @@ mod tests {
                 )),
                 execution_output: Arc::new(BlockExecutionOutput {
                     state: BundleState::new(
-                        [(address, None, Some(account.into()), {
+                        [(address, None, Some(account.clone().into()), {
                             let mut s = HashMap::default();
                             s.insert(slot, (U256::from(100), U256::from(200)));
                             s
