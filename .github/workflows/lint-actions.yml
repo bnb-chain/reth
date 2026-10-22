@@ -36,4 +36,5 @@ jobs:
           bash .github/scripts/bench-state-test.sh
           bash .github/scripts/bench-upload-charts-test.sh
           bash .github/scripts/bench-txgen-build-test.sh
-          node --test .github/scripts/bench-job-summary-test.js .github/scripts/bench-args-test.js
+          # The fork uses CodSpeed and has no upstream benchmark request parser.
+          node --test .github/scripts/bench-job-summary-test.js
