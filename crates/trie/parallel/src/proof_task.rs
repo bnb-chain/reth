@@ -239,7 +239,9 @@ impl ProofWorkerHandle {
         let storage_result_tx = proof_result_tx.clone();
         let storage_parent_span = tracing::Span::current();
         let storage_diagnostics = diagnostics.clone();
-        runtime.spawn_blocking_named("storage-workers", move || {
+        let storage_session_context = storage_diagnostics.proof_session_submitted("storage");
+        runtime.spawn_blocking_named_traced("storage-workers", storage_session_context, move || {
+            storage_diagnostics.proof_session_started("storage");
             let _session = storage_diagnostics.enter(Stage::StorageSessionStarted, Stage::StorageSessionExited);
             let worker_id = AtomicUsize::new(0);
             storage_rt.proof_storage_worker_pool().broadcast(storage_worker_count, |_| {
@@ -288,7 +290,9 @@ impl ProofWorkerHandle {
         let account_result_tx = proof_result_tx;
         let account_parent_span = tracing::Span::current();
         let account_diagnostics = diagnostics.clone();
-        runtime.spawn_blocking_named("account-workers", move || {
+        let account_session_context = account_diagnostics.proof_session_submitted("account");
+        runtime.spawn_blocking_named_traced("account-workers", account_session_context, move || {
+            account_diagnostics.proof_session_started("account");
             let _session = account_diagnostics.enter(Stage::AccountSessionStarted, Stage::AccountSessionExited);
             let worker_id = AtomicUsize::new(0);
             account_rt.proof_account_worker_pool().broadcast(account_worker_count, |_| {
@@ -688,6 +692,8 @@ where
     /// If this function panics, the worker thread terminates but other workers
     /// continue operating and the system degrades gracefully.
     fn run(mut self) -> ProviderResult<()> {
+        let mut initialization =
+            self.task_ctx.diagnostics.as_ref().map(|d| d.proof_worker_initializing("storage"));
         // Create provider from factory
         let provider = self.task_ctx.factory.database_provider_ro()?;
         let proof_tx = ProofTaskTx::new(provider, self.worker_id);
@@ -718,6 +724,10 @@ where
         if let Some(d) = &self.task_ctx.diagnostics {
             d.increment(Progress::StorageWorkersReady);
         }
+        if let Some(init) = initialization.as_mut() {
+            init.complete();
+        }
+        drop(initialization);
 
         let mut total_idle_time = Duration::ZERO;
         let mut idle_start = Instant::now();
@@ -914,6 +924,8 @@ where
     /// If this function panics, the worker thread terminates but other workers
     /// continue operating and the system degrades gracefully.
     fn run(mut self) -> ProviderResult<()> {
+        let mut initialization =
+            self.task_ctx.diagnostics.as_ref().map(|d| d.proof_worker_initializing("account"));
         let provider = self.task_ctx.factory.database_provider_ro()?;
 
         trace!(
@@ -976,6 +988,10 @@ where
         if let Some(d) = &self.task_ctx.diagnostics {
             d.increment(Progress::AccountWorkersReady);
         }
+        if let Some(init) = initialization.as_mut() {
+            init.complete();
+        }
+        drop(initialization);
 
         let mut total_idle_time = Duration::ZERO;
         let mut idle_start = Instant::now();

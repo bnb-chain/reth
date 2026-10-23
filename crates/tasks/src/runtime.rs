@@ -550,6 +550,21 @@ impl Runtime {
         crate::LazyHandle::new(self.0.worker_map.spawn_on(name, func))
     }
 
+    /// Uses the same named worker, adding session queue/run metrics and sampled owner logs.
+    /// Context IDs and block numbers are logged only, never used as metric labels.
+    pub fn spawn_blocking_named_traced<F, R>(
+        &self,
+        name: &'static str,
+        context: crate::NamedTaskContext,
+        func: F,
+    ) -> crate::LazyHandle<R>
+    where
+        F: FnOnce() -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        crate::LazyHandle::new(self.0.worker_map.spawn_on_traced(name, context, func))
+    }
+
     /// Attempts to spawn a blocking closure on a dedicated, named OS thread.
     ///
     /// Returns `None` if the named worker already has a task running or queued, allowing the caller
