@@ -3195,3 +3195,49 @@ async fn test_on_backfill_sync_finished_opstack_retriggers_backfill_to_buffered_
 async fn test_on_backfill_sync_finished_eth_retriggers_backfill_to_buffered_finalized() {
     assert_post_backfill_recheck_retriggers_to_buffered_target(EngineApiKind::Ethereum).await;
 }
+
+#[test]
+fn is_block_known_reports_whether_an_inserted_block_was_kept() {
+    let mut builder = TestBlockBuilder::eth();
+    let blocks: Vec<_> = builder.get_executed_blocks(1..4).collect();
+    let mut test_harness = TestHarness::new(MAINNET.clone()).with_blocks(blocks.clone());
+
+    let mut is_known = |hash: B256| {
+        let (tx, mut rx) = oneshot::channel();
+        let _ = test_harness
+            .tree
+            .on_engine_message(FromEngine::Request(EngineApiRequest::IsBlockKnown { hash, tx }))
+            .unwrap();
+        rx.try_recv().expect("answered while handling the request")
+    };
+
+    // A block in the engine tree is known; an arbitrary hash is not.
+    assert!(is_known(blocks[2].recovered_block().hash()));
+    assert!(!is_known(B256::random()));
+
+    // A sibling at an already-canonical height is skipped by `InsertExecutedBlock` without any
+    // reply, so the query sent after it is how the sender learns the block was not kept.
+    let sibling = builder.get_executed_block_with_number(2, blocks[0].recovered_block().hash());
+    let sibling_hash = sibling.recovered_block().hash();
+    assert_ne!(sibling_hash, blocks[1].recovered_block().hash());
+    let _ = test_harness
+        .tree
+        .on_engine_message(FromEngine::Request(EngineApiRequest::InsertExecutedBlock(
+            reth_payload_primitives::BuiltPayloadExecutedBlock {
+                recovered_block: sibling.recovered_block.clone(),
+                execution_output: sibling.execution_output,
+                hashed_state: Arc::default(),
+                trie_updates: Arc::default(),
+            },
+        )))
+        .unwrap();
+    let (tx, mut rx) = oneshot::channel();
+    let _ = test_harness
+        .tree
+        .on_engine_message(FromEngine::Request(EngineApiRequest::IsBlockKnown {
+            hash: sibling_hash,
+            tx,
+        }))
+        .unwrap();
+    assert!(!rx.try_recv().unwrap());
+}
