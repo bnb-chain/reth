@@ -542,7 +542,7 @@ pub struct DiagnosticPhase {
 
 impl DiagnosticPhase {
     /// Mark that the phase returned normally.
-    pub fn complete(&mut self) {
+    pub const fn complete(&mut self) {
         self.completed = true;
     }
 }
