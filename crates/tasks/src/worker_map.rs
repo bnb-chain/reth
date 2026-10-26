@@ -216,7 +216,7 @@ impl WorkerMap {
         worker.spawn(f)
     }
 
-    /// Same scheduler as spawn_on, with bounded metrics and sampled session identity logs.
+    /// Same scheduler as `spawn_on`, with bounded metrics and sampled session identity logs.
     pub(crate) fn spawn_on_traced<F, R>(
         &self,
         name: &'static str,

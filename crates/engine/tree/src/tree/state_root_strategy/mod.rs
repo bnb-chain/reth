@@ -858,9 +858,10 @@ impl DefaultStateRootStrategy {
 /// building EVM's DB before execution, then read the root via [`StateRootHandle::state_root`] once
 /// the hook has been dropped.
 ///
-/// `multiproof_provider_factory` should be an [`OverlayStateProviderFactory`] anchored at the
-/// parent and built from the same `overlay_manager` so the proof workers can resolve a
-/// not-yet-persisted parent. `preserved_sparse_trie` is `None`: an external builder spawns a fresh
+/// `multiproof_provider_factory` must provide proofs at the parent, including any unpersisted
+/// state. It may be an [`OverlayStateProviderFactory`] built from the same `overlay_manager` or
+/// a caller-owned factory that caches immutable parent overlays. `preserved_sparse_trie` is
+/// `None`: an external builder spawns a fresh
 /// sparse trie per call rather than reusing the engine's preserved one.
 pub fn spawn_payload_builder_state_root<N, F>(
     executor: &reth_tasks::Runtime,
