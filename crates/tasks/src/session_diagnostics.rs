@@ -1,5 +1,6 @@
 //! Opt-in named-session tracing. IDs and block numbers appear only in sampled logs,
 //! never in metric labels. Observations do not own channels, providers or Runtime handles.
+
 use reth_metrics::{metrics::Histogram, Metrics};
 use std::{
     sync::{
@@ -36,6 +37,7 @@ struct Running {
     since: Instant,
     sampled: Arc<AtomicBool>,
 }
+
 #[derive(Default)]
 struct State {
     running: Option<Running>,
@@ -48,6 +50,7 @@ pub(crate) struct SessionTracker {
     runtime: &'static str,
     state: Mutex<State>,
 }
+
 impl SessionTracker {
     pub(crate) fn new(worker: &'static str, runtime: Option<&'static str>) -> Self {
         Self { worker, runtime: runtime.unwrap_or("default"), state: Mutex::new(State::default()) }
@@ -90,6 +93,7 @@ impl SessionTracker {
         }
     }
 }
+
 fn permit_log(state: &mut State, now: Instant) -> bool {
     if state.last_log.is_some_and(|last| now.duration_since(last) < Duration::from_secs(5)) {
         return false
@@ -106,6 +110,7 @@ pub(crate) struct SessionObservation {
     sampled: Arc<AtomicBool>,
     metrics: SessionMetrics,
 }
+
 impl SessionObservation {
     pub(crate) fn start(&mut self) {
         let now = Instant::now();
@@ -127,6 +132,7 @@ impl SessionObservation {
         self.started = Some(now);
     }
 }
+
 impl Drop for SessionObservation {
     fn drop(&mut self) {
         let Some(started) = self.started else { return };
@@ -147,6 +153,7 @@ impl Drop for SessionObservation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn sampling_is_bounded_per_worker() {
         let mut state = State::default();
@@ -169,10 +176,12 @@ mod tests {
         drop(first);
         assert_eq!(tracker.state.lock().unwrap().previous, Some(a));
         second.start();
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = second;
             panic!("test");
-        }));
+        }))
+        .unwrap_err();
+        assert_eq!(panic.downcast_ref::<&str>(), Some(&"test"));
         assert!(tracker.state.lock().unwrap().running.is_none());
         assert_eq!(tracker.state.lock().unwrap().previous, Some(b));
         drop(tracker.submitted(a, 0));

@@ -231,7 +231,9 @@ impl WorkerMap {
             self.workers.entry(name).or_insert_with(|| WorkerThread::new(name, self.namespace));
         let mut observation =
             worker.sessions.submitted(context, worker.pending.load(Ordering::Acquire));
+        let span = tracing::Span::current();
         worker.spawn(move || {
+            let _entered = span.enter();
             observation.start();
             f()
         })
@@ -280,11 +282,11 @@ impl std::fmt::Debug for WorkerMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::NamedTaskContext;
+    use metrics_exporter_prometheus::PrometheusBuilder;
 
     #[tokio::test]
     async fn traced_session_reports_real_queue_and_dropped_receiver_does_not_cancel_work() {
-        use crate::NamedTaskContext;
-        use metrics_exporter_prometheus::PrometheusBuilder;
         let recorder = PrometheusBuilder::new().build_recorder();
         let handle = recorder.handle();
         let map = WorkerMap::with_namespace(Some("miner"));
@@ -294,10 +296,10 @@ mod tests {
         let first = metrics::with_local_recorder(&recorder, || {
             map.spawn_on_traced("account-workers", context, move || {
                 entered.send(()).unwrap();
-                wait.recv().unwrap();
+                wait.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
             })
         });
-        received.await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), received).await.unwrap().unwrap();
         let (done, completed) = tokio::sync::oneshot::channel();
         let mut second = metrics::with_local_recorder(&recorder, || {
             map.spawn_on_traced(
@@ -311,10 +313,16 @@ mod tests {
         assert!(matches!(second.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
         drop(second);
         release.send(()).unwrap();
-        first.await.unwrap();
-        completed.await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), first).await.unwrap().unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), completed).await.unwrap().unwrap();
         // Drain the same named worker to observe all teardown metrics.
-        map.spawn_on("account-workers", || {}).await.unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            map.spawn_on("account-workers", || {}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         let text = handle.render();
         for name in ["queue_wait_seconds", "run_seconds"] {
             assert!(

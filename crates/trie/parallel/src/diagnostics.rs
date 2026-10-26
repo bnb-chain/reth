@@ -384,6 +384,8 @@ impl Drop for StageGuard {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn proof_session_submission_and_start_are_distinct_clocks() {
         let d = RootTaskDiagnostics::for_block("miner", 99, alloy_primitives::B256::ZERO);
@@ -410,7 +412,6 @@ mod tests {
         finalize.complete();
     }
 
-    use super::*;
     #[test]
     fn resumed_task_log_bursts_are_bounded() {
         let budget = AtomicU64::new(0);
@@ -538,12 +539,14 @@ pub struct DiagnosticPhase {
     started: Instant,
     completed: bool,
 }
+
 impl DiagnosticPhase {
     /// Mark that the phase returned normally.
     pub fn complete(&mut self) {
         self.completed = true;
     }
 }
+
 impl Drop for DiagnosticPhase {
     fn drop(&mut self) {
         let elapsed = self.started.elapsed();
