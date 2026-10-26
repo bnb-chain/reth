@@ -1787,7 +1787,7 @@ mod tests {
         let mut hashed_state = HashedPostState::default();
         hashed_state.accounts.insert(
             address,
-            Some(Account { balance: U256::from(100), nonce: 1, bytecode_hash: None }),
+            Some(Account { balance: U256::from(100), nonce: 1, ..Default::default() }),
         );
         let mut storage = reth_trie::HashedStorage::default();
         storage.storage.insert(slot, value);
@@ -1812,9 +1812,7 @@ mod tests {
             panic!("expected HashedState message");
         };
 
-        let account = received.accounts.get(&address).unwrap().unwrap();
-        assert_eq!(account.balance, expected_state.accounts[&address].unwrap().balance);
-        assert_eq!(account.nonce, expected_state.accounts[&address].unwrap().nonce);
+        assert_eq!(received.accounts.get(&address).unwrap(), &expected_state.accounts[&address]);
 
         let storage = received.storages.get(&address).unwrap();
         assert_eq!(*storage.storage.get(&slot).unwrap(), value);
