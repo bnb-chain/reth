@@ -660,7 +660,9 @@ impl<N: NodePrimitives> OverlayManager<N> {
 
     /// Returns true if `hash` is in the parent chain segment from `anchor_hash` inclusive to
     /// `parent_hash` inclusive.
-    fn contains_hash(&self, parent_hash: B256, anchor_hash: B256, hash: B256) -> bool {
+    /// Returns false if traversal reaches the anchor or a missing block before finding `hash`.
+    /// Passing `hash == anchor_hash` checks whether this manager covers the entire segment.
+    pub fn contains_hash(&self, parent_hash: B256, anchor_hash: B256, hash: B256) -> bool {
         let mut current_hash = parent_hash;
 
         loop {
