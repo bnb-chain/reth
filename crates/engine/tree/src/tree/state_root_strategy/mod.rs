@@ -57,7 +57,7 @@ mod sparse_trie;
 
 use self::sparse_trie::{SparseTrieCacheTask, SparseTrieTaskMetrics};
 use crate::tree::{metrics::BlockValidationMetrics, EngineApiTreeState, ExecutionEnv, TreeConfig};
-use alloy_primitives::B256;
+use alloy_primitives::{map::B256Map, B256};
 use crossbeam_channel::Receiver as CrossbeamReceiver;
 use reth_chain_state::{ExecutedBlock, PreservedSparseTrie, SparseTrieWithStorageRoots};
 use reth_errors::ProviderResult;
@@ -68,7 +68,8 @@ use reth_primitives_traits::{
 use reth_provider::{
     BlockExecutionOutput, BlockNumReader, ChangeSetReader, DatabaseProviderFactory,
     DatabaseProviderROFactory, HashedPostStateProvider, ProviderError, PruneCheckpointReader,
-    StageCheckpointReader, StateRootProvider, StorageChangeSetReader, StorageSettingsCache,
+    StageCheckpointReader, StateProofProvider, StateRootProvider, StorageChangeSetReader,
+    StorageSettingsCache,
 };
 use reth_storage_overlay::{OverlayManager, OverlayStateProviderFactory};
 use reth_tasks::utils::increase_thread_priority;
@@ -547,6 +548,28 @@ impl DefaultStateRootStrategy {
             + StorageSettingsCache
             + 'static,
     {
+        self.spawn_state_root_with_factory(
+            executor,
+            multiproof_provider_factory,
+            options,
+            |factory, anchor, roots| {
+                factory.with_skip_overlay_for_reused_sparse_trie(anchor, roots)
+            },
+        )
+    }
+
+    /// Runs the shared pipeline with caller-owned proof providers and a sparse-trie reuse adapter.
+    fn spawn_state_root_with_factory<N, F>(
+        &self,
+        executor: &reth_tasks::Runtime,
+        multiproof_provider_factory: F,
+        options: StateRootTaskOptions<'_, N>,
+        configure_reused_factory: impl FnOnce(F, B256, B256Map<B256>) -> F + Send + 'static,
+    ) -> (StateRootHandle, mpsc::Receiver<PendingSparseTrie>)
+    where
+        N: NodePrimitives,
+        F: DatabaseProviderROFactory<Provider: StateProofProvider> + Clone + Send + Sync + 'static,
+    {
         let StateRootTaskOptions {
             origin,
             parent_header,
@@ -586,6 +609,7 @@ impl DefaultStateRootStrategy {
         self.spawn_sparse_trie_task(
             executor,
             multiproof_provider_factory,
+            configure_reused_factory,
             state_root_tx,
             hashed_state_tx,
             from_multi_proof,
@@ -625,7 +649,8 @@ impl DefaultStateRootStrategy {
     fn spawn_sparse_trie_task<N, F>(
         &self,
         executor: &reth_tasks::Runtime,
-        multiproof_provider_factory: OverlayStateProviderFactory<F, N>,
+        multiproof_provider_factory: F,
+        configure_reused_factory: impl FnOnce(F, B256, B256Map<B256>) -> F + Send + 'static,
         state_root_tx: mpsc::Sender<Result<StateRootComputeOutcome, StateRootTaskError>>,
         hashed_state_tx: mpsc::Sender<Arc<HashedPostState>>,
         from_multi_proof: CrossbeamReceiver<StateRootMessage>,
@@ -633,14 +658,7 @@ impl DefaultStateRootStrategy {
         options: SparseTrieTaskOptions<N>,
     ) where
         N: NodePrimitives,
-        F: DatabaseProviderFactory + Clone + 'static,
-        F::Provider: BlockNumReader
-            + PruneCheckpointReader
-            + StageCheckpointReader
-            + ChangeSetReader
-            + StorageChangeSetReader
-            + StorageSettingsCache
-            + 'static,
+        F: DatabaseProviderROFactory<Provider: StateProofProvider> + Clone + Send + Sync + 'static,
     {
         let SparseTrieTaskOptions {
             diagnostics,
@@ -727,7 +745,8 @@ impl DefaultStateRootStrategy {
                 pending_sparse_trie_prune_blocks.as_deref(),
             );
             let factory = if reused_preserved_sparse_trie {
-                multiproof_provider_factory.with_skip_overlay_for_reused_sparse_trie(
+                configure_reused_factory(
+                    multiproof_provider_factory,
                     sparse_trie_anchor_hash,
                     known_storage_roots,
                 )
@@ -846,7 +865,7 @@ impl DefaultStateRootStrategy {
 pub fn spawn_payload_builder_state_root<N, F>(
     executor: &reth_tasks::Runtime,
     _overlay_manager: &OverlayManager<N>,
-    multiproof_provider_factory: OverlayStateProviderFactory<F, N>,
+    multiproof_provider_factory: F,
     parent_header: SealedHeader<N::BlockHeader>,
     transaction_count: Option<usize>,
     config: &TreeConfig,
@@ -854,17 +873,10 @@ pub fn spawn_payload_builder_state_root<N, F>(
 ) -> StateRootHandle
 where
     N: NodePrimitives,
-    F: DatabaseProviderFactory + Clone + 'static,
-    F::Provider: BlockNumReader
-        + PruneCheckpointReader
-        + StageCheckpointReader
-        + ChangeSetReader
-        + StorageChangeSetReader
-        + StorageSettingsCache
-        + 'static,
+    F: DatabaseProviderROFactory<Provider: StateProofProvider> + Clone + Send + Sync + 'static,
 {
     DefaultStateRootStrategy::default()
-        .spawn_state_root(
+        .spawn_state_root_with_factory(
             executor,
             multiproof_provider_factory,
             StateRootTaskOptions {
@@ -876,6 +888,8 @@ where
                 config,
                 pending_sparse_trie_prune_blocks,
             },
+            // External producers always start a fresh trie; their provider needs no reuse adapter.
+            |factory, _, _| factory,
         )
         .0
 }

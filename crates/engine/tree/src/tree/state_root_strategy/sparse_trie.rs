@@ -482,6 +482,8 @@ where
 
         let start = Instant::now();
         self.return_storage_tries();
+        self.proof_worker_handle.diagnostics().finish_drained();
+        let mut finalization = self.proof_worker_handle.diagnostics().phase("final_root");
         let (state_root, trie_updates) = match self.trie.root_with_updates(self.new_epoch) {
             Ok(result) => result,
             Err(err)
@@ -497,6 +499,9 @@ where
             }
             Err(err) => return Err(StateRootTaskError::Other(err.into())),
         };
+
+        finalization.complete();
+        drop(finalization);
 
         let end = Instant::now();
         self.metrics.sparse_trie_final_update_duration_histogram.record(end.duration_since(start));

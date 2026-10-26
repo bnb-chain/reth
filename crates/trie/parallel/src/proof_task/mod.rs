@@ -433,7 +433,12 @@ fn spawn_workers<Factory, J>(
 {
     let rt = runtime.clone();
     let parent_span = tracing::Span::current();
-    runtime.spawn_blocking_named(kind.task_name(), move || {
+    let session_context =
+        worker.task_ctx.diagnostics.as_ref().map(|d| d.proof_session_submitted(kind.name()));
+    let task = move || {
+        if let Some(d) = &worker.task_ctx.diagnostics {
+            d.proof_session_started(kind.name());
+        }
         let (session_start, session_exit, worker_start, worker_exit) = match kind {
             ProofWorkerKind::Storage => (
                 Stage::StorageSessionStarted,
@@ -474,7 +479,12 @@ fn spawn_workers<Factory, J>(
                 let _ = worker.result_tx.send(Err(error));
             }
         });
-    });
+    };
+    if let Some(context) = session_context {
+        runtime.spawn_blocking_named_traced(kind.task_name(), context, task);
+    } else {
+        runtime.spawn_blocking_named(kind.task_name(), task);
+    }
 }
 
 /// State shared by the workers of one pool, each holding its own database transaction.
@@ -547,6 +557,8 @@ where
 {
     /// Opens a database transaction and serves storage proof jobs until the handle is dropped.
     fn run(&self, worker_id: usize) -> ProviderResult<()> {
+        let mut initialization =
+            self.task_ctx.diagnostics.as_ref().map(|d| d.proof_worker_initializing("storage"));
         let provider = self.task_ctx.factory.database_provider_ro()?;
 
         trace!(target: "trie::proof_task", worker_id, "Storage worker started");
@@ -554,6 +566,10 @@ where
         if let Some(d) = &self.task_ctx.diagnostics {
             d.increment(Progress::StorageWorkersReady);
         }
+        if let Some(init) = initialization.as_mut() {
+            init.complete();
+        }
+        drop(initialization);
         let mut storage_proofs_processed = 0u64;
         let total_idle_time = self.process_jobs(worker_id, |job| {
             let _progress = self
@@ -615,6 +631,8 @@ where
 {
     /// Opens a database transaction and serves account proof jobs until the handle is dropped.
     fn run(&self, worker_id: usize) -> ProviderResult<()> {
+        let mut initialization =
+            self.task_ctx.diagnostics.as_ref().map(|d| d.proof_worker_initializing("account"));
         let provider = self.task_ctx.factory.database_provider_ro()?;
 
         trace!(target: "trie::proof_task", worker_id, "Account worker started");
@@ -622,6 +640,10 @@ where
         if let Some(d) = &self.task_ctx.diagnostics {
             d.increment(Progress::AccountWorkersReady);
         }
+        if let Some(init) = initialization.as_mut() {
+            init.complete();
+        }
+        drop(initialization);
         let mut account_proofs_processed = 0u64;
         let total_idle_time = self.process_jobs(worker_id, |job| {
             let _progress = self

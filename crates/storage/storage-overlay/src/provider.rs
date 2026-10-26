@@ -201,6 +201,17 @@ impl<Provider: DBProvider, N: NodePrimitives> OverlayStateProvider<OwnedProvider
         )
     }
 
+    /// Installs a complete trie overlay cached for this provider's parent and durable frontiers.
+    ///
+    /// The caller must build the overlay against the same database snapshot and parent as this
+    /// provider, with `trie_changesets = true` so both root and trie-update proofs have exact
+    /// masks. Execution overlays remain lazy and are never replaced by this trie-only cache.
+    pub fn with_state_trie_overlay(mut self, overlay: StateTrieOverlay) -> Self {
+        self.state_trie_overlay = OnceCell::from(overlay.clone());
+        self.state_trie_overlay_with_trie_changesets = OnceCell::from(overlay);
+        self
+    }
+
     #[cfg(test)]
     fn new_with_execution(
         provider: Provider,
