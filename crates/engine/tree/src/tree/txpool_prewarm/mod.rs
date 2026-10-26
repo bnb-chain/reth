@@ -79,6 +79,12 @@ where
         self.control.snapshot(parent_hash)
     }
 
+    pub(crate) fn snapshot_provider(
+        &self,
+    ) -> Arc<dyn Fn(B256) -> Option<TxPoolPrewarmCacheSnapshot> + Send + Sync> {
+        self.control.snapshot_provider()
+    }
+
     /// Starts continuous warming for the latest canonical head.
     pub(crate) fn start(
         &self,

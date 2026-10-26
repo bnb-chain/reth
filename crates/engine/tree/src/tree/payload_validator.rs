@@ -385,6 +385,19 @@ where
         self
     }
 
+    /// Returns read-only access to the latest completed txpool-prewarm snapshot.
+    ///
+    /// Consumers must request their exact parent hash. Acquiring a snapshot only clones its
+    /// immutable handle; it neither pauses the worker nor grants access to mutable engine caches.
+    /// Returns `None` when txpool prewarming has not been installed.
+    pub fn txpool_prewarm_snapshot_provider(
+        &self,
+    ) -> Option<
+        Arc<dyn Fn(B256) -> Option<reth_execution_cache::TxPoolPrewarmCacheSnapshot> + Send + Sync>,
+    > {
+        self.txpool_prewarm.as_ref().map(|worker| worker.snapshot_provider())
+    }
+
     /// Converts a [`BlockOrPayload`] to a recovered block.
     #[instrument(level = "debug", target = "engine::tree::payload_validator", skip_all)]
     pub fn convert_to_block<T: PayloadTypes<BuiltPayload: BuiltPayload<Primitives = N>>>(

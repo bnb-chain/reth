@@ -54,6 +54,17 @@ impl<J> Control<J> {
             .filter(|snapshot| snapshot.parent_hash() == parent_hash)
             .cloned()
     }
+
+    pub(super) fn snapshot_provider(&self) -> Arc<dyn Fn(B256) -> Option<Snapshot> + Send + Sync> {
+        let publication = self.publication.clone();
+        Arc::new(move |parent_hash| {
+            publication
+                .read()
+                .as_ref()
+                .filter(|snapshot| snapshot.parent_hash() == parent_hash)
+                .cloned()
+        })
+    }
 }
 
 /// Immutable snapshot publication shared by the handle and worker.
@@ -109,6 +120,23 @@ mod tests {
             Some(parent_hash)
         );
         assert!(control.snapshot(B256::ZERO).is_none());
+    }
+
+    #[test]
+    fn reader_is_parent_scoped_and_keeps_an_acquired_snapshot_alive() {
+        let (control, _receiver) = control();
+        let read = control.snapshot_provider();
+        let parent = B256::repeat_byte(1);
+        assert!(read(parent).is_none());
+        *control.publication.write() = Some(snapshot(parent));
+        let held = read(parent).unwrap();
+        assert!(read(B256::ZERO).is_none());
+        *control.publication.write() = Some(snapshot(B256::ZERO));
+        assert!(read(parent).is_none());
+        assert_eq!(held.parent_hash(), parent);
+        assert_eq!(read(B256::ZERO).unwrap().parent_hash(), B256::ZERO);
+        drop(control);
+        assert_eq!(read(B256::ZERO).unwrap().parent_hash(), B256::ZERO);
     }
 
     #[test]
