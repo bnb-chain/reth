@@ -353,39 +353,19 @@ impl<N: NodePrimitives> OverlayManager<N> {
         }
         span.record("cache_reused", false);
 
-        // Resolve the block path and any cached parent overlay before locking the child entry.
-        let mut hash = tip_hash;
-        let mut blocks = Vec::new();
-        loop {
-            let block =
-                self.blocks.get(&hash).ok_or(StateTrieOverlayError { tip_hash, anchor_hash })?;
-            let parent_hash = block.recovered_block().parent_hash();
-            blocks.push(block.clone());
-
-            if parent_hash == anchor_hash {
-                break
+        // Resolve a completed ancestor before locking the child entry. Optional ancestor
+        // reuse never waits on an in-progress parent; the required child still singleflights.
+        let (compute_input, total_blocks) = self.overlay_compute_input(tip_hash, anchor_hash)?;
+        let (blocks, reuse) = match &compute_input {
+            ComputeOverlayInput::ExtendCached { blocks, .. } => {
+                (blocks.len(), if blocks.len() == 1 { "parent" } else { "ancestor" })
             }
-            hash = parent_hash;
-        }
-        span.record("block_count", blocks.len());
-        reth_metrics::metrics::histogram!("trie.diagnostics.overlay_blocks", "origin" => self.diagnostic_origin).record(blocks.len() as f64);
-        let parent_input = blocks.first().and_then(|block| {
-            let parent_hash = block.recovered_block().parent_hash();
-            (parent_hash != anchor_hash)
-                .then(|| {
-                    self.overlays
-                        .get(&OverlayCacheKey { anchor_hash, tip_hash: parent_hash })
-                        .and_then(|entry| entry.value().ready())
-                })
-                .flatten()
-        });
-        span.record("parent_overlay_reused", parent_input.is_some());
-        let compute_input = match parent_input {
-            Some(parent_input) => {
-                ComputeOverlayInput::ExtendCached { block: blocks.swap_remove(0), parent_input }
-            }
-            None => ComputeOverlayInput::MergeBlocks(blocks),
+            ComputeOverlayInput::MergeBlocks(blocks) => (blocks.len(), "miss"),
         };
+        span.record("block_count", total_blocks);
+        span.record("parent_overlay_reused", reuse != "miss");
+        // Preserve the existing full-path metric; expose actual delta work separately.
+        reth_metrics::metrics::histogram!("trie.diagnostics.overlay_blocks", "origin" => self.diagnostic_origin).record(total_blocks as f64);
 
         enum CacheAction {
             Ready(Arc<TrieInputSorted>),
@@ -415,6 +395,9 @@ impl<N: NodePrimitives> OverlayManager<N> {
             CacheAction::Ready(input) => Ok(input),
             CacheAction::Wait(waiter) => Ok(waiter.wait()),
             CacheAction::Compute(waiter) => {
+                // Count actual computations, not plans lost to another concurrent builder.
+                reth_metrics::metrics::histogram!("trie.diagnostics.overlay_delta_blocks", "origin" => self.diagnostic_origin).record(blocks as f64);
+                reth_metrics::metrics::counter!("trie.diagnostics.overlay_ancestor_reuse_total", "origin" => self.diagnostic_origin, "result" => reuse).increment(1);
                 let started = std::time::Instant::now();
                 let input = self.compute_overlay(compute_input, anchor_hash, span);
                 reth_metrics::metrics::histogram!("trie.diagnostics.overlay_compute_wall_seconds", "origin" => self.diagnostic_origin).record(started.elapsed().as_secs_f64());
@@ -435,6 +418,57 @@ impl<N: NodePrimitives> OverlayManager<N> {
                 Ok(input)
             }
         }
+    }
+
+    /// Finds the nearest ready overlay on this exact branch and durable anchor. A cache
+    /// entry for another anchor or an unfinished ancestor is not a reusable base.
+    fn overlay_compute_input(
+        &self,
+        tip_hash: B256,
+        anchor_hash: B256,
+    ) -> Result<(ComputeOverlayInput<N>, usize), StateTrieOverlayError> {
+        let mut hash = tip_hash;
+        let mut blocks = Vec::new();
+        let mut base = None;
+        loop {
+            // Release the block-map guard before looking in the overlay map. Validate
+            // the whole path, preserving pruning behavior and the full-path metric.
+            let parent_hash = {
+                let block = self
+                    .blocks
+                    .get(&hash)
+                    .ok_or(StateTrieOverlayError { tip_hash, anchor_hash })?;
+                blocks.push(block.value().clone());
+                block.recovered_block().parent_hash()
+            };
+            if parent_hash == anchor_hash {
+                break
+            }
+            if base.is_none() &&
+                let Some(ready) = self
+                    .overlays
+                    .get(&OverlayCacheKey { anchor_hash, tip_hash: parent_hash })
+                    .and_then(|entry| entry.value().ready())
+            {
+                base = Some((ready, blocks.len()));
+            }
+            hash = parent_hash;
+        }
+        let total_blocks = blocks.len();
+        let input = match base {
+            // A tiny base with an almost-full delta can add a second large merge pass.
+            // Preserve direct-parent reuse; admit older bases conservatively by coverage.
+            Some((parent_input, delta)) if delta == 1 || total_blocks - delta >= delta => {
+                blocks.truncate(delta);
+                ComputeOverlayInput::ExtendCached { blocks, parent_input }
+            }
+            Some(_) => {
+                reth_metrics::metrics::counter!("trie.diagnostics.overlay_ancestor_plan_skips_total", "origin" => self.diagnostic_origin, "reason" => "small_base").increment(1);
+                ComputeOverlayInput::MergeBlocks(blocks)
+            }
+            None => ComputeOverlayInput::MergeBlocks(blocks),
+        };
+        Ok((input, total_blocks))
     }
 
     fn record_overlay_cache_reuse(&self, span: &tracing::Span) {
@@ -557,7 +591,7 @@ impl OverlayWaiter {
 }
 
 enum ComputeOverlayInput<N: NodePrimitives> {
-    ExtendCached { block: ExecutedBlock<N>, parent_input: Arc<TrieInputSorted> },
+    ExtendCached { blocks: Vec<ExecutedBlock<N>>, parent_input: Arc<TrieInputSorted> },
     MergeBlocks(Vec<ExecutedBlock<N>>),
 }
 
@@ -579,7 +613,7 @@ fn compute_overlay<N: NodePrimitives>(
 ) -> TrieInputSorted {
     let started_at = Instant::now();
     let block_count = match &input {
-        ComputeOverlayInput::ExtendCached { .. } => 1,
+        ComputeOverlayInput::ExtendCached { blocks, .. } |
         ComputeOverlayInput::MergeBlocks(blocks) => blocks.len(),
     };
     let parent_overlay = matches!(&input, ComputeOverlayInput::ExtendCached { .. });
@@ -587,22 +621,19 @@ fn compute_overlay<N: NodePrimitives>(
     tracing::Span::current().record("parent_overlay", parent_overlay);
 
     let overlay = match input {
-        ComputeOverlayInput::ExtendCached { block, parent_input } => {
-            let trie_data = block.trie_data();
-
-            trace!(
-                target: "storage::overlay::manager",
-                %anchor_hash,
-                head = %block.recovered_block().hash(),
-                "extending cached parent state trie overlay"
-            );
-
+        ComputeOverlayInput::ExtendCached { blocks, parent_input } => {
+            trace!(target: "storage::overlay::manager", %anchor_hash,
+                blocks = blocks.len(), "extending cached ancestor state trie overlay");
             let mut overlay = parent_input.as_ref().clone();
-            extend_overlay(
-                &mut overlay,
-                &trie_data.sorted.hashed_state,
-                &trie_data.sorted.trie_updates,
-            );
+            if let [block] = blocks.as_slice() {
+                let data = block.trie_data();
+                extend_overlay(&mut overlay, &data.sorted.hashed_state, &data.sorted.trie_updates);
+            } else {
+                // Consolidate the newest-to-oldest delta once before merging it with the base.
+                // Repeatedly extending a large base would copy/scan it once per added block.
+                let delta = merge_blocks(blocks);
+                extend_overlay(&mut overlay, &delta.state, &delta.nodes);
+            }
             overlay
         }
         ComputeOverlayInput::MergeBlocks(blocks) => merge_blocks(blocks),
@@ -726,6 +757,222 @@ mod tests {
             .enumerate()
             .map(|(index, block)| with_unique_state(&block, index as u8 + 1))
             .collect()
+    }
+
+    fn overlapping_blocks(count: u64) -> Vec<ExecutedBlock<EthPrimitives>> {
+        TestBlockBuilder::eth()
+            .get_executed_blocks(1..count + 1)
+            .map(|block| {
+                let n = block.recovered_block().number;
+                let state = HashedPostState::default()
+                    .with_accounts([
+                        (B256::ZERO, Some(Account { nonce: n, ..Default::default() })),
+                        (
+                            B256::with_last_byte(1),
+                            if n % 3 == 0 {
+                                None
+                            } else {
+                                Some(Account { nonce: n, ..Default::default() })
+                            },
+                        ),
+                    ])
+                    .with_storages([(
+                        B256::ZERO,
+                        HashedStorage {
+                            wiped: n % 4 == 0,
+                            storage: [
+                                (B256::ZERO, U256::from(n)),
+                                (B256::from(U256::from(n)), U256::from(n + 1)),
+                            ]
+                            .into_iter()
+                            .collect(),
+                        },
+                    )])
+                    .into_sorted();
+                let path = reth_trie::Nibbles::from_nibbles([1, 2]);
+                let node = (n % 3 != 0)
+                    .then(|| reth_trie::BranchNodeCompact::new(1 << (n % 8), 0, 0, vec![], None));
+                let nodes = TrieUpdatesSorted::new(
+                    vec![(path, node.clone())],
+                    std::iter::once((
+                        B256::ZERO,
+                        reth_trie::updates::StorageTrieUpdatesSorted {
+                            is_deleted: n % 4 == 0,
+                            storage_nodes: vec![(path, node)],
+                        },
+                    ))
+                    .collect(),
+                );
+                ExecutedBlock::new(
+                    Arc::clone(&block.recovered_block),
+                    Arc::clone(&block.execution_output),
+                    ComputedTrieData::new(Arc::new(state), Arc::new(nodes)),
+                )
+            })
+            .collect()
+    }
+
+    fn assert_same_overlay(actual: &TrieInputSorted, expected: &TrieInputSorted) {
+        assert_eq!(actual.state, expected.state);
+        assert_eq!(actual.nodes, expected.nodes);
+    }
+
+    #[test]
+    fn extends_nearest_ready_ancestor_across_missing_parents_without_mutating_base() {
+        let manager = OverlayManager::default();
+        let blocks = overlapping_blocks(9);
+        for block in &blocks {
+            manager.insert_block(block.clone());
+        }
+        let anchor = blocks[0].recovered_block().parent_hash();
+        let older = manager.get_overlay(blocks[1].recovered_block().hash(), anchor).unwrap();
+        let base = manager.get_overlay(blocks[4].recovered_block().hash(), anchor).unwrap();
+        let before = base.as_ref().clone();
+        let input =
+            manager.overlay_compute_input(blocks[8].recovered_block().hash(), anchor).unwrap().0;
+        match &input {
+            ComputeOverlayInput::ExtendCached { blocks: delta, parent_input } => {
+                assert_eq!(delta.len(), 4);
+                assert!(Arc::ptr_eq(parent_input, &base));
+                assert!(!Arc::ptr_eq(parent_input, &older));
+            }
+            _ => panic!("expected nearest ready ancestor"),
+        }
+        let actual = compute_overlay(input, anchor, &manager.metrics);
+        assert_same_overlay(&actual, &merge_blocks(blocks.into_iter().rev().collect()));
+        assert_same_overlay(&base, &before);
+    }
+
+    #[test]
+    fn unfinished_parent_does_not_block_reuse_of_an_older_ready_ancestor() {
+        let manager = OverlayManager::default();
+        let blocks = overlapping_blocks(6);
+        for block in &blocks {
+            manager.insert_block(block.clone());
+        }
+        let anchor = blocks[0].recovered_block().parent_hash();
+        manager.get_overlay(blocks[2].recovered_block().hash(), anchor).unwrap();
+        let waiter = Arc::new(OverlayWaiter::new());
+        manager.overlays.insert(
+            OverlayCacheKey { anchor_hash: anchor, tip_hash: blocks[4].recovered_block().hash() },
+            OverlayCacheEntry::Computing(waiter.clone()),
+        );
+        let expected = merge_blocks(blocks.iter().rev().cloned().collect());
+        let (tx, rx) = mpsc::channel();
+        let worker = manager;
+        let tip = blocks[5].recovered_block().hash();
+        thread::spawn(move || {
+            tx.send(worker.get_overlay(tip, anchor)).unwrap();
+        });
+        let result = rx.recv_timeout(Duration::from_secs(2));
+        waiter.finish(Arc::new(merge_blocks(blocks[..5].iter().rev().cloned().collect())));
+        assert_same_overlay(
+            &result.expect("child waited on optional unfinished parent").unwrap(),
+            &expected,
+        );
+    }
+
+    #[test]
+    fn small_ancestor_uses_full_merge_instead_of_an_almost_full_delta() {
+        let manager = OverlayManager::default();
+        let blocks = overlapping_blocks(6);
+        for block in &blocks {
+            manager.insert_block(block.clone());
+        }
+        let anchor = blocks[0].recovered_block().parent_hash();
+        manager.get_overlay(blocks[0].recovered_block().hash(), anchor).unwrap();
+        let (input, total) =
+            manager.overlay_compute_input(blocks[5].recovered_block().hash(), anchor).unwrap();
+        assert_eq!(total, 6);
+        assert!(matches!(&input, ComputeOverlayInput::MergeBlocks(delta) if delta.len() == 6));
+        assert_same_overlay(
+            &compute_overlay(input, anchor, &manager.metrics),
+            &merge_blocks(blocks.into_iter().rev().collect()),
+        );
+    }
+
+    #[test]
+    fn ancestor_reuse_does_not_cross_durable_anchors_or_forks() {
+        let manager = OverlayManager::default();
+        let blocks = overlapping_blocks(6);
+        let fork = overlapping_blocks(6);
+        for block in blocks.iter().chain(&fork) {
+            manager.insert_block(block.clone());
+        }
+        let anchor = blocks[0].recovered_block().parent_hash();
+        manager.get_overlay(blocks[3].recovered_block().hash(), anchor).unwrap();
+        let tip = blocks[5].recovered_block().hash();
+        let new_anchor = blocks[1].recovered_block().hash();
+        let input = manager.overlay_compute_input(tip, new_anchor).unwrap().0;
+        assert!(matches!(&input, ComputeOverlayInput::MergeBlocks(delta) if delta.len() == 4));
+        assert_same_overlay(
+            &compute_overlay(input, new_anchor, &manager.metrics),
+            &merge_blocks(blocks[2..].iter().rev().cloned().collect()),
+        );
+        let fork_tip = fork[5].recovered_block().hash();
+        let input = manager.overlay_compute_input(fork_tip, anchor).unwrap().0;
+        assert!(matches!(&input, ComputeOverlayInput::MergeBlocks(delta) if delta.len() == 6));
+        assert_same_overlay(
+            &compute_overlay(input, anchor, &manager.metrics),
+            &merge_blocks(fork.into_iter().rev().collect()),
+        );
+    }
+
+    #[test]
+    #[ignore = "manual relative benchmark; synthetic dataset, not a TPS prediction"]
+    fn benchmark_ancestor_overlay_gap() {
+        use std::hint::black_box;
+        let manager = OverlayManager::default();
+        let blocks: Vec<ExecutedBlock<EthPrimitives>> = TestBlockBuilder::eth()
+            .get_executed_blocks(1..97)
+            .map(|block| {
+                let n = block.recovered_block().number;
+                let state = HashedPostState::default()
+                    .with_accounts((0..1500).map(|i| {
+                        let key = B256::from(U256::from(n * 1500 + i));
+                        (key, Some(Account { nonce: n, ..Default::default() }))
+                    }))
+                    .with_storages((0..4).map(|contract| {
+                        (
+                            B256::with_last_byte(contract),
+                            HashedStorage::from_iter((0..300).map(|slot| {
+                                (B256::from(U256::from(n * 300 + slot)), U256::from(n))
+                            })),
+                        )
+                    }))
+                    .into_sorted();
+                ExecutedBlock::new(
+                    Arc::clone(&block.recovered_block),
+                    Arc::clone(&block.execution_output),
+                    ComputedTrieData::new(Arc::new(state), Arc::new(TrieUpdatesSorted::default())),
+                )
+            })
+            .collect();
+        for block in &blocks {
+            manager.insert_block(block.clone());
+        }
+        let anchor = blocks[0].recovered_block().parent_hash();
+        let tip = blocks[95].recovered_block().hash();
+        let expected = merge_blocks(blocks.iter().rev().cloned().collect());
+        for cached in [1, 48, 90] {
+            manager.get_overlay(blocks[cached - 1].recovered_block().hash(), anchor).unwrap();
+            let (mut cold, mut reused) = (Vec::new(), Vec::new());
+            for _ in 0..12 {
+                let t = Instant::now();
+                let result =
+                    black_box(merge_blocks(black_box(blocks.iter().rev().cloned().collect())));
+                cold.push(t.elapsed().as_secs_f64() * 1000.0);
+                assert_same_overlay(&result, &expected);
+                let t = Instant::now();
+                let input = manager.overlay_compute_input(tip, anchor).unwrap().0;
+                let result = black_box(compute_overlay(black_box(input), anchor, &manager.metrics));
+                reused.push(t.elapsed().as_secs_f64() * 1000.0);
+                assert_same_overlay(&result, &expected);
+            }
+            cold.sort_by(f64::total_cmp);
+            reused.sort_by(f64::total_cmp);
+            eprintln!("ANCESTOR_BENCH profile=debug blocks=96 cached={} delta={} accounts={} storage_slots=115200 full_merge_median_ms={:.3} ancestor_median_ms={:.3}", cached, 96-cached, expected.state.accounts.len(), cold[6], reused[6]);
+        }
     }
 
     #[test]
