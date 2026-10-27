@@ -67,7 +67,6 @@ pub struct StateRootHandle {
     cached_trie_state_root: B256,
     /// Best-effort hint capability, taken once by prewarm wiring.
     hint: Option<StateRootHintStream>,
-    isolated_hint: bool,
     /// The single authoritative update capability.
     ///
     /// Taken exactly once, either as an execution hook (serial execution) or as a hashed
@@ -125,7 +124,6 @@ impl StateRootHandle {
             diagnostics,
             cached_trie_state_root,
             hint: Some(StateRootHintStream::new(Arc::clone(&sink))),
-            isolated_hint: false,
             authoritative: Some(StateRootUpdateStream::new(sink)),
             cancel_guard,
             state_root_rx: Some(state_root_rx),
@@ -150,31 +148,6 @@ impl StateRootHandle {
     /// If called more than once.
     pub const fn take_hint_stream(&mut self) -> StateRootHintStream {
         self.hint.take().expect("hint stream already taken")
-    }
-
-    /// Routes mining hints to an independent prefetch worker and completed-proof cache.
-    /// Authoritative updates retain their original sink and completion semantics.
-    pub fn with_isolated_prefetch(
-        mut self,
-        prefetch: Arc<crate::isolated_prefetch::IsolatedProofPrefetch>,
-    ) -> Self {
-        let formal = self.authoritative.take().expect("update capability already taken");
-        let sink: Arc<dyn StateRootSink> =
-            Arc::new(IsolatedPrefetchSink { formal: formal.inner, prefetch });
-        self.hint = Some(StateRootHintStream::new(sink.clone()));
-        self.authoritative = Some(StateRootUpdateStream::new(sink));
-        self.isolated_hint = true;
-        self
-    }
-
-    /// Takes only an independent hint capability. Missing startup support disables speculative
-    /// proof work; callers must not fall back to the ordinary, authoritative-task hint lane.
-    pub const fn take_isolated_hint_stream(&mut self) -> Option<StateRootHintStream> {
-        if self.isolated_hint {
-            self.hint.take()
-        } else {
-            None
-        }
     }
 
     /// Takes the authoritative update capability as an EVM state hook.
@@ -418,9 +391,6 @@ pub trait StateRootSink: Send + Sync + 'static {
     /// Best-effort access hint from transaction prewarming.
     fn on_access_hint(&self, _hint: StateAccessHint) {}
 
-    /// Stops optional hints without finishing or cancelling authoritative state updates.
-    fn on_hints_finished(&self) {}
-
     /// Authoritative state update from normal block execution.
     fn on_state_update(&self, state: EvmState);
 
@@ -452,11 +422,6 @@ impl StateRootHintStream {
     /// Emits a best-effort access hint.
     pub fn on_access_hint(&self, hint: StateAccessHint) {
         self.inner.on_access_hint(hint);
-    }
-
-    /// Stops optional prefetch submissions without waiting for speculative work to finish.
-    pub fn close(&self) {
-        self.inner.on_hints_finished();
     }
 }
 
@@ -542,29 +507,6 @@ impl Drop for StateRootUpdateHook {
             return;
         }
         self.inner.on_updates_finished();
-    }
-}
-
-struct IsolatedPrefetchSink {
-    formal: Arc<dyn StateRootSink>,
-    prefetch: Arc<crate::isolated_prefetch::IsolatedProofPrefetch>,
-}
-impl StateRootSink for IsolatedPrefetchSink {
-    fn on_access_hint(&self, hint: StateAccessHint) {
-        self.prefetch.submit(hint);
-    }
-    fn on_hints_finished(&self) {
-        self.prefetch.close();
-    }
-    fn on_state_update(&self, state: EvmState) {
-        self.formal.on_state_update(state);
-    }
-    fn on_hashed_state_update(&self, state: HashedPostState) {
-        self.formal.on_hashed_state_update(state);
-    }
-    fn on_updates_finished(&self) {
-        self.prefetch.close();
-        self.formal.on_updates_finished();
     }
 }
 

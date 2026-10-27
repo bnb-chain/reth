@@ -85,7 +85,6 @@ use reth_trie_parallel::{
 };
 pub use reth_trie_parallel::{
     error::StateRootTaskError,
-    isolated_prefetch::initialize_isolated_proof_prefetch,
     state_root_task::{
         evm_state_to_hashed_post_state, PayloadStateRootHandle, StateAccessHint,
         StateRootComputeOutcome, StateRootHandle, StateRootHintStream, StateRootMessage,
@@ -552,17 +551,7 @@ impl DefaultStateRootStrategy {
             parent_header.number().saturating_add(1),
             parent_header.hash(),
         );
-        let prefetch = (origin == "miner")
-            .then(|| {
-                reth_trie_parallel::isolated_prefetch::IsolatedProofPrefetch::new(
-                    parent_header.hash(),
-                    multiproof_provider_factory.clone(),
-                    cancel_rx.clone(),
-                )
-            })
-            .flatten();
-        let task_ctx = ProofTaskCtx::new(multiproof_provider_factory)
-            .with_prefetched(prefetch.as_ref().map(|prefetch| prefetch.cache()));
+        let task_ctx = ProofTaskCtx::new(multiproof_provider_factory);
         #[cfg(feature = "trie-debug")]
         let task_ctx = task_ctx.with_proof_jitter(config.proof_jitter());
         let halve_workers = transaction_count
@@ -601,18 +590,14 @@ impl DefaultStateRootStrategy {
             },
         );
 
-        let handle = StateRootHandle::new_with_diagnostics(
+        StateRootHandle::new_with_diagnostics(
             parent_state_root,
             updates_tx,
             cancel_guard,
             state_root_rx,
             hashed_state_rx,
             diagnostics,
-        );
-        match prefetch {
-            Some(prefetch) => handle.with_isolated_prefetch(prefetch),
-            None => handle,
-        }
+        )
     }
 
     /// Spawns the sparse-trie task and preserves its trie for the next state-root job.
@@ -1628,87 +1613,6 @@ mod tests {
             }
         }
         assert!(result.expect("import was blocked behind the miner").is_ok());
-    }
-
-    #[derive(Clone)]
-    struct GatedPrefetchFactory<F> {
-        inner: F,
-        entered: mpsc::Sender<()>,
-        release: Arc<std::sync::Mutex<mpsc::Receiver<()>>>,
-    }
-
-    impl<F: DatabaseProviderROFactory> DatabaseProviderROFactory for GatedPrefetchFactory<F> {
-        type Provider = F::Provider;
-
-        fn database_provider_ro(&self) -> ProviderResult<Self::Provider> {
-            if std::thread::current().name() == Some("proof-prefetch") {
-                let _ = self.entered.send(());
-                let _ =
-                    self.release.lock().unwrap().recv_timeout(std::time::Duration::from_secs(10));
-            }
-            self.inner.database_provider_ro()
-        }
-    }
-
-    #[test]
-    fn miner_root_completes_while_independent_prefetch_provider_is_blocked() {
-        assert!(initialize_isolated_proof_prefetch());
-        let factory = create_test_provider_factory_with_chain_spec(Arc::new(ChainSpec::default()));
-        let genesis_hash = init_genesis(&factory).unwrap();
-        let provider = BlockchainProvider::new(factory).unwrap();
-        let runtime = reth_tasks::Runtime::test();
-        let overlay = OverlayManager::<EthPrimitives>::new_with_diagnostic_origin(
-            runtime.state_trie_overlay_worker_pool(),
-            "miner",
-        );
-        let (entered, entered_rx) = mpsc::channel();
-        let (release, release_rx) = mpsc::channel();
-        let mut miner = spawn_payload_builder_state_root(
-            &runtime,
-            &overlay,
-            GatedPrefetchFactory {
-                inner: OverlayStateProviderFactory::new(
-                    provider,
-                    overlay.overlay_builder(genesis_hash),
-                ),
-                entered,
-                release: Arc::new(std::sync::Mutex::new(release_rx)),
-            },
-            SealedHeader::new(alloy_consensus::Header::default(), genesis_hash),
-            Some(1),
-            &TreeConfig::default(),
-            None,
-        );
-        let hint = miner.take_isolated_hint_stream().unwrap();
-        hint.on_access_hint(StateAccessHint {
-            accounts: vec![B256::ZERO],
-            storages: Default::default(),
-        });
-        let entered = entered_rx.recv_timeout(std::time::Duration::from_secs(5));
-        let mut hook = miner.take_execution_hook();
-        let updates = create_mock_state_updates(2, 2);
-        let mut expected = HashMap::<Address, (Account, HashMap<B256, U256>)>::default();
-        for update in updates {
-            for (address, account) in &update {
-                let entry = expected.entry(*address).or_default();
-                entry.0 = Account::from_revm_account(account);
-                entry.1.extend(
-                    account
-                        .storage
-                        .iter()
-                        .map(|(key, value)| (B256::from(*key), value.present_value)),
-                );
-            }
-            hook.on_state(update);
-        }
-        hint.close();
-        drop(hook);
-        let result = miner.take_state_root_rx().recv_timeout(std::time::Duration::from_secs(5));
-        // Release even on a failed assertion, so the global worker never leaks into other tests.
-        let _ = release.send(());
-        assert!(entered.is_ok(), "prefetch did not enter the provider");
-        let result = result.expect("formal root waited for speculative provider work").unwrap();
-        assert_eq!(result.state_root, state_root(expected));
     }
 
     #[test]

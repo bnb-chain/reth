@@ -438,7 +438,6 @@ impl ProofWorkerHandle {
 #[derive(Clone, Debug)]
 pub struct ProofTaskCtx<Factory> {
     diagnostics: Option<Arc<RootTaskDiagnostics>>,
-    prefetched: Option<Arc<crate::isolated_prefetch::ReadyProofCache>>,
     /// The factory for creating state providers.
     factory: Factory,
     /// Maximum random jitter to apply before each proof computation (trie-debug only).
@@ -452,19 +451,9 @@ impl<Factory> ProofTaskCtx<Factory> {
         Self {
             factory,
             diagnostics: None,
-            prefetched: None,
             #[cfg(feature = "trie-debug")]
             proof_jitter: None,
         }
-    }
-
-    /// Installs completed advisory proofs without linking the producer's lifecycle or queue.
-    pub fn with_prefetched(
-        mut self,
-        cache: Option<Arc<crate::isolated_prefetch::ReadyProofCache>>,
-    ) -> Self {
-        self.prefetched = cache;
-        self
     }
 
     /// Sets the maximum proof jitter duration (trie-debug only).
@@ -1128,27 +1117,14 @@ where
     {
         let proof_start = Instant::now();
 
-        let AccountMultiproofInput { mut targets, proof_result_sender } = input;
-        let prefetched = self
-            .task_ctx
-            .prefetched
-            .as_ref()
-            .map(|cache| cache.take_ready(&mut targets))
-            .unwrap_or_default();
-        let (result, value_encoder_stats) = if targets.is_empty() {
-            (Ok(prefetched), ValueEncoderStats::default())
-        } else {
-            match self.compute_v2_account_multiproof::<Provider>(
-                v2_account_calculator,
-                v2_storage_calculator,
-                targets,
-            ) {
-                Ok((mut proof, stats)) => {
-                    proof.extend(prefetched);
-                    (Ok(proof), stats)
-                }
-                Err(e) => (Err(e), ValueEncoderStats::default()),
-            }
+        let AccountMultiproofInput { targets, proof_result_sender } = input;
+        let (result, value_encoder_stats) = match self.compute_v2_account_multiproof::<Provider>(
+            v2_account_calculator,
+            v2_storage_calculator,
+            targets,
+        ) {
+            Ok((proof, stats)) => (Ok(proof), stats),
+            Err(e) => (Err(e), ValueEncoderStats::default()),
         };
 
         let ProofResultContext { sender: result_tx, state, start_time: start } =
