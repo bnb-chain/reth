@@ -26,3 +26,6 @@ pub mod proof_task_metrics;
 
 /// Lightweight state-root lifecycle diagnostics.
 pub mod diagnostics;
+
+/// Independent advisory proof prefetch and completed-result reuse.
+pub mod isolated_prefetch;
