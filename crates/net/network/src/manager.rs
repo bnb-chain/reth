@@ -42,7 +42,7 @@ use crate::{
 use futures::{Future, StreamExt};
 use parking_lot::Mutex;
 use reth_chainspec::EnrForkIdEntry;
-use reth_eth_wire::{DisconnectReason, EthNetworkPrimitives, NetworkPrimitives};
+use reth_eth_wire::{DisconnectReason, EthNetworkPrimitives, NetworkPrimitives, NewBlockPayload};
 use reth_fs_util::{self as fs, FsPathError};
 use reth_metrics::common::mpsc::MemoryBoundedSender;
 use reth_network_api::{
@@ -660,6 +660,10 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
             }
             PeerMessage::NewBlock(block) => {
                 self.within_pow_or_disconnect(peer_id, move |this| {
+                    // BSC vote propagation compares this live TD with the local head.
+                    if let Some(td) = block.block.td() {
+                        this.swarm.sessions_mut().update_peer_td(&peer_id, td);
+                    }
                     this.swarm.state_mut().on_new_block(peer_id, block.hash);
                     // start block import process
                     this.block_import.on_new_block(peer_id, NewBlockEvent::Block(block));
@@ -1216,8 +1220,11 @@ struct NetworkManagerPollDurations {
 mod tests {
     use super::*;
     use crate::{NetworkConfigBuilder, PeersConfig, SessionsConfig};
+    use alloy_primitives::{U128, U256};
     use futures::{future::poll_fn, task::noop_waker_ref};
     use metrics::{atomics::AtomicU64, Gauge};
+    use reth_eth_wire::{EthVersion, HelloMessageWithProtocols, NewBlock};
+    use reth_ethereum_primitives::Block;
     use reth_network_types::{PeerAddr, PeerKind, SessionLimits};
     use reth_storage_api::noop::NoopProvider;
     use reth_tasks::Runtime;
@@ -1381,5 +1388,68 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(f64::from_bits(total_pending.load(Ordering::Relaxed)), 0.0);
+    }
+
+    #[tokio::test]
+    async fn peer_info_tracks_total_difficulty_after_handshake() {
+        let config = || {
+            let builder = NetworkConfigBuilder::<EthNetworkPrimitives>::new(
+                SecretKey::new(&mut rand_08::thread_rng()),
+                Runtime::test(),
+            )
+            .disable_discovery()
+            .listener_addr("127.0.0.1:0".parse().unwrap())
+            .peer_config(PeersConfig::test())
+            .with_pow();
+            let hello = HelloMessageWithProtocols::builder(builder.get_peer_id())
+                .protocols([EthVersion::Eth68.into()])
+                .build();
+            builder.hello_message(hello).build(NoopProvider::default())
+        };
+        let mut local = NetworkManager::new(config()).await.unwrap();
+        let mut remote = NetworkManager::new(config()).await.unwrap();
+        let peer_id = *remote.peer_id();
+        local.swarm.peers_mut().add_and_connect_kind(
+            peer_id,
+            PeerKind::Basic,
+            PeerAddr::from_tcp(remote.swarm.listener().local_address()),
+            None,
+        );
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            poll_fn(|cx| {
+                assert!(Pin::new(&mut local).poll(cx).is_pending());
+                assert!(Pin::new(&mut remote).poll(cx).is_pending());
+                if local.get_peer_info_by_id(peer_id).is_some() {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            }),
+        )
+        .await
+        .unwrap();
+        let handshake_td = local.get_peer_info_by_id(peer_id).unwrap().best_td.unwrap();
+        // BSC stops forwarding votes once peer TD trails the local head by more than 1000.
+        for delta in [1002, 2004] {
+            let td = handshake_td + U256::from(delta);
+            let mut block = NewBlock { block: Block::default(), td: U128::from(td) };
+            block.block.header.number = delta / 2;
+            block.block.header.difficulty = U256::from(2);
+            local.on_peer_message(
+                peer_id,
+                PeerMessage::NewBlock(NewBlockMessage {
+                    hash: block.block.header.hash_slow(),
+                    block: Arc::new(block),
+                }),
+            );
+            assert_eq!(local.get_peer_info_by_id(peer_id).unwrap().best_td, Some(td));
+            assert_eq!(local.get_peer_infos()[0].best_td, Some(td));
+            assert_eq!(local.get_peer_infos_by_ids([peer_id])[0].best_td, Some(td));
+            assert_eq!(
+                local.swarm.sessions().active_sessions()[&peer_id].status.total_difficulty,
+                Some(handshake_td),
+            );
+        }
     }
 }
