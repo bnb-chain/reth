@@ -1106,8 +1106,11 @@ impl<TX: DbTx + 'static, N: NodeTypes> TryIntoHistoricalStateProvider for Databa
         // Only use the LatestStateProvider fast path when there is no pipeline gap.
         // During pipeline sync the Execution stage may have advanced PlainState beyond the
         // Finish checkpoint, so LatestStateProvider would return data from a future block.
+        // That can hold even after both history indices have caught up with Execution, so
+        // also require that PlainState is not ahead of the requested block.
         let pipeline_consistency = self.build_pipeline_consistency()?;
         if block_number == best_block &&
+            !pipeline_consistency.plain_state_ahead_of(block_number) &&
             pipeline_consistency.account_inconsistency().is_none() &&
             pipeline_consistency.storage_inconsistency().is_none()
         {
@@ -4217,6 +4220,72 @@ mod tests {
     use revm_database::BundleState;
     use revm_state::AccountInfo;
     use std::{sync::mpsc, time::Duration};
+
+    /// While a pipeline run is between the history-index commits and the Finish commit, the
+    /// Execution and index checkpoints are at `M` but the best block (Finish) is still `N`.
+    /// `PlainState` already holds block `M`, so a query at `N` must resolve through the
+    /// changesets instead of the `LatestStateProvider` fast path.
+    #[test]
+    fn history_at_best_block_ignores_plain_state_ahead_of_finish() {
+        use reth_db_api::{
+            models::{AccountBeforeTx, ShardedKey},
+            BlockNumberList,
+        };
+        use reth_primitives_traits::Account;
+        use reth_stages_types::StageCheckpoint;
+
+        const N: u64 = 5;
+        const M: u64 = 10;
+        let address = Address::with_last_byte(0x42);
+        let at_n = Account { nonce: 1, balance: U256::from(1_000), bytecode_hash: None };
+        let at_m = Account { nonce: 2, balance: U256::from(9_999), bytecode_hash: None };
+
+        let factory = create_test_provider_factory();
+        let provider_rw = factory.provider_rw().unwrap();
+        // Block N+1 changed the account from `at_n`; `PlainState` holds the result at M.
+        provider_rw.tx_ref().put::<tables::PlainAccountState>(address, at_m).unwrap();
+        provider_rw
+            .tx_ref()
+            .put::<tables::AccountChangeSets>(N + 1, AccountBeforeTx { address, info: Some(at_n) })
+            .unwrap();
+        provider_rw
+            .tx_ref()
+            .put::<tables::AccountsHistory>(
+                ShardedKey { key: address, highest_block_number: u64::MAX },
+                BlockNumberList::new([N + 1]).unwrap(),
+            )
+            .unwrap();
+        provider_rw.commit().unwrap();
+
+        let set_checkpoints = |finish: u64, execution: u64, history: u64| {
+            let provider_rw = factory.provider_rw().unwrap();
+            for (stage, block) in [
+                (StageId::Finish, finish),
+                (StageId::Execution, execution),
+                (StageId::IndexAccountHistory, history),
+                (StageId::IndexStorageHistory, history),
+            ] {
+                provider_rw.save_stage_checkpoint(stage, StageCheckpoint::new(block)).unwrap();
+            }
+            provider_rw.commit().unwrap();
+        };
+        let balance_at = |block: u64| {
+            let state = factory.provider().unwrap().try_into_history_at_block(block).unwrap();
+            state.basic_account(&address).unwrap().unwrap().balance
+        };
+
+        // Finished pipeline: the fast path at the best block reads PlainState, which is at M.
+        set_checkpoints(M, M, M);
+        assert_eq!(balance_at(M), at_m.balance);
+
+        // Mid-run window: Finish = N, Execution = both history indices = M.
+        set_checkpoints(N, M, M);
+        assert_eq!(balance_at(N), at_n.balance, "served PlainState from block M for block N");
+
+        // History indices behind Execution: already handled by the history-gap guard.
+        set_checkpoints(N, M, N);
+        assert_eq!(balance_at(N), at_n.balance);
+    }
 
     #[test]
     fn test_receipts_by_block_range_empty_range() {

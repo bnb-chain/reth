@@ -837,6 +837,15 @@ impl PipelineConsistency {
         }
     }
 
+    /// Returns `true` if the Execution stage has committed `PlainState` past `block_number`, so
+    /// `PlainState` does not hold the state at that block.
+    ///
+    /// During a pipeline run the Execution checkpoint can lead the Finish checkpoint (the best
+    /// block) even after both history indices have caught up with it.
+    pub const fn plain_state_ahead_of(&self, block_number: BlockNumber) -> bool {
+        matches!(self.execution_tip, Some(exec) if exec > block_number)
+    }
+
     /// Returns `Some((exec_tip, hist_tip))` if storage history is inconsistent with `PlainState`.
     ///
     /// A `None` history tip means the index stage has never run, which is equivalent to block 0.
@@ -1588,6 +1597,19 @@ mod tests {
         };
         assert!(pc.account_inconsistency().is_none());
         assert!(pc.storage_inconsistency().is_none());
+        assert!(!pc.plain_state_ahead_of(0));
+
+        // PlainState is ahead of a block only when Execution has committed past it, even when
+        // the history indices have caught up with Execution.
+        let pc = PipelineConsistency {
+            execution_tip: Some(10),
+            account_history_tip: Some(10),
+            storage_history_tip: Some(10),
+        };
+        assert!(pc.account_inconsistency().is_none());
+        assert!(pc.plain_state_ahead_of(5));
+        assert!(!pc.plain_state_ahead_of(10));
+        assert!(!pc.plain_state_ahead_of(11));
     }
 
     /// Verifies selective rejection during pipeline inconsistency:
