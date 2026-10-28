@@ -918,6 +918,36 @@ where
     N: NodePrimitives,
     F: DatabaseProviderROFactory<Provider: StateProofProvider> + Clone + Send + Sync + 'static,
 {
+    spawn_payload_builder_state_root_with_cache_origin(
+        executor,
+        multiproof_provider_factory,
+        parent_header,
+        transaction_count,
+        config,
+        pending_sparse_trie_prune_blocks,
+        preserved,
+        "miner",
+        configure_reused_factory,
+    )
+}
+
+/// Context-aware variant for fixed caller roles (never use block/transaction identities).
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_payload_builder_state_root_with_cache_origin<N, F>(
+    executor: &reth_tasks::Runtime,
+    multiproof_provider_factory: F,
+    parent_header: SealedHeader<N::BlockHeader>,
+    transaction_count: Option<usize>,
+    config: &TreeConfig,
+    pending_sparse_trie_prune_blocks: Option<Vec<ExecutedBlock<N>>>,
+    preserved: Option<PreservedSparseTrie>,
+    diagnostic_origin: &'static str,
+    configure_reused_factory: impl FnOnce(F, B256, B256Map<B256>) -> F + Send + 'static,
+) -> (StateRootHandle, PayloadBuilderTrieCache)
+where
+    N: NodePrimitives,
+    F: DatabaseProviderROFactory<Provider: StateProofProvider> + Clone + Send + Sync + 'static,
+{
     let parent_hash = parent_header.hash();
     let preserved_sparse_trie = match preserved {
         Some(trie) if trie.block_hash() == parent_hash => match trie.try_into_ready() {
@@ -935,11 +965,12 @@ where
         }
         None => None,
     };
+    reth_metrics::metrics::counter!("trie.diagnostics.external_cache_initializations_total", "origin" => diagnostic_origin, "result" => if preserved_sparse_trie.is_some() { "reused" } else { "fresh" }).increment(1);
     let (handle, pending) = DefaultStateRootStrategy::default().spawn_state_root_with_factory(
         executor,
         multiproof_provider_factory,
         StateRootTaskOptions {
-            origin: "miner",
+            origin: diagnostic_origin,
             parent_header,
             preserved_sparse_trie,
             transaction_count,

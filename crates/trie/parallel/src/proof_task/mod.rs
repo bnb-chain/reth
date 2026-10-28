@@ -56,6 +56,7 @@ struct AvailabilitySheet {
     /// One flag per worker, each on its own cacheline. Workers store `true` when idle,
     /// `false` when busy. Only the owning worker writes; the dispatcher only reads.
     flags: Vec<crossbeam_utils::CachePadded<AtomicBool>>,
+    active_jobs: AtomicUsize,
 }
 
 impl AvailabilitySheet {
@@ -63,7 +64,7 @@ impl AvailabilitySheet {
     fn new(count: usize) -> Self {
         let flags =
             (0..count).map(|_| crossbeam_utils::CachePadded::new(AtomicBool::new(false))).collect();
-        Self { flags }
+        Self { flags, active_jobs: AtomicUsize::new(0) }
     }
 
     /// Returns `true` if more than one worker is currently idle.
@@ -284,17 +285,16 @@ impl ProofWorkerHandle {
     /// failures on [`Self::results`].
     pub fn dispatch(&self, targets: MultiProofTargetsV2) -> Result<usize, ProofWorkersUnavailable> {
         let MultiProofTargetsV2 { account_targets, storage_targets } = targets;
-        let dispatched_at = Instant::now();
         let mut jobs = 0;
 
         for (hashed_address, targets) in storage_targets {
-            let job = StorageProofJob { hashed_address, targets, dispatched_at };
+            let job = StorageProofJob { hashed_address, targets, dispatched_at: Instant::now() };
             self.storage_work_tx.send(job).map_err(|_| ProofWorkersUnavailable)?;
             jobs += 1;
         }
 
         if !account_targets.is_empty() {
-            let job = AccountProofJob { targets: account_targets, dispatched_at };
+            let job = AccountProofJob { targets: account_targets, dispatched_at: Instant::now() };
             self.account_work_tx.send(job).map_err(|_| ProofWorkersUnavailable)?;
             jobs += 1;
         }
@@ -308,7 +308,45 @@ impl ProofWorkerHandle {
 ///
 /// A storage job yields the storage proof of a single account and no account proofs. An account
 /// job yields account proofs and no storage proofs. A failed job does not stop its worker.
-pub type ProofWorkerResult = Result<DecodedMultiProofV2, StateRootTaskError>;
+#[derive(Debug)]
+pub struct ProofWorkerResult {
+    result: Result<DecodedMultiProofV2, StateRootTaskError>,
+    timing: Option<ProofCompletion>,
+}
+#[derive(Debug)]
+struct ProofCompletion {
+    origin: &'static str,
+    kind: &'static str,
+    completed: Instant,
+}
+impl From<Result<DecodedMultiProofV2, StateRootTaskError>> for ProofWorkerResult {
+    fn from(result: Result<DecodedMultiProofV2, StateRootTaskError>) -> Self {
+        Self { result, timing: None }
+    }
+}
+impl ProofWorkerResult {
+    const fn new(
+        result: Result<DecodedMultiProofV2, StateRootTaskError>,
+        origin: &'static str,
+        kind: &'static str,
+        completed: Instant,
+    ) -> Self {
+        Self { result, timing: Some(ProofCompletion { origin, kind, completed }) }
+    }
+    const fn startup_error(error: StateRootTaskError) -> Self {
+        Self { result: Err(error), timing: None }
+    }
+    /// Consume exactly once on the root task, before coalescing/revealing the proof.
+    /// This measures completion-to-receive, including result-channel residence and worker send.
+    pub fn into_result(self) -> Result<DecodedMultiProofV2, StateRootTaskError> {
+        if let Some(timing) = self.timing {
+            #[cfg(feature = "metrics")]
+            reth_metrics::metrics::histogram!("trie.diagnostics.proof_job_delivery_seconds", "origin" => timing.origin, "kind" => timing.kind, "outcome" => if self.result.is_ok() { "success" } else { "error" }).record(timing.completed.elapsed().as_secs_f64());
+            let _ = (timing.origin, timing.kind, timing.completed);
+        }
+        self.result
+    }
+}
 
 /// Error returned by [`ProofWorkerHandle::dispatch`] when a worker pool has shut down.
 #[derive(Debug, Clone, Copy, thiserror::Error)]
@@ -476,7 +514,7 @@ fn spawn_workers<Factory, J>(
                     source: error,
                 }));
                 // The send fails only once the handle is dropped, when nobody waits for results.
-                let _ = worker.result_tx.send(Err(error));
+                let _ = worker.result_tx.send(ProofWorkerResult::startup_error(error));
             }
         });
     };
@@ -484,6 +522,20 @@ fn spawn_workers<Factory, J>(
         runtime.spawn_blocking_named_traced(kind.task_name(), context, task);
     } else {
         runtime.spawn_blocking_named(kind.task_name(), task);
+    }
+}
+
+/// Actual running jobs, excluding provider initialization and idle receivers.
+struct ActiveJob<'a>(&'a AtomicUsize);
+impl<'a> ActiveJob<'a> {
+    fn new(count: &'a AtomicUsize) -> Self {
+        count.fetch_add(1, Ordering::Relaxed);
+        Self(count)
+    }
+}
+impl Drop for ActiveJob<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -505,7 +557,7 @@ struct ProofWorker<Factory, J> {
 impl<Factory, J> ProofWorker<Factory, J> {
     /// Runs `process` for every job until the handle is dropped, advertising the worker as busy
     /// while a job runs. Returns the total time spent waiting for jobs.
-    fn process_jobs(&self, worker_id: usize, mut process: impl FnMut(J)) -> Duration {
+    fn process_jobs(&self, worker_id: usize, mut process: impl FnMut(J, Instant)) -> Duration {
         // Count this worker as available only after successful initialization.
         self.availability.mark_idle(worker_id);
 
@@ -513,6 +565,7 @@ impl<Factory, J> ProofWorker<Factory, J> {
         let mut idle_start = Instant::now();
 
         while let Ok(job) = self.work_rx.recv() {
+            let dequeued = Instant::now();
             total_idle_time += idle_start.elapsed();
             self.availability.mark_busy(worker_id);
 
@@ -529,7 +582,9 @@ impl<Factory, J> ProofWorker<Factory, J> {
                 std::thread::sleep(jitter);
             }
 
-            process(job);
+            let active = ActiveJob::new(&self.availability.active_jobs);
+            process(job, dequeued);
+            drop(active);
 
             self.availability.mark_idle(worker_id);
             idle_start = Instant::now();
@@ -559,7 +614,12 @@ where
     fn run(&self, worker_id: usize) -> ProviderResult<()> {
         let mut initialization =
             self.task_ctx.diagnostics.as_ref().map(|d| d.proof_worker_initializing("storage"));
-        let provider = self.task_ctx.factory.database_provider_ro()?;
+        let provider_start = Instant::now();
+        let provider = self.task_ctx.factory.database_provider_ro();
+        #[cfg(feature = "metrics")]
+        reth_metrics::metrics::histogram!("trie.diagnostics.proof_worker_provider_seconds", "origin" => self.task_ctx.diagnostics.as_ref().map_or("unknown", |d| d.context()), "kind" => "storage", "outcome" => if provider.is_ok() { "success" } else { "error" }).record(provider_start.elapsed().as_secs_f64());
+        let _ = provider_start;
+        let provider = provider?;
 
         trace!(target: "trie::proof_task", worker_id, "Storage worker started");
 
@@ -571,13 +631,22 @@ where
         }
         drop(initialization);
         let mut storage_proofs_processed = 0u64;
-        let total_idle_time = self.process_jobs(worker_id, |job| {
+        let total_idle_time = self.process_jobs(worker_id, |job, dequeued| {
             let _progress = self
                 .task_ctx
                 .diagnostics
                 .as_ref()
                 .map(|d| d.worker(Progress::StorageJobsStarted, Progress::StorageJobsExited));
             let StorageProofJob { hashed_address, targets, dispatched_at } = job;
+            let origin = self.task_ctx.diagnostics.as_ref().map_or("unknown", |d| d.context());
+            let _ = dequeued;
+            #[cfg(feature = "metrics")]
+            {
+                reth_metrics::metrics::histogram!("trie.diagnostics.proof_job_queue_seconds", "origin" => origin, "kind" => "storage").record(dequeued.duration_since(dispatched_at).as_secs_f64());
+                reth_metrics::metrics::histogram!("trie.diagnostics.proof_job_queue_depth", "origin" => origin, "kind" => "storage").record(self.work_rx.len() as f64);
+                reth_metrics::metrics::histogram!("trie.diagnostics.proof_job_active_workers", "origin" => origin, "kind" => "storage").record(self.availability.active_jobs.load(Ordering::Relaxed) as f64);
+                reth_metrics::metrics::histogram!("trie.diagnostics.proof_job_targets", "origin" => origin, "kind" => "storage").record(targets.len() as f64);
+            }
             let _span = debug_span!(
                 target: "trie::proof_task",
                 "Storage proof calculation",
@@ -585,28 +654,26 @@ where
                 targets = targets.len(),
             )
             .entered();
+            let targets = MultiProofTargetsV2 { account_targets: Vec::new(), storage_targets: std::iter::once((hashed_address, targets)).collect() };
             let proof_start = Instant::now();
-
-            let proof = provider.multiproof_v2(
-                MultiProofTargetsV2 {
-                    account_targets: Vec::new(),
-                    storage_targets: std::iter::once((hashed_address, targets)).collect(),
-                },
-                true,
-            );
+            let proof = provider.multiproof_v2(targets, true);
+            let proof_completed = Instant::now();
+            let proof_elapsed = proof_completed.duration_since(proof_start);
 
             trace!(
                 target: "trie::proof_task",
                 worker_id,
                 ?hashed_address,
-                proof_time_us = proof_start.elapsed().as_micros(),
+                proof_time_us = proof_elapsed.as_micros(),
                 dispatch_to_completion_us = dispatched_at.elapsed().as_micros(),
                 "Storage proof completed"
             );
+            #[cfg(feature = "metrics")]
+            reth_metrics::metrics::histogram!("trie.diagnostics.proof_job_call_seconds", "origin" => origin, "kind" => "storage", "call" => if storage_proofs_processed == 0 { "first" } else { "subsequent" }, "outcome" => if proof.is_ok() { "success" } else { "error" }).record(proof_elapsed.as_secs_f64());
 
             let result =
                 proof.map_err(|source| ProofJobError::Storage { hashed_address, source }.into());
-            self.send_result(worker_id, result);
+            self.send_result(worker_id, ProofWorkerResult::new(result, origin, "storage", proof_completed));
             storage_proofs_processed += 1;
         });
 
@@ -633,7 +700,12 @@ where
     fn run(&self, worker_id: usize) -> ProviderResult<()> {
         let mut initialization =
             self.task_ctx.diagnostics.as_ref().map(|d| d.proof_worker_initializing("account"));
-        let provider = self.task_ctx.factory.database_provider_ro()?;
+        let provider_start = Instant::now();
+        let provider = self.task_ctx.factory.database_provider_ro();
+        #[cfg(feature = "metrics")]
+        reth_metrics::metrics::histogram!("trie.diagnostics.proof_worker_provider_seconds", "origin" => self.task_ctx.diagnostics.as_ref().map_or("unknown", |d| d.context()), "kind" => "account", "outcome" => if provider.is_ok() { "success" } else { "error" }).record(provider_start.elapsed().as_secs_f64());
+        let _ = provider_start;
+        let provider = provider?;
 
         trace!(target: "trie::proof_task", worker_id, "Account worker started");
 
@@ -645,39 +717,46 @@ where
         }
         drop(initialization);
         let mut account_proofs_processed = 0u64;
-        let total_idle_time = self.process_jobs(worker_id, |job| {
+        let total_idle_time = self.process_jobs(worker_id, |job, dequeued| {
             let _progress = self
                 .task_ctx
                 .diagnostics
                 .as_ref()
                 .map(|d| d.worker(Progress::AccountJobsStarted, Progress::AccountJobsExited));
             let AccountProofJob { targets, dispatched_at } = job;
+            let origin = self.task_ctx.diagnostics.as_ref().map_or("unknown", |d| d.context());
+            let _ = dequeued;
+            #[cfg(feature = "metrics")]
+            {
+                reth_metrics::metrics::histogram!("trie.diagnostics.proof_job_queue_seconds", "origin" => origin, "kind" => "account").record(dequeued.duration_since(dispatched_at).as_secs_f64());
+                reth_metrics::metrics::histogram!("trie.diagnostics.proof_job_queue_depth", "origin" => origin, "kind" => "account").record(self.work_rx.len() as f64);
+                reth_metrics::metrics::histogram!("trie.diagnostics.proof_job_active_workers", "origin" => origin, "kind" => "account").record(self.availability.active_jobs.load(Ordering::Relaxed) as f64);
+                reth_metrics::metrics::histogram!("trie.diagnostics.proof_job_targets", "origin" => origin, "kind" => "account").record(targets.len() as f64);
+            }
             let _span = debug_span!(
                 target: "trie::proof_task",
                 "Account proof calculation",
                 targets = targets.len(),
             )
             .entered();
+            let targets = MultiProofTargetsV2 { account_targets: targets, storage_targets: Default::default() };
             let proof_start = Instant::now();
-
-            let proof = provider.multiproof_v2(
-                MultiProofTargetsV2 {
-                    account_targets: targets,
-                    storage_targets: Default::default(),
-                },
-                true,
-            );
+            let proof = provider.multiproof_v2(targets, true);
+            let proof_completed = Instant::now();
+            let proof_elapsed = proof_completed.duration_since(proof_start);
 
             trace!(
                 target: "trie::proof_task",
                 worker_id,
-                proof_time_us = proof_start.elapsed().as_micros(),
+                proof_time_us = proof_elapsed.as_micros(),
                 dispatch_to_completion_us = dispatched_at.elapsed().as_micros(),
                 "Account proof completed"
             );
+            #[cfg(feature = "metrics")]
+            reth_metrics::metrics::histogram!("trie.diagnostics.proof_job_call_seconds", "origin" => origin, "kind" => "account", "call" => if account_proofs_processed == 0 { "first" } else { "subsequent" }, "outcome" => if proof.is_ok() { "success" } else { "error" }).record(proof_elapsed.as_secs_f64());
 
             let result = proof.map_err(|source| ProofJobError::Account { source }.into());
-            self.send_result(worker_id, result);
+            self.send_result(worker_id, ProofWorkerResult::new(result, origin, "account", proof_completed));
             account_proofs_processed += 1;
         });
 
@@ -753,6 +832,34 @@ mod tests {
 
     fn test_ctx<Factory>(factory: Factory) -> ProofTaskCtx<Factory> {
         ProofTaskCtx::new(factory)
+    }
+
+    #[test]
+    fn timed_result_preserves_success_and_error_without_retaining_provider() {
+        let ready = Instant::now();
+        let result = ProofWorkerResult::new(
+            Ok(DecodedMultiProofV2::default()),
+            "miner-pipeline2",
+            "storage",
+            ready,
+        );
+        assert_eq!(result.timing.as_ref().unwrap().origin, "miner-pipeline2");
+        assert!(result.into_result().unwrap().account_proofs.is_empty());
+        let error = StateRootTaskError::Other(Box::new(std::io::Error::other("proof-test-error")));
+        let result = ProofWorkerResult::startup_error(error);
+        assert!(result.timing.is_none());
+        assert!(result.into_result().unwrap_err().to_string().contains("proof-test-error"));
+    }
+
+    #[test]
+    fn active_job_accounting_unwinds_without_leaking_busy_workers() {
+        let count = AtomicUsize::new(0);
+        let _ = std::panic::catch_unwind(|| {
+            let _active = ActiveJob::new(&count);
+            assert_eq!(count.load(Ordering::Relaxed), 1);
+            panic!("test worker unwind");
+        });
+        assert_eq!(count.load(Ordering::Relaxed), 0);
     }
 
     /// Ensures `ProofWorkerHandle::new` spawns workers correctly.
@@ -848,6 +955,7 @@ mod tests {
                 .results()
                 .recv_timeout(Duration::from_secs(30))
                 .unwrap()
+                .into_result()
                 .unwrap();
             assert!(storage_proof.account_proofs.is_empty());
             assert!(storage_proof.storage_proofs.contains_key(&address));
@@ -861,6 +969,7 @@ mod tests {
                 .results()
                 .recv_timeout(Duration::from_secs(30))
                 .unwrap()
+                .into_result()
                 .unwrap();
             assert!(account_proof.storage_proofs.is_empty());
 

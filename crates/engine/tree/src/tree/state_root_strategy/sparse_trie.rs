@@ -757,7 +757,7 @@ where
         result: ProofWorkerResult,
     ) -> Result<DecodedMultiProofV2, StateRootTaskError> {
         self.proof_worker_handle.diagnostics().increment(Progress::ProofBatchesReceived);
-        let proofs = result?;
+        let proofs = result.into_result()?;
         debug_assert!(
             self.in_flight_proof_jobs > 0,
             "received proof result without an in-flight proof job"
@@ -2561,7 +2561,7 @@ mod tests {
         assert!(task.ensure_not_stalled(false).is_ok());
 
         let result = Ok(DecodedMultiProofV2::default());
-        task.complete_proof_job(result).expect("proof result should be ok");
+        task.complete_proof_job(result.into()).expect("proof result should be ok");
 
         assert_eq!(task.in_flight_proof_jobs, 0);
         let error = task.ensure_not_stalled(false).expect_err("task should be stalled");

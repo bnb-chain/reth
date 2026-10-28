@@ -59,6 +59,7 @@ pub enum Progress {
 pub struct RootTaskDiagnostics {
     id: u64,
     origin: &'static str,
+    context: &'static str,
     block_number: u64,
     parent_hash: alloy_primitives::B256,
     created: Instant,
@@ -133,7 +134,11 @@ impl RootTaskDiagnostics {
         static NEXT_ID: AtomicU64 = AtomicU64::new(1);
         Arc::new(Self {
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
-            origin,
+            origin: match origin {
+                "miner-pipeline1" | "miner-pipeline2" => "miner",
+                other => other,
+            },
+            context: origin,
             block_number: 0,
             parent_hash: alloy_primitives::B256::ZERO,
             created: Instant::now(),
@@ -166,6 +171,11 @@ impl RootTaskDiagnostics {
     /// Returns the fixed origin label.
     pub const fn origin(&self) -> &'static str {
         self.origin
+    }
+
+    /// Fixed caller context for new per-proof metrics; legacy origin aggregation is unchanged.
+    pub const fn context(&self) -> &'static str {
+        self.context
     }
 
     /// Submit identity to the actual named scheduler. IDs never become metric labels.
@@ -410,6 +420,13 @@ mod tests {
         d.finish_drained();
         let mut finalize = d.phase("final_root");
         finalize.complete();
+    }
+
+    #[test]
+    fn private_depth_preserves_legacy_miner_origin() {
+        let d = RootTaskDiagnostics::new("miner-pipeline2");
+        assert_eq!(d.origin(), "miner");
+        assert_eq!(d.context(), "miner-pipeline2");
     }
 
     #[test]
