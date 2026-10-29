@@ -5,6 +5,7 @@ use crate::{
     session::{active::BroadcastItemCounter, conn::EthRlpxConnection, Direction, SessionId},
     PendingSessionHandshakeError,
 };
+use alloy_primitives::U256;
 use reth_ecies::ECIESError;
 use reth_eth_wire::{
     errors::EthStreamError, Capabilities, DisconnectReason, EthVersion, NetworkPrimitives,
@@ -81,6 +82,8 @@ pub struct ActiveSessionHandle<N: NetworkPrimitives> {
     pub(crate) peer_listen_port: Option<u16>,
     /// The Status message the peer sent for the `eth` handshake
     pub(crate) status: Arc<UnifiedStatus>,
+    /// Most recently announced total difficulty, initially taken from the handshake.
+    pub(crate) current_td: Option<U256>,
 }
 
 // === impl ActiveSessionHandle ===
@@ -171,7 +174,7 @@ impl<N: NetworkPrimitives> ActiveSessionHandle<N> {
             client_version: self.client_version.clone(),
             eth_version: self.version,
             best_number: self.status.latest_block,
-            best_td: self.status.total_difficulty,
+            best_td: self.current_td,
             status: self.status.clone(),
             session_established: self.established,
             kind,

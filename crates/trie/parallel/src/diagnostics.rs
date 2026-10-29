@@ -59,6 +59,7 @@ pub enum Progress {
 pub struct RootTaskDiagnostics {
     id: u64,
     origin: &'static str,
+    context: &'static str,
     block_number: u64,
     parent_hash: alloy_primitives::B256,
     created: Instant,
@@ -67,6 +68,8 @@ pub struct RootTaskDiagnostics {
     stages: [AtomicU64; 19],
     sampled: AtomicBool,
     result: AtomicU64,
+    // submission/start ages for storage and account sessions, microseconds plus one.
+    proof_sessions: [AtomicU64; 4],
 }
 
 /// Distinguishes an actual root result from cancellation or another failure.
@@ -131,7 +134,11 @@ impl RootTaskDiagnostics {
         static NEXT_ID: AtomicU64 = AtomicU64::new(1);
         Arc::new(Self {
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
-            origin,
+            origin: match origin {
+                "miner-pipeline1" | "miner-pipeline2" => "miner",
+                other => other,
+            },
+            context: origin,
             block_number: 0,
             parent_hash: alloy_primitives::B256::ZERO,
             created: Instant::now(),
@@ -139,6 +146,7 @@ impl RootTaskDiagnostics {
             stages: std::array::from_fn(|_| AtomicU64::new(0)),
             sampled: AtomicBool::new(false),
             result: AtomicU64::new(0),
+            proof_sessions: std::array::from_fn(|_| AtomicU64::new(0)),
         })
     }
 
@@ -165,6 +173,58 @@ impl RootTaskDiagnostics {
         self.origin
     }
 
+    /// Fixed caller context for new per-proof metrics; legacy origin aggregation is unchanged.
+    pub const fn context(&self) -> &'static str {
+        self.context
+    }
+
+    /// Submit identity to the actual named scheduler. IDs never become metric labels.
+    pub fn proof_session_submitted(&self, kind: &'static str) -> reth_tasks::NamedTaskContext {
+        let index = if kind == "storage" { 0 } else { 2 };
+        self.proof_sessions[index].store(self.elapsed_us(), Ordering::Relaxed);
+        reth_tasks::NamedTaskContext {
+            id: self.id,
+            origin: self.origin,
+            block_number: self.block_number,
+        }
+    }
+
+    /// Record the actual named closure start, before broadcasting into the proof worker pool.
+    pub fn proof_session_started(&self, kind: &'static str) {
+        let index = if kind == "storage" { 1 } else { 3 };
+        self.proof_sessions[index].store(self.elapsed_us(), Ordering::Relaxed);
+    }
+
+    /// Starts at worker.run entry: separate session/broadcast dispatch from provider/cursor init.
+    pub fn proof_worker_initializing(&self, kind: &'static str) -> DiagnosticPhase {
+        let index = if kind == "storage" { 1 } else { 3 };
+        let start = self.proof_sessions[index].load(Ordering::Relaxed);
+        #[cfg(feature = "metrics")]
+        if start != 0 {
+            metrics::histogram!("trie.diagnostics.proof_worker_dispatch_seconds", "origin" => self.origin, "kind" => kind)
+                .record(self.elapsed_us().saturating_sub(start) as f64 / 1_000_000.0);
+        }
+        let _ = start;
+        self.phase(if kind == "storage" { "storage_init" } else { "account_init" })
+    }
+
+    /// Foreground-independent phase timer, recording early error/unwind as well as completion.
+    pub fn phase(&self, phase: &'static str) -> DiagnosticPhase {
+        DiagnosticPhase { origin: self.origin, phase, started: Instant::now(), completed: false }
+    }
+
+    /// End marker has been consumed and all outstanding proof/trie work has drained.
+    /// This interval excludes the hashing/root-input queue before the marker was consumed.
+    pub fn finish_drained(&self) {
+        let start = self.progress[Progress::FinishReceivedUs as usize].load(Ordering::Relaxed);
+        #[cfg(feature = "metrics")]
+        if start != 0 {
+            metrics::histogram!("trie.diagnostics.finish_drain_seconds", "origin" => self.origin)
+                .record(self.elapsed_us().saturating_sub(start) as f64 / 1_000_000.0);
+        }
+        let _ = start;
+    }
+
     /// Records a counter without formatting logs or allocating.
     pub fn increment(&self, progress: Progress) {
         self.progress[progress as usize].fetch_add(1, Ordering::Relaxed);
@@ -184,7 +244,30 @@ impl RootTaskDiagnostics {
 
     /// Records an end-marker timestamp. Zero means not observed.
     pub fn marker(&self, progress: Progress) {
-        self.progress[progress as usize].store(self.elapsed_us(), Ordering::Relaxed);
+        let now = self.elapsed_us();
+        self.progress[progress as usize].store(now, Ordering::Relaxed);
+        #[cfg(feature = "metrics")]
+        if matches!(progress, Progress::FinishHashedUs | Progress::FinishReceivedUs) {
+            let (previous, phase) = if matches!(progress, Progress::FinishHashedUs) {
+                (Progress::FinishSentUs, "hash_input")
+            } else {
+                (Progress::FinishHashedUs, "root_input")
+            };
+            let start = self.progress[previous as usize].load(Ordering::Relaxed);
+            if start != 0 {
+                metrics::histogram!("trie.diagnostics.finish_marker_seconds", "origin" => self.origin, "phase" => phase)
+                    .record(now.saturating_sub(start) as f64 / 1_000_000.0);
+            }
+            if matches!(progress, Progress::FinishReceivedUs) {
+                let pending = self.progress[Progress::ProofBatchesSent as usize]
+                    .load(Ordering::Relaxed)
+                    .saturating_sub(
+                        self.progress[Progress::ProofBatchesReceived as usize]
+                            .load(Ordering::Relaxed),
+                    );
+                metrics::histogram!("trie.diagnostics.proofs_pending_at_finish", "origin" => self.origin).record(pending as f64);
+            }
+        }
     }
 
     /// Records task return, including its outcome, before publishing the result.
@@ -192,6 +275,14 @@ impl RootTaskDiagnostics {
         self.result.store(result as u64, Ordering::Relaxed);
         #[cfg(feature = "metrics")]
         metrics::counter!("trie.diagnostics.root_results_total", "origin" => self.origin, "result" => self.result_label()).increment(1);
+        #[cfg(feature = "metrics")]
+        {
+            let start = self.progress[Progress::FinishSentUs as usize].load(Ordering::Relaxed);
+            if start != 0 {
+                metrics::histogram!("trie.diagnostics.post_finish_seconds", "origin" => self.origin, "result" => self.result_label())
+                    .record(self.elapsed_us().saturating_sub(start) as f64 / 1_000_000.0);
+            }
+        }
         self.mark(Stage::RootComputed);
     }
 
@@ -304,6 +395,40 @@ impl Drop for StageGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn proof_session_submission_and_start_are_distinct_clocks() {
+        let d = RootTaskDiagnostics::for_block("miner", 99, alloy_primitives::B256::ZERO);
+        let context = d.proof_session_submitted("storage");
+        assert_eq!(context.id, d.id());
+        assert_eq!(context.block_number, 99);
+        assert_ne!(d.proof_sessions[0].load(Ordering::Relaxed), 0);
+        assert_eq!(d.proof_sessions[1].load(Ordering::Relaxed), 0);
+        d.proof_session_started("storage");
+        let mut init = d.proof_worker_initializing("storage");
+        init.complete();
+        drop(init);
+        assert!(
+            d.proof_sessions[1].load(Ordering::Relaxed) >=
+                d.proof_sessions[0].load(Ordering::Relaxed)
+        );
+        assert_eq!(d.proof_sessions[2].load(Ordering::Relaxed), 0);
+        assert_eq!(d.proof_sessions[3].load(Ordering::Relaxed), 0);
+        d.marker(Progress::FinishSentUs);
+        d.marker(Progress::FinishHashedUs);
+        d.marker(Progress::FinishReceivedUs);
+        d.finish_drained();
+        let mut finalize = d.phase("final_root");
+        finalize.complete();
+    }
+
+    #[test]
+    fn private_depth_preserves_legacy_miner_origin() {
+        let d = RootTaskDiagnostics::new("miner-pipeline2");
+        assert_eq!(d.origin(), "miner");
+        assert_eq!(d.context(), "miner-pipeline2");
+    }
+
     #[test]
     fn resumed_task_log_bursts_are_bounded() {
         let budget = AtomicU64::new(0);
@@ -420,4 +545,32 @@ fn allow_log(now: u64, budget: &AtomicU64) -> bool {
             (count < 32).then_some(window | (count + 1))
         })
         .is_ok()
+}
+
+/// Wall-clock phase scoped to one root task. Dropping it before complete records an error
+/// (including cancellation/unwind); it does not prove that the phase itself caused the error.
+#[derive(Debug)]
+pub struct DiagnosticPhase {
+    origin: &'static str,
+    phase: &'static str,
+    started: Instant,
+    completed: bool,
+}
+
+impl DiagnosticPhase {
+    /// Mark that the phase returned normally.
+    pub const fn complete(&mut self) {
+        self.completed = true;
+    }
+}
+
+impl Drop for DiagnosticPhase {
+    fn drop(&mut self) {
+        let elapsed = self.started.elapsed();
+        #[cfg(feature = "metrics")]
+        metrics::histogram!("trie.diagnostics.phase_seconds", "origin" => self.origin,
+            "phase" => self.phase, "outcome" => if self.completed { "completed" } else { "interrupted" })
+            .record(elapsed.as_secs_f64());
+        let _ = (elapsed, self.origin, self.phase, self.completed);
+    }
 }

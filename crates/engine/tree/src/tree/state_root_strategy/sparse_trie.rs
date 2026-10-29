@@ -482,6 +482,8 @@ where
 
         let start = Instant::now();
         self.return_storage_tries();
+        self.proof_worker_handle.diagnostics().finish_drained();
+        let mut finalization = self.proof_worker_handle.diagnostics().phase("final_root");
         let (state_root, trie_updates) = match self.trie.root_with_updates(self.new_epoch) {
             Ok(result) => result,
             Err(err)
@@ -497,6 +499,9 @@ where
             }
             Err(err) => return Err(StateRootTaskError::Other(err.into())),
         };
+
+        finalization.complete();
+        drop(finalization);
 
         let end = Instant::now();
         self.metrics.sparse_trie_final_update_duration_histogram.record(end.duration_since(start));
@@ -752,7 +757,7 @@ where
         result: ProofWorkerResult,
     ) -> Result<DecodedMultiProofV2, StateRootTaskError> {
         self.proof_worker_handle.diagnostics().increment(Progress::ProofBatchesReceived);
-        let proofs = result?;
+        let proofs = result.into_result()?;
         debug_assert!(
             self.in_flight_proof_jobs > 0,
             "received proof result without an in-flight proof job"
@@ -1782,7 +1787,7 @@ mod tests {
         let mut hashed_state = HashedPostState::default();
         hashed_state.accounts.insert(
             address,
-            Some(Account { balance: U256::from(100), nonce: 1, bytecode_hash: None }),
+            Some(Account { balance: U256::from(100), nonce: 1, ..Default::default() }),
         );
         let mut storage = reth_trie::HashedStorage::default();
         storage.storage.insert(slot, value);
@@ -1807,9 +1812,7 @@ mod tests {
             panic!("expected HashedState message");
         };
 
-        let account = received.accounts.get(&address).unwrap().unwrap();
-        assert_eq!(account.balance, expected_state.accounts[&address].unwrap().balance);
-        assert_eq!(account.nonce, expected_state.accounts[&address].unwrap().nonce);
+        assert_eq!(received.accounts.get(&address).unwrap(), &expected_state.accounts[&address]);
 
         let storage = received.storages.get(&address).unwrap();
         assert_eq!(*storage.storage.get(&slot).unwrap(), value);
@@ -2558,7 +2561,7 @@ mod tests {
         assert!(task.ensure_not_stalled(false).is_ok());
 
         let result = Ok(DecodedMultiProofV2::default());
-        task.complete_proof_job(result).expect("proof result should be ok");
+        task.complete_proof_job(result.into()).expect("proof result should be ok");
 
         assert_eq!(task.in_flight_proof_jobs, 0);
         let error = task.ensure_not_stalled(false).expect_err("task should be stalled");

@@ -14,9 +14,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   prepare-reth-stable:
-    uses: ./.github/workflows/prepare-reth.yml
+    uses: ./.github/workflows/prepare-reth.yml # zizmor: ignore[self-repository] -- actionlint 1.7.12 requires the ./ syntax.
     with:
       image_tag: ghcr.io/paradigmxyz/reth:latest
       binary_name: reth
@@ -24,7 +27,7 @@ jobs:
       artifact_name: "reth-stable"
 
   prepare-reth-edge:
-    uses: ./.github/workflows/prepare-reth.yml
+    uses: ./.github/workflows/prepare-reth.yml # zizmor: ignore[self-repository] -- actionlint 1.7.12 requires the ./ syntax.
     with:
       image_tag: ghcr.io/paradigmxyz/reth:latest
       binary_name: reth
@@ -36,25 +39,28 @@ jobs:
     timeout-minutes: 45
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - name: Checkout hive tests
-        uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
+          persist-credentials: false
+      - name: Checkout hive tests
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
           repository: ethereum/hive
           path: hivetests
 
       - name: Get hive commit hash
         id: hive-commit
-        run: echo "hash=$(cd hivetests && git rev-parse HEAD)" >> $GITHUB_OUTPUT
+        run: echo "hash=$(cd hivetests && git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: "^1.13.1"
       - run: go version
 
       - name: Restore hive assets cache
         id: cache-hive
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: ./hive_assets
           key: hive-assets-${{ steps.hive-commit.outputs.hash }}-${{ hashFiles('.github/assets/hive/build_simulators.sh') }}
@@ -77,7 +83,7 @@ jobs:
           chmod +x hive
 
       - name: Upload hive assets
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: hive_assets
           path: ./hive_assets
@@ -194,18 +200,19 @@ jobs:
     permissions:
       issues: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Download hive assets
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: hive_assets
           path: /tmp
 
       - name: Download reth image
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: reth-${{ matrix.storage }}
           path: /tmp
@@ -219,8 +226,9 @@ jobs:
           chmod +x /usr/local/bin/hive
 
       - name: Checkout hive tests
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
+          persist-credentials: false
           repository: ethereum/hive
           ref: master
           path: hivetests
@@ -243,7 +251,7 @@ jobs:
 
       - name: Parse hive output
         run: |
-          find hivetests/workspace/logs -type f -name "*.json" ! -name "hive.json" | xargs -I {} python .github/assets/hive/parse.py {} --exclusion .github/assets/hive/expected_failures.yaml --ignored .github/assets/hive/ignored_tests.yaml
+          find hivetests/workspace/logs -type f -name "*.json" ! -name "hive.json" -exec python .github/assets/hive/parse.py {} --exclusion .github/assets/hive/expected_failures.yaml --ignored .github/assets/hive/ignored_tests.yaml \;
 
       - name: Print simulator output
         if: ${{ failure() }}
@@ -259,7 +267,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Slack Webhook Action
-        uses: rtCamp/action-slack-notify@v2
+        uses: rtCamp/action-slack-notify@33ca3be66c6f378fe1610fd1d5258632dbed5e58 # v2.4.0
         env:
           SLACK_COLOR: ${{ job.status }}
           SLACK_MESSAGE: "Failed run: https://github.com/paradigmxyz/reth/actions/runs/${{ github.run_id }}"

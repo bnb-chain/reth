@@ -57,7 +57,7 @@ mod sparse_trie;
 
 use self::sparse_trie::{SparseTrieCacheTask, SparseTrieTaskMetrics};
 use crate::tree::{metrics::BlockValidationMetrics, EngineApiTreeState, ExecutionEnv, TreeConfig};
-use alloy_primitives::B256;
+use alloy_primitives::{map::B256Map, B256};
 use crossbeam_channel::Receiver as CrossbeamReceiver;
 use reth_chain_state::{ExecutedBlock, PreservedSparseTrie, SparseTrieWithStorageRoots};
 use reth_errors::ProviderResult;
@@ -68,7 +68,8 @@ use reth_primitives_traits::{
 use reth_provider::{
     BlockExecutionOutput, BlockNumReader, ChangeSetReader, DatabaseProviderFactory,
     DatabaseProviderROFactory, HashedPostStateProvider, ProviderError, PruneCheckpointReader,
-    StageCheckpointReader, StateRootProvider, StorageChangeSetReader, StorageSettingsCache,
+    StageCheckpointReader, StateProofProvider, StateRootProvider, StorageChangeSetReader,
+    StorageSettingsCache,
 };
 use reth_storage_overlay::{OverlayManager, OverlayStateProviderFactory};
 use reth_tasks::utils::increase_thread_priority;
@@ -547,10 +548,33 @@ impl DefaultStateRootStrategy {
             + StorageSettingsCache
             + 'static,
     {
+        self.spawn_state_root_with_factory(
+            executor,
+            multiproof_provider_factory,
+            options,
+            |factory, anchor, roots| {
+                factory.with_skip_overlay_for_reused_sparse_trie(anchor, roots)
+            },
+        )
+    }
+
+    /// Runs the shared pipeline with caller-owned proof providers and a sparse-trie reuse adapter.
+    fn spawn_state_root_with_factory<N, F>(
+        &self,
+        executor: &reth_tasks::Runtime,
+        multiproof_provider_factory: F,
+        options: StateRootTaskOptions<'_, N>,
+        configure_reused_factory: impl FnOnce(F, B256, B256Map<B256>) -> F + Send + 'static,
+    ) -> (StateRootHandle, mpsc::Receiver<PendingSparseTrie>)
+    where
+        N: NodePrimitives,
+        F: DatabaseProviderROFactory<Provider: StateProofProvider> + Clone + Send + Sync + 'static,
+    {
         let StateRootTaskOptions {
             origin,
             parent_header,
             preserved_sparse_trie,
+            parent_cache_wait,
             transaction_count,
             gas_used,
             config,
@@ -586,6 +610,7 @@ impl DefaultStateRootStrategy {
         self.spawn_sparse_trie_task(
             executor,
             multiproof_provider_factory,
+            configure_reused_factory,
             state_root_tx,
             hashed_state_tx,
             from_multi_proof,
@@ -594,6 +619,7 @@ impl DefaultStateRootStrategy {
                 diagnostics: diagnostics.clone(),
                 parent_header,
                 preserved_sparse_trie,
+                parent_cache_wait,
                 pending_trie_tx,
                 chunk_size: config.multiproof_chunk_size(),
                 worker_counts,
@@ -625,7 +651,8 @@ impl DefaultStateRootStrategy {
     fn spawn_sparse_trie_task<N, F>(
         &self,
         executor: &reth_tasks::Runtime,
-        multiproof_provider_factory: OverlayStateProviderFactory<F, N>,
+        multiproof_provider_factory: F,
+        configure_reused_factory: impl FnOnce(F, B256, B256Map<B256>) -> F + Send + 'static,
         state_root_tx: mpsc::Sender<Result<StateRootComputeOutcome, StateRootTaskError>>,
         hashed_state_tx: mpsc::Sender<Arc<HashedPostState>>,
         from_multi_proof: CrossbeamReceiver<StateRootMessage>,
@@ -633,19 +660,13 @@ impl DefaultStateRootStrategy {
         options: SparseTrieTaskOptions<N>,
     ) where
         N: NodePrimitives,
-        F: DatabaseProviderFactory + Clone + 'static,
-        F::Provider: BlockNumReader
-            + PruneCheckpointReader
-            + StageCheckpointReader
-            + ChangeSetReader
-            + StorageChangeSetReader
-            + StorageSettingsCache
-            + 'static,
+        F: DatabaseProviderROFactory<Provider: StateProofProvider> + Clone + Send + Sync + 'static,
     {
         let SparseTrieTaskOptions {
             diagnostics,
             parent_header,
             preserved_sparse_trie,
+            parent_cache_wait,
             pending_trie_tx,
             chunk_size,
             worker_counts,
@@ -692,6 +713,34 @@ impl DefaultStateRootStrategy {
             let mut sparse_trie_anchor_hash = parent_hash;
             let mut reused_preserved_sparse_trie = false;
             let mut known_storage_roots = Default::default();
+            let preserved_sparse_trie = if let Some(timeout) = parent_cache_wait {
+                let start = Instant::now();
+                let mut pending = preserved_sparse_trie;
+                loop {
+                    let Some(trie) = pending.take() else { break None };
+                    match trie.try_into_ready() {
+                        Ok(trie) => {
+                            reth_metrics::metrics::histogram!("trie.diagnostics.parent_handoff_wait_seconds").record(start.elapsed().as_secs_f64());
+                            break Some(trie)
+                        }
+                        Err(trie) => pending = Some(trie),
+                    }
+                    if !matches!(cancel_rx.try_recv(), Err(crossbeam_channel::TryRecvError::Empty)) {
+                        executor.spawn_drop(pending);
+                        diagnostics.returned(RootTaskResult::Cancelled);
+                        let _ = state_root_tx.send(Err(StateRootTaskError::Canceled));
+                        return
+                    }
+                    if start.elapsed() >= timeout {
+                        reth_metrics::metrics::counter!("trie.diagnostics.parent_handoff_timeout_total").increment(1);
+                        executor.spawn_drop(pending);
+                        break None
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            } else {
+                preserved_sparse_trie
+            };
             let sparse_state_trie = match preserved_sparse_trie {
                 Some(preserved) => {
                     let start = Instant::now();
@@ -727,7 +776,8 @@ impl DefaultStateRootStrategy {
                 pending_sparse_trie_prune_blocks.as_deref(),
             );
             let factory = if reused_preserved_sparse_trie {
-                multiproof_provider_factory.with_skip_overlay_for_reused_sparse_trie(
+                configure_reused_factory(
+                    multiproof_provider_factory,
                     sparse_trie_anchor_hash,
                     known_storage_roots,
                 )
@@ -839,14 +889,15 @@ impl DefaultStateRootStrategy {
 /// building EVM's DB before execution, then read the root via [`StateRootHandle::state_root`] once
 /// the hook has been dropped.
 ///
-/// `multiproof_provider_factory` should be an [`OverlayStateProviderFactory`] anchored at the
-/// parent and built from the same `overlay_manager` so the proof workers can resolve a
-/// not-yet-persisted parent. `preserved_sparse_trie` is `None`: an external builder spawns a fresh
+/// `multiproof_provider_factory` must provide proofs at the parent, including any unpersisted
+/// state. It may be an [`OverlayStateProviderFactory`] built from the same `overlay_manager` or
+/// a caller-owned factory that caches immutable parent overlays. `preserved_sparse_trie` is
+/// `None`: an external builder spawns a fresh
 /// sparse trie per call rather than reusing the engine's preserved one.
 pub fn spawn_payload_builder_state_root<N, F>(
     executor: &reth_tasks::Runtime,
     _overlay_manager: &OverlayManager<N>,
-    multiproof_provider_factory: OverlayStateProviderFactory<F, N>,
+    multiproof_provider_factory: F,
     parent_header: SealedHeader<N::BlockHeader>,
     transaction_count: Option<usize>,
     config: &TreeConfig,
@@ -854,30 +905,175 @@ pub fn spawn_payload_builder_state_root<N, F>(
 ) -> StateRootHandle
 where
     N: NodePrimitives,
-    F: DatabaseProviderFactory + Clone + 'static,
-    F::Provider: BlockNumReader
-        + PruneCheckpointReader
-        + StageCheckpointReader
-        + ChangeSetReader
-        + StorageChangeSetReader
-        + StorageSettingsCache
-        + 'static,
+    F: DatabaseProviderROFactory<Provider: StateProofProvider> + Clone + Send + Sync + 'static,
 {
     DefaultStateRootStrategy::default()
-        .spawn_state_root(
+        .spawn_state_root_with_factory(
             executor,
             multiproof_provider_factory,
             StateRootTaskOptions {
                 origin: "miner",
                 parent_header,
                 preserved_sparse_trie: None,
+                parent_cache_wait: None,
                 transaction_count,
                 gas_used: None,
                 config,
                 pending_sparse_trie_prune_blocks,
             },
+            // External producers always start a fresh trie; their provider needs no reuse adapter.
+            |factory, _, _| factory,
         )
         .0
+}
+
+/// Spawns an external builder root and retains its completed tree for a later exact-parent build.
+///
+/// Reuse is opportunistic: a pending/mismatched tree is retired on a drop worker and this
+/// attempt starts fresh. The factory adapter runs only after a matching tree is reused;
+/// it must supply proofs consistent with that tree's anchor and revealed storage roots.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "external roots supply a parent view and reuse adapter"
+)]
+pub fn spawn_payload_builder_state_root_with_cache<N, F>(
+    executor: &reth_tasks::Runtime,
+    multiproof_provider_factory: F,
+    parent_header: SealedHeader<N::BlockHeader>,
+    transaction_count: Option<usize>,
+    config: &TreeConfig,
+    pending_sparse_trie_prune_blocks: Option<Vec<ExecutedBlock<N>>>,
+    preserved: Option<PreservedSparseTrie>,
+    configure_reused_factory: impl FnOnce(F, B256, B256Map<B256>) -> F + Send + 'static,
+) -> (StateRootHandle, PayloadBuilderTrieCache)
+where
+    N: NodePrimitives,
+    F: DatabaseProviderROFactory<Provider: StateProofProvider> + Clone + Send + Sync + 'static,
+{
+    spawn_payload_builder_state_root_with_cache_origin(
+        executor,
+        multiproof_provider_factory,
+        parent_header,
+        transaction_count,
+        config,
+        pending_sparse_trie_prune_blocks,
+        preserved,
+        "miner",
+        configure_reused_factory,
+    )
+}
+
+/// Context-aware variant preserving ready-only parent-cache selection.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_payload_builder_state_root_with_cache_origin<N, F>(
+    executor: &reth_tasks::Runtime,
+    multiproof_provider_factory: F,
+    parent_header: SealedHeader<N::BlockHeader>,
+    transaction_count: Option<usize>,
+    config: &TreeConfig,
+    pending_sparse_trie_prune_blocks: Option<Vec<ExecutedBlock<N>>>,
+    preserved: Option<PreservedSparseTrie>,
+    diagnostic_origin: &'static str,
+    configure_reused_factory: impl FnOnce(F, B256, B256Map<B256>) -> F + Send + 'static,
+) -> (StateRootHandle, PayloadBuilderTrieCache)
+where
+    N: NodePrimitives,
+    F: DatabaseProviderROFactory<Provider: StateProofProvider> + Clone + Send + Sync + 'static,
+{
+    spawn_payload_builder_state_root_with_cache_wait(
+        executor,
+        multiproof_provider_factory,
+        parent_header,
+        transaction_count,
+        config,
+        pending_sparse_trie_prune_blocks,
+        preserved,
+        diagnostic_origin,
+        None,
+        configure_reused_factory,
+    )
+}
+
+/// Context-aware variant for fixed caller roles (never use block/transaction identities).
+///
+/// `parent_cache_wait` enables a bounded, cancellable wait on the background root
+/// worker for an already-computed parent's trie. `None` preserves the nonblocking
+/// ready-only selection used by existing callers. The calling mining thread never waits.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_payload_builder_state_root_with_cache_wait<N, F>(
+    executor: &reth_tasks::Runtime,
+    multiproof_provider_factory: F,
+    parent_header: SealedHeader<N::BlockHeader>,
+    transaction_count: Option<usize>,
+    config: &TreeConfig,
+    pending_sparse_trie_prune_blocks: Option<Vec<ExecutedBlock<N>>>,
+    preserved: Option<PreservedSparseTrie>,
+    diagnostic_origin: &'static str,
+    parent_cache_wait: Option<Duration>,
+    configure_reused_factory: impl FnOnce(F, B256, B256Map<B256>) -> F + Send + 'static,
+) -> (StateRootHandle, PayloadBuilderTrieCache)
+where
+    N: NodePrimitives,
+    F: DatabaseProviderROFactory<Provider: StateProofProvider> + Clone + Send + Sync + 'static,
+{
+    let parent_hash = parent_header.hash();
+    let preserved_sparse_trie = match preserved {
+        Some(trie) if trie.block_hash() == parent_hash && parent_cache_wait.is_some() => Some(trie),
+        Some(trie) if trie.block_hash() == parent_hash => match trie.try_into_ready() {
+            Ok(trie) => Some(trie),
+            Err(trie) => {
+                reth_metrics::metrics::counter!("trie.diagnostics.external_reuse_total", "result" => "not_ready").increment(1);
+                executor.spawn_drop(trie);
+                None
+            }
+        },
+        Some(trie) => {
+            reth_metrics::metrics::counter!("trie.diagnostics.external_reuse_total", "result" => "parent_mismatch").increment(1);
+            executor.spawn_drop(trie);
+            None
+        }
+        None => None,
+    };
+    reth_metrics::metrics::counter!("trie.diagnostics.external_cache_initializations_total", "origin" => diagnostic_origin, "result" => if preserved_sparse_trie.is_none() { "fresh" } else if parent_cache_wait.is_some() { "pending" } else { "reused" }).increment(1);
+    let (handle, pending) = DefaultStateRootStrategy::default().spawn_state_root_with_factory(
+        executor,
+        multiproof_provider_factory,
+        StateRootTaskOptions {
+            origin: diagnostic_origin,
+            parent_header,
+            preserved_sparse_trie,
+            parent_cache_wait,
+            transaction_count,
+            gas_used: None,
+            config,
+            pending_sparse_trie_prune_blocks,
+        },
+        configure_reused_factory,
+    );
+    (handle, PayloadBuilderTrieCache { receiver: pending, pending: None })
+}
+
+/// A root-checked, single-consumer handoff from an external builder to its next block.
+#[derive(Debug)]
+pub struct PayloadBuilderTrieCache {
+    receiver: mpsc::Receiver<PendingSparseTrie>,
+    pending: Option<PendingSparseTrie>,
+}
+impl PayloadBuilderTrieCache {
+    /// Returns a handle only for the requested, computed root. This never waits for a worker.
+    ///
+    /// The caller must bind `block_hash` to a block built on this attempt's parent. A wrong
+    /// root does not consume the matching candidate; a successful handoff can happen once.
+    pub fn try_take(&mut self, block_hash: B256, state_root: B256) -> Option<PreservedSparseTrie> {
+        if self.pending.is_none() {
+            self.pending = self.receiver.try_recv().ok();
+        }
+        if self.pending.as_ref()?.state_root != state_root {
+            return None
+        }
+        let pending = self.pending.take()?;
+        Some(PreservedSparseTrie::pending(pending.trie, block_hash, pending.anchor_hash))
+    }
 }
 
 /// A computed trie whose finalization and pruning may still be running.
@@ -911,6 +1107,7 @@ struct SparseTrieTaskOptions<N: NodePrimitives> {
     diagnostics: Arc<RootTaskDiagnostics>,
     parent_header: SealedHeader<N::BlockHeader>,
     preserved_sparse_trie: Option<PreservedSparseTrie>,
+    parent_cache_wait: Option<Duration>,
     pending_trie_tx: mpsc::Sender<PendingSparseTrie>,
     chunk_size: usize,
     worker_counts: ProofWorkerCounts,
@@ -924,6 +1121,7 @@ struct StateRootTaskOptions<'a, N: NodePrimitives> {
     origin: &'static str,
     parent_header: SealedHeader<N::BlockHeader>,
     preserved_sparse_trie: Option<PreservedSparseTrie>,
+    parent_cache_wait: Option<Duration>,
     transaction_count: Option<usize>,
     /// Gas the block claims to use, taken from the payload before execution.
     gas_used: Option<u64>,
@@ -1002,6 +1200,7 @@ where
                 origin: "import",
                 parent_header: parent_header.clone(),
                 preserved_sparse_trie,
+                parent_cache_wait: None,
                 transaction_count: Some(env.transaction_count),
                 gas_used: Some(env.gas_used),
                 config,
@@ -1069,6 +1268,7 @@ where
                 origin: "builder",
                 parent_header,
                 preserved_sparse_trie,
+                parent_cache_wait: None,
                 // Block built incrementally, so neither the tx count nor the gas is known at FCU
                 // time: the payload builder uses half of each proof pool.
                 transaction_count: None,
@@ -1582,6 +1782,7 @@ mod tests {
                         origin: "test",
                         parent_header: SealedHeader::new(Default::default(), genesis_hash),
                         preserved_sparse_trie: Some(preserved),
+                        parent_cache_wait: None,
                         transaction_count: None,
                         gas_used: None,
                         config: &TreeConfig::default(),
@@ -1597,6 +1798,117 @@ mod tests {
         for name in ["sparse-trie", "storage-workers", "account-workers"] {
             runtime.spawn_blocking_named(name, || {}).get();
         }
+    }
+
+    #[test]
+    fn external_handoff_is_nonblocking_root_checked_and_single_consumer() {
+        let (tx, rx) = mpsc::channel();
+        let mut cache = PayloadBuilderTrieCache { receiver: rx, pending: None };
+        let root = B256::with_last_byte(1);
+        let block = B256::with_last_byte(2);
+        assert!(cache.try_take(block, root).is_none());
+        let (completer, trie) = mpsc::channel();
+        tx.send(PendingSparseTrie { state_root: root, anchor_hash: B256::ZERO, trie }).unwrap();
+        assert!(cache.try_take(block, B256::ZERO).is_none());
+        let preserved = cache.try_take(block, root).unwrap();
+        assert_eq!(preserved.block_hash(), block);
+        assert!(cache.try_take(block, root).is_none());
+        // Publication does not require the trie producer to finish first.
+        completer.send(SparseTrieWithStorageRoots::default()).unwrap();
+        assert!(preserved.try_into_ready().unwrap().into_trie_for(block).unwrap().is_some());
+    }
+
+    #[test]
+    fn pending_external_handoff_cancels_without_waiting_for_parent_completion() {
+        let factory = create_test_provider_factory_with_chain_spec(Arc::new(ChainSpec::default()));
+        let genesis = init_genesis(&factory).unwrap();
+        let runtime = reth_tasks::Runtime::test();
+        let (completer, receiver) = mpsc::channel();
+        let (mut handle, _cache) =
+            spawn_payload_builder_state_root_with_cache_wait::<EthPrimitives, _>(
+                &runtime,
+                OverlayStateProviderFactory::new(
+                    factory,
+                    OverlayManager::<EthPrimitives>::default().overlay_builder(genesis),
+                ),
+                SealedHeader::new(Default::default(), genesis),
+                None,
+                &TreeConfig::default(),
+                None,
+                Some(PreservedSparseTrie::pending(receiver, genesis, genesis)),
+                "test",
+                Some(Duration::from_secs(30)),
+                |_, _, _| panic!("cancelled parent must not configure a reused provider"),
+            );
+        let result = handle.take_state_root_rx();
+        drop(handle);
+        assert!(matches!(
+            result.recv_timeout(Duration::from_secs(2)),
+            Ok(Err(StateRootTaskError::Canceled))
+        ));
+        drop(completer);
+    }
+
+    #[test]
+    fn pending_external_handoff_timeout_falls_back_to_normal_proof_path() {
+        let factory = create_test_provider_factory_with_chain_spec(Arc::new(ChainSpec::default()));
+        let genesis = init_genesis(&factory).unwrap();
+        let runtime = reth_tasks::Runtime::test();
+        let (completer, receiver) = mpsc::channel();
+        let parent = SealedHeader::new(
+            ChainSpec::<alloy_consensus::Header>::default().genesis_header().clone(),
+            genesis,
+        );
+        let provider = OverlayStateProviderFactory::new(
+            factory,
+            OverlayManager::<EthPrimitives>::default().overlay_builder(genesis),
+        );
+        let updates = create_mock_state_updates(1, 1);
+        let (mut expected, _) = spawn_payload_builder_state_root_with_cache_wait::<EthPrimitives, _>(
+            &runtime,
+            provider.clone(),
+            parent.clone(),
+            None,
+            &TreeConfig::default(),
+            None,
+            None,
+            "test",
+            None,
+            |factory, _, _| factory,
+        );
+        drop(expected.take_hint_stream());
+        let mut hook = expected.take_execution_hook();
+        for update in updates.clone() {
+            hook.on_state(update);
+        }
+        drop(hook);
+        let expected_result =
+            expected.take_state_root_rx().recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+        drop(expected);
+        let (mut actual, _) = spawn_payload_builder_state_root_with_cache_wait::<EthPrimitives, _>(
+            &runtime,
+            provider,
+            parent,
+            None,
+            &TreeConfig::default(),
+            None,
+            Some(PreservedSparseTrie::pending(receiver, genesis, genesis)),
+            "test",
+            Some(Duration::ZERO),
+            |_, _, _| panic!("timed-out parent must not configure a reused provider"),
+        );
+        drop(actual.take_hint_stream());
+        let mut hook = actual.take_execution_hook();
+        for update in updates {
+            hook.on_state(update);
+        }
+        drop(hook);
+        let actual_result =
+            actual.take_state_root_rx().recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+        drop(actual);
+        assert_eq!(actual_result.state_root, expected_result.state_root);
+        assert_eq!(actual_result.trie_updates, expected_result.trie_updates);
+        drop(completer);
     }
 
     #[test]
@@ -1630,6 +1942,7 @@ mod tests {
                 origin: "test",
                 parent_header: SealedHeader::new(Default::default(), genesis_hash),
                 preserved_sparse_trie: None,
+                parent_cache_wait: None,
                 transaction_count: None,
                 gas_used: None,
                 config: &TreeConfig::default(),
@@ -1800,6 +2113,7 @@ mod tests {
                 origin: "import",
                 parent_header: parent,
                 preserved_sparse_trie: None,
+                parent_cache_wait: None,
                 transaction_count: Some(1),
                 gas_used: None,
                 config: &TreeConfig::default(),
@@ -1968,6 +2282,129 @@ mod tests {
                 assert_eq!(preserved.anchor_hash(), genesis_hash);
             }
         }
+        for name in ["sparse-trie", "trie-hashing", "storage-workers", "account-workers", "drop"] {
+            runtime.spawn_blocking_named(name, || {}).get();
+        }
+    }
+    #[test]
+    fn external_builder_reuses_tree_and_matches_serial_root() {
+        reth_tracing::init_test_tracing();
+
+        let factory = create_test_provider_factory_with_chain_spec(Arc::new(ChainSpec::default()));
+        let genesis_hash = init_genesis(&factory).unwrap();
+        let state_updates = create_mock_state_updates(10, 10);
+        let mut accumulated_state: HashMap<Address, (Account, HashMap<B256, U256>)> =
+            HashMap::default();
+
+        {
+            let provider_rw = factory.provider_rw().expect("failed to get provider");
+            for update in &state_updates {
+                let account_updates = update.iter().map(|(address, account)| {
+                    (*address, Some(Account::from_revm_account(account)))
+                });
+                provider_rw
+                    .insert_account_for_hashing(account_updates)
+                    .expect("failed to insert accounts");
+
+                let storage_updates = update.iter().map(|(address, account)| {
+                    let storage_entries = account.storage.iter().map(|(slot, value)| {
+                        StorageEntry { key: B256::from(*slot), value: value.present_value }
+                    });
+                    (*address, storage_entries)
+                });
+                provider_rw
+                    .insert_storage_for_hashing(storage_updates)
+                    .expect("failed to insert storage");
+            }
+            provider_rw.commit().expect("failed to commit changes");
+        }
+
+        for update in &state_updates {
+            for (address, account) in update {
+                let storage: HashMap<B256, U256> = account
+                    .storage
+                    .iter()
+                    .map(|(key, value)| (B256::from(*key), value.present_value))
+                    .collect();
+                let entry = accumulated_state.entry(*address).or_default();
+                entry.0 = Account::from_revm_account(account);
+                entry.1.extend(storage);
+            }
+        }
+
+        let provider_factory = BlockchainProvider::new(factory).unwrap();
+        let runtime = reth_tasks::Runtime::test();
+        let overlay_manager = OverlayManager::<EthPrimitives>::default();
+        let config = TreeConfig::default().with_has_enough_parallelism(true);
+        let mut expected = state_root(accumulated_state.clone());
+        let mut preserved: Option<PreservedSparseTrie> = None;
+        for number in 0..3u64 {
+            let parent_hash =
+                preserved.as_ref().map_or(genesis_hash, PreservedSparseTrie::block_hash);
+            let (mut handle, mut cache) =
+                spawn_payload_builder_state_root_with_cache::<EthPrimitives, _>(
+                    &runtime,
+                    OverlayStateProviderFactory::new(
+                        provider_factory.clone(),
+                        overlay_manager.overlay_builder(genesis_hash),
+                    ),
+                    SealedHeader::new(
+                        alloy_consensus::Header {
+                            number,
+                            state_root: if number == 0 { B256::ZERO } else { expected },
+                            ..Default::default()
+                        },
+                        parent_hash,
+                    ),
+                    Some(100),
+                    &config,
+                    None,
+                    preserved.take(),
+                    |factory, anchor, roots| {
+                        factory.with_skip_overlay_for_reused_sparse_trie(anchor, roots)
+                    },
+                );
+            let mut hook = handle.take_execution_hook();
+            if number == 0 {
+                for update in &state_updates {
+                    hook.on_state(update.clone());
+                }
+            } else {
+                let mut update = state_updates.last().unwrap().clone();
+                for (address, account) in &mut update {
+                    account.info.nonce += number;
+                    for (slot, value) in &mut account.storage {
+                        value.present_value += U256::from(number);
+                        accumulated_state
+                            .get_mut(address)
+                            .unwrap()
+                            .1
+                            .insert(B256::from(*slot), value.present_value);
+                    }
+                    accumulated_state.get_mut(address).unwrap().0 =
+                        Account::from_revm_account(account);
+                }
+                hook.on_state(update);
+                expected = state_root(accumulated_state.clone());
+            }
+            drop(hook);
+            let outcome = handle.state_root().unwrap();
+            assert_eq!(outcome.state_root, expected);
+            assert!(cache.try_take(B256::ZERO, B256::ZERO).is_none());
+            let block_hash = B256::with_last_byte(number as u8 + 1);
+            let pending = cache.try_take(block_hash, expected).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut pending = pending;
+            preserved = Some(loop {
+                match pending.try_into_ready() {
+                    Ok(ready) => break ready,
+                    Err(not_ready) => pending = not_ready,
+                }
+                assert!(Instant::now() < deadline, "tree handoff did not complete");
+                std::thread::yield_now();
+            });
+        }
+        drop(preserved);
         for name in ["sparse-trie", "trie-hashing", "storage-workers", "account-workers", "drop"] {
             runtime.spawn_blocking_named(name, || {}).get();
         }

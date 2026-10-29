@@ -47,6 +47,22 @@ impl PreservedSparseTrie {
         self.anchor_hash
     }
 
+    /// Returns a ready-to-consume handle without waiting for finalization or pruning.
+    ///
+    /// On an empty or disconnected channel, return the original handle so its owner can
+    /// retire it away from a latency-sensitive thread. No tree is cloned.
+    pub fn try_into_ready(self) -> Result<Self, Self> {
+        match self.trie.try_recv() {
+            Ok(trie) => {
+                let (tx, rx) = std::sync::mpsc::channel();
+                // The receiver is owned here, so sending cannot fail.
+                let _ = tx.send(trie);
+                Ok(Self::pending(rx, self.block_hash, self.anchor_hash))
+            }
+            Err(_) => Err(self),
+        }
+    }
+
     /// Consumes self and returns the sparse trie and its revealed storage roots if reusable for
     /// the parent block.
     ///
@@ -115,6 +131,25 @@ pub struct SparseTrieWithStorageRoots {
 mod tests {
     use super::*;
     use std::sync::mpsc;
+
+    #[test]
+    fn readiness_probe_does_not_wait_or_lose_pending_handle() {
+        let hash = B256::with_last_byte(1);
+        let (tx, rx) = mpsc::channel();
+        let pending = PreservedSparseTrie::pending(rx, hash, B256::ZERO);
+        let pending = pending.try_into_ready().unwrap_err();
+        tx.send(SparseTrieWithStorageRoots::default()).unwrap();
+        let ready = pending.try_into_ready().unwrap();
+        assert!(ready.into_trie_for(hash).unwrap().is_some());
+    }
+
+    #[test]
+    fn disconnected_readiness_probe_returns_ownership() {
+        let (tx, rx) = mpsc::channel();
+        drop(tx);
+        let pending = PreservedSparseTrie::pending(rx, B256::ZERO, B256::ZERO);
+        assert!(pending.try_into_ready().is_err());
+    }
 
     #[test]
     fn pending_trie_exposes_block_hash_before_completion() {

@@ -16,7 +16,10 @@ use crate::{
     session::active::ActiveSession,
 };
 use active::QueuedOutgoingMessages;
-use alloy_primitives::map::{FbBuildHasher, HashMap};
+use alloy_primitives::{
+    map::{FbBuildHasher, HashMap},
+    U256,
+};
 use counter::SessionCounter;
 use futures::{
     future::{self, Either},
@@ -691,6 +694,7 @@ impl<N: NetworkPrimitives> SessionManager<N> {
                 let client_version = client_id.into();
                 let handle = ActiveSessionHandle {
                     status: status.clone(),
+                    current_td: status.total_difficulty,
                     direction,
                     session_id,
                     remote_id: peer_id,
@@ -810,6 +814,13 @@ impl<N: NetworkPrimitives> SessionManager<N> {
             block_range_update.latest,
             block_range_update.latest_hash,
         );
+    }
+
+    /// Refreshes peer TD without changing the original handshake status.
+    pub(crate) fn update_peer_td(&mut self, peer_id: &PeerId, td: U256) {
+        if let Some(session) = self.active_sessions.get_mut(peer_id) {
+            session.current_td = Some(td);
+        }
     }
 }
 

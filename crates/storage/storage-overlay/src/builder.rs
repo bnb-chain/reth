@@ -38,7 +38,8 @@ pub struct StateTrieOverlay {
 }
 
 impl StateTrieOverlay {
-    pub(crate) const fn new(input: TrieInputSorted) -> Self {
+    /// Creates a complete overlay from sorted trie input, including exact trie masks.
+    pub const fn new(input: TrieInputSorted) -> Self {
         Self { input, skipped_for_reused_sparse_trie: false }
     }
 
@@ -414,7 +415,7 @@ impl<N: NodePrimitives> OverlayBuilder<N> {
         skip_all,
         fields(?state_trie_tip_block, ?finish_tip_block, parent_hash = ?self.parent_hash)
     )]
-    pub(crate) fn build_state_trie_overlay_at_frontiers<Provider>(
+    pub fn build_state_trie_overlay_at_frontiers<Provider>(
         &self,
         provider: &Provider,
         state_trie_tip_block: BlockNumHash,
@@ -739,7 +740,7 @@ impl<N: NodePrimitives> OverlayBuilder<N> {
 
 /// Returns the highest blocks whose state/trie data and non-state/trie data are durably
 /// available in the database.
-pub(crate) fn database_state_frontiers<Provider>(
+pub fn database_state_frontiers<Provider>(
     provider: &Provider,
 ) -> ProviderResult<(BlockNumHash, BlockNumHash)>
 where

@@ -112,6 +112,10 @@ impl<B: Block + 'static> NewBlockPayload for NewBlock<B> {
     fn block(&self) -> &Self::Block {
         &self.block
     }
+
+    fn td(&self) -> Option<alloy_primitives::U256> {
+        Some(self.td.to())
+    }
 }
 
 generate_tests!(#[rlp, 25] NewBlock<reth_ethereum_primitives::Block>, EthNewBlockTests);

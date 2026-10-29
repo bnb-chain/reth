@@ -34,6 +34,9 @@ pub mod cancel;
 pub mod lazy;
 pub mod metrics;
 pub mod runtime;
+mod session_diagnostics;
+pub use session_diagnostics::NamedTaskContext;
+
 pub mod shutdown;
 pub mod utils;
 pub(crate) mod worker_map;

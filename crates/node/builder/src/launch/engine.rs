@@ -431,7 +431,8 @@ impl<B> EngineNodeLauncher<B> {
                         }
                     }
                     // BSC extension: externally-injected engine requests (parlia block-import).
-                    req = engine_api_stream.select_next_some(), if !engine_api_stream.is_terminated() => {
+                    // External senders may be dropped before the engine shuts down.
+                    Some(req) = engine_api_stream.next(), if !engine_api_stream.is_terminated() => {
                         orchestrator.handler_mut().handler_mut().on_event(req.into());
                     }
                     shutdown_req = &mut shutdown_rx => {

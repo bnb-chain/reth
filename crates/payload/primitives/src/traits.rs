@@ -8,8 +8,10 @@ use alloy_rpc_types_engine::{PayloadAttributes as EthPayloadAttributes, PayloadI
 use core::fmt;
 use either::Either;
 use reth_execution_types::BlockExecutionOutput;
-use reth_primitives_traits::{NodePrimitives, RecoveredBlock, SealedBlock, SealedHeader};
-use reth_trie_common::{updates::TrieUpdates, HashedPostState};
+use reth_primitives_traits::{
+    sync::OnceLock, NodePrimitives, RecoveredBlock, SealedBlock, SealedHeader,
+};
+use reth_trie_common::{updates::TrieUpdates, HashedPostState, SortedTrieData};
 
 /// Represents an executed block for payload building purposes.
 ///
@@ -25,6 +27,63 @@ pub struct BuiltPayloadExecutedBlock<N: NodePrimitives> {
     pub hashed_state: Arc<HashedPostState>,
     /// Trie updates that result from calculating the state root for the block (unsorted).
     pub trie_updates: Arc<TrieUpdates>,
+    /// Optional, source-checked memo shared by early descendants and later import.
+    /// Leave `None` to retain the existing deferred import sorting path.
+    pub shared_trie_data: Option<Arc<BuiltPayloadTrieData>>,
+}
+
+/// Immutable inputs and their optional sorted representation. Created through
+/// [`BuiltPayloadExecutedBlock::with_shared_trie_data`], never supplied independently.
+#[derive(Debug)]
+pub struct BuiltPayloadTrieData {
+    hashed_state: Arc<HashedPostState>,
+    trie_updates: Arc<TrieUpdates>,
+    sorted: OnceLock<SortedTrieData>,
+}
+
+impl PartialEq for BuiltPayloadTrieData {
+    fn eq(&self, other: &Self) -> bool {
+        self.hashed_state == other.hashed_state && self.trie_updates == other.trie_updates
+    }
+}
+impl Eq for BuiltPayloadTrieData {}
+
+impl<N: NodePrimitives> BuiltPayloadExecutedBlock<N> {
+    /// Enables lazy sharing of sorted data without changing execution outputs.
+    pub fn with_shared_trie_data(mut self) -> Self {
+        self.shared_trie_data = Some(Arc::new(BuiltPayloadTrieData {
+            hashed_state: self.hashed_state.clone(),
+            trie_updates: self.trie_updates.clone(),
+            sorted: OnceLock::new(),
+        }));
+        self
+    }
+
+    fn matching_trie_data(&self) -> Option<&BuiltPayloadTrieData> {
+        self.shared_trie_data.as_deref().filter(|data| {
+            Arc::ptr_eq(&data.hashed_state, &self.hashed_state) &&
+                Arc::ptr_eq(&data.trie_updates, &self.trie_updates)
+        })
+    }
+
+    /// Returns a completed memo without waiting or sorting on the importing thread.
+    /// Replaced hashed state or trie updates invalidate the memo by source identity.
+    pub fn ready_trie_data(&self) -> Option<SortedTrieData> {
+        self.matching_trie_data()?.sorted.get().cloned()
+    }
+
+    /// Sorts once for early construction; clones share the resulting immutable data.
+    /// If either source was replaced, compute directly from the new source instead.
+    pub fn sorted_trie_data(&self) -> SortedTrieData {
+        let compute = || {
+            SortedTrieData::new(
+                Arc::new(self.hashed_state.as_ref().clone().into_sorted()),
+                Arc::new(self.trie_updates.as_ref().clone().into_sorted()),
+            )
+        };
+        self.matching_trie_data()
+            .map_or_else(compute, |data| data.sorted.get_or_init(compute).clone())
+    }
 }
 
 /// Represents a successfully built execution payload (block).
