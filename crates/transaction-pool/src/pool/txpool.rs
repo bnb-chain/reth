@@ -1,5 +1,12 @@
 //! The internal transaction pool implementation.
 
+/// Actual removed entries, not requested hashes; fixed reasons and no per-hash labels.
+fn record_removal(reason: &'static str, count: usize) {
+    if count > 0 {
+        reth_metrics::metrics::counter!("transaction_pool.removal_transactions_total", "reason" => reason).increment(count as u64);
+    }
+}
+
 use crate::{
     config::{LocalTransactionConfig, TXPOOL_MAX_ACCOUNT_SLOTS_PER_SENDER},
     error::{
@@ -729,6 +736,7 @@ impl<T: TransactionOrdering> TxPool<T> {
 
         // Update removed transactions metric
         self.metrics.removed_transactions.increment(removed_txs_count);
+        record_removal("canonical_mined", removed_txs_count as usize);
 
         // Update fees internally first without triggering subpool updates based on fee movements
         // This must happen before we update the changed so that all account updates use the new fee
@@ -1040,11 +1048,13 @@ impl<T: TransactionOrdering> TxPool<T> {
         outcome: &mut UpdateOutcome<T::Transaction>,
     ) {
         let mut removed = 0;
+        let mut actually_removed = 0;
         for PoolUpdate { id, current, destination } in updates {
             match destination {
                 Destination::Discard => {
                     // remove the transaction from the pool and subpool
                     if let Some(tx) = self.prune_transaction_by_id(&id) {
+                        actually_removed += 1;
                         outcome.discarded.push(tx);
                     }
                     removed += 1;
@@ -1062,6 +1072,7 @@ impl<T: TransactionOrdering> TxPool<T> {
             }
         }
 
+        record_removal("state_update_invalidated", actually_removed);
         if removed > 0 {
             self.metrics.removed_transactions.increment(removed);
         }
@@ -1090,9 +1101,10 @@ impl<T: TransactionOrdering> TxPool<T> {
         &mut self,
         hashes: Vec<TxHash>,
     ) -> Vec<Arc<ValidPoolTransaction<T::Transaction>>> {
-        let txs =
+        let txs: Vec<_> =
             hashes.into_iter().filter_map(|hash| self.remove_transaction_by_hash(&hash)).collect();
         self.update_size_metrics();
+        record_removal("explicit_remove", txs.len());
         txs
     }
 
@@ -1109,6 +1121,7 @@ impl<T: TransactionOrdering> TxPool<T> {
             }
         }
         self.update_size_metrics();
+        record_removal("explicit_remove_with_descendants", removed.len());
         removed
     }
 
@@ -1125,6 +1138,7 @@ impl<T: TransactionOrdering> TxPool<T> {
             }
         }
         self.update_size_metrics();
+        record_removal("explicit_remove_sender", removed.len());
         removed
     }
 
@@ -1137,9 +1151,10 @@ impl<T: TransactionOrdering> TxPool<T> {
         &mut self,
         hashes: Vec<TxHash>,
     ) -> Vec<Arc<ValidPoolTransaction<T::Transaction>>> {
-        let txs =
+        let txs: Vec<_> =
             hashes.into_iter().filter_map(|hash| self.prune_transaction_by_hash(&hash)).collect();
         self.update_size_metrics();
+        record_removal("explicit_prune", txs.len());
         txs
     }
 
@@ -1281,6 +1296,7 @@ impl<T: TransactionOrdering> TxPool<T> {
         pool: SubPool,
     ) {
         if let Some((replaced, replaced_pool)) = replaced {
+            record_removal("replaced", 1);
             // Remove the replaced transaction
             self.remove_from_subpool(replaced_pool, replaced.id());
         }
@@ -1353,6 +1369,7 @@ impl<T: TransactionOrdering> TxPool<T> {
             ]
         );
 
+        record_removal("capacity", removed.len());
         removed
     }
 
