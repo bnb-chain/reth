@@ -262,3 +262,22 @@ async fn restart_applies_node_factory_and_builder_modifiers() -> eyre::Result<()
 
     Ok(())
 }
+
+/// Closing the optional import channel leaves the Engine API and graceful shutdown usable.
+#[tokio::test]
+async fn closed_external_engine_channel_keeps_node_running() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let (mut node, _) = EthereumNode::test_setup_for(EthereumHardfork::Prague)
+        .with_restartable_nodes()
+        .build_single()
+        .await?;
+    assert!(node.inner.engine_api_tx.take().is_some());
+
+    let payload = node.advance_block().await?;
+    assert_eq!(node.inner.provider.best_block_number()?, 1);
+    assert_eq!(node.block_hash(1), payload.block().hash());
+    node.stop().await?;
+
+    Ok(())
+}
