@@ -1977,6 +1977,13 @@ where
             &block.execution_output.state,
         );
 
+        if let Some(data) = block.ready_trie_data() {
+            return Ok(ExecutedBlock::new(block.recovered_block, block.execution_output, data))
+        }
+        // No completed memo: preserve the existing background computation and avoid
+        // retaining extra source references solely through an unused memo.
+        let mut block = block;
+        block.shared_trie_data = None;
         Ok(self.spawn_deferred_trie_task(
             block.recovered_block,
             block.execution_output,
