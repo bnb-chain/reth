@@ -95,7 +95,8 @@ labeling a full snapshot as an archive snapshot.
 `--print-plan-json` lists one `bundle` archive. Verified files can be reused on a
 rerun. As with modular manifests, the downloader caches the compressed archive
 before extraction; budget disk space for both the archive and restored files.
-`--resumable=false` currently affects only the direct `--url` mode. Use a fresh
+Zstd windows up to `--long=31` are supported and may need up to 2 GiB of decoder
+memory per concurrent archive. `--resumable=false` currently affects only the direct `--url` mode. Use a fresh
 datadir for a new snapshot, or explicitly clear the previous data with `--force`.
 
 ## Further reading
