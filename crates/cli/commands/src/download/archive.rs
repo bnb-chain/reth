@@ -242,7 +242,7 @@ impl ArchiveProcessor {
         let fetcher =
             ArchiveFetcher::new(self.archive().url.clone(), cache_dir, self.ctx.session().clone());
 
-        if self.archive.ty == super::manifest::SnapshotComponentType::State {
+        if self.archive.ty == Some(super::manifest::SnapshotComponentType::State) {
             debug!(target: "reth::cli", url = %self.archive().url, "Downloading state snapshot archive");
         }
 

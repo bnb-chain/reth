@@ -50,14 +50,41 @@ pub struct SnapshotManifest {
     /// Reth version that produced this snapshot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reth_version: Option<String>,
-    /// Available snapshot components.
+    /// Available snapshot components. Empty for a complete snapshot bundle.
+    ///
+    /// Bundle manifests omit this field so older consumers reject them instead of treating
+    /// them as an empty modular snapshot and rewriting database checkpoints.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub components: BTreeMap<String, ComponentManifest>,
+    /// Complete snapshot archive, restored without deriving pruning or index checkpoints.
+    /// Mutually exclusive with nonempty `components`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle: Option<SnapshotBundle>,
     /// Chain-specific manifest fields not interpreted by Reth.
     ///
     /// Extensions are retained so downstream commands can consume snapshot metadata without
     /// refetching or reparsing the manifest selected by Reth.
     #[serde(default, flatten)]
     pub extensions: BTreeMap<String, serde_json::Value>,
+}
+
+/// One archive containing the producer's complete database and static files.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnapshotBundle {
+    /// Producer-declared node profile. This does not restore already pruned history.
+    pub profile: SnapshotProfile,
+    /// Archive and checksums for every extracted file.
+    pub archive: SingleArchive,
+}
+
+/// Node profile of a complete snapshot, independent of component-selection presets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SnapshotProfile {
+    /// A full node whose historical data may already have been pruned.
+    Full,
+    /// An archive node retaining historical data.
+    Archive,
 }
 
 /// Manifest entry for a single snapshot component.
@@ -537,7 +564,7 @@ impl ChunkedArchive {
 /// Ensures directory semantics for `base_url` so the last path segment is not replaced when
 /// joining nested paths like `static_files/headers-0-499999.tar.zst`. Leading slashes on
 /// `relative_path` are stripped so publisher paths stay relative to the base prefix.
-fn resolve_archive_url(base_url: &str, relative_path: &str) -> String {
+pub(crate) fn resolve_archive_url(base_url: &str, relative_path: &str) -> String {
     let relative_path = relative_path.trim_start_matches('/');
 
     if base_url.is_empty() {
@@ -713,6 +740,7 @@ pub fn generate_manifest(
         base_url: base_url.map(str::to_owned),
         reth_version: Some(reth_node_core::version::version_metadata().short_version.to_string()),
         components,
+        bundle: None,
         extensions: Default::default(),
     })
 }
@@ -1001,6 +1029,7 @@ mod tests {
             base_url: Some("https://example.com".to_string()),
             reth_version: None,
             components,
+            bundle: None,
             extensions: Default::default(),
         }
     }
@@ -1074,6 +1103,7 @@ mod tests {
             base_url: Some("https://example.com".to_string()),
             reth_version: None,
             components,
+            bundle: None,
             extensions: Default::default(),
         };
 
@@ -1134,6 +1164,7 @@ mod tests {
             base_url: Some("https://example.com".to_string()),
             reth_version: None,
             components,
+            bundle: None,
             extensions: Default::default(),
         }
     }
@@ -1227,6 +1258,7 @@ mod tests {
             base_url: Some("https://example.com".to_string()),
             reth_version: None,
             components,
+            bundle: None,
             extensions: Default::default(),
         };
         let urls = m.archive_urls(SnapshotComponentType::StorageChangesets);
@@ -1309,6 +1341,7 @@ mod tests {
             base_url: Some("https://example.com".to_string()),
             reth_version: None,
             components,
+            bundle: None,
             extensions: Default::default(),
         };
 
@@ -1371,6 +1404,7 @@ mod tests {
             base_url: Some("https://example.com".to_string()),
             reth_version: None,
             components,
+            bundle: None,
             extensions: Default::default(),
         };
 
@@ -1489,6 +1523,7 @@ mod tests {
             base_url: Some("https://example.com/mainnet".to_string()),
             reth_version: None,
             components,
+            bundle: None,
             extensions: Default::default(),
         };
 
@@ -1573,6 +1608,7 @@ mod tests {
             base_url: Some("https://example.com/mainnet".to_string()),
             reth_version: None,
             components,
+            bundle: None,
             extensions: Default::default(),
         };
 

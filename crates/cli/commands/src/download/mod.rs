@@ -14,7 +14,9 @@
 //!   extracts it.
 //! - Manifest mode resolves a [`SnapshotManifest`], turns CLI or TUI choices into
 //!   [`ComponentSelection`]s, plans the required archives, processes them, and then writes the
-//!   resulting config and database checkpoints.
+//!   resulting config and database checkpoints. Complete snapshot bundles instead restore every
+//!   declared file and preserve the producer's config and checkpoints. They do not support
+//!   component or range selection.
 //!
 //! [`DownloadDefaults`] defines the discovery endpoints and default help text used when the command
 //! needs to discover a manifest instead of consuming an explicit source.
@@ -84,6 +86,7 @@
 //! successful command leaves a data directory that matches the snapshot shape that was selected.
 
 mod archive;
+mod bundle;
 pub mod config_gen;
 mod extract;
 mod fetch;
@@ -599,13 +602,17 @@ impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> DownloadCo
         )
         .await?;
 
-        self.finalize_modular_download(
-            &selections,
-            &prepared.manifest,
-            preset,
-            target_dir,
-            &target_dir.join("db"),
-        )?;
+        if prepared.manifest.bundle.is_some() {
+            info!(target: "reth::cli", "Complete snapshot restored; preserving configuration and database checkpoints. Start the node with the producer's matching settings.");
+        } else {
+            self.finalize_modular_download(
+                &selections,
+                &prepared.manifest,
+                preset,
+                target_dir,
+                &target_dir.join("db"),
+            )?;
+        }
 
         Ok(Some(prepared))
     }
@@ -625,6 +632,20 @@ impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> DownloadCo
 
     async fn resolve_download(&self, chain_id: u64) -> Result<ResolvedDownload> {
         let manifest = self.load_manifest(chain_id).await?;
+        if let Some(bundle) = &manifest.bundle {
+            self.validate_bundle_selection(bundle)?;
+            let planned = bundle::plan_bundle(&manifest, bundle)?;
+            return Ok(ResolvedDownload {
+                manifest,
+                selections: BTreeMap::new(),
+                preset: None,
+                planned,
+            });
+        }
+        eyre::ensure!(
+            !manifest.components.is_empty(),
+            "Snapshot manifest must contain components or a complete bundle"
+        );
         let ResolvedComponents { mut selections, preset } = self.resolve_components(&manifest)?;
 
         match preset {
@@ -650,7 +671,8 @@ impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> DownloadCo
 
         info!(target: "reth::cli", source = %manifest_source, "Fetching snapshot manifest");
         let mut manifest = fetch_manifest_from_source(&manifest_source).await?;
-        if self.env.datadir.datadir.as_ref().is_none() ||
+        if manifest.bundle.is_some() ||
+            self.env.datadir.datadir.as_ref().is_none() ||
             (self.manifest_url.is_none() && self.manifest_path.is_none())
         {
             self.validate_manifest_chain(&manifest)?;
@@ -1230,6 +1252,7 @@ mod tests {
             base_url: Some("https://example.com".to_string()),
             reth_version: None,
             components,
+            bundle: None,
             extensions: Default::default(),
         }
     }
@@ -1723,5 +1746,135 @@ mod tests {
         );
         manifest.chain_id = 1;
         assert!(args.full_preset_selections(&manifest).is_ok());
+    }
+
+    #[test]
+    fn bundle_selection_requires_the_producer_profile() {
+        let archive: manifest::SnapshotBundle = serde_json::from_value(serde_json::json!({
+            "profile": "archive", "archive": {"file": "snapshot.tar.zst", "size": 1}
+        }))
+        .unwrap();
+        let mut full = archive.clone();
+        full.profile = manifest::SnapshotProfile::Full;
+        for flags in [vec![], vec!["--non-interactive"], vec!["--archive"]] {
+            let args = CommandParser::<DownloadCommand<EthereumChainSpecParser>>::parse_from(
+                std::iter::once("reth").chain(flags),
+            )
+            .args;
+            args.validate_bundle_selection(&archive).unwrap();
+        }
+        let full_args = CommandParser::<DownloadCommand<EthereumChainSpecParser>>::parse_from([
+            "reth", "--full",
+        ])
+        .args;
+        full_args.validate_bundle_selection(&full).unwrap();
+        assert_eq!(
+            full_args.validate_bundle_selection(&archive).unwrap_err().to_string(),
+            "--full requires a full bundle; bundle downloads preserve the producer's profile"
+        );
+        let archive_args = CommandParser::<DownloadCommand<EthereumChainSpecParser>>::parse_from([
+            "reth",
+            "--archive",
+        ])
+        .args;
+        assert_eq!(
+            archive_args.validate_bundle_selection(&full).unwrap_err().to_string(),
+            "--archive requires an archive bundle; a full snapshot cannot restore pruned history"
+        );
+        for flags in [
+            vec!["--minimal"],
+            vec!["--with-txs"],
+            vec!["--with-txs-since", "1"],
+            vec!["--with-txs-distance", "1"],
+            vec!["--with-receipts"],
+            vec!["--with-receipts-since", "1"],
+            vec!["--with-receipts-distance", "1"],
+            vec!["--with-state-history"],
+            vec!["--with-state-history-since", "1"],
+            vec!["--with-state-history-distance", "1"],
+            vec!["--with-txs", "--with-senders"],
+            vec!["--with-rocksdb"],
+            vec!["--without-rocksdb"],
+            vec!["--prune-unlisted"],
+        ] {
+            let args = CommandParser::<DownloadCommand<EthereumChainSpecParser>>::parse_from(
+                std::iter::once("reth").chain(flags),
+            )
+            .args;
+            assert_eq!(args.validate_bundle_selection(&archive).unwrap_err().to_string(),
+                "Complete snapshot bundles do not support component selection, ranges, --minimal, --without-rocksdb, or --prune-unlisted");
+        }
+    }
+
+    #[tokio::test]
+    async fn bundle_restore_preserves_database_and_config_bytes_and_reuses_outputs() {
+        let source = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        // Deliberately not an initialized MDBX database: finalizing modular checkpoints would
+        // fail here. A complete bundle must restore these bytes without opening the database.
+        let files = [
+            ("db/mdbx.dat", b"producer database and checkpoints".as_slice()),
+            ("reth.toml", b"producer settings".as_slice()),
+            ("static_files/static_file_headers_0_499999", b"headers".as_slice()),
+            ("rocksdb/CURRENT", b"index state".as_slice()),
+        ];
+        let archive_path = source.path().join("existing.tar.zst");
+        let encoder = zstd::Encoder::new(fs::create_file(&archive_path).unwrap(), 1).unwrap();
+        let mut tar = tar::Builder::new(encoder);
+        for (path, data) in files {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            tar.append_data(&mut header, path, data).unwrap();
+        }
+        tar.into_inner().unwrap().finish().unwrap();
+        let manifest_path = source.path().join("manifest.json");
+        let mut manifest = serde_json::json!({
+            "block": 123, "chain_id": 1, "storage_version": 2, "timestamp": 1,
+            "bundle": {"profile": "full", "archive": {
+                "file": "existing.tar.zst", "size": fs::metadata(&archive_path).unwrap().len(),
+                "output_files": files.iter().map(|(path, data)| OutputFileChecksum {
+                    path: (*path).into(), size: data.len() as u64,
+                    blake3: blake3::hash(data).to_hex().to_string()
+                }).collect::<Vec<_>>()
+            }}
+        });
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let args = || {
+            CommandParser::<DownloadCommand<EthereumChainSpecParser>>::parse_from([
+                "reth",
+                "--manifest-path",
+                manifest_path.to_str().unwrap(),
+                "--datadir",
+                target.path().to_str().unwrap(),
+                "--full",
+                "--non-interactive",
+            ])
+            .args
+        };
+        let (plan, _) = args().plan().await.unwrap();
+        assert_eq!(plan.archives.len(), 1);
+        assert_eq!(plan.archives[0].component, "bundle");
+        args().execute::<()>().await.unwrap();
+        for (path, data) in files {
+            assert_eq!(fs::read(target.path().join(path)).unwrap(), data);
+        }
+        fs::remove_file(&archive_path).unwrap();
+        // No source archive remains, so the second success proves checksum-based reuse.
+        args().execute::<()>().await.unwrap();
+        manifest["chain_id"] = serde_json::json!(97);
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert_eq!(
+            args().plan().await.unwrap_err().to_string(),
+            "Snapshot chain ID 97 does not match selected chain ID 1"
+        );
+        manifest["chain_id"] = serde_json::json!(1);
+        manifest.as_object_mut().unwrap().remove("bundle");
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert_eq!(
+            args().plan().await.unwrap_err().to_string(),
+            "Snapshot manifest must contain components or a complete bundle"
+        );
     }
 }
