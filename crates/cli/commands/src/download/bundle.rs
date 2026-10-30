@@ -59,7 +59,7 @@ pub(super) fn plan_bundle(
         ensure!(
             safe_relative_path(&output.path) &&
                 (output.path == "reth.toml" ||
-                    ["db/", "rocksdb/", "static_files/"]
+                    ["db/", "rocksdb/", "static_files/", "blobstore/", "parlia_snapshots/"]
                         .iter()
                         .any(|root| output.path.starts_with(root))),
             "Invalid bundle output path: {}",
@@ -188,6 +188,21 @@ mod tests {
                 "Bundle archive must be a relative .tar.zst or .tar.lz4 path"
             );
         }
+    }
+
+    #[test]
+    fn preserves_bsc_bundle_data_directories() {
+        let mut manifest = manifest();
+        let single = &mut manifest.bundle.as_mut().unwrap().archive;
+        for path in ["blobstore/sidecar", "parlia_snapshots/mdbx.dat"] {
+            let mut output = single.output_files[0].clone();
+            output.path = path.into();
+            single.output_files.push(output);
+        }
+        single.decompressed_size = 9;
+        let plan = plan_bundle(&manifest, manifest.bundle.as_ref().unwrap()).unwrap();
+        assert_eq!(plan.total_output_size, 9);
+        assert_eq!(plan.archives[0].archive.output_files.len(), 3);
     }
 
     #[test]

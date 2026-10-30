@@ -81,7 +81,8 @@ Bundle manifests replace `components` with `bundle`, containing `profile`
 (`full` or `archive`) and `archive` (the usual single-archive fields: `file`,
 `size`, optional `decompressed_size`/`blake3`, and required `output_files`). Each
 output needs its relative `path`, `size`, and BLAKE3 checksum. The supported
-storage version is 2. Files must be under `db/`, `rocksdb/`, or `static_files/`,
+storage version is 2. Files must be under `db/`, `rocksdb/`, `static_files/`,
+`blobstore/`, or `parlia_snapshots/`,
 or be the top-level `reth.toml`; `db/mdbx.dat` must be included. Never include
 `components` in a bundle manifest: omitting it makes older clients reject the
 new format instead of treating the snapshot as empty.
