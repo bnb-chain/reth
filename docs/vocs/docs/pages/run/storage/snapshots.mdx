@@ -62,6 +62,42 @@ reth download \
     -y
 ```
 
+## Existing complete snapshots
+
+A publisher can also describe one existing `.tar.zst` or `.tar.lz4` file as a
+complete snapshot bundle. Download it through the same command:
+
+```bash
+reth download --chain <chain> --manifest-url <manifest-url> --datadir <empty-directory>
+```
+
+A bundle restores the whole file, verifies extracted-file BLAKE3 checksums, and
+preserves the producer's database checkpoints and included `reth.toml`. It does
+not generate pruning settings or rebuild index checkpoints. Start the node with
+the source snapshot's matching database, pruning, and static-file settings; if
+`reth.toml` is absent, obtain those settings from the publisher.
+
+Bundle manifests replace `components` with `bundle`, containing `profile`
+(`full` or `archive`) and `archive` (the usual single-archive fields: `file`,
+`size`, optional `decompressed_size`/`blake3`, and required `output_files`). Each
+output needs its relative `path`, `size`, and BLAKE3 checksum. The supported
+storage version is 2. Files must be under `db/`, `rocksdb/`, or `static_files/`,
+or be the top-level `reth.toml`; `db/mdbx.dat` must be included. Never include
+`components` in a bundle manifest: omitting it makes older clients reject the
+new format instead of treating the snapshot as empty.
+
+The selected chain must match the manifest, including with an explicit datadir.
+`--full` or `--archive` may assert the corresponding source profile, but cannot
+convert it. Component/range selections, `--minimal`, `--without-rocksdb`, and
+`--prune-unlisted` are rejected. Already pruned history cannot be recovered by
+labeling a full snapshot as an archive snapshot.
+
+`--print-plan-json` lists one `bundle` archive. Verified files can be reused on a
+rerun. As with modular manifests, the downloader caches the compressed archive
+before extraction; budget disk space for both the archive and restored files.
+`--resumable=false` currently affects only the direct `--url` mode. Use a fresh
+datadir for a new snapshot, or explicitly clear the previous data with `--force`.
+
 ## Further reading
 
 -   [Storage V2](/run/storage) - understand the default storage layout

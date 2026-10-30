@@ -93,7 +93,7 @@ impl DownloadPlanArchive {
 
     fn from_planned(planned: &PlannedArchive) -> Self {
         Self::new(
-            planned.ty.key(),
+            planned.ty.map_or("bundle", |ty| ty.key()),
             planned.archive.file_name.clone(),
             planned.archive.url.clone(),
             planned.archive.size,
@@ -106,8 +106,8 @@ impl DownloadPlanArchive {
 /// One archive selected from the manifest, along with its component name.
 #[derive(Debug, Clone)]
 pub(crate) struct PlannedArchive {
-    /// Snapshot component type this archive belongs to.
-    pub(crate) ty: SnapshotComponentType,
+    /// Component type, or `None` for a complete snapshot bundle.
+    pub(crate) ty: Option<SnapshotComponentType>,
     /// User-facing component name used in logs.
     pub(crate) component: String,
     /// Concrete snapshot archive metadata resolved from the manifest.
@@ -202,8 +202,8 @@ fn selection_archive_distance(
 /// Sorts planned archives into a stable processing order.
 fn sort_planned_archives(all_downloads: &mut [PlannedArchive]) {
     all_downloads.sort_by(|a, b| {
-        archive_priority_rank(a.ty)
-            .cmp(&archive_priority_rank(b.ty))
+        a.ty.map_or(0, archive_priority_rank)
+            .cmp(&b.ty.map_or(0, archive_priority_rank))
             .then_with(|| a.component.cmp(&b.component))
             .then_with(|| a.archive.file_name.cmp(&b.archive.file_name))
     });
@@ -256,7 +256,7 @@ pub(crate) fn collect_planned_archives(
                 );
             }
 
-            archives.push(PlannedArchive { ty: *ty, component: component.clone(), archive });
+            archives.push(PlannedArchive { ty: Some(*ty), component: component.clone(), archive });
         }
     }
 
@@ -279,7 +279,7 @@ mod tests {
 
         let planned = vec![
             PlannedArchive {
-                ty: SnapshotComponentType::State,
+                ty: Some(SnapshotComponentType::State),
                 component: "State".to_string(),
                 archive: SnapshotArchive {
                     url: "https://example.com/ok.tar.zst".to_string(),
@@ -294,7 +294,7 @@ mod tests {
                 },
             },
             PlannedArchive {
-                ty: SnapshotComponentType::Headers,
+                ty: Some(SnapshotComponentType::Headers),
                 component: "Headers".to_string(),
                 archive: SnapshotArchive {
                     url: "https://example.com/missing.tar.zst".to_string(),
@@ -309,7 +309,7 @@ mod tests {
                 },
             },
             PlannedArchive {
-                ty: SnapshotComponentType::Transactions,
+                ty: Some(SnapshotComponentType::Transactions),
                 component: "Transactions".to_string(),
                 archive: SnapshotArchive {
                     url: "https://example.com/bad-size.tar.zst".to_string(),
@@ -338,7 +338,7 @@ mod tests {
     fn archive_priority_prefers_state_then_rocksdb() {
         let mut planned = [
             PlannedArchive {
-                ty: SnapshotComponentType::Transactions,
+                ty: Some(SnapshotComponentType::Transactions),
                 component: "Transactions".to_string(),
                 archive: SnapshotArchive {
                     url: "u3".to_string(),
@@ -353,7 +353,7 @@ mod tests {
                 },
             },
             PlannedArchive {
-                ty: SnapshotComponentType::RocksdbIndices,
+                ty: Some(SnapshotComponentType::RocksdbIndices),
                 component: "RocksDB Indices".to_string(),
                 archive: SnapshotArchive {
                     url: "u2".to_string(),
@@ -368,7 +368,7 @@ mod tests {
                 },
             },
             PlannedArchive {
-                ty: SnapshotComponentType::State,
+                ty: Some(SnapshotComponentType::State),
                 component: "State (mdbx)".to_string(),
                 archive: SnapshotArchive {
                     url: "u1".to_string(),
@@ -385,15 +385,15 @@ mod tests {
         ];
 
         planned.sort_by(|a, b| {
-            archive_priority_rank(a.ty)
-                .cmp(&archive_priority_rank(b.ty))
+            a.ty.map_or(0, archive_priority_rank)
+                .cmp(&b.ty.map_or(0, archive_priority_rank))
                 .then_with(|| a.component.cmp(&b.component))
                 .then_with(|| a.archive.file_name.cmp(&b.archive.file_name))
         });
 
-        assert_eq!(planned[0].ty, SnapshotComponentType::State);
-        assert_eq!(planned[1].ty, SnapshotComponentType::RocksdbIndices);
-        assert_eq!(planned[2].ty, SnapshotComponentType::Transactions);
+        assert_eq!(planned[0].ty, Some(SnapshotComponentType::State));
+        assert_eq!(planned[1].ty, Some(SnapshotComponentType::RocksdbIndices));
+        assert_eq!(planned[2].ty, Some(SnapshotComponentType::Transactions));
     }
 
     #[test]
@@ -444,6 +444,7 @@ mod tests {
             base_url: Some("https://example.com".to_string()),
             reth_version: None,
             components,
+            bundle: None,
             extensions: Default::default(),
         };
 
@@ -521,6 +522,7 @@ mod tests {
             base_url: Some("https://example.com/mainnet".to_string()),
             reth_version: None,
             components,
+            bundle: None,
             extensions: Default::default(),
         };
         let selections =

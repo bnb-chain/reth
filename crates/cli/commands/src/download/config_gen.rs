@@ -335,6 +335,7 @@ mod tests {
             base_url: None,
             reth_version: None,
             components: BTreeMap::new(),
+            bundle: None,
             extensions: Default::default(),
         }
     }
