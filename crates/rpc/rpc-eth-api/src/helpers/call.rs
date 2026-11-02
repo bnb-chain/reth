@@ -24,8 +24,8 @@ use reth_errors::{ProviderError, RethError};
 use reth_evm::{
     database::StateProviderDatabase,
     execute::{BlockBuilder, BlockExecutor},
-    BlockEnvFor, BundleState, ConfigureEvm, Database, Evm, EvmEnv, EvmEnvFor, EvmTypesFor,
-    TransactionEnvMut, TxEnvFor, TxResultWithStateFor,
+    BundleState, ConfigureEvm, Database, Evm, EvmEnv, EvmEnvFor, EvmTypesFor, TransactionEnvMut,
+    TxEnvFor, TxResultWithStateFor,
 };
 use reth_execution_types::BundleSource;
 use reth_primitives_traits::{BlockBody, Recovered};
@@ -51,7 +51,7 @@ pub type SimulatedBlocksResult<N, E> = Result<Vec<SimulatedBlock<RpcBlock<N>>>, 
 /// the `eth_` namespace.
 pub trait EthCall: EstimateCall + LoadBlock + FullEthApiTypes
 where
-    BlockEnvFor<Self::Evm>: BlockOverridesExt,
+    EvmEnvFor<Self::Evm>: BlockOverridesExt,
 {
     /// Estimate gas needed for execution of the `request` at the [`BlockId`].
     fn estimate_gas_at(
@@ -187,13 +187,11 @@ where
                         }
                         apply_block_overrides(block_overrides.clone(), &mut db, &mut evm_env);
                         evm_env
-                            .block_env_mut()
                             .apply_block_overrides_ext(&block_overrides)
                             .map_err(EthApiError::InvalidParams)?;
                     }
                     if let Some(ref state_overrides) = state_overrides {
                         evm_env
-                            .block_env_mut()
                             .apply_state_overrides_ext(state_overrides)
                             .map_err(EthApiError::InvalidParams)?;
                         let mut changes = simulation_state.as_ref().map(|_| BundleState::default());
@@ -377,7 +375,6 @@ where
                 // After replay, preserve override metadata in the env cloned for each call.
                 if let Some(overrides) = state_override.as_ref() {
                     evm_env
-                        .block_env_mut()
                         .apply_state_overrides_ext(overrides)
                         .map_err(EthApiError::InvalidParams)?;
                 }
@@ -533,7 +530,7 @@ pub trait Call:
                    + From<ProviderError>,
     > + SpawnBlocking
 where
-    BlockEnvFor<Self::Evm>: BlockOverridesExt,
+    EvmEnvFor<Self::Evm>: BlockOverridesExt,
 {
     /// Returns default gas limit to use for `eth_call` and tracing RPC methods.
     ///
@@ -943,13 +940,11 @@ where
         if let Some(block_overrides) = overrides.block {
             apply_block_overrides((*block_overrides).clone(), db, &mut evm_env);
             evm_env
-                .block_env_mut()
                 .apply_block_overrides_ext(&block_overrides)
                 .map_err(EthApiError::InvalidParams)?;
         }
         if let Some(state_overrides) = overrides.state {
             evm_env
-                .block_env_mut()
                 .apply_state_overrides_ext(&state_overrides)
                 .map_err(EthApiError::InvalidParams)?;
             apply_state_overrides(state_overrides, db)

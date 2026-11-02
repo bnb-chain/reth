@@ -164,7 +164,7 @@ where
         Evm = N::Evm,
     >,
     EthApiError: FromEvmError<N::Evm>,
-    reth_evm::BlockEnvFor<N::Evm>: reth_rpc_eth_types::BlockOverridesExt,
+    reth_evm::EvmEnvFor<N::Evm>: reth_rpc_eth_types::BlockOverridesExt,
 {
     type EthApi = EthApiFor<N, NetworkT>;
 
@@ -184,7 +184,7 @@ pub struct EthereumAddOns<
     RpcMiddleware = Identity,
     AuthHttpMiddleware = Identity,
 > where
-    reth_evm::BlockEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+    reth_evm::EvmEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
         reth_rpc_eth_types::BlockOverridesExt,
 {
     inner: RpcAddOns<N, EthB, PVB, EB, EVB, RpcMiddleware, AuthHttpMiddleware>,
@@ -195,7 +195,7 @@ impl<N, EthB, PVB, EB, EVB, RpcMiddleware, AuthHttpMiddleware>
 where
     N: FullNodeComponents,
     EthB: EthApiBuilder<N>,
-    reth_evm::BlockEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+    reth_evm::EvmEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
         reth_rpc_eth_types::BlockOverridesExt,
 {
     /// Creates a new instance from the inner `RpcAddOns`.
@@ -217,7 +217,7 @@ where
         >,
     >,
     EthereumEthApiBuilder: EthApiBuilder<N>,
-    reth_evm::BlockEnvFor<<<EthereumEthApiBuilder as EthApiBuilder<N>>::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>: reth_rpc_eth_types::BlockOverridesExt,
+    reth_evm::EvmEnvFor<<<EthereumEthApiBuilder as EthApiBuilder<N>>::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>: reth_rpc_eth_types::BlockOverridesExt,
 {
     fn default() -> Self {
         Self::new(RpcAddOns::new(
@@ -236,7 +236,7 @@ impl<N, EthB, PVB, EB, EVB, RpcMiddleware, AuthHttpMiddleware>
 where
     N: FullNodeComponents,
     EthB: EthApiBuilder<N>,
-    reth_evm::BlockEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+    reth_evm::EvmEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
         reth_rpc_eth_types::BlockOverridesExt,
 {
     /// Replace the engine API builder.
@@ -332,7 +332,7 @@ where
         Evm: ConfigureEvm<NextBlockEnvCtx = NextBlockEnvAttributes>,
     >,
     EthB: EthApiBuilder<N>,
-    reth_evm::BlockEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+    reth_evm::EvmEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
         reth_rpc_eth_types::BlockOverridesExt,
     PVB: Send,
     EB: EngineApiBuilder<N>,
@@ -427,7 +427,7 @@ where
         Evm: ConfigureEvm<NextBlockEnvCtx = NextBlockEnvAttributes>,
     >,
     EthB: EthApiBuilder<N>,
-    reth_evm::BlockEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+    reth_evm::EvmEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
         reth_rpc_eth_types::BlockOverridesExt,
     PVB: PayloadValidatorBuilder<N>,
     EB: EngineApiBuilder<N>,
@@ -457,7 +457,7 @@ where
         Evm: ConfigureEvm<NextBlockEnvCtx = NextBlockEnvAttributes>,
     >,
     EthB: EthApiBuilder<N>,
-    reth_evm::BlockEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+    reth_evm::EvmEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
         reth_rpc_eth_types::BlockOverridesExt,
     PVB: Send,
     EB: EngineApiBuilder<N>,

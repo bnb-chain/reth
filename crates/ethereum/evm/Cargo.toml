@@ -27,6 +27,7 @@ alloy-primitives.workspace = true
 alloy-eips.workspace = true
 alloy-eip7928.workspace = true
 alloy-consensus.workspace = true
+alloy-rpc-types-eth.workspace = true
 alloy-rpc-types-engine.workspace = true
 alloy-sol-types.workspace = true
 
@@ -75,6 +76,7 @@ p256-aws-lc-rs = [
 ]
 std = [
     "alloy-consensus/std",
+    "alloy-rpc-types-eth/std",
     "alloy-eips/std",
     "alloy-genesis/std",
     "alloy-primitives/std",

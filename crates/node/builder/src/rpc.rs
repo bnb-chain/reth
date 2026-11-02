@@ -537,7 +537,7 @@ pub struct RpcAddOns<
     RpcMiddleware = Identity,
     AuthHttpMiddleware = Identity,
 > where
-    reth_evm::BlockEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+    reth_evm::EvmEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
         reth_rpc_eth_types::BlockOverridesExt,
 {
     /// Additional RPC add-ons.
@@ -569,7 +569,7 @@ impl<Node, EthB, PVB, EB, EVB, RpcMiddleware, AuthHttpMiddleware> Debug
 where
     Node: FullNodeComponents,
     EthB: EthApiBuilder<Node>,
-    reth_evm::BlockEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+    reth_evm::EvmEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
         reth_rpc_eth_types::BlockOverridesExt,
     PVB: Debug,
     EB: Debug,
@@ -592,7 +592,7 @@ impl<Node, EthB, PVB, EB, EVB, RpcMiddleware, AuthHttpMiddleware>
 where
     Node: FullNodeComponents,
     EthB: EthApiBuilder<Node>,
-    reth_evm::BlockEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+    reth_evm::EvmEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
         reth_rpc_eth_types::BlockOverridesExt,
 {
     /// Creates a new instance of the RPC add-ons.
@@ -970,7 +970,7 @@ impl<Node, EthB, EV, EB, Engine> Default
 where
     Node: FullNodeComponents,
     EthB: EthApiBuilder<Node>,
-    reth_evm::BlockEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+    reth_evm::EvmEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
         reth_rpc_eth_types::BlockOverridesExt,
     EV: Default,
     EB: Default,
@@ -994,7 +994,7 @@ where
     N: FullNodeComponents,
     N::Provider: ChainSpecProvider<ChainSpec: EthereumHardforks>,
     EthB: EthApiBuilder<N>,
-    reth_evm::BlockEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+    reth_evm::EvmEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
         reth_rpc_eth_types::BlockOverridesExt,
     EB: EngineApiBuilder<N>,
     EVB: EngineValidatorBuilder<N>,
@@ -1324,7 +1324,7 @@ where
     N: FullNodeComponents,
     <N as FullNodeTypes>::Provider: ChainSpecProvider<ChainSpec: EthereumHardforks>,
     EthB: EthApiBuilder<N>,
-    reth_evm::BlockEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+    reth_evm::EvmEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
         reth_rpc_eth_types::BlockOverridesExt,
     PVB: PayloadValidatorBuilder<N>,
     EB: EngineApiBuilder<N>,
@@ -1356,7 +1356,7 @@ impl<N: FullNodeComponents, EthB, EV, EB, Engine, RpcMiddleware, AuthHttpMiddlew
 where
     Self: NodeAddOns<N, Handle = RpcHandle<N, EthB::EthApi>>,
     EthB: EthApiBuilder<N>,
-    reth_evm::BlockEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+    reth_evm::EvmEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
         reth_rpc_eth_types::BlockOverridesExt,
 {
     type EthApi = EthB::EthApi;
@@ -1441,7 +1441,7 @@ impl<'a, N: FullNodeComponents<Types: NodeTypes<ChainSpec: Hardforks + EthereumH
 /// A `EthApi` that knows how to build `eth` namespace API from [`FullNodeComponents`].
 pub trait EthApiBuilder<N: FullNodeComponents>: Default + Send + 'static
 where
-    reth_evm::BlockEnvFor<<Self::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+    reth_evm::EvmEnvFor<<Self::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
         reth_rpc_eth_types::BlockOverridesExt,
 {
     /// The Ethapi implementation this builder will build.
@@ -1468,7 +1468,7 @@ impl<N, EthB, PVB, EB, EVB, RpcMiddleware, AuthHttpMiddleware> EngineValidatorAd
 where
     N: FullNodeComponents,
     EthB: EthApiBuilder<N>,
-    reth_evm::BlockEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+    reth_evm::EvmEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
         reth_rpc_eth_types::BlockOverridesExt,
     PVB: Send,
     EB: EngineApiBuilder<N>,
@@ -1750,7 +1750,7 @@ async fn prewarm_new_block_bals_task<EthApi: GetBlockAccessList, N: NodePrimitiv
     mut events: impl Stream<Item = CanonStateNotification<N>> + Unpin,
     startup_blocks: usize,
 ) where
-    reth_evm::BlockEnvFor<EthApi::Evm>: reth_rpc_eth_types::BlockOverridesExt,
+    reth_evm::EvmEnvFor<EthApi::Evm>: reth_rpc_eth_types::BlockOverridesExt,
 {
     let mut startup = match eth_api.recovered_block(BlockId::latest()).await {
         Ok(Some(head)) => {

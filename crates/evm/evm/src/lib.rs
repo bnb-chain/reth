@@ -114,8 +114,11 @@ impl EvmTransactionValidationGasRules {
     }
 }
 
+mod overrides;
+pub use overrides::BlockOverridesExt;
+
 /// Resolved EVM environment data needed by the EVM execution path.
-pub trait EvmEnv: Debug + Clone + Send + Sync + 'static {
+pub trait EvmEnv: BlockOverridesExt + Debug + Clone + Send + Sync + 'static {
     /// Runtime EVM type family.
     type EvmTypes: evm2::EvmTypes;
 

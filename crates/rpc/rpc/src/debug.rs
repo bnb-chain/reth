@@ -115,7 +115,7 @@ where
 impl<Eth> DebugApi<Eth>
 where
     Eth: TraceExt,
-    reth_evm::BlockEnvFor<Eth::Evm>: reth_rpc_eth_types::BlockOverridesExt,
+    reth_evm::EvmEnvFor<Eth::Evm>: reth_rpc_eth_types::BlockOverridesExt,
 {
     /// Acquires a permit to execute a tracing call.
     async fn acquire_trace_permit(&self) -> Result<OwnedSemaphorePermit, AcquireError> {
@@ -558,7 +558,6 @@ where
                 // After replay, preserve override metadata in the env cloned for each call.
                 if let Some(overrides) = state_overrides.as_ref() {
                     evm_env
-                        .block_env_mut()
                         .apply_state_overrides_ext(overrides)
                         .map_err(EthApiError::InvalidParams)?;
                 }
@@ -863,7 +862,7 @@ where
 impl<Eth> DebugApiServer<RpcTxReq<Eth::NetworkTypes>> for DebugApi<Eth>
 where
     Eth: EthTransactions + TraceExt,
-    reth_evm::BlockEnvFor<Eth::Evm>: reth_rpc_eth_types::BlockOverridesExt,
+    reth_evm::EvmEnvFor<Eth::Evm>: reth_rpc_eth_types::BlockOverridesExt,
 {
     /// Handler for `debug_getRawHeader`
     async fn raw_header(&self, block_id: BlockId) -> RpcResult<Bytes> {

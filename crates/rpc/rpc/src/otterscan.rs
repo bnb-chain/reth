@@ -51,7 +51,7 @@ impl<Eth> OtterscanApi<Eth> {
 impl<Eth> OtterscanApi<Eth>
 where
     Eth: TraceExt,
-    reth_evm::BlockEnvFor<Eth::Evm>: reth_rpc_eth_types::BlockOverridesExt,
+    reth_evm::EvmEnvFor<Eth::Evm>: reth_rpc_eth_types::BlockOverridesExt,
 {
     /// Constructs a `BlockDetails` from a block and its receipts.
     async fn block_details(
@@ -120,7 +120,7 @@ where
         > + EthTransactions
         + TraceExt
         + 'static,
-    reth_evm::BlockEnvFor<Eth::Evm>: reth_rpc_eth_types::BlockOverridesExt,
+    reth_evm::EvmEnvFor<Eth::Evm>: reth_rpc_eth_types::BlockOverridesExt,
 {
     /// Handler for `ots_getHeaderByNumber` and `erigon_getHeaderByNumber`
     async fn get_header_by_number(

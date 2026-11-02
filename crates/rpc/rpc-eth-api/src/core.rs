@@ -39,7 +39,7 @@ pub trait FullEthApiServer:
     > + FullEthApi
     + Clone
 where
-    reth_evm::BlockEnvFor<Self::Evm>: reth_rpc_eth_types::BlockOverridesExt,
+    reth_evm::EvmEnvFor<Self::Evm>: reth_rpc_eth_types::BlockOverridesExt,
 {
 }
 
@@ -54,7 +54,7 @@ where
             TxTy<T::Primitives>,
         > + FullEthApi
         + Clone,
-    reth_evm::BlockEnvFor<T::Evm>: reth_rpc_eth_types::BlockOverridesExt,
+    reth_evm::EvmEnvFor<T::Evm>: reth_rpc_eth_types::BlockOverridesExt,
 {
 }
 
@@ -503,7 +503,7 @@ impl<T>
     > for T
 where
     T: FullEthApi,
-    reth_evm::BlockEnvFor<T::Evm>: reth_rpc_eth_types::BlockOverridesExt,
+    reth_evm::EvmEnvFor<T::Evm>: reth_rpc_eth_types::BlockOverridesExt,
     jsonrpsee_types::error::ErrorObject<'static>: From<T::Error>,
 {
     /// Handler for: `eth_protocolVersion`

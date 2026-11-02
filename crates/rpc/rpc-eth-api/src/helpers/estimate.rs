@@ -30,7 +30,7 @@ use tracing::trace;
 /// Gas execution estimates
 pub trait EstimateCall: Call
 where
-    reth_evm::BlockEnvFor<Self::Evm>: reth_rpc_eth_types::BlockOverridesExt,
+    reth_evm::EvmEnvFor<Self::Evm>: reth_rpc_eth_types::BlockOverridesExt,
 {
     /// Estimates the gas usage of the `request` with the state.
     ///
@@ -86,7 +86,6 @@ where
         if let Some(block_overrides) = overrides.block {
             apply_block_overrides((*block_overrides).clone(), &mut db, &mut evm_env);
             evm_env
-                .block_env_mut()
                 .apply_block_overrides_ext(&block_overrides)
                 .map_err(EthApiError::InvalidParams)?;
         }
@@ -94,7 +93,6 @@ where
         // Apply any state overrides if specified.
         if let Some(state_override) = overrides.state {
             evm_env
-                .block_env_mut()
                 .apply_state_overrides_ext(&state_override)
                 .map_err(EthApiError::InvalidParams)?;
             apply_state_overrides(state_override, &mut db).map_err(Self::Error::from_eth_err)?;

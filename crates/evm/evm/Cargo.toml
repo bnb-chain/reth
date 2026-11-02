@@ -26,6 +26,7 @@ evm2.workspace = true
 alloy-primitives.workspace = true
 alloy-eips.workspace = true
 alloy-consensus.workspace = true
+alloy-rpc-types-eth.workspace = true
 alloy-eip7928.workspace = true
 alloy-rlp = { workspace = true, optional = true }
 alloy-rpc-types-debug = { workspace = true, optional = true }
@@ -47,6 +48,7 @@ account-ext = [
     "reth-execution-types/account-ext",
     "reth-primitives-traits/account-ext",
     "reth-trie-common/account-ext",
+    "alloy-rpc-types-eth/account-ext",
 ]
 default = ["std"]
 gmp = ["evm2/gmp"]
@@ -76,6 +78,7 @@ std = [
     "alloy-eips/std",
     "alloy-primitives/std",
     "alloy-consensus/std",
+    "alloy-rpc-types-eth/std",
     "evm2/std",
     "evm2/secp256k1",
     "reth-execution-errors/std",

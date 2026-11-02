@@ -104,7 +104,7 @@ impl<Eth, Evm, Payload: PayloadTypes> TestingApi<Eth, Evm, Payload> {
 
 impl<Eth, Evm, Payload> TestingApi<Eth, Evm, Payload>
 where
-    reth_evm::BlockEnvFor<Eth::Evm>: reth_rpc_eth_types::BlockOverridesExt,
+    reth_evm::EvmEnvFor<Eth::Evm>: reth_rpc_eth_types::BlockOverridesExt,
     Payload: PayloadTypes<
         ExecutionData = ExecutionData,
         BuiltPayload: BuiltPayload<Primitives = Evm::Primitives>,
@@ -416,7 +416,7 @@ where
 #[async_trait]
 impl<Eth, Evm, Payload> TestingApiServer for TestingApi<Eth, Evm, Payload>
 where
-    reth_evm::BlockEnvFor<Eth::Evm>: reth_rpc_eth_types::BlockOverridesExt,
+    reth_evm::EvmEnvFor<Eth::Evm>: reth_rpc_eth_types::BlockOverridesExt,
     Payload: PayloadTypes<
         ExecutionData = ExecutionData,
         BuiltPayload: BuiltPayload<Primitives = Evm::Primitives>,

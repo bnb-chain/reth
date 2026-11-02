@@ -45,7 +45,7 @@ impl<Insp, EvmTypes: evm2::EvmTypes> TracingCtx<'_, Insp, EvmTypes> {
 /// Executes CPU heavy trace tasks.
 pub trait Trace: LoadState<Error: FromEvmError<Self::Evm>> + Call
 where
-    reth_evm::BlockEnvFor<Self::Evm>: reth_rpc_eth_types::BlockOverridesExt,
+    reth_evm::EvmEnvFor<Self::Evm>: reth_rpc_eth_types::BlockOverridesExt,
 {
     /// Executes a transaction with the provided inspector without committing state changes.
     fn inspect<DB, I>(

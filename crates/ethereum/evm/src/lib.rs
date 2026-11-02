@@ -118,6 +118,15 @@ impl<T: evm2::EvmTypesHost> AsRef<evm2::env::BlockEnv<T>> for EthEvmEnv<T> {
     }
 }
 
+impl<T: evm2::EvmTypesHost> reth_evm::BlockOverridesExt for EthEvmEnv<T> {
+    fn apply_block_overrides_ext(
+        &mut self,
+        _overrides: &alloy_rpc_types_eth::BlockOverrides,
+    ) -> Result<(), alloc::string::String> {
+        Ok(())
+    }
+}
+
 impl<T: evm2::EvmTypes> EvmEnv for EthEvmEnv<T>
 where
     T::SpecId: Debug + Send + Sync,
@@ -595,6 +604,33 @@ mod tests {
     use alloy_genesis::Genesis;
     use alloy_primitives::U256;
     use reth_chainspec::{Chain, ChainSpec};
+
+    #[test]
+    fn ethereum_override_hooks_preserve_resolved_environment() {
+        use reth_evm::BlockOverridesExt;
+        let mut env = EthEvmEnv::<evm2::BaseEvmTypes>::new(
+            evm2::SpecId::PRAGUE,
+            evm2::env::BlockEnv::<evm2::BaseEvmTypes> {
+                timestamp: U256::from(12_345),
+                prevrandao: U256::from(42),
+                ..Default::default()
+            },
+            1,
+        );
+        let before = env.block;
+        let version_before = env.version;
+        let overrides = alloy_rpc_types_eth::BlockOverrides {
+            time: Some(12_345),
+            random: Some(B256::from(U256::from(42))),
+            ..Default::default()
+        };
+        env.apply_block_overrides_ext(&overrides).unwrap();
+        env.apply_state_overrides_ext(&Default::default()).unwrap();
+        assert_eq!(env.block, before);
+        assert_eq!(env.version.features, version_before.features);
+        assert_eq!(env.version.chain_id, version_before.chain_id);
+        assert_eq!(env.version.tx_gas_limit_cap, version_before.tx_gas_limit_cap);
+    }
 
     #[test]
     fn test_evm_env_for_header_uses_chain_blob_params() {

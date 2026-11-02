@@ -140,7 +140,7 @@ impl<Eth> EthSimBundle<Eth> {
 impl<Eth> EthSimBundle<Eth>
 where
     Eth: EthTransactions + LoadBlock + Call + 'static,
-    reth_evm::BlockEnvFor<Eth::Evm>: reth_rpc_eth_types::BlockOverridesExt,
+    reth_evm::EvmEnvFor<Eth::Evm>: reth_rpc_eth_types::BlockOverridesExt,
 {
     /// Flattens a potentially nested bundle into a list of individual transactions in a
     /// `FlattenedBundleItem` with their associated metadata. This handles recursive bundle
@@ -491,7 +491,7 @@ where
 impl<Eth> MevSimApiServer for EthSimBundle<Eth>
 where
     Eth: EthTransactions + LoadBlock + Call + 'static,
-    reth_evm::BlockEnvFor<Eth::Evm>: reth_rpc_eth_types::BlockOverridesExt,
+    reth_evm::EvmEnvFor<Eth::Evm>: reth_rpc_eth_types::BlockOverridesExt,
 {
     async fn sim_bundle(
         &self,
