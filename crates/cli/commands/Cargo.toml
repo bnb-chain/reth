@@ -45,7 +45,6 @@ reth-ethereum-primitives = { workspace = true, optional = true }
 reth-provider.workspace = true
 reth-prune.workspace = true
 reth-prune-types.workspace = true
-reth-revm.workspace = true
 reth-stages.workspace = true
 reth-stages-types.workspace = true
 reth-static-file-types = { workspace = true, features = ["clap"] }
@@ -139,6 +138,7 @@ asm-keccak = [
     "reth-stages/asm-keccak",
     "reth-trie-common?/asm-keccak",
     "reth-trie-db/asm-keccak",
+    "reth-evm/asm-keccak",
 ]
 arbitrary = [
     "dep:proptest",

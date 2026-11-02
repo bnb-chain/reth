@@ -156,6 +156,7 @@ macro_rules! tables {
             {
                 const NAME: &'static str = table_names::$name;
                 const DUPSORT: bool = tables!(@bool $($subkey)?);
+                const TABLE: Option<Tables> = Some(Tables::$name);
 
                 type Key = $key;
                 type Value = $value;
@@ -572,6 +573,7 @@ pub struct PackedAccountsTrie;
 impl Table for PackedAccountsTrie {
     const NAME: &'static str = <AccountsTrie as Table>::NAME;
     const DUPSORT: bool = false;
+    const TABLE: Option<Tables> = <AccountsTrie as Table>::TABLE;
     type Key = PackedStoredNibbles;
     type Value = BranchNodeCompact;
 }
@@ -586,6 +588,7 @@ pub struct PackedStoragesTrie;
 impl Table for PackedStoragesTrie {
     const NAME: &'static str = <StoragesTrie as Table>::NAME;
     const DUPSORT: bool = true;
+    const TABLE: Option<Tables> = <StoragesTrie as Table>::TABLE;
     type Key = B256;
     type Value = PackedStorageTrieEntry;
 }
