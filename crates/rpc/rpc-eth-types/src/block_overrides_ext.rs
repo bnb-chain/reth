@@ -47,8 +47,8 @@ mod tests {
 
     #[test]
     fn block_env_hook_is_a_noop() {
-        let mut env = BlockEnv::default();
-        let before = env.clone();
+        let mut env = BlockEnv::<evm2::BaseEvmTypes>::default();
+        let before = env;
         let overrides = BlockOverrides {
             time: Some(12_345),
             random: Some(B256::from([0x42; 32])),
