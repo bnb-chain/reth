@@ -62,6 +62,7 @@ use tracing::*;
 
 mod block_buffer;
 pub mod error;
+mod handoff_metrics;
 pub mod instrumented_state;
 mod invalid_headers;
 mod metrics;
@@ -1585,6 +1586,15 @@ where
         &mut self,
         msg: FromEngine<EngineApiRequest<T, N>, N::Block>,
     ) -> Result<ops::ControlFlow<oneshot::Sender<()>>, InsertBlockFatalError> {
+        if let FromEngine::TimedRequest { request, queued_at } = &msg {
+            let kind = match request {
+                EngineApiRequest::InsertExecutedBlock(_) => "local_insert",
+                EngineApiRequest::Beacon(BeaconEngineMessage::ForkchoiceUpdated { .. }) => "fcu",
+                _ => "other",
+            };
+            ::metrics::histogram!("engine.handoff.queue_seconds", "kind" => kind)
+                .record(queued_at.elapsed().as_secs_f64());
+        }
         match msg {
             FromEngine::Event(event) => match event {
                 FromOrchestrator::BackfillSyncStarted => {
@@ -1603,9 +1613,10 @@ where
                     return Ok(ops::ControlFlow::Break(tx))
                 }
             },
-            FromEngine::Request(request) => {
+            FromEngine::Request(request) | FromEngine::TimedRequest { request, .. } => {
                 match request {
                     EngineApiRequest::InsertExecutedBlock(payload) => {
+                        let _stage = handoff_metrics::HandoffStage::new("insert_executed_total");
                         let block_num_hash = payload.recovered_block.num_hash();
                         if block_num_hash.number <= self.state.tree_state.canonical_block_number() {
                             // outdated block that can be skipped
@@ -1659,7 +1670,9 @@ where
                                 let has_attrs = payload_attrs.is_some();
 
                                 let start = Instant::now();
+                                let stage = handoff_metrics::HandoffStage::new("fcu_process");
                                 let mut output = self.on_forkchoice_updated(state, payload_attrs);
+                                drop(stage);
 
                                 if let Ok(res) = &mut output {
                                     // track last received forkchoice state
@@ -2913,7 +2926,10 @@ where
         self.state.tree_state.set_canonical_head(chain_update.tip().num_hash());
 
         let tip = chain_update.tip().clone_sealed_header();
+        let notification_stage =
+            handoff_metrics::HandoffStage::new("canonical_notification_convert");
         let notification = chain_update.to_chain_notification();
+        drop(notification_stage);
 
         // reinsert any missing reorged blocks
         if let NewCanonicalChain::Reorg { new, old } = &chain_update {
@@ -2928,15 +2944,21 @@ where
         }
 
         // update the tracked in-memory state with the new chain
+        let state_stage = handoff_metrics::HandoffStage::new("canonical_memory_update");
         self.canonical_in_memory_state.update_chain(chain_update);
         self.canonical_in_memory_state.set_canonical_head(tip.clone());
+        drop(state_stage);
+        let prewarm_stage = handoff_metrics::HandoffStage::new("canonical_prewarm_setup");
         self.payload_validator.on_canonical_head_changed(tip.hash(), &self.state);
+        drop(prewarm_stage);
 
         // Update metrics based on new tip
         self.metrics.tree.canonical_chain_height.set(tip.number() as f64);
 
         // sends an event to all active listeners about the new canonical chain
+        let notify_stage = handoff_metrics::HandoffStage::new("canonical_notification_send");
         self.canonical_in_memory_state.notify_canon_state(notification);
+        drop(notify_stage);
 
         // emit event
         self.emit_event(ConsensusEngineEvent::CanonicalChainCommitted(
