@@ -574,6 +574,7 @@ impl DefaultStateRootStrategy {
             origin,
             parent_header,
             preserved_sparse_trie,
+            parent_cache_wait,
             transaction_count,
             gas_used,
             config,
@@ -618,6 +619,7 @@ impl DefaultStateRootStrategy {
                 diagnostics: diagnostics.clone(),
                 parent_header,
                 preserved_sparse_trie,
+                parent_cache_wait,
                 pending_trie_tx,
                 chunk_size: config.multiproof_chunk_size(),
                 worker_counts,
@@ -664,6 +666,7 @@ impl DefaultStateRootStrategy {
             diagnostics,
             parent_header,
             preserved_sparse_trie,
+            parent_cache_wait,
             pending_trie_tx,
             chunk_size,
             worker_counts,
@@ -710,6 +713,34 @@ impl DefaultStateRootStrategy {
             let mut sparse_trie_anchor_hash = parent_hash;
             let mut reused_preserved_sparse_trie = false;
             let mut known_storage_roots = Default::default();
+            let preserved_sparse_trie = if let Some(timeout) = parent_cache_wait {
+                let start = Instant::now();
+                let mut pending = preserved_sparse_trie;
+                loop {
+                    let Some(trie) = pending.take() else { break None };
+                    match trie.try_into_ready() {
+                        Ok(trie) => {
+                            reth_metrics::metrics::histogram!("trie.diagnostics.parent_handoff_wait_seconds").record(start.elapsed().as_secs_f64());
+                            break Some(trie)
+                        }
+                        Err(trie) => pending = Some(trie),
+                    }
+                    if !matches!(cancel_rx.try_recv(), Err(crossbeam_channel::TryRecvError::Empty)) {
+                        executor.spawn_drop(pending);
+                        diagnostics.returned(RootTaskResult::Cancelled);
+                        let _ = state_root_tx.send(Err(StateRootTaskError::Canceled));
+                        return
+                    }
+                    if start.elapsed() >= timeout {
+                        reth_metrics::metrics::counter!("trie.diagnostics.parent_handoff_timeout_total").increment(1);
+                        executor.spawn_drop(pending);
+                        break None
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            } else {
+                preserved_sparse_trie
+            };
             let sparse_state_trie = match preserved_sparse_trie {
                 Some(preserved) => {
                     let start = Instant::now();
@@ -884,6 +915,7 @@ where
                 origin: "miner",
                 parent_header,
                 preserved_sparse_trie: None,
+                parent_cache_wait: None,
                 transaction_count,
                 gas_used: None,
                 config,
@@ -931,7 +963,7 @@ where
     )
 }
 
-/// Context-aware variant for fixed caller roles (never use block/transaction identities).
+/// Context-aware variant preserving ready-only parent-cache selection.
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_payload_builder_state_root_with_cache_origin<N, F>(
     executor: &reth_tasks::Runtime,
@@ -948,8 +980,45 @@ where
     N: NodePrimitives,
     F: DatabaseProviderROFactory<Provider: StateProofProvider> + Clone + Send + Sync + 'static,
 {
+    spawn_payload_builder_state_root_with_cache_wait(
+        executor,
+        multiproof_provider_factory,
+        parent_header,
+        transaction_count,
+        config,
+        pending_sparse_trie_prune_blocks,
+        preserved,
+        diagnostic_origin,
+        None,
+        configure_reused_factory,
+    )
+}
+
+/// Context-aware variant for fixed caller roles (never use block/transaction identities).
+///
+/// `parent_cache_wait` enables a bounded, cancellable wait on the background root
+/// worker for an already-computed parent's trie. `None` preserves the nonblocking
+/// ready-only selection used by existing callers. The calling mining thread never waits.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_payload_builder_state_root_with_cache_wait<N, F>(
+    executor: &reth_tasks::Runtime,
+    multiproof_provider_factory: F,
+    parent_header: SealedHeader<N::BlockHeader>,
+    transaction_count: Option<usize>,
+    config: &TreeConfig,
+    pending_sparse_trie_prune_blocks: Option<Vec<ExecutedBlock<N>>>,
+    preserved: Option<PreservedSparseTrie>,
+    diagnostic_origin: &'static str,
+    parent_cache_wait: Option<Duration>,
+    configure_reused_factory: impl FnOnce(F, B256, B256Map<B256>) -> F + Send + 'static,
+) -> (StateRootHandle, PayloadBuilderTrieCache)
+where
+    N: NodePrimitives,
+    F: DatabaseProviderROFactory<Provider: StateProofProvider> + Clone + Send + Sync + 'static,
+{
     let parent_hash = parent_header.hash();
     let preserved_sparse_trie = match preserved {
+        Some(trie) if trie.block_hash() == parent_hash && parent_cache_wait.is_some() => Some(trie),
         Some(trie) if trie.block_hash() == parent_hash => match trie.try_into_ready() {
             Ok(trie) => Some(trie),
             Err(trie) => {
@@ -965,7 +1034,7 @@ where
         }
         None => None,
     };
-    reth_metrics::metrics::counter!("trie.diagnostics.external_cache_initializations_total", "origin" => diagnostic_origin, "result" => if preserved_sparse_trie.is_some() { "reused" } else { "fresh" }).increment(1);
+    reth_metrics::metrics::counter!("trie.diagnostics.external_cache_initializations_total", "origin" => diagnostic_origin, "result" => if preserved_sparse_trie.is_none() { "fresh" } else if parent_cache_wait.is_some() { "pending" } else { "reused" }).increment(1);
     let (handle, pending) = DefaultStateRootStrategy::default().spawn_state_root_with_factory(
         executor,
         multiproof_provider_factory,
@@ -973,6 +1042,7 @@ where
             origin: diagnostic_origin,
             parent_header,
             preserved_sparse_trie,
+            parent_cache_wait,
             transaction_count,
             gas_used: None,
             config,
@@ -1037,6 +1107,7 @@ struct SparseTrieTaskOptions<N: NodePrimitives> {
     diagnostics: Arc<RootTaskDiagnostics>,
     parent_header: SealedHeader<N::BlockHeader>,
     preserved_sparse_trie: Option<PreservedSparseTrie>,
+    parent_cache_wait: Option<Duration>,
     pending_trie_tx: mpsc::Sender<PendingSparseTrie>,
     chunk_size: usize,
     worker_counts: ProofWorkerCounts,
@@ -1050,6 +1121,7 @@ struct StateRootTaskOptions<'a, N: NodePrimitives> {
     origin: &'static str,
     parent_header: SealedHeader<N::BlockHeader>,
     preserved_sparse_trie: Option<PreservedSparseTrie>,
+    parent_cache_wait: Option<Duration>,
     transaction_count: Option<usize>,
     /// Gas the block claims to use, taken from the payload before execution.
     gas_used: Option<u64>,
@@ -1128,6 +1200,7 @@ where
                 origin: "import",
                 parent_header: parent_header.clone(),
                 preserved_sparse_trie,
+                parent_cache_wait: None,
                 transaction_count: Some(env.transaction_count),
                 gas_used: Some(env.gas_used),
                 config,
@@ -1195,6 +1268,7 @@ where
                 origin: "builder",
                 parent_header,
                 preserved_sparse_trie,
+                parent_cache_wait: None,
                 // Block built incrementally, so neither the tx count nor the gas is known at FCU
                 // time: the payload builder uses half of each proof pool.
                 transaction_count: None,
@@ -1708,6 +1782,7 @@ mod tests {
                         origin: "test",
                         parent_header: SealedHeader::new(Default::default(), genesis_hash),
                         preserved_sparse_trie: Some(preserved),
+                        parent_cache_wait: None,
                         transaction_count: None,
                         gas_used: None,
                         config: &TreeConfig::default(),
@@ -1744,6 +1819,99 @@ mod tests {
     }
 
     #[test]
+    fn pending_external_handoff_cancels_without_waiting_for_parent_completion() {
+        let factory = create_test_provider_factory_with_chain_spec(Arc::new(ChainSpec::default()));
+        let genesis = init_genesis(&factory).unwrap();
+        let runtime = reth_tasks::Runtime::test();
+        let (completer, receiver) = mpsc::channel();
+        let (mut handle, _cache) =
+            spawn_payload_builder_state_root_with_cache_wait::<EthPrimitives, _>(
+                &runtime,
+                OverlayStateProviderFactory::new(
+                    factory,
+                    OverlayManager::<EthPrimitives>::default().overlay_builder(genesis),
+                ),
+                SealedHeader::new(Default::default(), genesis),
+                None,
+                &TreeConfig::default(),
+                None,
+                Some(PreservedSparseTrie::pending(receiver, genesis, genesis)),
+                "test",
+                Some(Duration::from_secs(30)),
+                |_, _, _| panic!("cancelled parent must not configure a reused provider"),
+            );
+        let result = handle.take_state_root_rx();
+        drop(handle);
+        assert!(matches!(
+            result.recv_timeout(Duration::from_secs(2)),
+            Ok(Err(StateRootTaskError::Canceled))
+        ));
+        drop(completer);
+    }
+
+    #[test]
+    fn pending_external_handoff_timeout_falls_back_to_normal_proof_path() {
+        let factory = create_test_provider_factory_with_chain_spec(Arc::new(ChainSpec::default()));
+        let genesis = init_genesis(&factory).unwrap();
+        let runtime = reth_tasks::Runtime::test();
+        let (completer, receiver) = mpsc::channel();
+        let parent = SealedHeader::new(
+            ChainSpec::<alloy_consensus::Header>::default().genesis_header().clone(),
+            genesis,
+        );
+        let provider = OverlayStateProviderFactory::new(
+            factory,
+            OverlayManager::<EthPrimitives>::default().overlay_builder(genesis),
+        );
+        let updates = create_mock_state_updates(1, 1);
+        let (mut expected, _) = spawn_payload_builder_state_root_with_cache_wait::<EthPrimitives, _>(
+            &runtime,
+            provider.clone(),
+            parent.clone(),
+            None,
+            &TreeConfig::default(),
+            None,
+            None,
+            "test",
+            None,
+            |factory, _, _| factory,
+        );
+        drop(expected.take_hint_stream());
+        let mut hook = expected.take_execution_hook();
+        for update in updates.clone() {
+            hook.on_state(update);
+        }
+        drop(hook);
+        let expected_result =
+            expected.take_state_root_rx().recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+        drop(expected);
+        let (mut actual, _) = spawn_payload_builder_state_root_with_cache_wait::<EthPrimitives, _>(
+            &runtime,
+            provider,
+            parent,
+            None,
+            &TreeConfig::default(),
+            None,
+            Some(PreservedSparseTrie::pending(receiver, genesis, genesis)),
+            "test",
+            Some(Duration::ZERO),
+            |_, _, _| panic!("timed-out parent must not configure a reused provider"),
+        );
+        drop(actual.take_hint_stream());
+        let mut hook = actual.take_execution_hook();
+        for update in updates {
+            hook.on_state(update);
+        }
+        drop(hook);
+        let actual_result =
+            actual.take_state_root_rx().recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+        drop(actual);
+        assert_eq!(actual_result.state_root, expected_result.state_root);
+        assert_eq!(actual_result.trie_updates, expected_result.trie_updates);
+        drop(completer);
+    }
+
+    #[test]
     fn publication_does_not_wait_for_worker() {
         let (pending_trie_tx, pending_trie_rx) = mpsc::channel();
         let overlay_manager = OverlayManager::<EthPrimitives>::default();
@@ -1774,6 +1942,7 @@ mod tests {
                 origin: "test",
                 parent_header: SealedHeader::new(Default::default(), genesis_hash),
                 preserved_sparse_trie: None,
+                parent_cache_wait: None,
                 transaction_count: None,
                 gas_used: None,
                 config: &TreeConfig::default(),
@@ -1944,6 +2113,7 @@ mod tests {
                 origin: "import",
                 parent_header: parent,
                 preserved_sparse_trie: None,
+                parent_cache_wait: None,
                 transaction_count: Some(1),
                 gas_used: None,
                 config: &TreeConfig::default(),

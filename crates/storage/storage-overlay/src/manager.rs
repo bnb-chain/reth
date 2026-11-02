@@ -667,7 +667,12 @@ impl<N: NodePrimitives> OverlayManager<N> {
         write_to_cache: bool,
     ) -> TrieInputSorted {
         if !write_to_cache {
-            return compute_overlay(compute_input, anchor_hash, &self.metrics)
+            return compute_overlay(
+                compute_input,
+                anchor_hash,
+                &self.metrics,
+                self.diagnostic_origin,
+            )
         }
 
         #[cfg(feature = "rayon")]
@@ -675,14 +680,15 @@ impl<N: NodePrimitives> OverlayManager<N> {
             if let Some(worker_pool) = &self.worker_pool {
                 let compute_span = _span;
                 let metrics = self.metrics.clone();
+                let origin = self.diagnostic_origin;
                 return worker_pool.spawn_and_wait(move || {
                     let _guard = compute_span.enter();
-                    compute_overlay(compute_input, anchor_hash, &metrics)
+                    compute_overlay(compute_input, anchor_hash, &metrics, origin)
                 })
             }
         }
 
-        compute_overlay(compute_input, anchor_hash, &self.metrics)
+        compute_overlay(compute_input, anchor_hash, &self.metrics, self.diagnostic_origin)
     }
 
     fn compute_execution_overlay(
@@ -697,6 +703,7 @@ impl<N: NodePrimitives> OverlayManager<N> {
                 compute_input,
                 anchor_hash,
                 &self.execution_metrics,
+                self.diagnostic_origin,
             )
         }
 
@@ -705,14 +712,20 @@ impl<N: NodePrimitives> OverlayManager<N> {
             if let Some(worker_pool) = &self.worker_pool {
                 let compute_span = _span;
                 let metrics = self.execution_metrics.clone();
+                let origin = self.diagnostic_origin;
                 return worker_pool.spawn_and_wait(move || {
                     let _guard = compute_span.enter();
-                    compute_execution_overlay_inner(compute_input, anchor_hash, &metrics)
+                    compute_execution_overlay_inner(compute_input, anchor_hash, &metrics, origin)
                 })
             }
         }
 
-        compute_execution_overlay_inner(compute_input, anchor_hash, &self.execution_metrics)
+        compute_execution_overlay_inner(
+            compute_input,
+            anchor_hash,
+            &self.execution_metrics,
+            self.diagnostic_origin,
+        )
     }
 }
 
@@ -883,6 +896,7 @@ fn compute_overlay<N: NodePrimitives>(
     input: ComputeOverlayInput<N, TrieInputSorted>,
     anchor_hash: B256,
     metrics: &StateTrieOverlayMetrics,
+    origin: &'static str,
 ) -> TrieInputSorted {
     let started_at = Instant::now();
     let block_count = match &input {
@@ -900,6 +914,12 @@ fn compute_overlay<N: NodePrimitives>(
 
     let overlay = match input {
         ComputeOverlayInput::ExtendCached { blocks, parent_input } => {
+            let shared = Arc::strong_count(&parent_input) > 1 ||
+                Arc::strong_count(&parent_input.state) > 1 ||
+                Arc::strong_count(&parent_input.nodes) > 1;
+            reth_metrics::metrics::counter!("trie.diagnostics.overlay_extension_total", "origin" => origin, "kind" => "trie", "ownership" => if shared { "shared" } else { "unique" }).increment(1);
+            reth_metrics::metrics::histogram!("trie.diagnostics.overlay_extension_accounts", "origin" => origin, "ownership" => if shared { "shared" } else { "unique" }).record(parent_input.state.accounts.len() as f64);
+
             trace!(
                 target: "storage::overlay::manager",
                 %anchor_hash,
@@ -914,7 +934,10 @@ fn compute_overlay<N: NodePrimitives>(
             extend_overlay(overlay, &updates.state, &updates.nodes);
             Arc::try_unwrap(parent_input).expect("Arc::make_mut leaves the child overlay unique")
         }
-        ComputeOverlayInput::MergeBlocks(blocks) => merge_blocks(blocks),
+        ComputeOverlayInput::MergeBlocks(blocks) => {
+            reth_metrics::metrics::histogram!("trie.diagnostics.overlay_full_merge_blocks", "origin" => origin, "kind" => "trie").record(blocks.len() as f64);
+            merge_blocks(blocks)
+        }
     };
 
     let elapsed = started_at.elapsed();
@@ -996,6 +1019,7 @@ fn compute_execution_overlay_inner<N: NodePrimitives>(
     input: ComputeOverlayInput<N, ExecutionOverlay>,
     anchor_hash: B256,
     metrics: &ExecutionOverlayMetrics,
+    origin: &'static str,
 ) -> ExecutionOverlay {
     let started_at = Instant::now();
     let block_count = match &input {
@@ -1013,6 +1037,7 @@ fn compute_execution_overlay_inner<N: NodePrimitives>(
 
     let overlay = match input {
         ComputeOverlayInput::ExtendCached { blocks, parent_input } => {
+            reth_metrics::metrics::counter!("trie.diagnostics.overlay_extension_total", "origin" => origin, "kind" => "execution", "ownership" => if Arc::strong_count(&parent_input) > 1 { "shared" } else { "unique" }).increment(1);
             let mut parent_input = parent_input;
             let overlay = Arc::make_mut(&mut parent_input);
             for block in blocks.iter().rev() {
@@ -1021,6 +1046,7 @@ fn compute_execution_overlay_inner<N: NodePrimitives>(
             Arc::try_unwrap(parent_input).expect("Arc::make_mut leaves the child overlay unique")
         }
         ComputeOverlayInput::MergeBlocks(blocks) => {
+            reth_metrics::metrics::histogram!("trie.diagnostics.overlay_full_merge_blocks", "origin" => origin, "kind" => "execution").record(blocks.len() as f64);
             let mut overlay = ExecutionOverlay::default();
             for block in blocks.iter().rev() {
                 overlay.extend_block(block);

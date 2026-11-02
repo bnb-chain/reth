@@ -319,7 +319,9 @@ pub async fn maintain_transaction_pool<N, Client, P, St>(
                     })
                     .collect();
                 debug!(target: "txpool", count=%stale_txs.len(), "removing stale transactions");
-                pool.remove_transactions(stale_txs);
+                let expired = pool.remove_transactions(stale_txs);
+                // Context subset of explicit_remove, not an additional removal population.
+                reth_metrics::metrics::counter!("transaction_pool.removal_context_transactions_total", "reason" => "queued_expired").increment(expired.len() as u64);
                 for tx in &stale_blobs {
                     debug!(target: "txpool::blob", tx_hash = ?tx, reason = "stale_queued", "Blob deletion requested");
                 }
