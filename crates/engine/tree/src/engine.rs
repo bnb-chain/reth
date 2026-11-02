@@ -16,6 +16,7 @@ use reth_primitives_traits::{Block, NodePrimitives};
 use std::{
     fmt::Display,
     task::{ready, Context, Poll},
+    time::Instant,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -198,7 +199,13 @@ where
     type Block = N::Block;
 
     fn on_event(&mut self, event: FromEngine<Self::Request, Self::Block>) {
-        // delegate to the tree
+        // Timestamp only the service-to-tree queue, not the upstream API channel.
+        let event = match event {
+            FromEngine::Request(request) => {
+                FromEngine::TimedRequest { request, queued_at: Instant::now() }
+            }
+            event => event,
+        };
         let _ = self.to_tree.send(event);
     }
 
@@ -308,6 +315,13 @@ pub enum FromEngine<Req, B: Block> {
     Event(FromOrchestrator),
     /// Request from the engine.
     Request(Req),
+    /// Request timestamped immediately before submission to the tree queue.
+    TimedRequest {
+        /// Original request, unchanged by instrumentation.
+        request: Req,
+        /// Monotonic start of service-to-tree queue residence.
+        queued_at: Instant,
+    },
     /// Downloaded blocks from the network.
     DownloadedBlocks(Vec<SealedBlockWithAccessList<B>>),
 }
@@ -316,7 +330,9 @@ impl<Req: Display, B: Block> Display for FromEngine<Req, B> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Event(ev) => write!(f, "Event({ev:?})"),
-            Self::Request(req) => write!(f, "Request({req})"),
+            Self::Request(req) | Self::TimedRequest { request: req, .. } => {
+                write!(f, "Request({req})")
+            }
             Self::DownloadedBlocks(blocks) => {
                 write!(f, "DownloadedBlocks({} blocks)", blocks.len())
             }
@@ -387,5 +403,29 @@ impl DownloadRequest {
             }
         }
         self
+    }
+}
+
+#[cfg(test)]
+mod handoff_tests {
+    use super::*;
+
+    #[test]
+    fn handoff_timestamps_preserve_request_order_and_payload() {
+        let (to_tree, received) = crossbeam_channel::unbounded();
+        let (_events, from_tree) = tokio::sync::mpsc::unbounded_channel();
+        let mut handler = EngineApiRequestHandler::<u64, EthPrimitives>::new(to_tree, from_tree);
+        let before = Instant::now();
+        handler.on_event(FromEngine::Request(11));
+        handler.on_event(FromEngine::Request(22));
+        let after = Instant::now();
+        for expected in [11, 22] {
+            let FromEngine::TimedRequest { request, queued_at } = received.try_recv().unwrap() else {
+                panic!("request must retain its queue timestamp");
+            };
+            assert_eq!(request, expected);
+            assert!(queued_at >= before && queued_at <= after);
+        }
+        assert!(received.is_empty());
     }
 }
