@@ -473,6 +473,10 @@ fn spawn_workers<Factory, J>(
     let parent_span = tracing::Span::current();
     let session_context =
         worker.task_ctx.diagnostics.as_ref().map(|d| d.proof_session_submitted(kind.name()));
+    // TODO: Propagate root-task cancellation to queued proof sessions before provider setup.
+    // Dropping the root consumer does not remove this closure from the named-worker queue;
+    // an obsolete session can still start and delay later sessions of the same kind.
+    // Keep cancellation scoped to this session, without interrupting other roots.
     let task = move || {
         if let Some(d) = &worker.task_ctx.diagnostics {
             d.proof_session_started(kind.name());
@@ -564,6 +568,10 @@ impl<Factory, J> ProofWorker<Factory, J> {
         let mut total_idle_time = Duration::ZERO;
         let mut idle_start = Instant::now();
 
+        // TODO: Stop consuming buffered jobs when this root is cancelled. Disconnecting the
+        // sender still allows recv() to drain queued jobs, and synchronous multiproof calls
+        // already in progress cannot be interrupted here. Avoid starting obsolete work so
+        // the named session can retire promptly and unblock the next root.
         while let Ok(job) = self.work_rx.recv() {
             let dequeued = Instant::now();
             total_idle_time += idle_start.elapsed();
