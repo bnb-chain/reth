@@ -6,7 +6,7 @@
 //! - **Worker Pools**: Pre-spawned workers with dedicated database transactions
 //!   - Storage pool: Handles storage proofs, one account's storage trie per job
 //!   - Account pool: Handles account proofs, calculating storage roots inline
-//! - **Automatic Shutdown**: Workers terminate gracefully when the handle is dropped
+//! - **Automatic Shutdown**: Dropping the handle cancels queued work; in-flight calls finish.
 //!
 //! # Message Flow
 //!
@@ -39,7 +39,7 @@ use reth_trie::{DecodedMultiProofV2, MultiProofTargetsV2, ProofV2Target};
 use std::{
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
-        Arc,
+        Arc, OnceLock,
     },
     time::Duration,
 };
@@ -97,14 +97,20 @@ impl AvailabilitySheet {
 
 /// Owns the storage and account proof worker pools and the channel their results arrive on.
 ///
-/// Every job queued by [`Self::dispatch`] sends exactly one [`ProofWorkerResult`] to
-/// [`Self::results`]. A worker that fails to start sends an error that belongs to no job instead,
-/// and jobs left queued when every worker of a pool has failed get no result. Workers shut down
-/// once the handle is dropped.
+/// Each executed job sends one [`ProofWorkerResult`] to [`Self::results`]. Cancelled buffered
+/// jobs send no result. A worker that fails to start sends an error that belongs to no job instead,
+/// and jobs left queued when every worker of a pool has failed get no result. Dropping the handle
+/// cancels buffered jobs; synchronous proof calls already running finish before workers exit.
 #[derive(Debug)]
 pub struct ProofWorkerHandle {
     /// Progress shared with the state-root pipeline.
     diagnostics: Arc<RootTaskDiagnostics>,
+    /// Dropping the only sender wakes every idle worker, even with buffered work remaining.
+    cancel_tx: Option<CrossbeamSender<()>>,
+    /// Shared cancellation timestamp also gates sessions that have not started yet.
+    cancelled_at: Arc<OnceLock<Instant>>,
+    /// Normal completion must not be counted as cancelled work.
+    completed: Arc<AtomicBool>,
     /// Sender shared with the workers, kept so that [`Self::results`] never disconnects while the
     /// handle is alive.
     _result_tx: CrossbeamSender<ProofWorkerResult>,
@@ -127,6 +133,17 @@ pub struct ProofWorkerHandle {
 }
 
 impl ProofWorkerHandle {
+    /// Cancels this root's queued work and wakes idle workers. Active proof calls finish.
+    pub fn cancel(&mut self) {
+        self.cancelled_at.get_or_init(Instant::now);
+        drop(self.cancel_tx.take());
+    }
+
+    /// Marks fully drained proof work, so normal handle release is not counted as cancellation.
+    pub fn mark_completed(&self) {
+        self.completed.store(true, Ordering::Release);
+    }
+
     /// Returns progress shared with the state-root task.
     pub const fn diagnostics(&self) -> &Arc<RootTaskDiagnostics> {
         &self.diagnostics
@@ -183,6 +200,9 @@ impl ProofWorkerHandle {
             DatabaseProviderROFactory<Provider: StateProofProvider> + Clone + Send + Sync + 'static,
     {
         task_ctx.diagnostics = Some(diagnostics.clone());
+        let (cancel_tx, cancel_rx) = unbounded();
+        let cancelled_at = Arc::new(OnceLock::new());
+        let completed = Arc::new(AtomicBool::new(false));
         let (result_tx, result_rx) = unbounded();
         let (storage_work_tx, storage_work_rx) = unbounded();
         let (account_work_tx, account_work_rx) = unbounded();
@@ -210,6 +230,9 @@ impl ProofWorkerHandle {
             ProofWorker {
                 task_ctx: task_ctx.clone(),
                 work_rx: storage_work_rx,
+                cancel_rx: cancel_rx.clone(),
+                cancelled_at: cancelled_at.clone(),
+                completed: completed.clone(),
                 result_tx: result_tx.clone(),
                 availability: storage_availability.clone(),
                 #[cfg(feature = "metrics")]
@@ -225,6 +248,9 @@ impl ProofWorkerHandle {
             ProofWorker {
                 task_ctx,
                 work_rx: account_work_rx,
+                cancel_rx,
+                cancelled_at: cancelled_at.clone(),
+                completed: completed.clone(),
                 result_tx: result_tx.clone(),
                 availability: account_availability.clone(),
                 #[cfg(feature = "metrics")]
@@ -235,6 +261,9 @@ impl ProofWorkerHandle {
 
         Self {
             diagnostics,
+            cancel_tx: Some(cancel_tx),
+            cancelled_at,
+            completed,
             _result_tx: result_tx,
             result_rx,
             storage_work_tx,
@@ -277,13 +306,15 @@ impl ProofWorkerHandle {
     /// Queues the proofs for `targets` and returns the number of jobs queued.
     ///
     /// The storage targets of each account become one storage job, and all account targets
-    /// together become one account job. Each job sends exactly one [`ProofWorkerResult`] to
-    /// [`Self::results`]. A storage job without slot targets proves only the account's storage
-    /// root node.
+    /// together become one account job. Each executed job sends one [`ProofWorkerResult`] to
+    /// [`Self::results`]; jobs skipped after cancellation send none. A storage job without slot
+    /// targets proves only the account's storage root node.
     ///
-    /// Fails once a worker pool has shut down, which only happens after its workers reported start
-    /// failures on [`Self::results`].
+    /// Fails when cancelled or once a worker pool has shut down after reporting startup failures.
     pub fn dispatch(&self, targets: MultiProofTargetsV2) -> Result<usize, ProofWorkersUnavailable> {
+        if self.cancelled_at.get().is_some() {
+            return Err(ProofWorkersUnavailable);
+        }
         let MultiProofTargetsV2 { account_targets, storage_targets } = targets;
         let mut jobs = 0;
 
@@ -348,7 +379,7 @@ impl ProofWorkerResult {
     }
 }
 
-/// Error returned by [`ProofWorkerHandle::dispatch`] when a worker pool has shut down.
+/// Error returned by [`ProofWorkerHandle::dispatch`] after cancellation or worker shutdown.
 #[derive(Debug, Clone, Copy, thiserror::Error)]
 #[error("proof workers unavailable")]
 pub struct ProofWorkersUnavailable;
@@ -378,6 +409,13 @@ impl ProofWorkerCounts {
             runtime.proof_storage_worker_pool().num_threads(),
             runtime.proof_account_worker_pool().num_threads(),
         )
+    }
+}
+
+impl Drop for ProofWorkerHandle {
+    fn drop(&mut self) {
+        // Publish before the sender disconnects or any buffered jobs can be observed.
+        self.cancel();
     }
 }
 
@@ -473,11 +511,12 @@ fn spawn_workers<Factory, J>(
     let parent_span = tracing::Span::current();
     let session_context =
         worker.task_ctx.diagnostics.as_ref().map(|d| d.proof_session_submitted(kind.name()));
-    // TODO: Propagate root-task cancellation to queued proof sessions before provider setup.
-    // Dropping the root consumer does not remove this closure from the named-worker queue;
-    // an obsolete session can still start and delay later sessions of the same kind.
-    // Keep cancellation scoped to this session, without interrupting other roots.
     let task = move || {
+        // A queued session must not open providers for an obsolete root.
+        if worker.is_cancelled() {
+            worker.record_cancelled_session(kind, "queued");
+            return;
+        }
         if let Some(d) = &worker.task_ctx.diagnostics {
             d.proof_session_started(kind.name());
         }
@@ -504,6 +543,9 @@ fn spawn_workers<Factory, J>(
             let worker_id = next_worker_id.fetch_add(1, Ordering::Relaxed);
             let _guard = kind.span(&parent_span, worker_id).entered();
 
+            if worker.is_cancelled() {
+                return;
+            }
             if let Err(error) = run(&worker, worker_id) {
                 error!(
                     target: "trie::proof_task",
@@ -521,6 +563,7 @@ fn spawn_workers<Factory, J>(
                 let _ = worker.result_tx.send(ProofWorkerResult::startup_error(error));
             }
         });
+        worker.record_cancelled_session(kind, "running");
     };
     if let Some(context) = session_context {
         runtime.spawn_blocking_named_traced(kind.task_name(), context, task);
@@ -549,6 +592,11 @@ struct ProofWorker<Factory, J> {
     task_ctx: ProofTaskCtx<Factory>,
     /// Channel for receiving jobs
     work_rx: CrossbeamReceiver<J>,
+    /// Disconnects when the owner drops; independent of buffered job channels.
+    cancel_rx: CrossbeamReceiver<()>,
+    cancelled_at: Arc<OnceLock<Instant>>,
+    /// Normal completion must not be counted as cancelled work.
+    completed: Arc<AtomicBool>,
     /// Sender for job results and worker failures
     result_tx: CrossbeamSender<ProofWorkerResult>,
     /// Per-worker availability flags
@@ -559,6 +607,28 @@ struct ProofWorker<Factory, J> {
 }
 
 impl<Factory, J> ProofWorker<Factory, J> {
+    fn is_cancelled(&self) -> bool {
+        self.cancelled_at.get().is_some()
+    }
+
+    fn record_cancelled_session(&self, kind: ProofWorkerKind, phase: &'static str) {
+        if self.completed.load(Ordering::Acquire) {
+            return;
+        }
+        if let Some(cancelled_at) = self.cancelled_at.get() {
+            let origin = self.task_ctx.diagnostics.as_ref().map_or("unknown", |d| d.context());
+            debug!(target: "trie::proof_task", origin, kind = kind.name(), phase,
+                queued_jobs = self.work_rx.len(), "Cancelled proof session retired");
+            #[cfg(feature = "metrics")]
+            {
+                reth_metrics::metrics::counter!("trie.diagnostics.proof_cancelled_sessions_total", "origin" => origin, "kind" => kind.name(), "phase" => phase).increment(1);
+                reth_metrics::metrics::counter!("trie.diagnostics.proof_cancel_buffered_jobs_total", "origin" => origin, "kind" => kind.name()).increment(self.work_rx.len() as u64);
+                reth_metrics::metrics::histogram!("trie.diagnostics.proof_cancel_to_exit_seconds", "origin" => origin, "kind" => kind.name(), "phase" => phase).record(cancelled_at.elapsed().as_secs_f64());
+            }
+            let _ = cancelled_at;
+        }
+    }
+
     /// Runs `process` for every job until the handle is dropped, advertising the worker as busy
     /// while a job runs. Returns the total time spent waiting for jobs.
     fn process_jobs(&self, worker_id: usize, mut process: impl FnMut(J, Instant)) -> Duration {
@@ -568,11 +638,17 @@ impl<Factory, J> ProofWorker<Factory, J> {
         let mut total_idle_time = Duration::ZERO;
         let mut idle_start = Instant::now();
 
-        // TODO: Stop consuming buffered jobs when this root is cancelled. Disconnecting the
-        // sender still allows recv() to drain queued jobs, and synchronous multiproof calls
-        // already in progress cannot be interrupted here. Avoid starting obsolete work so
-        // the named session can retire promptly and unblock the next root.
-        while let Ok(job) = self.work_rx.recv() {
+        loop {
+            if self.is_cancelled() {
+                break;
+            }
+            let job = crossbeam_channel::select_biased! {
+                recv(self.cancel_rx) -> _ => break,
+                recv(self.work_rx) -> job => match job {
+                    Ok(job) => job,
+                    Err(_) => break,
+                },
+            };
             let dequeued = Instant::now();
             total_idle_time += idle_start.elapsed();
             self.availability.mark_busy(worker_id);
@@ -590,6 +666,13 @@ impl<Factory, J> ProofWorker<Factory, J> {
                 std::thread::sleep(jitter);
             }
 
+            // Cancellation can arrive during dequeue or diagnostic jitter. A call already
+            // started is synchronous and must return before this worker can retire.
+            if self.is_cancelled() {
+                #[cfg(feature = "metrics")]
+                reth_metrics::metrics::counter!("trie.diagnostics.proof_cancel_dequeued_jobs_total", "origin" => self.task_ctx.diagnostics.as_ref().map_or("unknown", |d| d.context())).increment(1);
+                break;
+            }
             let active = ActiveJob::new(&self.availability.active_jobs);
             process(job, dequeued);
             drop(active);
@@ -620,6 +703,9 @@ where
 {
     /// Opens a database transaction and serves storage proof jobs until the handle is dropped.
     fn run(&self, worker_id: usize) -> ProviderResult<()> {
+        if self.is_cancelled() {
+            return Ok(());
+        }
         let mut initialization =
             self.task_ctx.diagnostics.as_ref().map(|d| d.proof_worker_initializing("storage"));
         let provider_start = Instant::now();
@@ -706,6 +792,9 @@ where
 {
     /// Opens a database transaction and serves account proof jobs until the handle is dropped.
     fn run(&self, worker_id: usize) -> ProviderResult<()> {
+        if self.is_cancelled() {
+            return Ok(());
+        }
         let mut initialization =
             self.task_ctx.diagnostics.as_ref().map(|d| d.proof_worker_initializing("account"));
         let provider_start = Instant::now();
@@ -990,5 +1079,118 @@ mod tests {
                 Err(crossbeam_channel::RecvTimeoutError::Disconnected)
             ));
         }
+    }
+
+    fn cancellation_test_worker(
+        cancel_rx: CrossbeamReceiver<()>,
+        cancelled_at: Arc<OnceLock<Instant>>,
+        work_rx: CrossbeamReceiver<usize>,
+    ) -> ProofWorker<(), usize> {
+        let (result_tx, _) = unbounded();
+        ProofWorker {
+            task_ctx: ProofTaskCtx::new(()),
+            work_rx,
+            cancel_rx,
+            cancelled_at,
+            completed: Arc::new(AtomicBool::new(false)),
+            result_tx,
+            availability: Arc::new(AvailabilitySheet::new(1)),
+            #[cfg(feature = "metrics")]
+            metrics: Default::default(),
+        }
+    }
+
+    #[test]
+    fn cancelled_queued_session_skips_worker_start() {
+        let runtime = reth_tasks::Runtime::test();
+        let (started_tx, started_rx) = unbounded();
+        let (release_tx, release_rx) = unbounded();
+        runtime.spawn_blocking_named("storage-workers", move || {
+            started_tx.send(()).unwrap();
+            release_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        });
+        started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        let (_cancel_tx, cancel_rx) = unbounded();
+        let cancelled_at = Arc::new(OnceLock::new());
+        let (work_tx, work_rx) = unbounded();
+        work_tx.send(1).unwrap();
+        let worker = cancellation_test_worker(cancel_rx, cancelled_at.clone(), work_rx);
+        let (result_tx, results) = unbounded();
+        let worker = ProofWorker { result_tx, ..worker };
+        spawn_workers(&runtime, ProofWorkerKind::Storage, 1, worker, |_, _| {
+            panic!("cancelled session must not open a provider");
+        });
+        cancelled_at.set(Instant::now()).unwrap();
+        release_tx.send(()).unwrap();
+        assert!(matches!(
+            results.recv_timeout(Duration::from_secs(10)),
+            Err(RecvTimeoutError::Disconnected)
+        ));
+    }
+
+    #[test]
+    fn cancellation_finishes_active_call_but_discards_buffered_jobs() {
+        let (cancel_tx, cancel_rx) = unbounded();
+        let cancelled_at = Arc::new(OnceLock::new());
+        let (work_tx, work_rx) = unbounded();
+        for n in 0..100 {
+            work_tx.send(n).unwrap();
+        }
+        let worker = cancellation_test_worker(cancel_rx, cancelled_at.clone(), work_rx);
+        let remaining = worker.work_rx.clone();
+        let (started_tx, started_rx) = unbounded();
+        let (release_tx, release_rx) = unbounded();
+        let join = std::thread::spawn(move || {
+            let mut calls = Vec::new();
+            worker.process_jobs(0, |job, _| {
+                calls.push(job);
+                started_tx.send(()).unwrap();
+                release_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            });
+            calls
+        });
+        started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        cancelled_at.set(Instant::now()).unwrap();
+        drop(cancel_tx);
+        release_tx.send(()).unwrap();
+        assert_eq!(join.join().unwrap(), vec![0]);
+        assert_eq!(remaining.len(), 99);
+    }
+
+    #[test]
+    fn cancellation_wakes_idle_worker_without_closing_job_sender() {
+        let (cancel_tx, cancel_rx) = unbounded();
+        let cancelled_at = Arc::new(OnceLock::new());
+        let (_work_tx, work_rx) = unbounded();
+        let worker = cancellation_test_worker(cancel_rx, cancelled_at.clone(), work_rx);
+        let (done_tx, done_rx) = unbounded();
+        let join = std::thread::spawn(move || {
+            worker.process_jobs(0, |_, _| panic!("no jobs queued"));
+            done_tx.send(()).unwrap();
+        });
+        cancelled_at.set(Instant::now()).unwrap();
+        drop(cancel_tx);
+        done_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        join.join().unwrap();
+    }
+
+    #[test]
+    fn cancelling_one_root_does_not_stop_another_root() {
+        let (_cancel_tx, cancel_rx) = unbounded();
+        let cancelled_at = Arc::new(OnceLock::new());
+        let (work_tx, work_rx) = unbounded();
+        work_tx.send(1).unwrap();
+        let obsolete = cancellation_test_worker(cancel_rx, cancelled_at.clone(), work_rx);
+        cancelled_at.set(Instant::now()).unwrap();
+        obsolete.process_jobs(0, |_, _| panic!("obsolete root must not execute jobs"));
+
+        let (_next_cancel_tx, next_cancel_rx) = unbounded();
+        let (next_tx, next_rx) = unbounded();
+        next_tx.send(2).unwrap();
+        drop(next_tx);
+        let next = cancellation_test_worker(next_cancel_rx, Arc::new(OnceLock::new()), next_rx);
+        let mut executed = Vec::new();
+        next.process_jobs(0, |job, _| executed.push(job));
+        assert_eq!(executed, vec![2]);
     }
 }

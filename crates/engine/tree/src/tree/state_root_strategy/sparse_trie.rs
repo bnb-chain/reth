@@ -371,6 +371,14 @@ where
         skip_all
     )]
     pub(super) fn run(&mut self) -> Result<StateRootComputeOutcome, StateRootTaskError> {
+        let result = self.run_inner();
+        if result.is_err() {
+            self.proof_worker_handle.cancel();
+        }
+        result
+    }
+
+    fn run_inner(&mut self) -> Result<StateRootComputeOutcome, StateRootTaskError> {
         let now = Instant::now();
 
         let mut idle = RootWaitObservation::new(
@@ -482,6 +490,7 @@ where
 
         let start = Instant::now();
         self.return_storage_tries();
+        self.proof_worker_handle.mark_completed();
         self.proof_worker_handle.diagnostics().finish_drained();
         let mut finalization = self.proof_worker_handle.diagnostics().phase("final_root");
         let (state_root, trie_updates) = match self.trie.root_with_updates(self.new_epoch) {
@@ -2188,6 +2197,11 @@ mod tests {
 
         drop(cancel_guard);
         assert!(matches!(task.run(), Err(StateRootTaskError::Canceled)));
+        // Cancellation reaches proof workers before trie teardown consumes the task.
+        assert!(matches!(
+            task.proof_worker_handle.dispatch(Default::default()),
+            Err(reth_trie_parallel::proof_task::ProofWorkersUnavailable)
+        ));
         let (trie, _) = task.into_cleared_trie();
         assert_eq!(trie.retained_storage_tries_count(), 1, "only the idle trie can be reused");
 
