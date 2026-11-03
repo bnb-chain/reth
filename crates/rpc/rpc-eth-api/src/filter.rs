@@ -18,6 +18,10 @@ pub trait EthFilterApi<T: RpcObject> {
     #[method(name = "newBlockFilter")]
     async fn new_block_filter(&self) -> RpcResult<FilterId>;
 
+    /// Creates a filter for future finalized header hashes and returns its id.
+    #[method(name = "newFinalizedHeaderFilter")]
+    async fn new_finalized_header_filter(&self) -> RpcResult<FilterId>;
+
     /// Creates a pending transaction filter and returns its id.
     #[method(name = "newPendingTransactionFilter")]
     async fn new_pending_transaction_filter(

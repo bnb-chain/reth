@@ -26,6 +26,10 @@ impl<C: Send + Sync, N: NodePrimitives> ForkChoiceSubscriptions for NoopProvider
         let (_, rx) = watch::channel(None);
         ForkChoiceNotifications(rx)
     }
+
+    fn subscribe_finalized_header_hashes(&self) -> broadcast::Receiver<alloy_primitives::B256> {
+        broadcast::channel(1).1
+    }
 }
 
 impl<C: Send + Sync, N: NodePrimitives> PersistedBlockSubscriptions for NoopProvider<C, N> {
