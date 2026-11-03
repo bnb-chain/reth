@@ -3241,6 +3241,16 @@ where
     ) -> Result<PayloadStatus, InsertBlockFatalError> {
         let (block, error) = error.split();
 
+        if let error::InsertBlockErrorKind::Consensus(ref consensus_error) = error &&
+            self.consensus.is_transient_error(consensus_error)
+        {
+            debug!(target: "engine::tree", block_hash = %block.hash(),
+                %consensus_error, "Deferring payload with transient consensus error");
+            // The caller must retry. Neither this hash nor its descendants
+            // are known invalid, and there is no latest-valid verdict yet.
+            return Ok(PayloadStatus::from_status(PayloadStatusEnum::Accepted));
+        }
+
         // if invalid block, we check the validation error. Otherwise return the fatal
         // error.
         match error.ensure_validation_error() {
