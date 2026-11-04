@@ -25,7 +25,6 @@ use reth_provider::{
 };
 use reth_storage_overlay::OverlayStateProviderFactory;
 use reth_tasks::Runtime;
-use reth_trie_common::bundle_state::BundleState;
 pub use reth_trie_parallel::{
     error::StateRootTaskError,
     state_root_task::{
@@ -513,7 +512,8 @@ where
         }
     }
 
-    /// Updates the execution cache with the post-execution state from an inserted block.
+    /// Schedules an exclusive background cache update for an already executed local block.
+    /// Cache unavailability or newer activity causes the update to be skipped or discarded.
     ///
     /// This is used when blocks are inserted directly (e.g., locally built blocks by sequencers)
     /// to ensure the cache remains warm for subsequent block execution.
@@ -523,47 +523,44 @@ where
     pub fn on_inserted_executed_block(
         &self,
         block_with_parent: BlockWithParent,
-        bundle_state: &BundleState,
+        execution_output: Arc<BlockExecutionOutput<<Evm::Primitives as NodePrimitives>::Receipt>>,
     ) {
+        let Some(mut update) = self.execution_cache.take_for_update(block_with_parent.parent)
+        else {
+            metrics::counter!("engine.handoff.cache_update_total", "outcome" => "skipped")
+                .increment(1);
+            return;
+        };
+        let cache_size = self.cross_block_cache_size;
         let cache_state_metrics = self.cache_state_metrics.clone();
-        self.execution_cache.update_with_guard(|cached| {
-            if cached.as_ref().is_some_and(|c| c.executed_block_hash() != block_with_parent.parent) {
-                debug!(
-                    target: "engine::caching",
-                    parent_hash = %block_with_parent.parent,
-                    "Cannot find cache for parent hash, skip updating cache with new state for inserted executed block",
-                );
-                return
+        let submitted = Instant::now();
+        let span = Span::current();
+        self.executor.spawn_blocking_named("local-execution-cache", move || {
+            let _entered = span.enter();
+            metrics::histogram!("engine.handoff.cache_update_seconds", "phase" => "queue")
+                .record(submitted.elapsed().as_secs_f64());
+            if !update.is_current() {
+                metrics::counter!("engine.handoff.cache_update_total", "outcome" => "obsolete").increment(1);
+                return;
             }
-
-            if let Some(cache) = cached.as_ref().filter(|cache| !cache.is_available()) {
-                debug!(
-                    target: "engine::caching",
-                    parent_hash = %block_with_parent.parent,
-                    usage_count = cache.usage_count(),
-                    "Execution cache is in use, skip updating cache with new state for inserted executed block",
-                );
-                return
-            }
-
-            // Take existing cache (if any) or create fresh caches
-            let caches = match cached.take() {
-                Some(existing) => existing.cache().clone(),
-                None => ExecutionCache::new(self.cross_block_cache_size),
-            };
-
-            // Insert the block's bundle state into cache
+            let start = Instant::now();
+            let caches = update.take_cache().map_or_else(
+                || ExecutionCache::new(cache_size),
+                |existing| existing.cache().clone(),
+            );
             let new_cache = SavedCache::new(block_with_parent.block.hash, caches);
-            if new_cache.cache().insert_state(bundle_state).is_err() {
-                *cached = None;
-                debug!(target: "engine::caching", "cleared execution cache on update error");
-                return
+            if new_cache.cache().insert_state(&execution_output.state).is_err() {
+                metrics::counter!("engine.handoff.cache_update_total", "outcome" => "invalid").increment(1);
+                return;
             }
             new_cache.update_metrics(cache_state_metrics.as_ref());
-
-            // Replace with the updated cache
-            *cached = Some(new_cache);
-            debug!(target: "engine::caching", ?block_with_parent, "Updated execution cache for inserted block");
+            metrics::histogram!("engine.handoff.cache_update_seconds", "phase" => "work")
+                .record(start.elapsed().as_secs_f64());
+            let publish_start = Instant::now();
+            let published = update.publish(new_cache);
+            metrics::histogram!("engine.handoff.cache_update_seconds", "phase" => "publish")
+                .record(publish_start.elapsed().as_secs_f64());
+            metrics::counter!("engine.handoff.cache_update_total", "outcome" => if published { "published" } else { "obsolete" }).increment(1);
         });
     }
 }
@@ -922,6 +919,14 @@ mod tests {
         }
     }
 
+    fn drain_local_cache_update(processor: &PayloadProcessor<EthEvmConfig>) {
+        let (tx, rx) = mpsc::channel();
+        processor.executor.spawn_blocking_named("local-execution-cache", move || {
+            tx.send(()).unwrap();
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+    }
+
     fn make_saved_cache(hash: B256) -> SavedCache {
         let execution_cache = ExecutionCache::new(1_000);
         SavedCache::new(hash, execution_cache)
@@ -1018,18 +1023,33 @@ mod tests {
             block: BlockNumHash { hash: block_hash, number: 1 },
             parent: parent_hash,
         };
-        let bundle_state = BundleState::default();
+        let address = Address::with_last_byte(1);
+        let bundle_state = BundleState::builder(1..=1)
+            .state_present_account_info(
+                address,
+                AccountInfo { balance: U256::from(777), ..Default::default() },
+            )
+            .build();
 
         // Cache should be empty initially
         assert!(payload_processor.execution_cache.get_cache_for(block_hash).is_none());
 
         // Update cache with inserted block
-        payload_processor.on_inserted_executed_block(block_with_parent, &bundle_state);
+        payload_processor.on_inserted_executed_block(
+            block_with_parent,
+            Arc::new(BlockExecutionOutput { state: bundle_state, result: Default::default() }),
+        );
+        drain_local_cache_update(&payload_processor);
 
         // Cache should now exist for the block hash
         let cached = payload_processor.execution_cache.get_cache_for(block_hash);
-        assert!(cached.is_some());
-        assert_eq!(cached.unwrap().executed_block_hash(), block_hash);
+        let cached = cached.unwrap();
+        assert_eq!(cached.executed_block_hash(), block_hash);
+        let account =
+            cached.cache().get_or_try_insert_account_with(address, || Ok::<_, ()>(None)).unwrap();
+        assert!(
+            matches!(account, CachedStatus::Cached(Some(account)) if account.balance == U256::from(777))
+        );
     }
 
     #[test]
@@ -1056,7 +1076,11 @@ mod tests {
         };
         let bundle_state = BundleState::default();
 
-        payload_processor.on_inserted_executed_block(block_with_parent, &bundle_state);
+        payload_processor.on_inserted_executed_block(
+            block_with_parent,
+            Arc::new(BlockExecutionOutput { state: bundle_state, result: Default::default() }),
+        );
+        drain_local_cache_update(&payload_processor);
 
         // Cache should still be for block 1 (unchanged)
         let cached = payload_processor.execution_cache.get_cache_for(block1_hash);
@@ -1110,7 +1134,11 @@ mod tests {
             parent: parent_hash,
         };
 
-        payload_processor.on_inserted_executed_block(block_with_parent, &bundle_state);
+        payload_processor.on_inserted_executed_block(
+            block_with_parent,
+            Arc::new(BlockExecutionOutput { state: bundle_state, result: Default::default() }),
+        );
+        drain_local_cache_update(&payload_processor);
 
         // The closure runs only on a cache miss, so NotCached(None) means polluted_address was
         // absent and Cached(Some(_)) means it was written by on_inserted_executed_block.
@@ -1123,6 +1151,40 @@ mod tests {
             account,
             CachedStatus::NotCached(None),
             "checked-out parent cache should not observe state from inserted local block"
+        );
+    }
+
+    #[test]
+    fn local_cache_update_returns_before_background_work_and_cannot_overwrite_new_state() {
+        let processor = PayloadProcessor::new(
+            reth_tasks::Runtime::test(),
+            EthEvmConfig::new(Arc::new(ChainSpec::default())),
+            &TreeConfig::default(),
+            PrecompileCacheMap::default(),
+        );
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        processor.executor.spawn_blocking_named("local-execution-cache", move || {
+            started_tx.send(()).unwrap();
+            release_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+        });
+        started_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+        let parent = B256::repeat_byte(1);
+        let local = B256::repeat_byte(2);
+        processor.execution_cache.update_with_guard(|slot| *slot = Some(make_saved_cache(parent)));
+        processor.on_inserted_executed_block(
+            BlockWithParent { block: BlockNumHash { hash: local, number: 2 }, parent },
+            Arc::new(BlockExecutionOutput::default()),
+        );
+        // No background update has run yet, but the caller can already use the provider fallback.
+        assert!(processor.execution_cache.get_cache_for(local).is_none());
+        let newer = B256::repeat_byte(3);
+        processor.execution_cache.update_with_guard(|slot| *slot = Some(make_saved_cache(newer)));
+        release_tx.send(()).unwrap();
+        drain_local_cache_update(&processor);
+        assert_eq!(
+            processor.execution_cache.get_cache_for(newer).unwrap().executed_block_hash(),
+            newer
         );
     }
 
