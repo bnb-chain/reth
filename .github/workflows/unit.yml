@@ -81,6 +81,8 @@ jobs:
       RUST_BACKTRACE: 1
       # Each fixture creates databases and thread pools. Bound nested parallelism.
       RAYON_NUM_THREADS: 2
+      # Recursive random/static-call fixtures exceed Rust's default 2 MiB stack.
+      RUST_MIN_STACK: 16777216
     # Allow for a cold build and the full fixture suite on GitHub-hosted runners.
     timeout-minutes: 60
     steps:
