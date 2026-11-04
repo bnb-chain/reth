@@ -56,3 +56,7 @@ alloy-consensus.workspace = true
 default = ["metrics"]
 metrics = ["reth-trie/metrics", "reth-trie-db/metrics"]
 rayon = ["dep:rayon", "dep:reth-tasks"]
+
+[[bench]]
+name = "ancestor_overlay"
+harness = false

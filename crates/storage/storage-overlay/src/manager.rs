@@ -525,24 +525,16 @@ impl<N: NodePrimitives> OverlayManager<N> {
         span.record("cache_reused", false);
 
         // Resolve the block path and any cached parent overlay before locking the child entry.
-        let mut blocks = Self::blocks_from_parent_state(parent_state, anchor_hash)?;
+        let blocks = Self::blocks_from_parent_state(parent_state, anchor_hash)?;
         span.record("block_count", blocks.len());
         reth_metrics::metrics::histogram!("trie.diagnostics.overlay_blocks", "origin" => self.diagnostic_origin).record(blocks.len() as f64);
 
         if !cache_config.write_to_cache {
-            let parent_input = blocks.first().and_then(|block| {
-                let parent_hash = block.recovered_block().parent_hash();
-                (parent_hash != anchor_hash)
-                    .then(|| cache.ready(&OverlayCacheKey { anchor_hash, tip_hash: parent_hash }))
-                    .flatten()
-            });
-            span.record("parent_overlay_reused", parent_input.is_some());
-            let compute_input = match parent_input {
-                Some(parent_input) => {
-                    ComputeOverlayInput::ExtendCached { block: blocks.swap_remove(0), parent_input }
-                }
-                None => ComputeOverlayInput::MergeBlocks(blocks),
-            };
+            let compute_input = ComputeOverlayInput::from_blocks(blocks, anchor_hash, cache, false);
+            span.record(
+                "parent_overlay_reused",
+                matches!(&compute_input, ComputeOverlayInput::ExtendCached { .. }),
+            );
             return Ok(Some(Arc::new(compute(compute_input, span))))
         }
 
@@ -586,23 +578,12 @@ impl<N: NodePrimitives> OverlayManager<N> {
             CacheAction::Wait(waiter) => Ok(Some(waiter.wait(metrics))),
             CacheAction::Compute(waiter) => {
                 let started = std::time::Instant::now();
-                let parent_input = blocks.first().and_then(|block| {
-                    let parent_hash = block.recovered_block().parent_hash();
-                    (parent_hash != anchor_hash)
-                        .then(|| {
-                            cache
-                                .take_ready(&OverlayCacheKey { anchor_hash, tip_hash: parent_hash })
-                        })
-                        .flatten()
-                });
-                span.record("parent_overlay_reused", parent_input.is_some());
-                let compute_input = match parent_input {
-                    Some(parent_input) => ComputeOverlayInput::ExtendCached {
-                        block: blocks.swap_remove(0),
-                        parent_input,
-                    },
-                    None => ComputeOverlayInput::MergeBlocks(blocks),
-                };
+                let compute_input =
+                    ComputeOverlayInput::from_blocks(blocks, anchor_hash, cache, true);
+                span.record(
+                    "parent_overlay_reused",
+                    matches!(&compute_input, ComputeOverlayInput::ExtendCached { .. }),
+                );
                 let input = Arc::new(compute(compute_input, span));
                 reth_metrics::metrics::histogram!("trie.diagnostics.overlay_compute_wall_seconds", "origin" => self.diagnostic_origin).record(started.elapsed().as_secs_f64());
                 waiter.finish(Arc::clone(&input));
@@ -871,8 +852,33 @@ impl<T> OverlayWaiter<T> {
 }
 
 enum ComputeOverlayInput<N: NodePrimitives, T> {
-    ExtendCached { block: ExecutedBlock<N>, parent_input: Arc<T> },
+    ExtendCached { blocks: Vec<ExecutedBlock<N>>, parent_input: Arc<T> },
     MergeBlocks(Vec<ExecutedBlock<N>>),
+}
+
+impl<N: NodePrimitives, T> ComputeOverlayInput<N, T> {
+    /// Reuses the nearest ready ancestor with the same anchor on the validated block path.
+    fn from_blocks(
+        mut blocks: Vec<ExecutedBlock<N>>,
+        anchor_hash: B256,
+        cache: &OverlayCache<T>,
+        take_cached: bool,
+    ) -> Self {
+        for (index, block) in blocks.iter().enumerate() {
+            let tip_hash = block.recovered_block().parent_hash();
+            if tip_hash == anchor_hash {
+                break
+            }
+            let key = OverlayCacheKey { anchor_hash, tip_hash };
+            let cached = if take_cached { cache.take_ready(&key) } else { cache.ready(&key) };
+            if let Some(parent_input) = cached {
+                // Blocks are newest first; the cached ancestor already covers the older suffix.
+                blocks.truncate(index + 1);
+                return Self::ExtendCached { blocks, parent_input }
+            }
+        }
+        Self::MergeBlocks(blocks)
+    }
 }
 
 #[tracing::instrument(
@@ -894,16 +900,20 @@ fn compute_overlay<N: NodePrimitives>(
 ) -> TrieInputSorted {
     let started_at = Instant::now();
     let block_count = match &input {
-        ComputeOverlayInput::ExtendCached { .. } => 1,
+        ComputeOverlayInput::ExtendCached { blocks, .. } |
         ComputeOverlayInput::MergeBlocks(blocks) => blocks.len(),
     };
     let parent_overlay = matches!(&input, ComputeOverlayInput::ExtendCached { .. });
+    if parent_overlay {
+        metrics.overlay_extension_blocks.record(block_count as f64);
+    } else {
+        metrics.overlay_rebuild_blocks.record(block_count as f64);
+    }
     tracing::Span::current().record("block_count", block_count);
     tracing::Span::current().record("parent_overlay", parent_overlay);
 
     let overlay = match input {
-        ComputeOverlayInput::ExtendCached { block, parent_input } => {
-            let trie_data = block.trie_data();
+        ComputeOverlayInput::ExtendCached { blocks, parent_input } => {
             let shared = Arc::strong_count(&parent_input) > 1 ||
                 Arc::strong_count(&parent_input.state) > 1 ||
                 Arc::strong_count(&parent_input.nodes) > 1;
@@ -913,16 +923,15 @@ fn compute_overlay<N: NodePrimitives>(
             trace!(
                 target: "storage::overlay::manager",
                 %anchor_hash,
-                head = %block.recovered_block().hash(),
-                "extending cached parent state trie overlay"
+                block_count = blocks.len(),
+                "extending cached ancestor state trie overlay"
             );
 
             let mut parent_input = parent_input;
-            extend_overlay(
-                Arc::make_mut(&mut parent_input),
-                &trie_data.hashed_state,
-                &trie_data.trie_updates,
-            );
+            let overlay = Arc::make_mut(&mut parent_input);
+            // Merge the missing suffix first so a large cached overlay is extended only once.
+            let updates = merge_blocks(blocks);
+            extend_overlay(overlay, &updates.state, &updates.nodes);
             Arc::try_unwrap(parent_input).expect("Arc::make_mut leaves the child overlay unique")
         }
         ComputeOverlayInput::MergeBlocks(blocks) => {
@@ -1014,18 +1023,26 @@ fn compute_execution_overlay_inner<N: NodePrimitives>(
 ) -> ExecutionOverlay {
     let started_at = Instant::now();
     let block_count = match &input {
-        ComputeOverlayInput::ExtendCached { .. } => 1,
+        ComputeOverlayInput::ExtendCached { blocks, .. } |
         ComputeOverlayInput::MergeBlocks(blocks) => blocks.len(),
     };
     let parent_overlay = matches!(&input, ComputeOverlayInput::ExtendCached { .. });
+    if parent_overlay {
+        metrics.overlay_extension_blocks.record(block_count as f64);
+    } else {
+        metrics.overlay_rebuild_blocks.record(block_count as f64);
+    }
     tracing::Span::current().record("block_count", block_count);
     tracing::Span::current().record("parent_overlay", parent_overlay);
 
     let overlay = match input {
-        ComputeOverlayInput::ExtendCached { block, parent_input } => {
+        ComputeOverlayInput::ExtendCached { blocks, parent_input } => {
             reth_metrics::metrics::counter!("trie.diagnostics.overlay_extension_total", "origin" => origin, "kind" => "execution", "ownership" => if Arc::strong_count(&parent_input) > 1 { "shared" } else { "unique" }).increment(1);
             let mut parent_input = parent_input;
-            Arc::make_mut(&mut parent_input).extend_block(&block);
+            let overlay = Arc::make_mut(&mut parent_input);
+            for block in blocks.iter().rev() {
+                overlay.extend_block(block);
+            }
             Arc::try_unwrap(parent_input).expect("Arc::make_mut leaves the child overlay unique")
         }
         ComputeOverlayInput::MergeBlocks(blocks) => {
@@ -1054,6 +1071,9 @@ fn compute_execution_overlay_inner<N: NodePrimitives>(
 }
 
 #[cfg(test)]
+mod root_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use alloy_primitives::{map::HashMap, Address, U256};
@@ -1063,7 +1083,10 @@ mod tests {
     use reth_primitives_traits::Account;
     #[cfg(feature = "rayon")]
     use reth_tasks::WorkerPool;
-    use reth_trie::{updates::TrieUpdatesSorted, HashedPostState, HashedStorage, SortedTrieData};
+    use reth_trie::{
+        updates::TrieUpdatesSorted, BranchNodeCompact, HashedPostState, HashedStorage, Nibbles,
+        SortedTrieData,
+    };
     use reth_trie_common::bundle_state::BundleState;
     use std::{
         sync::{mpsc, Arc},
@@ -1133,7 +1156,7 @@ mod tests {
         }
     }
 
-    fn overlay_for_parent(
+    pub(super) fn overlay_for_parent(
         manager: &OverlayManager,
         parent_hash: B256,
         anchor_hash: B256,
@@ -1593,5 +1616,168 @@ mod tests {
             .execution_overlay_for_parent(blocks[2].recovered_block().hash(), anchor_hash)
             .unwrap();
         assert_eq!(execution.accounts().len(), 1);
+    }
+
+    #[test]
+    fn extends_cached_grandparent_without_changing_held_views() {
+        for write_to_cache in [false, true] {
+            let manager = OverlayManager::default();
+            let mut blocks = test_blocks();
+            let shared = B256::with_last_byte(100);
+            let address = Address::with_last_byte(100);
+            for (index, block) in blocks.iter_mut().enumerate() {
+                let nonce = index as u64 + 1;
+                let mut state = (*block.trie_data().hashed_state).clone();
+                state.extend_ref_and_sort(
+                    &HashedPostState::default()
+                        .with_accounts([(shared, Some(Account { nonce, ..Default::default() }))])
+                        .with_storages([(
+                            shared,
+                            HashedStorage::from_iter([(B256::ZERO, U256::from(nonce))]),
+                        )])
+                        .into_sorted(),
+                );
+                let mut output = (*block.execution_output).clone();
+                output.state = BundleState::builder(block.block_number()..=block.block_number())
+                    .state_present_account_info(
+                        address,
+                        AccountInfo { nonce, ..Default::default() },
+                    )
+                    .state_storage(
+                        address,
+                        HashMap::from_iter([(U256::ZERO, (U256::ZERO, U256::from(nonce)))]),
+                    )
+                    .build();
+                *block = ExecutedBlock::new(
+                    Arc::clone(&block.recovered_block),
+                    Arc::new(output),
+                    SortedTrieData::new(
+                        Arc::new(state),
+                        Arc::new(TrieUpdatesSorted::new(
+                            vec![(
+                                Nibbles::from_nibbles([1]),
+                                (index != 2).then(|| {
+                                    BranchNodeCompact::new(1 << index, 0, 0, vec![], None)
+                                }),
+                            )],
+                            Default::default(),
+                        )),
+                    ),
+                );
+                manager.insert_block(block.clone());
+            }
+            let anchor_hash = blocks[0].recovered_block().parent_hash();
+            let ancestor = blocks[0].recovered_block().hash();
+            let key = OverlayCacheKey { anchor_hash, tip_hash: ancestor };
+            let (_, held_state) = overlay_for_parent(&manager, ancestor, anchor_hash).unwrap();
+            let held_execution =
+                manager.execution_overlay_for_parent(ancestor, anchor_hash).unwrap();
+            let parent_state = manager.block_state(blocks[2].recovered_block().hash()).unwrap();
+            let config = OverlayCacheConfig { precompute: false, write_to_cache };
+            let (nodes, state) =
+                manager.overlay_for_parent(&parent_state, anchor_hash, config).unwrap();
+            let execution = manager
+                .execution_overlay_for_block_state(&parent_state, anchor_hash, config)
+                .unwrap();
+
+            let cold_state = merge_blocks(blocks.iter().rev().cloned().collect());
+            assert_eq!(nodes, cold_state.nodes);
+            assert_eq!(state, cold_state.state);
+            assert_eq!(
+                state.accounts().iter().find(|(key, _)| *key == shared).unwrap().1.unwrap().nonce,
+                3
+            );
+            assert_eq!(
+                state.account_storages()[&shared].storage_slots,
+                vec![(B256::ZERO, U256::from(3))]
+            );
+            assert_eq!(execution.accounts()[&address].as_ref().unwrap().nonce, 3);
+            assert_eq!(execution.storage()[&address][&U256::ZERO], U256::from(3));
+            assert_eq!(
+                execution.block_hashes(),
+                blocks.iter().map(|block| block.recovered_block().num_hash()).collect::<Vec<_>>()
+            );
+            assert_eq!(
+                held_state
+                    .accounts()
+                    .iter()
+                    .find(|(key, _)| *key == shared)
+                    .unwrap()
+                    .1
+                    .unwrap()
+                    .nonce,
+                1
+            );
+            assert_eq!(held_execution.accounts()[&address].as_ref().unwrap().nonce, 1);
+            assert_eq!(held_execution.storage()[&address][&U256::ZERO], U256::from(1));
+            assert_eq!(manager.state_trie_overlays.entries.contains_key(&key), !write_to_cache);
+            assert_eq!(manager.execution_overlays.entries.contains_key(&key), !write_to_cache);
+        }
+    }
+
+    #[test]
+    fn selects_nearest_ready_ancestor_without_waiting() {
+        let blocks = test_blocks();
+        let anchor_hash = blocks[0].recovered_block().parent_hash();
+        let cache = OverlayCache::default();
+        let oldest_key =
+            OverlayCacheKey { anchor_hash, tip_hash: blocks[0].recovered_block().hash() };
+        let nearest_key =
+            OverlayCacheKey { anchor_hash, tip_hash: blocks[1].recovered_block().hash() };
+        let oldest = Arc::new(1);
+        let nearest = Arc::new(2);
+        cache.entries.insert(oldest_key, OverlayCacheEntry::Ready(Arc::clone(&oldest)));
+        cache.entries.insert(nearest_key, OverlayCacheEntry::Ready(Arc::clone(&nearest)));
+        let reversed = blocks.iter().rev().cloned().collect::<Vec<_>>();
+        let ComputeOverlayInput::ExtendCached { blocks: missing, parent_input } =
+            ComputeOverlayInput::from_blocks(reversed.clone(), anchor_hash, &cache, false)
+        else {
+            panic!("nearest cached ancestor was not reused")
+        };
+        assert_eq!(missing.len(), 1);
+        assert!(Arc::ptr_eq(&parent_input, &nearest));
+
+        cache
+            .entries
+            .insert(nearest_key, OverlayCacheEntry::Computing(Arc::new(OverlayWaiter::new())));
+        let ComputeOverlayInput::ExtendCached { blocks: missing, parent_input } =
+            ComputeOverlayInput::from_blocks(reversed, anchor_hash, &cache, true)
+        else {
+            panic!("ready ancestor behind the computing parent was not reused")
+        };
+        assert_eq!(missing.len(), 2);
+        assert!(Arc::ptr_eq(&parent_input, &oldest));
+        assert!(!cache.entries.contains_key(&oldest_key));
+        assert!(matches!(
+            cache.entries.get(&nearest_key).unwrap().value(),
+            OverlayCacheEntry::Computing(_)
+        ));
+    }
+
+    #[test]
+    fn ancestor_reuse_requires_matching_anchor_and_branch() {
+        let blocks = test_blocks();
+        let anchor_hash = blocks[0].recovered_block().parent_hash();
+        let cache = OverlayCache::default();
+        let wrong_anchor = OverlayCacheKey {
+            anchor_hash: B256::random(),
+            tip_hash: blocks[0].recovered_block().hash(),
+        };
+        let wrong_branch = OverlayCacheKey { anchor_hash, tip_hash: B256::random() };
+        for key in [wrong_anchor, wrong_branch] {
+            cache.entries.insert(key, OverlayCacheEntry::Ready(Arc::new(())));
+        }
+        let input = ComputeOverlayInput::from_blocks(
+            blocks.iter().rev().cloned().collect(),
+            anchor_hash,
+            &cache,
+            true,
+        );
+        let ComputeOverlayInput::MergeBlocks(missing) = input else {
+            panic!("unrelated overlay reused")
+        };
+        assert_eq!(missing.len(), blocks.len());
+        assert!(cache.entries.contains_key(&wrong_anchor));
+        assert!(cache.entries.contains_key(&wrong_branch));
     }
 }

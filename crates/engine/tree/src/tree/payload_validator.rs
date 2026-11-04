@@ -1880,10 +1880,13 @@ where
         &self,
         block: BuiltPayloadExecutedBlock<N>,
     ) -> ProviderResult<ExecutedBlock<N>> {
+        let cache_stage = super::handoff_metrics::HandoffStage::new("insert_execution_cache");
         self.payload_processor.on_inserted_executed_block(
             block.recovered_block.block_with_parent(),
             &block.execution_output.state,
         );
+        drop(cache_stage);
+        let _trie_stage = super::handoff_metrics::HandoffStage::new("insert_trie_handoff");
 
         if let Some(data) = block.ready_trie_data() {
             return Ok(ExecutedBlock::new(block.recovered_block, block.execution_output, data))
