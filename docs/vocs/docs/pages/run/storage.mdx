@@ -87,6 +87,24 @@ reth node \
 -   Storage V2 and pruning are separate controls: storage V2 changes where data
     is stored, while pruning decides how much historical data is retained.
 
+## BSC total difficulty
+
+The BSC fork stores cumulative total difficulty (TD) in the header static-file
+segment, alongside each header and hash. Genesis initialization, header sync,
+and live block persistence all maintain this column.
+
+Older MDBX-backed data directories can continue without rewriting their header
+files: when a static-file TD entry is a zero placeholder, the provider reads the
+legacy `HeaderTerminalDifficulties` table. New blocks continue from that total
+and store TD in static files only. Keep the legacy table while historical
+static-file entries still depend on it. Reorgs remove obsolete legacy entries.
+
+This change does not repair incorrect historical totals. If the legacy table
+contains incorrectly anchored TD, stop the node and repair it with `db rebuild-td`
+before producing new static-file TD entries. That command repairs MDBX, not the
+static-file column. Missing history is rebuilt inline only up to the existing
+bounded limit; larger gaps require offline repair and available header history.
+
 ## Further reading
 
 -   [Snapshots](/run/storage/snapshots) - start from public modular snapshots

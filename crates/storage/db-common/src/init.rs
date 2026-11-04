@@ -489,8 +489,7 @@ where
                     .set_block_range(genesis_block_number, genesis_block_number);
                 writer.append_header_direct(header, difficulty, &block_hash)?;
             } else {
-                // For zero genesis blocks, use normal append_header
-                writer.append_header(header, &block_hash)?;
+                writer.append_header_with_td(header, difficulty, &block_hash)?;
             }
         }
         Ok(Some(_)) => {}
@@ -1484,11 +1483,13 @@ mod tests {
 
     #[test]
     fn success_init_genesis_mainnet() {
-        let genesis_hash =
-            init_genesis(&create_test_provider_factory_with_chain_spec(MAINNET.clone())).unwrap();
-
-        // actual, expected
+        let factory = create_test_provider_factory_with_chain_spec(MAINNET.clone());
+        let genesis_hash = init_genesis(&factory).unwrap();
         assert_eq!(genesis_hash, MAINNET_GENESIS_HASH);
+        assert_eq!(
+            factory.static_file_provider().header_td_by_number(0).unwrap(),
+            Some(MAINNET.genesis_header().difficulty)
+        );
     }
 
     #[test]
