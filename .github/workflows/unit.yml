@@ -71,7 +71,8 @@ jobs:
     env:
       RUST_LOG: info,sync=error
       RUST_BACKTRACE: 1
-    timeout-minutes: 30
+    # Allow for a cold build and the full fixture suite on GitHub-hosted runners.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
