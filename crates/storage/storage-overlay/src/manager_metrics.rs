@@ -10,6 +10,10 @@ use std::time::Duration;
 pub(crate) struct StateTrieOverlayMetrics {
     /// Duration of overlay computation in seconds.
     pub(crate) overlay_computation_duration_seconds: Histogram,
+    /// Number of new blocks applied when extending a cached ancestor overlay.
+    pub(crate) overlay_extension_blocks: Histogram,
+    /// Number of blocks merged when no ready ancestor overlay can be reused.
+    pub(crate) overlay_rebuild_blocks: Histogram,
     /// Number of requests satisfied by an existing overlay cache entry.
     pub(crate) overlay_cache_reuses: Counter,
     /// Number of overlay cache entries populated by computing an overlay.
@@ -24,6 +28,10 @@ pub(crate) struct StateTrieOverlayMetrics {
 pub(crate) struct ExecutionOverlayMetrics {
     /// Duration of overlay computation in seconds.
     pub(crate) overlay_computation_duration_seconds: Histogram,
+    /// Number of new blocks applied when extending a cached ancestor overlay.
+    pub(crate) overlay_extension_blocks: Histogram,
+    /// Number of blocks merged when no ready ancestor overlay can be reused.
+    pub(crate) overlay_rebuild_blocks: Histogram,
     /// Number of requests satisfied by an existing overlay cache entry.
     pub(crate) overlay_cache_reuses: Counter,
     /// Number of overlay cache entries populated by computing an overlay.

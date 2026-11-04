@@ -420,7 +420,8 @@ mod handoff_tests {
         handler.on_event(FromEngine::Request(22));
         let after = Instant::now();
         for expected in [11, 22] {
-            let FromEngine::TimedRequest { request, queued_at } = received.try_recv().unwrap() else {
+            let FromEngine::TimedRequest { request, queued_at } = received.try_recv().unwrap()
+            else {
                 panic!("request must retain its queue timestamp");
             };
             assert_eq!(request, expected);
