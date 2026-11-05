@@ -28,7 +28,7 @@
 //! - On the parallel BAL execution path, prewarm converts the block access list and delivers
 //!   pre-hashed updates through the hashed update stream, terminated by
 //!   [`StateRootUpdateStream::finish`].
-//! - On the serial execution path, per-transaction `EvmState` updates arrive through the execution
+//! - On the serial execution path, per-transaction `StateUpdate`s arrive through the execution
 //!   hook, terminated when the hook is dropped after execution.
 //!
 //! Which path runs depends on runtime conditions (BAL present, caching and prewarming enabled),
@@ -61,7 +61,7 @@ use alloy_primitives::{map::B256Map, B256};
 use crossbeam_channel::Receiver as CrossbeamReceiver;
 use reth_chain_state::{ExecutedBlock, PreservedSparseTrie, SparseTrieWithStorageRoots};
 use reth_errors::ProviderResult;
-use reth_evm::{ConfigureEvm, OnStateHook};
+use reth_evm::ConfigureEvm;
 use reth_primitives_traits::{
     AlloyBlockHeader, FastInstant as Instant, NodePrimitives, RecoveredBlock, SealedHeader,
 };
@@ -83,9 +83,9 @@ use reth_trie_parallel::{
 pub use reth_trie_parallel::{
     error::StateRootTaskError,
     state_root_task::{
-        evm_state_to_hashed_post_state, PayloadStateRootHandle, StateAccessHint,
-        StateRootComputeOutcome, StateRootHandle, StateRootHintStream, StateRootMessage,
-        StateRootTaskCancelGuard, StateRootUpdateHook, StateRootUpdateStream,
+        PayloadStateRootHandle, StateAccessHint, StateRootComputeOutcome, StateRootHandle,
+        StateRootHintStream, StateRootMessage, StateRootTaskCancelGuard, StateRootUpdateHook,
+        StateRootUpdateStream,
     },
 };
 use reth_trie_sparse::{
@@ -381,8 +381,8 @@ impl<N: NodePrimitives> PreparedStateRootJob<N> {
     }
 
     /// Takes the execution hook, present only when the job wants normal execution updates.
-    pub fn take_execution_hook(&mut self) -> Option<Box<dyn OnStateHook + 'static>> {
-        self.execution_hook.take().map(|hook| Box::new(hook) as Box<dyn OnStateHook + 'static>)
+    pub const fn take_execution_hook(&mut self) -> Option<StateRootUpdateHook> {
+        self.execution_hook.take()
     }
 
     /// Takes the hint stream for transaction prewarming.
@@ -530,8 +530,10 @@ impl DefaultStateRootStrategy {
     ///
     /// The authoritative update capability taken from the returned handle must be dropped or
     /// explicitly finished after execution so the task observes the end of the update stream.
+    /// Publish the returned pending trie with [`publish_sparse_trie`] only after accepting the
+    /// matching block root. Dropping that receiver discards the reusable trie.
     #[instrument(level = "debug", target = "engine::tree::payload_processor", skip_all)]
-    fn spawn_state_root<N, F>(
+    pub fn spawn_state_root<N, F>(
         &self,
         executor: &reth_tasks::Runtime,
         multiproof_provider_factory: OverlayStateProviderFactory<F, N>,
@@ -574,6 +576,7 @@ impl DefaultStateRootStrategy {
             origin,
             parent_header,
             preserved_sparse_trie,
+            parent_cache_wait,
             transaction_count,
             gas_used,
             config,
@@ -618,6 +621,7 @@ impl DefaultStateRootStrategy {
                 diagnostics: diagnostics.clone(),
                 parent_header,
                 preserved_sparse_trie,
+                parent_cache_wait,
                 pending_trie_tx,
                 chunk_size: config.multiproof_chunk_size(),
                 worker_counts,
@@ -664,6 +668,7 @@ impl DefaultStateRootStrategy {
             diagnostics,
             parent_header,
             preserved_sparse_trie,
+            parent_cache_wait,
             pending_trie_tx,
             chunk_size,
             worker_counts,
@@ -710,6 +715,34 @@ impl DefaultStateRootStrategy {
             let mut sparse_trie_anchor_hash = parent_hash;
             let mut reused_preserved_sparse_trie = false;
             let mut known_storage_roots = Default::default();
+            let preserved_sparse_trie = if let Some(timeout) = parent_cache_wait {
+                let start = Instant::now();
+                let mut pending = preserved_sparse_trie;
+                loop {
+                    let Some(trie) = pending.take() else { break None };
+                    match trie.try_into_ready() {
+                        Ok(trie) => {
+                            reth_metrics::metrics::histogram!("trie.diagnostics.parent_handoff_wait_seconds").record(start.elapsed().as_secs_f64());
+                            break Some(trie)
+                        }
+                        Err(trie) => pending = Some(trie),
+                    }
+                    if !matches!(cancel_rx.try_recv(), Err(crossbeam_channel::TryRecvError::Empty)) {
+                        executor.spawn_drop(pending);
+                        diagnostics.returned(RootTaskResult::Cancelled);
+                        let _ = state_root_tx.send(Err(StateRootTaskError::Canceled));
+                        return
+                    }
+                    if start.elapsed() >= timeout {
+                        reth_metrics::metrics::counter!("trie.diagnostics.parent_handoff_timeout_total").increment(1);
+                        executor.spawn_drop(pending);
+                        break None
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            } else {
+                preserved_sparse_trie
+            };
             let sparse_state_trie = match preserved_sparse_trie {
                 Some(preserved) => {
                     let start = Instant::now();
@@ -884,6 +917,7 @@ where
                 origin: "miner",
                 parent_header,
                 preserved_sparse_trie: None,
+                parent_cache_wait: None,
                 transaction_count,
                 gas_used: None,
                 config,
@@ -931,7 +965,7 @@ where
     )
 }
 
-/// Context-aware variant for fixed caller roles (never use block/transaction identities).
+/// Context-aware variant preserving ready-only parent-cache selection.
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_payload_builder_state_root_with_cache_origin<N, F>(
     executor: &reth_tasks::Runtime,
@@ -948,8 +982,45 @@ where
     N: NodePrimitives,
     F: DatabaseProviderROFactory<Provider: StateProofProvider> + Clone + Send + Sync + 'static,
 {
+    spawn_payload_builder_state_root_with_cache_wait(
+        executor,
+        multiproof_provider_factory,
+        parent_header,
+        transaction_count,
+        config,
+        pending_sparse_trie_prune_blocks,
+        preserved,
+        diagnostic_origin,
+        None,
+        configure_reused_factory,
+    )
+}
+
+/// Context-aware variant for fixed caller roles (never use block/transaction identities).
+///
+/// `parent_cache_wait` enables a bounded, cancellable wait on the background root
+/// worker for an already-computed parent's trie. `None` preserves the nonblocking
+/// ready-only selection used by existing callers. The calling mining thread never waits.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_payload_builder_state_root_with_cache_wait<N, F>(
+    executor: &reth_tasks::Runtime,
+    multiproof_provider_factory: F,
+    parent_header: SealedHeader<N::BlockHeader>,
+    transaction_count: Option<usize>,
+    config: &TreeConfig,
+    pending_sparse_trie_prune_blocks: Option<Vec<ExecutedBlock<N>>>,
+    preserved: Option<PreservedSparseTrie>,
+    diagnostic_origin: &'static str,
+    parent_cache_wait: Option<Duration>,
+    configure_reused_factory: impl FnOnce(F, B256, B256Map<B256>) -> F + Send + 'static,
+) -> (StateRootHandle, PayloadBuilderTrieCache)
+where
+    N: NodePrimitives,
+    F: DatabaseProviderROFactory<Provider: StateProofProvider> + Clone + Send + Sync + 'static,
+{
     let parent_hash = parent_header.hash();
     let preserved_sparse_trie = match preserved {
+        Some(trie) if trie.block_hash() == parent_hash && parent_cache_wait.is_some() => Some(trie),
         Some(trie) if trie.block_hash() == parent_hash => match trie.try_into_ready() {
             Ok(trie) => Some(trie),
             Err(trie) => {
@@ -965,7 +1036,7 @@ where
         }
         None => None,
     };
-    reth_metrics::metrics::counter!("trie.diagnostics.external_cache_initializations_total", "origin" => diagnostic_origin, "result" => if preserved_sparse_trie.is_some() { "reused" } else { "fresh" }).increment(1);
+    reth_metrics::metrics::counter!("trie.diagnostics.external_cache_initializations_total", "origin" => diagnostic_origin, "result" => if preserved_sparse_trie.is_none() { "fresh" } else if parent_cache_wait.is_some() { "pending" } else { "reused" }).increment(1);
     let (handle, pending) = DefaultStateRootStrategy::default().spawn_state_root_with_factory(
         executor,
         multiproof_provider_factory,
@@ -973,6 +1044,7 @@ where
             origin: diagnostic_origin,
             parent_header,
             preserved_sparse_trie,
+            parent_cache_wait,
             transaction_count,
             gas_used: None,
             config,
@@ -1008,13 +1080,16 @@ impl PayloadBuilderTrieCache {
 
 /// A computed trie whose finalization and pruning may still be running.
 #[derive(Debug)]
-struct PendingSparseTrie {
+pub struct PendingSparseTrie {
     state_root: B256,
     anchor_hash: B256,
     trie: mpsc::Receiver<SparseTrieWithStorageRoots>,
 }
 
-fn publish_sparse_trie<N: NodePrimitives>(
+/// Publishes a matching completed root for reuse after its block has been accepted.
+///
+/// Does nothing if the producer has not handed off a trie or its root differs.
+pub fn publish_sparse_trie<N: NodePrimitives>(
     pending_trie_rx: &mpsc::Receiver<PendingSparseTrie>,
     overlay_manager: &OverlayManager<N>,
     block_hash: B256,
@@ -1037,6 +1112,7 @@ struct SparseTrieTaskOptions<N: NodePrimitives> {
     diagnostics: Arc<RootTaskDiagnostics>,
     parent_header: SealedHeader<N::BlockHeader>,
     preserved_sparse_trie: Option<PreservedSparseTrie>,
+    parent_cache_wait: Option<Duration>,
     pending_trie_tx: mpsc::Sender<PendingSparseTrie>,
     chunk_size: usize,
     worker_counts: ProofWorkerCounts,
@@ -1046,15 +1122,29 @@ struct SparseTrieTaskOptions<N: NodePrimitives> {
     pending_sparse_trie_prune_blocks: Option<Vec<ExecutedBlock<N>>>,
 }
 
-struct StateRootTaskOptions<'a, N: NodePrimitives> {
-    origin: &'static str,
-    parent_header: SealedHeader<N::BlockHeader>,
-    preserved_sparse_trie: Option<PreservedSparseTrie>,
-    transaction_count: Option<usize>,
-    /// Gas the block claims to use, taken from the payload before execution.
-    gas_used: Option<u64>,
-    config: &'a TreeConfig,
-    pending_sparse_trie_prune_blocks: Option<Vec<ExecutedBlock<N>>>,
+/// Inputs for starting one sparse-trie task and its proof workers.
+///
+/// Complete the returned handle's authoritative update stream before awaiting its result.
+#[derive(Debug)]
+pub struct StateRootTaskOptions<'a, N: NodePrimitives> {
+    /// Origin label for task diagnostics.
+    pub origin: &'static str,
+    /// Time spent waiting for the accepted parent's cached trie.
+    pub parent_cache_wait: Option<Duration>,
+    /// Accepted parent whose post-state the proof workers must read.
+    pub parent_header: SealedHeader<N::BlockHeader>,
+    /// Previously accepted trie, or `None` for a cold start.
+    pub preserved_sparse_trie: Option<PreservedSparseTrie>,
+    /// Transaction count hint for proof-worker sizing, or `None` if unknown.
+    pub transaction_count: Option<usize>,
+    /// Gas the block claims to use, or `None` if unknown.
+    pub gas_used: Option<u64>,
+    /// Task and proof batching configuration.
+    pub config: &'a TreeConfig,
+    /// In-memory parent chain, newest first, when pruning is requested.
+    ///
+    /// `None` disables pruning; an empty chain means the parent is durable.
+    pub pending_sparse_trie_prune_blocks: Option<Vec<ExecutedBlock<N>>>,
 }
 
 fn sparse_trie_prune_target<N: NodePrimitives>(
@@ -1128,6 +1218,7 @@ where
                 origin: "import",
                 parent_header: parent_header.clone(),
                 preserved_sparse_trie,
+                parent_cache_wait: None,
                 transaction_count: Some(env.transaction_count),
                 gas_used: Some(env.gas_used),
                 config,
@@ -1195,6 +1286,7 @@ where
                 origin: "builder",
                 parent_header,
                 preserved_sparse_trie,
+                parent_cache_wait: None,
                 // Block built incrementally, so neither the tx count nor the gas is known at FCU
                 // time: the payload builder uses half of each proof pool.
                 transaction_count: None,
@@ -1542,6 +1634,7 @@ mod tests {
     use super::*;
     use alloy_consensus::constants::KECCAK_EMPTY;
     use alloy_primitives::{map::HashMap, Address, U256};
+    use evm2::evm::AccountInfo;
     use rand::Rng;
     use reth_chain_state::test_utils::TestBlockBuilder;
     use reth_chainspec::ChainSpec;
@@ -1549,6 +1642,7 @@ mod tests {
     use reth_ethereum_primitives::EthPrimitives;
     use reth_evm::OnStateHook;
     use reth_evm_ethereum::EthEvmConfig;
+    use reth_execution_types::{AccountUpdate, StateUpdate};
     use reth_primitives_traits::{Account, StorageEntry};
     use reth_provider::{
         providers::BlockchainProvider, test_utils::create_test_provider_factory_with_chain_spec,
@@ -1557,7 +1651,7 @@ mod tests {
     use reth_storage_overlay::{OverlayManager, OverlayStateProviderFactory};
     use reth_testing_utils::generators;
     use reth_trie::test_utils::state_root;
-    use revm::state::{AccountInfo, AccountStatus, EvmState, EvmStorageSlot, TransactionId};
+    use reth_trie_common::bundle_state::StorageSlot;
 
     #[test]
     fn proof_worker_count_scales_with_block_gas() {
@@ -1708,6 +1802,7 @@ mod tests {
                         origin: "test",
                         parent_header: SealedHeader::new(Default::default(), genesis_hash),
                         preserved_sparse_trie: Some(preserved),
+                        parent_cache_wait: None,
                         transaction_count: None,
                         gas_used: None,
                         config: &TreeConfig::default(),
@@ -1744,6 +1839,99 @@ mod tests {
     }
 
     #[test]
+    fn pending_external_handoff_cancels_without_waiting_for_parent_completion() {
+        let factory = create_test_provider_factory_with_chain_spec(Arc::new(ChainSpec::default()));
+        let genesis = init_genesis(&factory).unwrap();
+        let runtime = reth_tasks::Runtime::test();
+        let (completer, receiver) = mpsc::channel();
+        let (mut handle, _cache) =
+            spawn_payload_builder_state_root_with_cache_wait::<EthPrimitives, _>(
+                &runtime,
+                OverlayStateProviderFactory::new(
+                    factory,
+                    OverlayManager::<EthPrimitives>::default().overlay_builder(genesis),
+                ),
+                SealedHeader::new(Default::default(), genesis),
+                None,
+                &TreeConfig::default(),
+                None,
+                Some(PreservedSparseTrie::pending(receiver, genesis, genesis)),
+                "test",
+                Some(Duration::from_secs(30)),
+                |_, _, _| panic!("cancelled parent must not configure a reused provider"),
+            );
+        let result = handle.take_state_root_rx();
+        drop(handle);
+        assert!(matches!(
+            result.recv_timeout(Duration::from_secs(2)),
+            Ok(Err(StateRootTaskError::Canceled))
+        ));
+        drop(completer);
+    }
+
+    #[test]
+    fn pending_external_handoff_timeout_falls_back_to_normal_proof_path() {
+        let factory = create_test_provider_factory_with_chain_spec(Arc::new(ChainSpec::default()));
+        let genesis = init_genesis(&factory).unwrap();
+        let runtime = reth_tasks::Runtime::test();
+        let (completer, receiver) = mpsc::channel();
+        let parent = SealedHeader::new(
+            ChainSpec::<alloy_consensus::Header>::default().genesis_header().clone(),
+            genesis,
+        );
+        let provider = OverlayStateProviderFactory::new(
+            factory,
+            OverlayManager::<EthPrimitives>::default().overlay_builder(genesis),
+        );
+        let updates = create_mock_state_updates(1, 1);
+        let (mut expected, _) = spawn_payload_builder_state_root_with_cache_wait::<EthPrimitives, _>(
+            &runtime,
+            provider.clone(),
+            parent.clone(),
+            None,
+            &TreeConfig::default(),
+            None,
+            None,
+            "test",
+            None,
+            |factory, _, _| factory,
+        );
+        drop(expected.take_hint_stream());
+        let mut hook = expected.take_execution_hook();
+        for update in updates.clone() {
+            hook.on_state(update);
+        }
+        drop(hook);
+        let expected_result =
+            expected.take_state_root_rx().recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+        drop(expected);
+        let (mut actual, _) = spawn_payload_builder_state_root_with_cache_wait::<EthPrimitives, _>(
+            &runtime,
+            provider,
+            parent,
+            None,
+            &TreeConfig::default(),
+            None,
+            Some(PreservedSparseTrie::pending(receiver, genesis, genesis)),
+            "test",
+            Some(Duration::ZERO),
+            |_, _, _| panic!("timed-out parent must not configure a reused provider"),
+        );
+        drop(actual.take_hint_stream());
+        let mut hook = actual.take_execution_hook();
+        for update in updates {
+            hook.on_state(update);
+        }
+        drop(hook);
+        let actual_result =
+            actual.take_state_root_rx().recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+        drop(actual);
+        assert_eq!(actual_result.state_root, expected_result.state_root);
+        assert_eq!(actual_result.trie_updates, expected_result.trie_updates);
+        drop(completer);
+    }
+
+    #[test]
     fn publication_does_not_wait_for_worker() {
         let (pending_trie_tx, pending_trie_rx) = mpsc::channel();
         let overlay_manager = OverlayManager::<EthPrimitives>::default();
@@ -1774,6 +1962,7 @@ mod tests {
                 origin: "test",
                 parent_header: SealedHeader::new(Default::default(), genesis_hash),
                 preserved_sparse_trie: None,
+                parent_cache_wait: None,
                 transaction_count: None,
                 gas_used: None,
                 config: &TreeConfig::default(),
@@ -1859,43 +2048,45 @@ mod tests {
         );
     }
 
-    fn create_mock_state_updates(num_accounts: usize, updates_per_account: usize) -> Vec<EvmState> {
+    fn create_mock_state_updates(
+        num_accounts: usize,
+        updates_per_account: usize,
+    ) -> Vec<StateUpdate> {
         let mut rng = generators::rng();
         let all_addresses: Vec<Address> = (0..num_accounts).map(|_| rng.random()).collect();
         let mut updates = Vec::with_capacity(updates_per_account);
 
         for _ in 0..updates_per_account {
             let num_accounts_in_update = rng.random_range(1..=num_accounts);
-            let mut state_update = EvmState::default();
+            let mut state_update = StateUpdate::default();
 
             for &address in &all_addresses[0..num_accounts_in_update] {
-                let mut storage = HashMap::default();
+                let mut storage = HashMap::<_, _>::default();
                 if rng.random_bool(0.7) {
                     for _ in 0..rng.random_range(1..10) {
                         let slot = U256::from(rng.random::<u64>());
                         storage.insert(
                             slot,
-                            EvmStorageSlot::new_changed(
-                                U256::ZERO,
-                                U256::from(rng.random::<u64>()),
-                                TransactionId::ZERO,
-                            ),
+                            StorageSlot::new_changed(U256::ZERO, U256::from(rng.random::<u64>())),
                         );
                     }
                 }
 
-                let mut account = revm::state::Account::default();
-                account.info = AccountInfo {
+                let info = AccountInfo {
                     balance: U256::from(rng.random::<u64>()),
                     nonce: rng.random::<u64>(),
                     code_hash: KECCAK_EMPTY,
                     code: Some(Default::default()),
                     ..Default::default()
                 };
-                account.storage = storage;
-                account.status = AccountStatus::Touched;
-                account.transaction_id = TransactionId::ZERO;
-                state_update.insert(address, account);
+                state_update.accounts.push(AccountUpdate {
+                    address,
+                    original: Some(AccountInfo::default()),
+                    current: Some(info),
+                    created: false,
+                    wiped: false,
+                    storage: storage.into_iter().collect(),
+                });
             }
 
             updates.push(state_update);
@@ -1944,6 +2135,7 @@ mod tests {
                 origin: "import",
                 parent_header: parent,
                 preserved_sparse_trie: None,
+                parent_cache_wait: None,
                 transaction_count: Some(1),
                 gas_used: None,
                 config: &TreeConfig::default(),
@@ -1982,18 +2174,21 @@ mod tests {
         {
             let provider_rw = factory.provider_rw().expect("failed to get provider");
             for update in &state_updates {
-                let account_updates = update.iter().map(|(address, account)| {
-                    (*address, Some(Account::from_revm_account(account)))
+                let account_updates = update.accounts.iter().map(|account| {
+                    (
+                        account.address,
+                        account.current.as_ref().map(reth_primitives_traits::Account::from),
+                    )
                 });
                 provider_rw
                     .insert_account_for_hashing(account_updates)
                     .expect("failed to insert accounts");
 
-                let storage_updates = update.iter().map(|(address, account)| {
+                let storage_updates = update.accounts.iter().map(|account| {
                     let storage_entries = account.storage.iter().map(|(slot, value)| {
                         StorageEntry { key: B256::from(*slot), value: value.present_value }
                     });
-                    (*address, storage_entries)
+                    (account.address, storage_entries)
                 });
                 provider_rw
                     .insert_storage_for_hashing(storage_updates)
@@ -2003,14 +2198,14 @@ mod tests {
         }
 
         for update in &state_updates {
-            for (address, account) in update {
+            for account in &update.accounts {
                 let storage: HashMap<B256, U256> = account
                     .storage
                     .iter()
                     .map(|(key, value)| (B256::from(*key), value.present_value))
                     .collect();
-                let entry = accumulated_state.entry(*address).or_default();
-                entry.0 = Account::from_revm_account(account);
+                let entry = accumulated_state.entry(account.address).or_default();
+                entry.0 = reth_primitives_traits::Account::from(account.current.as_ref().unwrap());
                 entry.1.extend(storage);
             }
         }
@@ -2079,10 +2274,11 @@ mod tests {
             let mut state_hook = state_root_handle.take_state_hook();
             if reuse {
                 let mut update = state_updates.last().unwrap().clone();
-                for (address, account) in &mut update {
-                    account.info.nonce += number as u64;
-                    accumulated_state.get_mut(address).unwrap().0 =
-                        Account::from_revm_account(account);
+                for account in &mut update.accounts {
+                    let info = account.current.as_mut().unwrap();
+                    info.nonce += number as u64;
+                    accumulated_state.get_mut(&account.address).unwrap().0 =
+                        reth_primitives_traits::Account::from(&*info);
                 }
                 state_hook.on_state(update);
                 root_from_regular = state_root(accumulated_state.clone());
@@ -2129,14 +2325,16 @@ mod tests {
         {
             let provider_rw = factory.provider_rw().expect("failed to get provider");
             for update in &state_updates {
-                let account_updates = update.iter().map(|(address, account)| {
-                    (*address, Some(Account::from_revm_account(account)))
+                let account_updates = update.accounts.iter().map(|account| {
+                    let address = &account.address;
+                    (*address, Some(Account::from(account.current.as_ref().unwrap())))
                 });
                 provider_rw
                     .insert_account_for_hashing(account_updates)
                     .expect("failed to insert accounts");
 
-                let storage_updates = update.iter().map(|(address, account)| {
+                let storage_updates = update.accounts.iter().map(|account| {
+                    let address = &account.address;
                     let storage_entries = account.storage.iter().map(|(slot, value)| {
                         StorageEntry { key: B256::from(*slot), value: value.present_value }
                     });
@@ -2150,14 +2348,15 @@ mod tests {
         }
 
         for update in &state_updates {
-            for (address, account) in update {
+            for account in &update.accounts {
+                let address = &account.address;
                 let storage: HashMap<B256, U256> = account
                     .storage
                     .iter()
                     .map(|(key, value)| (B256::from(*key), value.present_value))
                     .collect();
                 let entry = accumulated_state.entry(*address).or_default();
-                entry.0 = Account::from_revm_account(account);
+                entry.0 = Account::from(account.current.as_ref().unwrap());
                 entry.1.extend(storage);
             }
         }
@@ -2201,8 +2400,9 @@ mod tests {
                 }
             } else {
                 let mut update = state_updates.last().unwrap().clone();
-                for (address, account) in &mut update {
-                    account.info.nonce += number;
+                for account in &mut update.accounts {
+                    let address = &account.address;
+                    account.current.as_mut().unwrap().nonce += number;
                     for (slot, value) in &mut account.storage {
                         value.present_value += U256::from(number);
                         accumulated_state
@@ -2212,7 +2412,7 @@ mod tests {
                             .insert(B256::from(*slot), value.present_value);
                     }
                     accumulated_state.get_mut(address).unwrap().0 =
-                        Account::from_revm_account(account);
+                        Account::from(account.current.as_ref().unwrap());
                 }
                 hook.on_state(update);
                 expected = state_root(accumulated_state.clone());

@@ -165,7 +165,7 @@ where
         AddOns::EthApi: EthApiSpec<Provider: BlockReader<Block = BlockTy<Node::Types>>>
             + EthTransactions
             + TraceExt,
-        reth_evm::BlockEnvFor<<AddOns::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+        reth_evm::EvmEnvFor<<AddOns::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
             reth_rpc_eth_types::BlockOverridesExt,
     {
         let mut chain = Vec::with_capacity(length as usize);
@@ -189,7 +189,7 @@ where
         AddOns::EthApi: EthApiSpec<Provider: BlockReader<Block = BlockTy<Node::Types>>>
             + EthTransactions
             + TraceExt,
-        reth_evm::BlockEnvFor<<AddOns::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+        reth_evm::EvmEnvFor<<AddOns::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
             reth_rpc_eth_types::BlockOverridesExt,
     {
         Box::pin(async move {
@@ -428,7 +428,7 @@ where
             + TraceExt
             + LoadReceipt
             + 'static,
-        reth_evm::BlockEnvFor<<AddOns::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+        reth_evm::EvmEnvFor<<AddOns::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
             reth_rpc_eth_types::BlockOverridesExt,
     {
         Box::pin(async move {
@@ -570,7 +570,7 @@ where
             + TraceExt
             + LoadReceipt
             + 'static,
-        reth_evm::BlockEnvFor<<AddOns::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+        reth_evm::EvmEnvFor<<AddOns::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
             reth_rpc_eth_types::BlockOverridesExt,
     {
         let txs: Vec<Bytes> = txs.into_iter().collect();
@@ -596,7 +596,7 @@ where
             + TraceExt
             + LoadReceipt
             + 'static,
-        reth_evm::BlockEnvFor<<AddOns::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+        reth_evm::EvmEnvFor<<AddOns::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
             reth_rpc_eth_types::BlockOverridesExt,
     {
         let txs: Vec<Bytes> = txs.into_iter().collect();
@@ -624,7 +624,7 @@ where
             + TraceExt
             + LoadReceipt
             + 'static,
-        reth_evm::BlockEnvFor<<AddOns::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+        reth_evm::EvmEnvFor<<AddOns::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
             reth_rpc_eth_types::BlockOverridesExt,
     {
         // Encoded up front, so the returned future does not hold `T`.
@@ -659,7 +659,7 @@ where
             + TraceExt
             + LoadReceipt
             + 'static,
-        reth_evm::BlockEnvFor<<AddOns::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+        reth_evm::EvmEnvFor<<AddOns::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
             reth_rpc_eth_types::BlockOverridesExt,
     {
         let hashes: Vec<B256> = hashes.into_iter().collect();
@@ -685,7 +685,7 @@ where
             + TraceExt
             + LoadReceipt
             + 'static,
-        reth_evm::BlockEnvFor<<AddOns::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+        reth_evm::EvmEnvFor<<AddOns::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
             reth_rpc_eth_types::BlockOverridesExt,
     {
         let mut hashes = Vec::new();
@@ -720,7 +720,7 @@ where
             + TraceExt
             + LoadReceipt
             + 'static,
-        reth_evm::BlockEnvFor<<AddOns::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+        reth_evm::EvmEnvFor<<AddOns::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
             reth_rpc_eth_types::BlockOverridesExt,
     {
         for hash in &hashes {

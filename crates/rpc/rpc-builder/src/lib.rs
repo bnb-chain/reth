@@ -341,7 +341,7 @@ where
     )
     where
         EthApi: FullEthApiServer<Provider = Provider, Pool = Pool>,
-        reth_evm::BlockEnvFor<EthApi::Evm>: reth_rpc_eth_types::BlockOverridesExt,
+        reth_evm::EvmEnvFor<EthApi::Evm>: reth_rpc_eth_types::BlockOverridesExt,
         Payload: PayloadTypes,
     {
         let config = module_config.config.clone().unwrap_or_default();
@@ -365,7 +365,7 @@ where
     ) -> RpcRegistryInner<Provider, Pool, Network, EthApi, EvmConfig, Consensus>
     where
         EthApi: FullEthApiServer<Provider = Provider, Pool = Pool>,
-        reth_evm::BlockEnvFor<EthApi::Evm>: reth_rpc_eth_types::BlockOverridesExt,
+        reth_evm::EvmEnvFor<EthApi::Evm>: reth_rpc_eth_types::BlockOverridesExt,
     {
         let Self { provider, pool, network, executor, consensus, evm_config, .. } = self;
         let executor =
@@ -393,7 +393,7 @@ where
     ) -> TransportRpcModules<()>
     where
         EthApi: FullEthApiServer<Provider = Provider, Pool = Pool>,
-        reth_evm::BlockEnvFor<EthApi::Evm>: reth_rpc_eth_types::BlockOverridesExt,
+        reth_evm::EvmEnvFor<EthApi::Evm>: reth_rpc_eth_types::BlockOverridesExt,
     {
         if module_config.is_empty() {
             TransportRpcModules::default()
@@ -698,7 +698,7 @@ where
     pub fn register_ots(&mut self) -> &mut Self
     where
         EthApi: TraceExt + EthTransactions<Primitives = N>,
-        reth_evm::BlockEnvFor<EthApi::Evm>: reth_rpc_eth_types::BlockOverridesExt,
+        reth_evm::EvmEnvFor<EthApi::Evm>: reth_rpc_eth_types::BlockOverridesExt,
     {
         let otterscan_api = self.otterscan_api();
         self.modules.insert(RethRpcModule::Ots, otterscan_api.into_rpc().into());
@@ -713,7 +713,7 @@ where
     pub fn register_debug(&mut self) -> &mut Self
     where
         EthApi: EthTransactions + TraceExt,
-        reth_evm::BlockEnvFor<EthApi::Evm>: reth_rpc_eth_types::BlockOverridesExt,
+        reth_evm::EvmEnvFor<EthApi::Evm>: reth_rpc_eth_types::BlockOverridesExt,
     {
         let debug_api = self.debug_api();
         self.modules.insert(RethRpcModule::Debug, debug_api.into_rpc().into());
@@ -728,7 +728,7 @@ where
     pub fn register_trace(&mut self) -> &mut Self
     where
         EthApi: TraceExt,
-        reth_evm::BlockEnvFor<EthApi::Evm>: reth_rpc_eth_types::BlockOverridesExt,
+        reth_evm::EvmEnvFor<EthApi::Evm>: reth_rpc_eth_types::BlockOverridesExt,
     {
         let trace_api = self.trace_api();
         self.modules.insert(RethRpcModule::Trace, trace_api.into_rpc().into());
@@ -810,7 +810,7 @@ where
     pub fn bundle_api(&self) -> EthBundle<EthApi>
     where
         EthApi: EthTransactions + Call,
-        reth_evm::BlockEnvFor<EthApi::Evm>: reth_rpc_eth_types::BlockOverridesExt,
+        reth_evm::EvmEnvFor<EthApi::Evm>: reth_rpc_eth_types::BlockOverridesExt,
     {
         let eth_api = self.eth_api().clone();
         EthBundle::new(eth_api, self.blocking_pool_guard.clone())
@@ -869,7 +869,7 @@ where
     Pool: TransactionPool + 'static,
     Network: NetworkInfo + Peers + Clone + 'static,
     EthApi: FullEthApiServer,
-    reth_evm::BlockEnvFor<EthApi::Evm>: reth_rpc_eth_types::BlockOverridesExt,
+    reth_evm::EvmEnvFor<EthApi::Evm>: reth_rpc_eth_types::BlockOverridesExt,
     EvmConfig: ConfigureEvm<Primitives = N> + 'static,
     Consensus: FullConsensus<N> + Clone + 'static,
 {
@@ -1516,9 +1516,8 @@ impl<RpcMiddleware> RpcServerConfig<RpcMiddleware> {
                     RpcError::server_error(err, ServerKind::WsHttp(http_socket_addr))
                 })?;
                 if let Some(module) = modules.http.as_ref().or(modules.ws.as_ref()) {
-                    let handle = server.start(module.clone());
-                    http_handle = Some(handle.clone());
-                    ws_handle = Some(handle);
+                    // Both transports share one server, so only keep one shutdown handle.
+                    http_handle = Some(server.start(module.clone()));
                 }
                 return Ok(RpcServerHandle {
                     http_local_addr: Some(addr),
@@ -2255,11 +2254,16 @@ impl RpcServerHandle {
 
     /// Tell the server to stop without waiting for the server to stop.
     pub fn stop(self) -> Result<(), AlreadyStoppedError> {
+        // HTTP and WS share one server, and one stop handle, when they use the same address.
+        // Stopping it twice would race with the server shutting down after the first stop.
+        let shared_server =
+            self.http_local_addr.is_some() && self.http_local_addr == self.ws_local_addr;
+
         if let Some(handle) = self.http {
             handle.stop()?
         }
 
-        if let Some(handle) = self.ws {
+        if let Some(handle) = self.ws.filter(|_| !shared_server) {
             handle.stop()?
         }
 
@@ -2829,5 +2833,29 @@ mod tests {
 
         assert!(result.is_ok());
         assert!(!closure_called, "Closure should NOT be called when module is not configured");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_stop_rpc_servers() {
+        let modules = TransportRpcModules::default()
+            .with_http(create_test_module())
+            .with_ws(create_test_module());
+        for config in [
+            RpcServerConfig::http(Default::default()),
+            RpcServerConfig::ws(Default::default()),
+            RpcServerConfig::http(Default::default()).with_ws(Default::default()),
+        ] {
+            let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+            let handle =
+                config.with_http_address(addr).with_ws_address(addr).start(&modules).await.unwrap();
+            let servers = handle.http.iter().chain(handle.ws.iter()).cloned().collect::<Vec<_>>();
+            let cloned = handle.clone();
+
+            handle.stop().unwrap();
+            for server in servers {
+                tokio::time::timeout(Duration::from_secs(5), server.stopped()).await.unwrap();
+            }
+            assert!(matches!(cloned.stop(), Err(AlreadyStoppedError)));
+        }
     }
 }
