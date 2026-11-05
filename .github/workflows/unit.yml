@@ -27,6 +27,7 @@ jobs:
       contents: read
     env:
       RUST_BACKTRACE: 1
+      CARGO_INCREMENTAL: 0
     strategy:
       matrix:
         type: [ethereum]
@@ -36,6 +37,17 @@ jobs:
             exclude_args: ""
     timeout-minutes: 30
     steps:
+      - name: Free disk space
+        if: github.repository != 'paradigmxyz/reth'
+        uses: jlumbroso/free-disk-space@3f13feab2962a87273d379ebc36ea159527e6cc9 # v1.3.2
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: false
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
