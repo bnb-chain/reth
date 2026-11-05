@@ -59,14 +59,6 @@ fn fixture(branch: u64) -> RootFixture {
             let deleted = (id == 0 && number == 3) || (id == 1 && number == 7);
             let account = (!deleted).then_some(Account { nonce, ..Default::default() });
             delta.accounts.insert(address, account);
-            match account {
-                Some(account) => {
-                    complete.accounts.insert(address, Some(account));
-                }
-                None => {
-                    complete.accounts.remove(&address);
-                }
-            }
             let mut storage = HashedStorage::default();
             for slot in 0..8 {
                 let recreated = (id == 0 && number == 4) || (id == 1 && number == 8);
@@ -98,15 +90,26 @@ fn fixture(branch: u64) -> RootFixture {
             }
             delta.storages.insert(address, storage);
         }
+        for (address, account) in delta.accounts.clone() {
+            match account {
+                Some(account) => {
+                    complete.accounts.insert(address, Some(account));
+                }
+                None => {
+                    complete.accounts.remove(&address);
+                }
+            }
+        }
 
         // This oracle builds tries from complete live leaves, without overlay merging or cached
         // intermediate nodes. It therefore cannot inherit an overlay merge ordering mistake.
-        let root = state_root_unsorted(complete.accounts.iter().map(|(address, account)| {
-            let storage_root = storage_root_unsorted(
-                complete.storages[address].storage.iter().map(|(key, value)| (*key, *value)),
-            );
-            (*address, account.unwrap().into_trie_account(storage_root))
-        }));
+        let root =
+            state_root_unsorted(complete.accounts.clone().into_iter().map(|(address, account)| {
+                let storage_root = storage_root_unsorted(
+                    complete.storages[&address].storage.iter().map(|(key, value)| (*key, *value)),
+                );
+                (address, account.unwrap().into_trie_account(storage_root))
+            }));
         let (incremental_root, updates) = LatestStateProvider::new(factory.provider().unwrap())
             .state_root_with_updates(delta.clone())
             .unwrap();
@@ -164,7 +167,7 @@ fn assert_overlay(
     if let Some(child) = fixture.blocks.get(tip + 1) {
         let state = &child.trie_data().hashed_state;
         let delta = HashedPostState {
-            accounts: state.accounts.iter().copied().collect(),
+            accounts: state.accounts.iter().map(Clone::clone).collect(),
             storages: state
                 .storages
                 .iter()
