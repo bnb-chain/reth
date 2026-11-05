@@ -50,6 +50,7 @@ jobs:
           tool: nextest
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y liburing-dev pkg-config libclang-dev
+      - run: .github/scripts/install_llvm.sh ubuntu
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           cache-on-failure: true

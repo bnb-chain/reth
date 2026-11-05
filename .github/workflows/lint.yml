@@ -36,6 +36,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: rui314/setup-mold@339e96b4ff1f3bd865856ba4cbbe8818a7acb038 # v1
+      - run: .github/scripts/install_llvm.sh ubuntu
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: ${{ env.PINNED_NIGHTLY }}
@@ -176,7 +177,7 @@ jobs:
       - run: .github/scripts/install_llvm.sh ubuntu
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
-          toolchain: "1.95" # MSRV
+          toolchain: "1.96" # MSRV
       - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:

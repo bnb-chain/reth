@@ -627,6 +627,8 @@ fn run(config: &mut Config, snapshotter: &Snapshotter) -> Result<()> {
             &runtime,
             factory_view,
             StateRootTaskOptions {
+                origin: "trie-dst",
+                parent_cache_wait: None,
                 parent_header: parent.clone(),
                 preserved_sparse_trie: manager.take_sparse_trie(),
                 transaction_count: None,
