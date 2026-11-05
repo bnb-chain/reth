@@ -1684,7 +1684,15 @@ mod tests {
             assert_eq!(nodes, cold_state.nodes);
             assert_eq!(state, cold_state.state);
             assert_eq!(
-                state.accounts().iter().find(|(key, _)| *key == shared).unwrap().1.unwrap().nonce,
+                state
+                    .accounts()
+                    .iter()
+                    .find(|(key, _)| *key == shared)
+                    .unwrap()
+                    .1
+                    .as_ref()
+                    .unwrap()
+                    .nonce,
                 3
             );
             assert_eq!(
@@ -1704,6 +1712,7 @@ mod tests {
                     .find(|(key, _)| *key == shared)
                     .unwrap()
                     .1
+                    .as_ref()
                     .unwrap()
                     .nonce,
                 1
