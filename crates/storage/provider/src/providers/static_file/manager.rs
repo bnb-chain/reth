@@ -13,7 +13,7 @@ use alloy_consensus::{
     Header,
 };
 use alloy_eips::BlockHashOrNumber;
-use alloy_primitives::{b256, Address, BlockHash, BlockNumber, TxHash, TxNumber, B256};
+use alloy_primitives::{b256, Address, BlockHash, BlockNumber, TxHash, TxNumber, B256, U256};
 
 use parking_lot::RwLock;
 use reth_chain_state::ExecutedBlock;
@@ -477,10 +477,12 @@ impl<N: NodePrimitives> StaticFileProvider<N> {
     fn write_headers(
         w: &mut StaticFileProviderRWRefMut<'_, N>,
         blocks: &[ExecutedBlock<N>],
+        mut total_difficulty: U256,
     ) -> ProviderResult<()> {
         for block in blocks {
             let b = block.recovered_block();
-            w.append_header(b.header(), &b.hash())?;
+            total_difficulty += b.header().difficulty();
+            w.append_header_with_td(b.header(), total_difficulty, &b.hash())?;
         }
         Ok(())
     }
@@ -617,6 +619,9 @@ impl<N: NodePrimitives> StaticFileProvider<N> {
 
     /// Writes all static file data for multiple blocks in parallel per-segment.
     ///
+    /// `starting_td` must be the total difficulty of the first block's parent, or zero when
+    /// writing genesis. The caller resolves legacy MDBX TD before starting the workers.
+    ///
     /// This spawns tasks on the storage thread pool for each segment type and each task calls
     /// `sync_all()` on its writer when done.
     #[instrument(level = "debug", target = "providers::static_file", skip_all)]
@@ -625,6 +630,7 @@ impl<N: NodePrimitives> StaticFileProvider<N> {
         blocks: &[ExecutedBlock<N>],
         tx_nums: &[TxNumber],
         ctx: StaticFileWriteCtx,
+        starting_td: U256,
         runtime: &reth_tasks::Runtime,
     ) -> ProviderResult<()> {
         if blocks.is_empty() {
@@ -648,7 +654,7 @@ impl<N: NodePrimitives> StaticFileProvider<N> {
                 let _guard = span.enter();
                 r_headers =
                     Some(self.write_segment(StaticFileSegment::Headers, first_block_number, |w| {
-                        Self::write_headers(w, blocks)
+                        Self::write_headers(w, blocks, starting_td)
                     }));
             });
 
@@ -2714,6 +2720,18 @@ impl<N: NodePrimitives<BlockHeader: Value>> HeaderProvider for StaticFileProvide
     fn header_by_number(&self, num: BlockNumber) -> ProviderResult<Option<Self::Header>> {
         self.get_segment_provider_for_block(StaticFileSegment::Headers, num, None)
             .and_then(|provider| provider.header_by_number(num))
+            .or_else(|err| {
+                if let ProviderError::MissingStaticFileBlock(_, _) = err {
+                    Ok(None)
+                } else {
+                    Err(err)
+                }
+            })
+    }
+
+    fn header_td_by_number(&self, num: BlockNumber) -> ProviderResult<Option<U256>> {
+        self.get_segment_provider_for_block(StaticFileSegment::Headers, num, None)
+            .and_then(|provider| provider.header_td_by_number(num))
             .or_else(|err| {
                 if let ProviderError::MissingStaticFileBlock(_, _) = err {
                     Ok(None)

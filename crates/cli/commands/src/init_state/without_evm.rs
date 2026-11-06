@@ -1,5 +1,5 @@
 use alloy_consensus::BlockHeader;
-use alloy_primitives::{BlockNumber, B256};
+use alloy_primitives::{BlockNumber, B256, U256};
 use alloy_rlp::Decodable;
 use eyre::WrapErr;
 use reth_codecs::Compact;
@@ -7,7 +7,7 @@ use reth_fs_util::FsPathError;
 use reth_node_builder::NodePrimitives;
 use reth_primitives_traits::{SealedBlock, SealedHeader, SealedHeaderFor};
 use reth_provider::{
-    providers::StaticFileProvider, BlockWriter, ProviderError, ProviderResult,
+    providers::StaticFileProvider, BlockWriter, HeaderProvider, ProviderError, ProviderResult,
     StageCheckpointWriter, StaticFileProviderFactory, StaticFileWriter,
 };
 use reth_stages::{StageCheckpoint, StageId};
@@ -45,6 +45,7 @@ pub fn setup_without_evm<Provider, F>(
 ) -> ProviderResult<()>
 where
     Provider: StaticFileProviderFactory
+        + HeaderProvider
         + StageCheckpointWriter
         + BlockWriter<Block = <Provider::Primitives as NodePrimitives>::Block>,
     F: Fn(BlockNumber) -> <Provider::Primitives as NodePrimitives>::BlockHeader
@@ -60,7 +61,14 @@ where
     // `u64::MAX`, sending `append_dummy_chain` into a 1..=u64::MAX loop that
     // exhausts memory before failing.
     if header.number() > 0 {
-        append_dummy_chain(&static_file_provider, header.number() - 1, header_factory)?;
+        append_dummy_chain(
+            &static_file_provider,
+            header.number() - 1,
+            provider_rw.total_difficulty_at(0)?,
+            header_factory,
+        )?;
+        // Publish the dummy headers and their TD before insert_block reads the parent anchor.
+        static_file_provider.commit()?;
     }
 
     info!(target: "reth::cli", "Appending first valid block.");
@@ -113,6 +121,7 @@ where
 fn append_dummy_chain<N, F>(
     sf_provider: &StaticFileProvider<N>,
     target_height: BlockNumber,
+    mut total_difficulty: U256,
     header_factory: F,
 ) -> ProviderResult<()>
 where
@@ -161,7 +170,8 @@ where
             for block_num in 1..=target_height {
                 // TODO: should we fill with real parent_hash?
                 let header = header_factory(block_num);
-                writer.append_header(&header, &B256::ZERO)?;
+                total_difficulty += header.difficulty();
+                writer.append_header_with_td(&header, total_difficulty, &B256::ZERO)?;
             }
             Ok(())
         });
@@ -214,7 +224,9 @@ mod tests {
     use alloy_consensus::Header;
     use alloy_primitives::{address, b256};
     use reth_db_common::init::init_genesis;
-    use reth_provider::{test_utils::create_test_provider_factory, DatabaseProviderFactory};
+    use reth_provider::{
+        test_utils::create_test_provider_factory, DBProvider, DatabaseProviderFactory,
+    };
     use std::{
         io::Write,
         sync::{
@@ -275,24 +287,36 @@ mod tests {
         let header: Header = read_header_from_file(temp_file.path()).unwrap();
         let header_hash = b256!("4f05e4392969fc82e41f6d6a8cea379323b0b2d3ddf7def1a33eec03883e3a33");
 
-        let provider_factory = create_test_provider_factory();
+        for difficulty in [U256::ZERO, U256::from(2)] {
+            let provider_factory = create_test_provider_factory();
+            init_genesis(&provider_factory).unwrap();
+            let provider_rw = provider_factory.database_provider_rw().unwrap();
+            let genesis_td = provider_rw.total_difficulty_at(0).unwrap();
+            let header_difficulty = header.difficulty;
 
-        init_genesis(&provider_factory).unwrap();
+            setup_without_evm(
+                &provider_rw,
+                SealedHeader::new(header.clone(), header_hash),
+                move |number| Header { number, difficulty, ..Default::default() },
+            )
+            .unwrap();
+            provider_rw.commit().unwrap();
 
-        let provider_rw = provider_factory.database_provider_rw().unwrap();
+            let static_files = provider_factory.static_file_provider();
+            let writer = static_files.latest_writer(StaticFileSegment::Headers).unwrap();
+            assert_eq!(writer.next_block_number(), 1701);
+            drop(writer);
 
-        setup_without_evm(&provider_rw, SealedHeader::new(header, header_hash), |number| Header {
-            number,
-            ..Default::default()
-        })
-        .unwrap();
-
-        let static_files = provider_factory.static_file_provider();
-        let writer = static_files.latest_writer(StaticFileSegment::Headers).unwrap();
-        let actual_next_height = writer.next_block_number();
-        let expected_next_height = 1701;
-
-        assert_eq!(actual_next_height, expected_next_height);
+            // Verify the synthetic history and the first real block after reopening the provider.
+            let provider = provider_factory.database_provider_ro().unwrap();
+            for number in [1, 1699, 1700] {
+                let expected = genesis_td +
+                    difficulty * U256::from(number.min(1699)) +
+                    if number == 1700 { header_difficulty } else { U256::ZERO };
+                assert_eq!(static_files.header_td_by_number(number).unwrap(), Some(expected));
+                assert_eq!(provider.total_difficulty_at(number).unwrap(), expected);
+            }
+        }
     }
 
     /// Regression: a header at block 0 used to send `append_dummy_chain` into
