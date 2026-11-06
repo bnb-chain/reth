@@ -208,6 +208,8 @@ pub struct EngineMetrics {
     pub(crate) executed_blocks: Gauge,
     /// How many already executed blocks were directly inserted into the tree.
     pub(crate) inserted_already_executed_blocks: Counter,
+    /// Downloaded blocks ignored because their height is already locally finalized.
+    pub(crate) downloaded_blocks_ignored_finalized_total: Counter,
     /// The number of times the pipeline was run.
     pub(crate) pipeline_runs: Counter,
     /// Newly arriving block hash is not present in executed blocks cache storage

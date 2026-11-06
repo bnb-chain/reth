@@ -560,6 +560,95 @@ impl TestBlockFactory {
 }
 
 #[test]
+fn test_downloaded_blocks_at_or_below_local_finalized_are_ignored() {
+    let mut harness = TestHarness::new(MAINNET.clone());
+    let canonical: Vec<_> = harness.block_builder.get_executed_blocks(1..5).collect();
+    harness = harness.with_blocks(canonical.clone());
+    harness
+        .tree
+        .canonical_in_memory_state
+        .set_finalized(canonical[2].recovered_block().clone_sealed_header());
+
+    for number in [2, 3] {
+        // This branch is no longer in either the executed tree or the database. Without the
+        // finality guard, processing it would buffer it and request its obsolete ancestors.
+        let block = harness.block_builder.generate_random_block(number, B256::random());
+        let hash = block.hash();
+        assert!(harness.tree.on_downloaded_block(block.into()).unwrap().is_none());
+        assert!(harness.tree.state.buffer.block(&hash).is_none());
+        assert!(harness.tree.state.tree_state.executed_block_by_hash(hash).is_none());
+    }
+
+    // A connected stale branch must not even reach block validation or poison the invalid cache.
+    let connected =
+        harness.block_builder.generate_random_block(2, canonical[0].recovered_block().hash());
+    let hash = connected.hash();
+    assert!(harness.tree.on_downloaded_block(connected.into()).unwrap().is_none());
+    assert!(harness.tree.state.invalid_headers.get(&hash).is_none());
+    assert!(harness.tree.state.tree_state.executed_block_by_hash(hash).is_none());
+
+    // An already executed canonical download is also harmless and preserves the current head.
+    let duplicate = canonical[2].recovered_block().clone_sealed_block();
+    assert!(harness.tree.on_downloaded_block(duplicate.into()).unwrap().is_none());
+    assert_eq!(
+        harness.tree.state.tree_state.canonical_block_hash(),
+        canonical[3].recovered_block().hash()
+    );
+    assert!(harness.from_tree_rx.try_recv().is_err());
+}
+
+#[test]
+fn test_downloaded_blocks_with_restored_finality_ahead_of_head_are_not_filtered() {
+    let mut harness = TestHarness::new(MAINNET.clone());
+    let canonical: Vec<_> = harness.block_builder.get_executed_blocks(1..3).collect();
+    harness = harness.with_blocks(canonical);
+    let block = harness.block_builder.generate_random_block(3, B256::random());
+    // A persisted finalized marker can be restored independently of the executed head.
+    // It must not prevent the downloads needed to recover the state up to that marker.
+    harness.tree.canonical_in_memory_state.set_finalized(block.clone_sealed_header());
+    let hash = block.hash();
+    assert_matches!(
+        harness.tree.on_downloaded_block(block.into()).unwrap(),
+        Some(TreeEvent::Download(_))
+    );
+    assert!(harness.tree.state.buffer.block(&hash).is_some());
+}
+
+#[test]
+fn test_downloaded_blocks_above_local_finalized_still_recover_ancestors() {
+    for local_finalized in [false, true] {
+        let mut harness = TestHarness::new(MAINNET.clone());
+        let canonical: Vec<_> = harness.block_builder.get_executed_blocks(1..3).collect();
+        harness = harness.with_blocks(canonical.clone());
+        if local_finalized {
+            harness
+                .tree
+                .canonical_in_memory_state
+                .set_finalized(canonical[0].recovered_block().clone_sealed_header());
+        }
+        // A syncing FCU may name an unknown finalized block ahead of our local chain. It must
+        // not prevent downloading/executing the blocks needed to reach that target.
+        let sync_target = B256::random();
+        harness.tree.state.forkchoice_state_tracker.set_latest(
+            ForkchoiceState {
+                head_block_hash: sync_target,
+                safe_block_hash: sync_target,
+                finalized_block_hash: sync_target,
+            },
+            ForkchoiceStatus::Syncing,
+        );
+        let parent = B256::random();
+        let block = harness.block_builder.generate_random_block(3, parent);
+        let hash = block.hash();
+        assert_matches!(
+            harness.tree.on_downloaded_block(block.into()).unwrap(),
+            Some(TreeEvent::Download(_))
+        );
+        assert!(harness.tree.state.buffer.block(&hash).is_some());
+    }
+}
+
+#[test]
 fn test_tree_persist_block_batch() {
     let tree_config = TreeConfig::default();
     let chain_spec = MAINNET.clone();
