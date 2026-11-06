@@ -2,13 +2,21 @@ use super::*;
 use crate::{OverlayStateProvider, StateTrieOverlay};
 use alloy_consensus::Header;
 use alloy_primitives::{keccak256, Address, U256};
+use reth_db::{
+    models::{AccountBeforeTx, BlockNumberAddress},
+    tables,
+    transaction::DbTxMut,
+};
 use reth_ethereum_primitives::{Block, EthPrimitives};
-use reth_primitives_traits::{Account, RecoveredBlock};
+use reth_primitives_traits::{Account, RecoveredBlock, StorageEntry};
 use reth_provider::{
     test_utils::{create_test_provider_factory, MockNodeTypesWithDB},
-    LatestStateProvider, ProviderFactory,
+    BlockWriter, LatestStateProvider, ProviderFactory,
 };
-use reth_storage_api::{StateProofProvider, StateRootProvider, StateWriter, TrieWriter};
+use reth_stages_types::{FinishCheckpoint, StageCheckpoint, StageId};
+use reth_storage_api::{
+    StageCheckpointWriter, StateProofProvider, StateRootProvider, StateWriter, TrieWriter,
+};
 use reth_trie::{
     root::{state_root_unsorted, storage_root_unsorted},
     DecodedMultiProofV2, HashedPostState, HashedStorage, MultiProofTargetsV2, SortedTrieData,
@@ -281,4 +289,238 @@ fn persisted_anchor_change_does_not_reuse_old_overlay() {
         11,
         TrieInputSorted::new(nodes, state, Default::default()),
     );
+}
+
+fn masked_finish_fixture() -> (ProviderFactory<MockNodeTypesWithDB>, RootFixture) {
+    let durable = fixture(0);
+    let factory = create_test_provider_factory();
+    let partial = durable.blocks[4].recovered_block().num_hash();
+    let finish = durable.blocks[7].recovered_block().num_hash();
+    for block in &durable.blocks[..=4] {
+        persist(&factory, block);
+    }
+
+    // Non-state data is at Finish, but state/trie rows still describe block 4.
+    let writer = factory.provider_rw().unwrap();
+    let mut complete = HashedPostState::default();
+    for (number, block) in durable.blocks[..=7].iter().enumerate() {
+        writer.insert_block(block.recovered_block()).unwrap();
+        let delta = block.trie_data();
+        if number > 4 {
+            for (address_hash, _) in &delta.hashed_state.accounts {
+                let address = (0..4)
+                    .map(Address::with_last_byte)
+                    .find(|address| keccak256(address) == *address_hash)
+                    .unwrap();
+                writer
+                    .tx_ref()
+                    .put::<tables::AccountChangeSets>(
+                        block.block_number(),
+                        AccountBeforeTx {
+                            address,
+                            info: complete.accounts.get(address_hash).cloned().flatten(),
+                        },
+                    )
+                    .unwrap();
+            }
+            for (address_hash, storage) in &delta.hashed_state.storages {
+                let address = (0..4)
+                    .map(Address::with_last_byte)
+                    .find(|address| keccak256(address) == *address_hash)
+                    .unwrap();
+                for (slot_hash, _) in &storage.storage_slots {
+                    let slot = (0..8)
+                        .map(B256::with_last_byte)
+                        .find(|slot| keccak256(slot) == *slot_hash)
+                        .unwrap();
+                    let value = complete
+                        .storages
+                        .get(address_hash)
+                        .and_then(|storage| storage.storage.get(slot_hash))
+                        .copied()
+                        .unwrap_or_default();
+                    writer
+                        .tx_ref()
+                        .put::<tables::StorageChangeSets>(
+                            BlockNumberAddress((block.block_number(), address)),
+                            StorageEntry { key: slot, value },
+                        )
+                        .unwrap();
+                }
+            }
+        }
+        complete.extend_from_sorted(&delta.hashed_state);
+    }
+    writer
+        .save_stage_checkpoint(
+            StageId::Finish,
+            StageCheckpoint::new(finish.number).with_finish_stage_checkpoint(FinishCheckpoint {
+                partial_state_trie: Some(partial.number),
+            }),
+        )
+        .unwrap();
+    writer.commit().unwrap();
+
+    (factory, durable)
+}
+
+#[test]
+fn block_source_completes_masked_finish_for_fork_and_older_parent() {
+    let (factory, durable) = masked_finish_fixture();
+    let fork = fixture(1);
+    let partial = durable.blocks[4].recovered_block().num_hash();
+    let finish = durable.blocks[7].recovered_block().num_hash();
+
+    // The second case needs Finish even without a fork: persistence advanced beyond the parent.
+    for (chain, tip) in [(&fork, 9), (&durable, 6)] {
+        let source = OverlayManager::default();
+        for block in &durable.blocks[5..=7] {
+            source.insert_block(block.clone());
+        }
+        let local = OverlayManager::default();
+        for block in &chain.blocks[5..=tip] {
+            local.insert_block(block.clone());
+        }
+        let parent = chain.blocks[tip].recovered_block().hash();
+        let provider = factory.provider().unwrap();
+        let error = local
+            .overlay_builder(parent)
+            .build_state_trie_overlay_at_frontiers(&provider, partial, finish, true)
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "overlay anchor #{} ({}) is after partial state trie frontier #{} ({}); missing trie updates for blocks #{}..=#{}",
+                finish.number, finish.hash, partial.number, partial.hash, partial.number + 1,
+                finish.number,
+            )
+        );
+
+        let manager = local.with_block_source(&source);
+        let overlay = manager
+            .overlay_builder(parent)
+            .build_state_trie_overlay_at_frontiers(&provider, partial, finish, true)
+            .unwrap();
+        assert!(source.state_trie_overlays.entries.is_empty());
+        assert!(source.execution_overlays.entries.is_empty());
+        source.remove_blocks(
+            durable.blocks[5..=7].iter().map(|block| block.recovered_block().hash()),
+        );
+        assert_overlay(&factory, &manager, chain, tip, overlay.input().clone());
+    }
+}
+
+#[test]
+fn old_snapshot_reports_missing_finish_if_source_is_pruned_before_capture() {
+    let (factory, durable) = masked_finish_fixture();
+    let fork = fixture(1);
+    let source = OverlayManager::default();
+    for block in &durable.blocks[5..=7] {
+        source.insert_block(block.clone());
+    }
+    let local = OverlayManager::default();
+    for block in &fork.blocks[5..=9] {
+        local.insert_block(block.clone());
+    }
+    let manager = local.with_block_source(&source);
+    let provider = factory.provider().unwrap();
+    let (partial, finish) = database_state_frontiers(&provider).unwrap();
+    assert_eq!(partial, durable.blocks[4].recovered_block().num_hash());
+    assert_eq!(finish, durable.blocks[7].recovered_block().num_hash());
+
+    // Advance the durable state/trie frontier while the reader keeps its older DB snapshot.
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                for block in &durable.blocks[5..=7] {
+                    persist(&factory, block);
+                }
+                let writer = factory.provider_rw().unwrap();
+                writer
+                    .save_stage_checkpoint(
+                        StageId::Finish,
+                        StageCheckpoint::new(finish.number).with_finish_stage_checkpoint(
+                            FinishCheckpoint { partial_state_trie: Some(finish.number) },
+                        ),
+                    )
+                    .unwrap();
+                writer.commit().unwrap();
+                source.remove_blocks(
+                    durable.blocks[5..=7].iter().map(|block| block.recovered_block().hash()),
+                );
+            })
+            .join()
+            .unwrap();
+    });
+
+    assert_eq!(database_state_frontiers(&provider).unwrap(), (partial, finish));
+    assert_eq!(database_state_frontiers(&factory.provider().unwrap()).unwrap(), (finish, finish));
+    let error = manager
+        .overlay_builder(fork.blocks[9].recovered_block().hash())
+        .build_state_trie_overlay_at_frontiers(&provider, partial, finish, true)
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "overlay anchor #{} ({}) is after partial state trie frontier #{} ({}); missing trie updates for blocks #{}..=#{}",
+            finish.number, finish.hash, partial.number, partial.hash, partial.number + 1,
+            finish.number,
+        )
+    );
+}
+
+#[test]
+fn source_prune_between_parent_lookups_truncates_capture_but_keeps_captured_chain_alive() {
+    let (factory, durable) = masked_finish_fixture();
+    let source = OverlayManager::default();
+    for block in &durable.blocks[5..=7] {
+        source.insert_block(block.clone());
+    }
+    let manager = OverlayManager::default().with_block_source(&source);
+    let finish = durable.blocks[7].recovered_block().num_hash();
+    let partial = durable.blocks[4].recovered_block().num_hash();
+    let complete = Arc::new(manager.block_state(finish.hash).unwrap());
+    let mut capture = manager.parent_chain(finish.hash);
+    let first = capture.next().unwrap();
+    assert_eq!(first.recovered_block().num_hash(), finish);
+
+    // Force pruning strictly between two lookups; no sleep or scheduler timing is required.
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                source.remove_blocks(
+                    durable.blocks[5..=7].iter().map(|block| block.recovered_block().hash()),
+                );
+            })
+            .join()
+            .unwrap();
+    });
+    assert!(capture.next().is_none());
+    assert_eq!(complete.chain().count(), 3);
+
+    let provider = factory.provider().unwrap();
+    let truncated = Arc::new(BlockState::new(first));
+    let error = manager
+        .overlay_builder_for_state(truncated)
+        .build_state_trie_overlay_at_frontiers(&provider, partial, finish, true)
+        .unwrap_err();
+    let missing_anchor = durable.blocks[6].recovered_block().num_hash();
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "overlay anchor #{} ({}) is after partial state trie frontier #{} ({}); missing trie updates for blocks #{}..=#{}",
+            missing_anchor.number, missing_anchor.hash, partial.number, partial.hash,
+            partial.number + 1, missing_anchor.number,
+        )
+    );
+
+    let builder = manager.overlay_builder_for_state(complete);
+    let overlay =
+        builder.build_state_trie_overlay_at_frontiers(&provider, partial, finish, true).unwrap();
+    let state_provider =
+        OverlayStateProvider::new(provider, builder).with_state_trie_overlay(overlay);
+    assert_eq!(state_provider.state_root(HashedPostState::default()).unwrap(), durable.roots[7]);
+    let proof = state_provider.multiproof_v2(targets(), true).unwrap();
+    verify_proofs(&proof, durable.roots[7]);
+    assert_eq!(proof, durable.proofs[7]);
 }
