@@ -5429,6 +5429,8 @@ mod tests {
                         !shards.is_empty(),
                         "v2: RocksDB AccountsHistory missing for block {block_num} acct {acct_idx}"
                     );
+                    assert_eq!(shards.len(), 1);
+                    assert_eq!(shards[0].1.iter().collect::<Vec<_>>(), vec![block_num]);
 
                     for s in 1..=slots_per_account as u64 {
                         let slot = U256::from(s + acct_idx as u64 * 100);
