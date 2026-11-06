@@ -117,7 +117,8 @@ pub trait Consensus<B: Block>: HeaderValidator<B::Header> {
     /// prevent them from being re-validated once the local clock catches up.
     ///
     /// Transient errors will not cause the block hash to be cached as permanently invalid,
-    /// allowing the block to be re-validated later.
+    /// allowing the block to be re-validated later. Engine payload insertion returns
+    /// `ACCEPTED` with no latest-valid hash; the submitter is responsible for retrying.
     fn is_transient_error(&self, _error: &ConsensusError) -> bool {
         false
     }

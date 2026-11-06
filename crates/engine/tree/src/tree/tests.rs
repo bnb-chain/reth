@@ -40,6 +40,131 @@ use std::{
 };
 use tokio::sync::oneshot;
 
+#[derive(Debug)]
+struct ClockConsensus(std::sync::atomic::AtomicU64);
+
+impl reth_consensus::HeaderValidator for ClockConsensus {
+    fn validate_header(&self, header: &SealedHeader) -> Result<(), ConsensusError> {
+        let present_timestamp = self.0.load(std::sync::atomic::Ordering::SeqCst) / 1000;
+        if header.timestamp > present_timestamp {
+            return Err(ConsensusError::TimestampIsInFuture {
+                timestamp: header.timestamp,
+                present_timestamp,
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_header_against_parent(
+        &self,
+        _: &SealedHeader,
+        _: &SealedHeader,
+    ) -> Result<(), ConsensusError> {
+        Ok(())
+    }
+}
+
+impl Consensus<Block> for ClockConsensus {
+    fn validate_body_against_header(
+        &self,
+        _: &<Block as reth_primitives_traits::Block>::Body,
+        _: &SealedHeader,
+    ) -> Result<(), ConsensusError> {
+        Ok(())
+    }
+
+    fn validate_block_pre_execution(&self, _: &SealedBlock<Block>) -> Result<(), ConsensusError> {
+        Ok(())
+    }
+
+    fn is_transient_error(&self, error: &ConsensusError) -> bool {
+        matches!(error, ConsensusError::TimestampIsInFuture { .. })
+    }
+}
+
+impl FullConsensus<EthPrimitives> for ClockConsensus {
+    fn validate_block_post_execution(
+        &self,
+        _: &RecoveredBlock<Block>,
+        _: &BlockExecutionResult<reth_ethereum_primitives::Receipt>,
+        _: Option<reth_consensus::ReceiptRootBloom>,
+    ) -> Result<(), ConsensusError> {
+        Ok(())
+    }
+}
+
+#[test]
+fn future_payload_does_not_poison_descendants_after_clock_catches_up() {
+    let mut harness =
+        TestHarness::new(HOLESKY.clone()).with_backfill_state(BackfillSyncState::Active);
+    let clock = Arc::new(ClockConsensus(std::sync::atomic::AtomicU64::new(100_982)));
+    harness.tree.consensus = clock.clone();
+    let data = Bytes::from_str(include_str!("../../test-data/holesky/1.rlp")).unwrap();
+    let mut parent = Block::decode(&mut data.as_ref()).unwrap();
+    parent.header.timestamp = 101;
+    let parent = parent.seal_slow();
+    let mut child = parent.clone_block();
+    child.header.number += 1;
+    child.header.parent_hash = parent.hash();
+    let child = child.seal_slow();
+    let payload = |block: &SealedBlock<Block>| ExecutionData {
+        payload: ExecutionPayloadV1::from_block_unchecked(block.hash(), &block.clone_block())
+            .into(),
+        sidecar: ExecutionPayloadSidecar::none(),
+    };
+
+    let early = harness.tree.on_new_payload(payload(&parent)).unwrap().outcome;
+    assert!(matches!(early.status, PayloadStatusEnum::Accepted), "{early:?}");
+    assert_eq!(early.latest_valid_hash, None);
+    assert!(harness.tree.state.invalid_headers.get(&parent.hash()).is_none());
+    while let Ok(event) = harness.from_tree_rx.try_recv() {
+        assert!(!matches!(
+            event,
+            EngineApiEvent::BeaconConsensus(ConsensusEngineEvent::InvalidBlock { .. })
+        ));
+    }
+
+    clock.0.store(101_000, std::sync::atomic::Ordering::SeqCst);
+    let retried = harness.tree.on_new_payload(payload(&parent)).unwrap().outcome;
+    assert!(retried.is_syncing(), "backfill should buffer the now-valid header: {retried:?}");
+    let descendant = harness.tree.on_new_payload(payload(&child)).unwrap().outcome;
+    assert!(descendant.is_syncing(), "{descendant:?}");
+    assert!(harness.tree.state.invalid_headers.get(&child.hash()).is_none());
+    assert!(harness.tree.state.buffer.block(&parent.hash()).is_some());
+    assert!(harness.tree.state.buffer.block(&child.hash()).is_some());
+}
+
+#[test]
+fn transient_consensus_opt_in_preserves_permanent_rejection() {
+    let mut harness = TestHarness::new(HOLESKY.clone());
+    harness.tree.consensus = Arc::new(ClockConsensus(std::sync::atomic::AtomicU64::new(101_000)));
+    let block = Block::default().seal_slow();
+    let status = harness
+        .tree
+        .on_insert_block_error(InsertBlockError::consensus_error(
+            ConsensusError::BaseFeeMissing,
+            block.clone(),
+        ))
+        .unwrap();
+    assert!(status.is_invalid());
+    assert!(harness.tree.state.invalid_headers.get(&block.hash()).is_some());
+}
+
+#[test]
+fn transient_consensus_requires_explicit_opt_in() {
+    let mut harness = TestHarness::new(HOLESKY.clone());
+    let block = Block::default().seal_slow();
+    let status = harness
+        .tree
+        .on_insert_block_error(InsertBlockError::consensus_error(
+            ConsensusError::TimestampIsInFuture { timestamp: 101, present_timestamp: 100 },
+            block.clone(),
+        ))
+        .unwrap();
+    assert!(status.is_invalid());
+    assert!(harness.tree.state.invalid_headers.get(&block.hash()).is_some());
+}
+
 /// Mock engine validator for tests
 #[derive(Debug, Clone)]
 struct MockEngineValidator;
