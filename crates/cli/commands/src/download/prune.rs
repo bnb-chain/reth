@@ -117,7 +117,7 @@ mod tests {
 
     fn planned_with_outputs(paths: &[&str]) -> Vec<PlannedArchive> {
         vec![PlannedArchive {
-            ty: SnapshotComponentType::State,
+            ty: Some(SnapshotComponentType::State),
             component: "State".to_string(),
             archive: SnapshotArchive {
                 url: "https://example.com/state.tar.zst".to_string(),

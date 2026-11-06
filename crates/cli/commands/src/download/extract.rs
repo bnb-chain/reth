@@ -13,7 +13,7 @@ use reqwest::blocking::Client as BlockingClient;
 use reth_cli_util::cancellation::CancellationToken;
 use reth_fs_util as fs;
 use std::{
-    io::Read,
+    io::{BufReader, Read},
     path::{Component, Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -32,6 +32,8 @@ const EXTENSION_TAR_LZ4: &str = ".tar.lz4";
 const EXTENSION_TAR_ZSTD: &str = ".tar.zst";
 const STREAMING_EXTRACTION_PROGRESS_MIN_FILE_SIZE: u64 = 64 * 1024 * 1024;
 const EXTRACTION_PROGRESS_POLL_INTERVAL: Duration = Duration::from_millis(100);
+/// Matches snapshots compressed with `zstd --long=31` (a window of up to 2 GiB).
+const SNAPSHOT_ZSTD_WINDOW_LOG_MAX: u32 = 31;
 
 /// Supported compression formats for snapshots
 #[derive(Debug, Clone, Copy)]
@@ -78,7 +80,7 @@ fn extract_archive<R: Read>(
             unpack_archive(Archive::new(decoder), target_dir, static_files_dir, None)?;
         }
         CompressionFormat::Zstd => {
-            let decoder = ZstdDecoder::new(progress_reader)?;
+            let decoder = snapshot_zstd_decoder(progress_reader)?;
             unpack_archive(Archive::new(decoder), target_dir, static_files_dir, None)?;
         }
     }
@@ -106,7 +108,7 @@ pub(crate) fn extract_archive_raw<R: Read>(
         }
         CompressionFormat::Zstd => {
             unpack_archive(
-                Archive::new(ZstdDecoder::new(reader)?),
+                Archive::new(snapshot_zstd_decoder(reader)?),
                 target_dir,
                 static_files_dir,
                 progress,
@@ -115,6 +117,13 @@ pub(crate) fn extract_archive_raw<R: Read>(
     }
 
     Ok(())
+}
+
+/// Allows the large windows used by published snapshots in both extraction paths.
+fn snapshot_zstd_decoder<R: Read>(reader: R) -> Result<ZstdDecoder<'static, BufReader<R>>> {
+    let mut decoder = ZstdDecoder::new(reader)?;
+    decoder.window_log_max(SNAPSHOT_ZSTD_WINDOW_LOG_MAX)?;
+    Ok(decoder)
 }
 
 fn unpack_archive<R: Read>(
@@ -624,6 +633,52 @@ pub(crate) async fn stream_and_extract(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extracts_long_window_snapshots_in_both_paths() {
+        let mut encoder = zstd::Encoder::new(Vec::new(), 1).unwrap();
+        encoder.window_log(SNAPSHOT_ZSTD_WINDOW_LOG_MAX).unwrap();
+        let mut tar = tar::Builder::new(encoder);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(4);
+        header.set_mode(0o644);
+        header.set_cksum();
+        tar.append_data(&mut header, "db/data", b"data".as_slice()).unwrap();
+        let bytes = tar.into_inner().unwrap().finish().unwrap();
+        // Ensure this fixture exercises the previously rejected window, even though it is small.
+        assert_eq!(
+            ZstdDecoder::new(bytes.as_slice())
+                .unwrap()
+                .read_to_end(&mut Vec::new())
+                .unwrap_err()
+                .to_string(),
+            "Frame requires too much memory for decoding"
+        );
+        for tracked in [false, true] {
+            let target = tempfile::tempdir().unwrap();
+            if tracked {
+                extract_archive(
+                    bytes.as_slice(),
+                    bytes.len() as u64,
+                    CompressionFormat::Zstd,
+                    target.path(),
+                    None,
+                    CancellationToken::new(),
+                )
+                .unwrap();
+            } else {
+                extract_archive_raw(
+                    bytes.as_slice(),
+                    CompressionFormat::Zstd,
+                    target.path(),
+                    None,
+                    None,
+                )
+                .unwrap();
+            }
+            assert_eq!(fs::read(target.path().join("db/data")).unwrap(), b"data");
+        }
+    }
 
     #[test]
     fn custom_static_root_cannot_be_redirected_by_archive_symlinks() {
