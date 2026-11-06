@@ -27,7 +27,7 @@
 // This basis of this file has been taken from the deprecated jsonrpc codebase:
 // https://github.com/paritytech/jsonrpc
 
-use bytes::{Buf, BytesMut};
+use bytes::{Buf, BufMut, BytesMut};
 use std::{io, str};
 
 /// Separator for enveloping messages in streaming codecs
@@ -48,10 +48,14 @@ impl Default for Separator {
 }
 
 /// Stream codec for streaming protocols (ipc, tcp)
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct StreamCodec {
     incoming_separator: Separator,
     outgoing_separator: Separator,
+    max_length: usize,
+    /// The first `max_length + 1` bytes of the message being skipped.
+    truncated: Option<BytesMut>,
+    scan: ScanState,
 }
 
 impl StreamCodec {
@@ -62,13 +66,77 @@ impl StreamCodec {
 
     /// New custom stream codec
     pub const fn new(incoming_separator: Separator, outgoing_separator: Separator) -> Self {
-        Self { incoming_separator, outgoing_separator }
+        Self {
+            incoming_separator,
+            outgoing_separator,
+            max_length: usize::MAX,
+            truncated: None,
+            scan: ScanState::new(),
+        }
+    }
+
+    /// Truncates messages longer than `max_length` bytes to `max_length + 1` bytes, so the
+    /// reader can reject them without buffering the whole message.
+    pub const fn with_max_length(mut self, max_length: usize) -> Self {
+        self.max_length = max_length;
+        self
+    }
+
+    /// Starts skipping the message at the start of `buf`, keeping its first bytes.
+    fn truncate(&mut self, buf: &mut BytesMut) {
+        self.truncated = Some(buf.split_to(self.max_length + 1));
+        buf.clear();
+    }
+}
+
+impl Default for StreamCodec {
+    fn default() -> Self {
+        Self::new(Default::default(), Default::default())
+    }
+}
+
+/// Scan state of the [`Separator::Empty`] decoder, carried across `decode` calls so bytes
+/// scanned by a previous call are not scanned again.
+///
+/// Indices refer to the current read buffer and must be reset whenever bytes are consumed from
+/// it.
+#[derive(Debug)]
+struct ScanState {
+    depth: i32,
+    in_str: bool,
+    is_escaped: bool,
+    start_idx: usize,
+    whitespaces: usize,
+    cursor: usize,
+}
+
+impl ScanState {
+    const fn new() -> Self {
+        Self { depth: 0, in_str: false, is_escaped: false, start_idx: 0, whitespaces: 0, cursor: 0 }
+    }
+}
+
+impl Default for ScanState {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 #[inline]
 const fn is_whitespace(byte: u8) -> bool {
     matches!(byte, 0x0D | 0x0A | 0x20 | 0x09)
+}
+
+/// Converts the start of a truncated message, which may end inside a UTF-8 sequence.
+///
+/// The reader rejects the message by its length alone, so non-ASCII bytes are replaced with `?`
+/// in place, which keeps the length.
+fn lossy(truncated: BytesMut) -> String {
+    String::from_utf8(truncated.into()).unwrap_or_else(|err| {
+        let mut bytes = err.into_bytes();
+        bytes.iter_mut().filter(|b| !b.is_ascii()).for_each(|b| *b = b'?');
+        String::from_utf8(bytes).expect("ASCII is valid UTF-8")
+    })
 }
 
 impl tokio_util::codec::Decoder for StreamCodec {
@@ -79,45 +147,88 @@ impl tokio_util::codec::Decoder for StreamCodec {
         if let Separator::Byte(separator) = self.incoming_separator {
             if let Some(i) = buf.as_ref().iter().position(|&b| b == separator) {
                 let line = buf.split_to(i);
-                let _ = buf.split_to(1);
+                buf.advance(1);
+                if let Some(truncated) = self.truncated.take() {
+                    return Ok(Some(lossy(truncated)))
+                }
 
                 match str::from_utf8(line.as_ref()) {
                     Ok(s) => Ok(Some(s.to_string())),
                     Err(_) => Err(io::Error::other("invalid UTF-8")),
                 }
             } else {
+                if self.truncated.is_some() {
+                    buf.clear();
+                } else if buf.len() > self.max_length {
+                    self.truncate(buf);
+                }
                 Ok(None)
             }
         } else {
-            let mut depth = 0;
-            let mut in_str = false;
-            let mut is_escaped = false;
-            let mut start_idx = 0;
-            let mut whitespaces = 0;
+            // resume scanning at the byte the previous call stopped at
+            while self.scan.cursor < buf.len() {
+                let idx = self.scan.cursor;
+                let byte = buf[idx];
 
-            for idx in 0..buf.as_ref().len() {
-                let byte = buf.as_ref()[idx];
-
-                if (byte == b'{' || byte == b'[') && !in_str {
-                    if depth == 0 {
-                        start_idx = idx;
+                if (byte == b'{' || byte == b'[') && !self.scan.in_str {
+                    if self.scan.depth == 0 {
+                        self.scan.start_idx = idx;
                     }
-                    depth += 1;
-                } else if (byte == b'}' || byte == b']') && !in_str {
-                    depth -= 1;
-                } else if byte == b'"' && !is_escaped {
-                    in_str = !in_str;
+                    self.scan.depth += 1;
+                } else if (byte == b'}' || byte == b']') && !self.scan.in_str {
+                    self.scan.depth -= 1;
+                } else if byte == b'"' && !self.scan.is_escaped {
+                    self.scan.in_str = !self.scan.in_str;
                 } else if is_whitespace(byte) {
-                    whitespaces += 1;
+                    self.scan.whitespaces += 1;
                 }
-                is_escaped = byte == b'\\' && !is_escaped && in_str;
+                self.scan.is_escaped = byte == b'\\' && !self.scan.is_escaped && self.scan.in_str;
 
-                if depth == 0 && idx != start_idx && idx - start_idx + 1 > whitespaces {
-                    if start_idx > 0 {
-                        buf.advance(start_idx);
+                if self.scan.depth == 0 &&
+                    let Some(truncated) = self.truncated.take()
+                {
+                    self.scan = ScanState::new();
+                    buf.advance(idx + 1);
+                    return Ok(Some(lossy(truncated)))
+                }
+                if self.scan.depth == 0 &&
+                    idx != self.scan.start_idx &&
+                    idx - self.scan.start_idx + 1 > self.scan.whitespaces
+                {
+                    let start = self.scan.start_idx;
+                    let end = idx + 1;
+                    // reset before advancing the buffer because the stored indices go stale
+                    self.scan = ScanState::new();
+                    if start > 0 {
+                        buf.advance(start);
                     }
-                    let bts = buf.split_to(idx + 1 - start_idx);
-                    return Ok(String::from_utf8(bts.into()).ok())
+                    let bts = buf.split_to(end - start);
+                    // Skip invalid UTF-8 and keep scanning, the rest of the buffer may hold more
+                    // messages.
+                    match String::from_utf8(bts.into()) {
+                        Ok(msg) => return Ok(Some(msg)),
+                        Err(_) => continue,
+                    }
+                }
+
+                self.scan.cursor += 1;
+            }
+
+            // Keep at most `max_length` bytes buffered between calls.
+            if self.truncated.is_some() {
+                buf.clear();
+                self.scan.cursor = 0;
+            } else if buf.len() > self.max_length {
+                if self.scan.depth <= 0 {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "message too large"))
+                }
+                // The bytes before an open value are never part of a message.
+                buf.advance(self.scan.start_idx);
+                self.scan.cursor -= self.scan.start_idx;
+                self.scan.start_idx = 0;
+                if buf.len() > self.max_length {
+                    self.truncate(buf);
+                    self.scan.cursor = 0;
                 }
             }
             Ok(None)
@@ -129,11 +240,14 @@ impl tokio_util::codec::Encoder<String> for StreamCodec {
     type Error = io::Error;
 
     fn encode(&mut self, msg: String, buf: &mut BytesMut) -> io::Result<()> {
-        let mut payload = msg.into_bytes();
-        if let Separator::Byte(separator) = self.outgoing_separator {
-            payload.push(separator);
+        match self.outgoing_separator {
+            Separator::Byte(separator) => {
+                buf.reserve(msg.len() + 1);
+                buf.extend_from_slice(msg.as_bytes());
+                buf.put_u8(separator);
+            }
+            Separator::Empty => buf.extend_from_slice(msg.as_bytes()),
         }
-        buf.extend_from_slice(&payload);
         Ok(())
     }
 }
@@ -142,6 +256,7 @@ impl tokio_util::codec::Encoder<String> for StreamCodec {
 mod tests {
     use super::*;
     use bytes::BufMut;
+    use rand::{rngs::StdRng, RngCore, SeedableRng};
     use tokio_util::codec::Decoder;
 
     #[test]
@@ -311,5 +426,322 @@ mod tests {
         let parsed: Result<Obj, _> = serde_json::from_str(json);
         assert!(parsed.is_ok(), "serde_json should accept whitespace-wrapped JSON");
         assert_eq!(parsed.unwrap(), Obj { key: "value".into() });
+    }
+
+    /// Multiple messages fed one byte at a time.
+    #[test]
+    fn pipelined_messages_byte_by_byte() {
+        let payload = br#"{"a":1}{"b":2}{"c":3}"#;
+        let mut buf = BytesMut::with_capacity(256);
+        let mut codec = StreamCodec::stream_incoming();
+        let mut decoded = Vec::new();
+
+        for byte in payload {
+            buf.put_u8(*byte);
+            while let Some(m) = codec.decode(&mut buf).unwrap() {
+                decoded.push(m);
+            }
+        }
+
+        assert_eq!(decoded, vec![r#"{"a":1}"#, r#"{"b":2}"#, r#"{"c":3}"#]);
+        assert!(buf.is_empty());
+    }
+
+    /// The stateless `Separator::Empty` decode loop that `ScanState` replaced, kept as the
+    /// reference implementation for the differential tests below.
+    ///
+    /// Messages with invalid UTF-8 are skipped.
+    struct ReferenceDecoder;
+
+    impl Decoder for ReferenceDecoder {
+        type Item = String;
+        type Error = io::Error;
+
+        fn decode(&mut self, buf: &mut BytesMut) -> io::Result<Option<Self::Item>> {
+            let mut depth = 0i32;
+            let mut in_str = false;
+            let mut is_escaped = false;
+            let mut start_idx = 0usize;
+            let mut whitespaces = 0usize;
+
+            for idx in 0..buf.as_ref().len() {
+                let byte = buf.as_ref()[idx];
+
+                if (byte == b'{' || byte == b'[') && !in_str {
+                    if depth == 0 {
+                        start_idx = idx;
+                    }
+                    depth += 1;
+                } else if (byte == b'}' || byte == b']') && !in_str {
+                    depth -= 1;
+                } else if byte == b'"' && !is_escaped {
+                    in_str = !in_str;
+                } else if is_whitespace(byte) {
+                    whitespaces += 1;
+                }
+                is_escaped = byte == b'\\' && !is_escaped && in_str;
+
+                if depth == 0 && idx != start_idx && idx - start_idx + 1 > whitespaces {
+                    if start_idx > 0 {
+                        buf.advance(start_idx);
+                    }
+                    let bts = buf.split_to(idx + 1 - start_idx);
+                    return match String::from_utf8(bts.into()) {
+                        Ok(msg) => Ok(Some(msg)),
+                        Err(_) => self.decode(buf),
+                    }
+                }
+            }
+            Ok(None)
+        }
+    }
+
+    /// Feeds the same bytes with the same chunk boundaries to the codec and the reference
+    /// decoder and returns the decode results of both. Asserts that both consume the same bytes.
+    fn drain_both(bytes: &[u8], chunks: &[usize]) -> (Vec<Option<String>>, Vec<Option<String>>) {
+        let mut ours = StreamCodec::stream_incoming();
+        let mut theirs = ReferenceDecoder;
+
+        let mut buf_ours = BytesMut::with_capacity(bytes.len() + 16);
+        let mut buf_theirs = BytesMut::with_capacity(bytes.len() + 16);
+        let mut out_ours = Vec::new();
+        let mut out_theirs = Vec::new();
+
+        let mut cur = 0usize;
+        for &c in chunks {
+            let end = cur.saturating_add(c.max(1)).min(bytes.len());
+            if cur == end {
+                break;
+            }
+            buf_ours.put_slice(&bytes[cur..end]);
+            buf_theirs.put_slice(&bytes[cur..end]);
+            loop {
+                let a = ours.decode(&mut buf_ours).unwrap();
+                let b = theirs.decode(&mut buf_theirs).unwrap();
+                out_ours.push(a.clone());
+                out_theirs.push(b.clone());
+                if a.is_none() && b.is_none() {
+                    break;
+                }
+            }
+            cur = end;
+        }
+        if cur < bytes.len() {
+            buf_ours.put_slice(&bytes[cur..]);
+            buf_theirs.put_slice(&bytes[cur..]);
+            loop {
+                let a = ours.decode(&mut buf_ours).unwrap();
+                let b = theirs.decode(&mut buf_theirs).unwrap();
+                out_ours.push(a.clone());
+                out_theirs.push(b.clone());
+                if a.is_none() && b.is_none() {
+                    break;
+                }
+            }
+        }
+
+        assert_eq!(buf_ours, buf_theirs, "residual buffers diverged");
+
+        (out_ours, out_theirs)
+    }
+
+    /// Hand-picked adversarial inputs under several chunk schedules.
+    #[test]
+    fn differential_curated_corpus() {
+        let inputs: &[&[u8]] = &[
+            b"",
+            b"{}",
+            b"[]",
+            b"{}{}",
+            br#"{"a":1}"#,
+            br#"{"a":1}{"b":2}"#,
+            b"   {}   ",
+            b"   { }   ",
+            b"   {\n}\n   ",
+            br#"{"a":"\""}"#,
+            br#"{"a":"\\"}"#,
+            br#"{"a":"\\\""}"#,
+            b"{\xff}",
+            b"{\xff}{\"a\":1}",
+            b"]{}",
+            b"}{}",
+            b"]{}{}",
+            b"}{}{}",
+            b"][{}",
+            b"abc",
+            b"a",
+            b"\n\n\n",
+            br#"{"\":1}"#,
+            br#"{"escaped":"line\nline"}"#,
+            b"{[]}",
+            b"[{}]",
+            b"[{},{},{}]",
+        ];
+        let chunk_variants: &[&[usize]] =
+            &[&[usize::MAX], &[1], &[2], &[3], &[5], &[7], &[1, 3, 2, 7, 1, 4]];
+
+        for input in inputs {
+            for chunks in chunk_variants {
+                let (ours, theirs) = drain_both(input, chunks);
+                assert_eq!(
+                    ours,
+                    theirs,
+                    "differential mismatch on {:?} with chunks {:?}",
+                    std::str::from_utf8(input).unwrap_or("<non-utf8>"),
+                    chunks
+                );
+            }
+        }
+    }
+
+    /// Random byte sequences over a JSON-heavy alphabet under random chunk schedules.
+    #[test]
+    fn differential_random_bytes() {
+        const SEQUENCES: usize = 200;
+        const SCHEDULES: usize = 5;
+        const MAX_LEN: usize = 128;
+
+        let mut rng = StdRng::seed_from_u64(0x00CC_2259_C0DE_C0DE);
+        let alphabet: &[u8] = b"{}[]\":,\\ \n \t a1{}[]\"";
+
+        for seq in 0..SEQUENCES {
+            let len = 1 + (rng.next_u32() as usize % MAX_LEN);
+            let mut bytes = Vec::with_capacity(len);
+            for _ in 0..len {
+                let b = alphabet[rng.next_u32() as usize % alphabet.len()];
+                bytes.push(b);
+            }
+            for sched in 0..SCHEDULES {
+                let mut chunks = Vec::new();
+                let mut remaining = len;
+                while remaining > 0 {
+                    let c = 1 + (rng.next_u32() as usize % remaining.min(16));
+                    chunks.push(c);
+                    remaining -= c;
+                }
+                let (ours, theirs) = drain_both(&bytes, &chunks);
+                assert_eq!(
+                    ours, theirs,
+                    "differential mismatch on seq={} sched={} bytes={:?}",
+                    seq, sched, bytes
+                );
+            }
+        }
+    }
+
+    /// Randomly chunked well-formed JSON-RPC envelopes.
+    #[test]
+    fn differential_random_wellformed_json_rpc() {
+        let mut rng = StdRng::seed_from_u64(0x00DE_C0DE_C002_2259);
+        for _ in 0..20 {
+            let str_len = 500 + (rng.next_u32() as usize % 4096);
+            let filler: String = (0..str_len)
+                .map(|_| {
+                    let b = rng.next_u32() as u8 & 0x7F;
+                    // printable ASCII without quotes or backslashes
+                    if b < 0x20 || b == b'"' || b == b'\\' {
+                        b'a'
+                    } else {
+                        b
+                    }
+                })
+                .map(|b| b as char)
+                .collect();
+            let msg = format!(
+                r#"{{"jsonrpc":"2.0","method":"engine_test","params":["{}"],"id":1}}"#,
+                filler
+            );
+            let bytes = msg.as_bytes();
+
+            let mut chunks = Vec::new();
+            let mut remaining = bytes.len();
+            while remaining > 0 {
+                let c = 1 + (rng.next_u32() as usize % remaining.min(64));
+                chunks.push(c);
+                remaining -= c;
+            }
+
+            let (ours, theirs) = drain_both(bytes, &chunks);
+            assert_eq!(ours, theirs, "differential mismatch on well-formed JSON-RPC");
+            assert!(
+                ours.iter().any(|o| o.is_some()),
+                "well-formed message should decode to at least one frame"
+            );
+        }
+    }
+
+    #[test]
+    fn max_length() {
+        let mut codec = StreamCodec::stream_incoming().with_max_length(8);
+        let mut buf = BytesMut::from(&br#"{"a":1}  {"b":"#[..]);
+        assert_eq!(codec.decode(&mut buf).unwrap().unwrap(), r#"{"a":1}"#);
+        assert!(codec.decode(&mut buf).unwrap().is_none());
+        buf.put_slice(br#""long","c":["#);
+        assert!(codec.decode(&mut buf).unwrap().is_none());
+        buf.put_slice(br#"]}{"d":2}"#);
+        assert_eq!(codec.decode(&mut buf).unwrap().unwrap(), r#"{"b":"lon"#);
+        assert_eq!(codec.decode(&mut buf).unwrap().unwrap(), r#"{"d":2}"#);
+        assert!(buf.is_empty());
+
+        let mut buf = BytesMut::from(&br#"      {"a":"#[..]);
+        assert!(codec.decode(&mut buf).unwrap().is_none());
+        assert_eq!(buf, br#"{"a":"#[..]);
+        buf.put_slice(b"1}");
+        assert_eq!(codec.decode(&mut buf).unwrap().unwrap(), r#"{"a":1}"#);
+
+        let mut buf = BytesMut::from(&b"          "[..]);
+        assert_eq!(codec.decode(&mut buf).unwrap_err().kind(), io::ErrorKind::InvalidData);
+
+        let mut codec = StreamCodec::stream_incoming().with_max_length(8);
+        let mut buf = BytesMut::from(&b"}aaaaaaaa"[..]);
+        assert_eq!(codec.decode(&mut buf).unwrap_err().kind(), io::ErrorKind::InvalidData);
+
+        let mut codec = StreamCodec::default().with_max_length(4);
+        let mut buf = BytesMut::from(&b"abcd\nabcdef"[..]);
+        assert_eq!(codec.decode(&mut buf).unwrap().unwrap(), "abcd");
+        assert!(codec.decode(&mut buf).unwrap().is_none());
+        buf.put_slice(b"gh\nij\n");
+        assert_eq!(codec.decode(&mut buf).unwrap().unwrap(), "abcde");
+        assert_eq!(codec.decode(&mut buf).unwrap().unwrap(), "ij");
+
+        let mut buf = BytesMut::from(&b"\xff\xffcd\xe2\x82\xacgh"[..]);
+        assert!(codec.decode(&mut buf).unwrap().is_none());
+        buf.put_slice(b"\n");
+        assert_eq!(codec.decode(&mut buf).unwrap().unwrap(), "??cd?");
+    }
+
+    /// Random input under random chunk schedules never leaves more than `max_length` bytes
+    /// buffered between calls, in either framing mode.
+    #[test]
+    fn max_length_bounds_buffer() {
+        const MAX_CHUNK: usize = 16;
+
+        let mut rng = StdRng::seed_from_u64(0x00B0_0B5E_C0DE_C0DE);
+        let alphabet: &[u8] = b"{}[]\":,\\ \n\t a1\xff";
+
+        for _ in 0..200 {
+            let max_length = 1 + rng.next_u32() as usize % 16;
+            let mut codec = if rng.next_u32() % 2 == 0 {
+                StreamCodec::stream_incoming()
+            } else {
+                StreamCodec::default()
+            }
+            .with_max_length(max_length);
+            let mut buf = BytesMut::new();
+
+            'input: for _ in 0..rng.next_u32() % 64 {
+                for _ in 0..1 + rng.next_u32() as usize % MAX_CHUNK {
+                    buf.put_u8(alphabet[rng.next_u32() as usize % alphabet.len()]);
+                }
+                loop {
+                    match codec.decode(&mut buf) {
+                        Ok(Some(msg)) => assert!(msg.len() <= max_length + MAX_CHUNK),
+                        Ok(None) => break,
+                        Err(_) => break 'input,
+                    }
+                }
+                assert!(buf.len() <= max_length, "{} bytes buffered", buf.len());
+            }
+        }
     }
 }

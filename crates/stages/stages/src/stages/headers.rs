@@ -1,5 +1,5 @@
 use alloy_consensus::BlockHeader;
-use alloy_primitives::{BlockHash, BlockNumber, Bytes, B256, U256};
+use alloy_primitives::{BlockHash, BlockNumber, Bytes, B256};
 use alloy_rlp::Decodable;
 use futures_util::StreamExt;
 use reth_config::config::EtlConfig;
@@ -99,7 +99,7 @@ where
     /// database table.
     fn write_headers<P>(&mut self, provider: &P) -> Result<BlockNumber, StageError>
     where
-        P: DBProvider<Tx: DbTxMut> + StaticFileProviderFactory,
+        P: DBProvider<Tx: DbTxMut> + StaticFileProviderFactory + HeaderProvider,
         Downloader: HeaderDownloader<Header = <P::Primitives as NodePrimitives>::BlockHeader>,
         <P::Primitives as NodePrimitives>::BlockHeader: Value + FullBlockHeader,
     {
@@ -115,9 +115,8 @@ where
             .get_highest_static_file_block(StaticFileSegment::Headers)
             .unwrap_or_default();
 
-        // Get the total difficulty of the last header to continue accumulating TD
-        let mut current_td =
-            static_file_provider.header_td_by_number(last_header_number)?.unwrap_or(U256::ZERO);
+        // Resolve through the provider so legacy MDBX totals can anchor new static-file rows.
+        let mut total_difficulty = provider.total_difficulty_at(last_header_number)?;
 
         // Although headers were downloaded in reverse order, the collector iterates it in ascending
         // order
@@ -127,7 +126,7 @@ where
             let (_, header_buf) = header?;
 
             if index > 0 && index.is_multiple_of(interval) && total_headers > 100 {
-                info!(target: "sync::stages::headers", progress = %format!("{:.2}%", (index as f64 / total_headers as f64) * 100.0), "Writing headers");
+                info!(target: "sync::stages::headers", progress = %format_args!("{:.2}%", (index as f64 / total_headers as f64) * 100.0), "Writing headers");
             }
 
             let sealed_header: SealedHeader<Downloader::Header> = SealedHeader::new_unhashed(
@@ -141,11 +140,8 @@ where
             }
             last_header_number = header.number();
 
-            // Calculate the new total difficulty: parent_td + block_difficulty
-            current_td = current_td.saturating_add(header.difficulty());
-
-            // Append to Headers segment with total difficulty
-            writer.append_header_with_td(header, current_td, header_hash)?;
+            total_difficulty += header.difficulty();
+            writer.append_header_with_td(header, total_difficulty, header_hash)?;
         }
 
         info!(target: "sync::stages::headers", total = total_headers, "Writing headers hash index");
@@ -171,7 +167,7 @@ where
             let (hash, number) = hash_to_number?;
 
             if index > 0 && index.is_multiple_of(interval) && total_headers > 100 {
-                info!(target: "sync::stages::headers", progress = %format!("{:.2}%", (index as f64 / total_headers as f64) * 100.0), "Writing headers hash index");
+                info!(target: "sync::stages::headers", progress = %format_args!("{:.2}%", (index as f64 / total_headers as f64) * 100.0), "Writing headers hash index");
             }
 
             if first_sync {
@@ -193,7 +189,7 @@ where
 
 impl<Provider, P, D> Stage<Provider> for HeaderStage<P, D>
 where
-    Provider: DBProvider<Tx: DbTxMut> + StaticFileProviderFactory,
+    Provider: DBProvider<Tx: DbTxMut> + StaticFileProviderFactory + HeaderProvider,
     P: HeaderSyncGapProvider<Header = <Provider::Primitives as NodePrimitives>::BlockHeader>,
     D: HeaderDownloader<Header = <Provider::Primitives as NodePrimitives>::BlockHeader>,
     <Provider::Primitives as NodePrimitives>::BlockHeader: FullBlockHeader + Value,
@@ -306,8 +302,10 @@ where
         self.hash_collector.clear();
         self.header_collector.clear();
 
-        Ok(ExecOutput {
-            checkpoint: StageCheckpoint::new(last_header_number).with_headers_stage_checkpoint(
+        // We only reach here if all headers have been downloaded by ETL, and pushed to DB all
+        // in one stage run.
+        Ok(ExecOutput::done(
+            StageCheckpoint::new(last_header_number).with_headers_stage_checkpoint(
                 HeadersCheckpoint {
                     block_range: CheckpointBlockRange {
                         from: input.checkpoint().block_number,
@@ -319,10 +317,7 @@ where
                     },
                 },
             ),
-            // We only reach here if all headers have been downloaded by ETL, and pushed to DB all
-            // in one stage run.
-            done: true,
-        })
+        ))
     }
 
     /// Unwind the stage.
@@ -342,6 +337,9 @@ where
                 (input.unwind_to + 1)..,
             )?;
         provider.tx_ref().unwind_table_by_num::<tables::CanonicalHeaders>(input.unwind_to)?;
+        provider
+            .tx_ref()
+            .unwind_table_by_num::<tables::HeaderTerminalDifficulties>(input.unwind_to)?;
         let unfinalized_headers_unwound = provider.tx_ref().unwind_table_by_num::<tables::Headers<
             HeaderTy<Provider::Primitives>,
         >>(input.unwind_to)?;
@@ -399,7 +397,7 @@ mod tests {
     };
     use alloy_primitives::B256;
     use assert_matches::assert_matches;
-    use reth_provider::{DatabaseProviderFactory, ProviderFactory, StaticFileProviderFactory};
+    use reth_provider::{test_utils::insert_headers, ProviderFactory, StaticFileProviderFactory};
     use reth_stages_api::StageUnitCheckpoint;
     use reth_testing_utils::generators::{self, random_header, random_header_range};
     use std::sync::Arc;
@@ -468,6 +466,16 @@ mod tests {
                 let headers = random_header_range(&mut rng, 0..start + 1, B256::ZERO);
                 let head = headers.last().cloned().unwrap();
                 self.db.insert_headers(headers.iter())?;
+                // Model an MDBX-backed datadir whose static-file TD column contains placeholders.
+                let provider = self.db.factory.provider_rw()?;
+                let mut td = alloy_primitives::U256::ZERO;
+                for header in &headers {
+                    td += header.difficulty;
+                    provider
+                        .tx_ref()
+                        .put::<tables::HeaderTerminalDifficulties>(header.number, td.into())?;
+                }
+                provider.commit()?;
 
                 // use previous checkpoint as seed size
                 let end = input.target.unwrap_or_default() + 1;
@@ -491,6 +499,15 @@ mod tests {
                 match output {
                     Some(output) if output.checkpoint.block_number > initial_checkpoint => {
                         let provider = self.db.factory.provider()?;
+
+                        let mut td = provider.total_difficulty_at(initial_checkpoint)?;
+                        for number in initial_checkpoint + 1..=output.checkpoint.block_number {
+                            td += provider.header_by_number(number)?.unwrap().difficulty;
+                            assert_eq!(
+                                provider.static_file_provider().header_td_by_number(number)?,
+                                Some(td)
+                            );
+                        }
 
                         for block_num in initial_checkpoint..output.checkpoint.block_number {
                             // look up the header hash
@@ -558,6 +575,10 @@ mod tests {
                     .ensure_no_entry_above_by_value::<tables::HeaderNumbers, _>(block, |val| val)?;
                 self.db.ensure_no_entry_above::<tables::CanonicalHeaders, _>(block, |key| key)?;
                 self.db.ensure_no_entry_above::<tables::Headers, _>(block, |key| key)?;
+                self.db.ensure_no_entry_above::<tables::HeaderTerminalDifficulties, _>(
+                    block,
+                    |key| key,
+                )?;
                 Ok(())
             }
 
@@ -618,15 +639,7 @@ mod tests {
             tip.hash(),
         );
 
-        let provider = runner.db().factory.database_provider_rw().unwrap();
-        let static_file_provider = provider.static_file_provider();
-        let mut writer = static_file_provider.latest_writer(StaticFileSegment::Headers).unwrap();
-        for header in sealed_headers {
-            writer.append_header(header.header(), &header.hash()).unwrap();
-        }
-        drop(writer);
-
-        provider.commit().unwrap();
+        insert_headers(&runner.db().factory, &sealed_headers);
 
         // now we can unwind 10 blocks
         let unwind_input = UnwindInput {

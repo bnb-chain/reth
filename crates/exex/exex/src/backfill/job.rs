@@ -13,7 +13,7 @@ use reth_evm::execute::{BlockExecutionError, BlockExecutionOutput, Executor};
 use reth_node_api::{Block as _, BlockBody as _, NodePrimitives};
 use reth_primitives_traits::{format_gas_throughput, RecoveredBlock, SignedTransaction};
 use reth_provider::{
-    BlockReader, Chain, ExecutionOutcome, HeaderProvider, ProviderError, StateProviderFactory,
+    BlockReader, Chain, ExecutionOutcome, ProviderError, StateProvider, StateProviderFactory,
     TransactionVariant,
 };
 use reth_prune_types::PruneModes;
@@ -41,7 +41,7 @@ pub struct BackfillJob<E, P> {
 impl<E, P> Iterator for BackfillJob<E, P>
 where
     E: ConfigureEvm<Primitives: NodePrimitives<Block = P::Block>> + 'static,
-    P: HeaderProvider + BlockReader<Transaction: SignedTransaction> + StateProviderFactory,
+    P: BlockReader<Transaction: SignedTransaction> + StateProviderFactory,
 {
     type Item = BackfillJobResult<Chain<E::Primitives>>;
 
@@ -57,7 +57,7 @@ where
 impl<E, P> BackfillJob<E, P>
 where
     E: ConfigureEvm<Primitives: NodePrimitives<Block = P::Block>> + 'static,
-    P: BlockReader<Transaction: SignedTransaction> + HeaderProvider + StateProviderFactory,
+    P: BlockReader<Transaction: SignedTransaction> + StateProviderFactory,
 {
     /// Converts the backfill job into a single block backfill job.
     pub fn into_single_blocks(self) -> SingleBlockBackfillJob<E, P> {
@@ -79,7 +79,8 @@ where
         let mut executor = self.evm_config.batch_executor(StateProviderDatabase::new(
             self.provider
                 .history_by_block_number(self.range.start().saturating_sub(1))
-                .map_err(BlockExecutionError::other)?,
+                .map_err(BlockExecutionError::other)?
+                .into_evm_state_provider(),
         ));
 
         let mut fetch_block_duration = Duration::default();
@@ -169,7 +170,7 @@ pub struct SingleBlockBackfillJob<E, P> {
 impl<E, P> Iterator for SingleBlockBackfillJob<E, P>
 where
     E: ConfigureEvm<Primitives: NodePrimitives<Block = P::Block>> + 'static,
-    P: HeaderProvider + BlockReader + StateProviderFactory,
+    P: BlockReader + StateProviderFactory,
 {
     type Item = BackfillJobResult<(
         RecoveredBlock<P::Block>,
@@ -184,7 +185,7 @@ where
 impl<E, P> SingleBlockBackfillJob<E, P>
 where
     E: ConfigureEvm<Primitives: NodePrimitives<Block = P::Block>> + 'static,
-    P: HeaderProvider + BlockReader + StateProviderFactory,
+    P: BlockReader + StateProviderFactory,
 {
     /// Converts the single block backfill job into a stream.
     pub fn into_stream(
@@ -217,7 +218,8 @@ where
         let executor = self.evm_config.batch_executor(StateProviderDatabase::new(
             self.provider
                 .history_by_block_number(block_number.saturating_sub(1))
-                .map_err(BlockExecutionError::other)?,
+                .map_err(BlockExecutionError::other)?
+                .into_evm_state_provider(),
         ));
 
         trace!(target: "exex::backfill", number = block_number, txs = block_with_senders.body().transaction_count(), "Executing block");
@@ -287,7 +289,8 @@ mod tests {
         assert_eq!(chains.len(), 1);
         let mut chain = chains.into_iter().next().unwrap();
         chain.execution_outcome_mut().bundle.reverts.sort();
-        assert_eq!(chain.blocks(), &[(1, block.clone())].into());
+        assert_eq!(chain.blocks().len(), 1);
+        assert_eq!(chain.blocks().get(&1).map(|block| block.as_ref()), Some(block));
         assert_eq!(chain.execution_outcome(), &execution_outcome);
 
         Ok(())
@@ -437,7 +440,11 @@ mod tests {
         for (i, (pipeline_block, pipeline_output)) in pipeline_results.iter().enumerate() {
             let block_number = pipeline_block.number();
             let chain_block = chain.blocks().get(&block_number).expect("block should be in chain");
-            assert_eq!(chain_block, pipeline_block, "block {i}: block mismatch in batch backfill");
+            assert_eq!(
+                chain_block.as_ref(),
+                pipeline_block,
+                "block {i}: block mismatch in batch backfill"
+            );
 
             let chain_receipts = &chain.execution_outcome().receipts[i];
             assert_eq!(
@@ -482,12 +489,14 @@ mod tests {
 
         let mut chain1 = chains[0].clone();
         chain1.execution_outcome_mut().bundle.reverts.sort();
-        assert_eq!(chain1.blocks(), &[(1, block1)].into());
+        assert_eq!(chain1.blocks().len(), 1);
+        assert_eq!(chain1.blocks().get(&1).map(|block| block.as_ref()), Some(&block1));
         assert_eq!(chain1.execution_outcome(), &to_execution_outcome(1, &output1));
 
         let mut chain2 = chains[1].clone();
         chain2.execution_outcome_mut().bundle.reverts.sort();
-        assert_eq!(chain2.blocks(), &[(2, block2)].into());
+        assert_eq!(chain2.blocks().len(), 1);
+        assert_eq!(chain2.blocks().get(&2).map(|block| block.as_ref()), Some(&block2));
         assert_eq!(chain2.execution_outcome(), &to_execution_outcome(2, &output2));
 
         Ok(())

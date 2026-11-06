@@ -117,6 +117,14 @@ impl NodeRecord {
     pub const fn udp_addr(&self) -> SocketAddr {
         SocketAddr::new(self.address, self.udp_port)
     }
+
+    /// Returns `true` if this record advertises an `RLPx` endpoint, i.e. a non-zero tcp port.
+    ///
+    /// Discovery-only records, such as ENRs without a tcp key, convert with a tcp port of 0.
+    #[must_use]
+    pub const fn has_rlpx_endpoint(&self) -> bool {
+        self.tcp_port != 0
+    }
 }
 
 impl fmt::Display for NodeRecord {
@@ -213,28 +221,31 @@ impl TryFrom<&Enr<secp256k1::SecretKey>> for NodeRecord {
     type Error = NodeRecordParseError;
 
     fn try_from(enr: &Enr<secp256k1::SecretKey>) -> Result<Self, Self::Error> {
-        let Some(address) = enr.ip4().map(IpAddr::from).or_else(|| enr.ip6().map(IpAddr::from))
-        else {
-            return Err(NodeRecordParseError::InvalidUrl("ip missing".to_string()))
-        };
-
-        let Some(udp_port) = enr.udp4().or_else(|| enr.udp6()) else {
-            return Err(NodeRecordParseError::InvalidUrl("udp port missing".to_string()))
-        };
-
-        let Some(tcp_port) = enr.tcp4().or_else(|| enr.tcp6()) else {
-            return Err(NodeRecordParseError::InvalidUrl("tcp port missing".to_string()))
-        };
+        let endpoint = enr
+            .ip4()
+            .zip(enr.udp4())
+            .map(|(ip, udp)| (IpAddr::from(ip), udp, enr.tcp4().unwrap_or(0)));
+        // Generic `udp` and `tcp` entries also apply to IPv6 when their IPv6-specific counterparts
+        // are absent.
+        let (address, udp_port, tcp_port) = endpoint
+            .or_else(|| {
+                enr.ip6().zip(enr.udp6().or_else(|| enr.udp4())).map(|(ip, udp)| {
+                    (IpAddr::from(ip), udp, enr.tcp6().or_else(|| enr.tcp4()).unwrap_or(0))
+                })
+            })
+            .ok_or_else(|| {
+                NodeRecordParseError::InvalidUrl("ip or matching udp port missing".to_string())
+            })?;
 
         let id = crate::pk2id(&enr.public_key());
-
-        Ok(Self { address, tcp_port, udp_port, id }.into_ipv4_mapped())
+        Ok(Self { address, udp_port, tcp_port, id }.into_ipv4_mapped())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_primitives::b512;
     use alloy_rlp::Decodable;
     use rand::{rng, Rng, RngCore};
     use std::net::Ipv6Addr;
@@ -317,7 +328,7 @@ mod tests {
             address: IpAddr::V4([127,0,0, 1].into()),
             tcp_port: 35481,
             udp_port: 0,
-            id: "0xfc8a2ff614e848c0af4c99372a81b8655edb8e11b617cffd0aab1a0691bcca66ca533626a528ee567f05f70c8cb529bda2c0a864cc0aec638a367fd2bb8e49fb".parse().unwrap(),
+            id: b512!("0xfc8a2ff614e848c0af4c99372a81b8655edb8e11b617cffd0aab1a0691bcca66ca533626a528ee567f05f70c8cb529bda2c0a864cc0aec638a367fd2bb8e49fb"),
         })
     }
 
@@ -329,7 +340,7 @@ mod tests {
             address: IpAddr::V4([10,3,58,6].into()),
             tcp_port: 30303,
             udp_port: 30301,
-            id: "6f8a80d14311c39f35f516fa664deaaaa13e85b2f7493f37f6144d86991ec012937307647bd3b9a82abe2974e1407241d54947bbb39763a4cac9f77166ad92a0".parse().unwrap(),
+            id: b512!("6f8a80d14311c39f35f516fa664deaaaa13e85b2f7493f37f6144d86991ec012937307647bd3b9a82abe2974e1407241d54947bbb39763a4cac9f77166ad92a0"),
         })
     }
 
@@ -356,7 +367,7 @@ mod tests {
                     address: IpAddr::V4([10, 3, 58, 6].into()),
                     tcp_port: 30303u16,
                     udp_port: 30301u16,
-                    id: PeerId::from_str("6f8a80d14311c39f35f516fa664deaaaa13e85b2f7493f37f6144d86991ec012937307647bd3b9a82abe2974e1407241d54947bbb39763a4cac9f77166ad92a0").unwrap(),
+                    id: b512!("6f8a80d14311c39f35f516fa664deaaaa13e85b2f7493f37f6144d86991ec012937307647bd3b9a82abe2974e1407241d54947bbb39763a4cac9f77166ad92a0"),
                 },
                 "\"enode://6f8a80d14311c39f35f516fa664deaaaa13e85b2f7493f37f6144d86991ec012937307647bd3b9a82abe2974e1407241d54947bbb39763a4cac9f77166ad92a0@10.3.58.6:30303?discport=30301\""
             ),
@@ -366,7 +377,7 @@ mod tests {
                     address: Ipv6Addr::new(0x2001, 0xdb8, 0x3c4d, 0x15, 0x0, 0x0, 0xabcd, 0xef12).into(),
                     tcp_port: 52150u16,
                     udp_port: 52151u16,
-                    id: PeerId::from_str("1dd9d65c4552b5eb43d5ad55a2ee3f56c6cbc1c64a5c8d659f51fcd51bace24351232b8d7821617d2b29b54b81cdefb9b3e9c37d7fd5f63270bcc9e1a6f6a439").unwrap(),
+                    id: b512!("1dd9d65c4552b5eb43d5ad55a2ee3f56c6cbc1c64a5c8d659f51fcd51bace24351232b8d7821617d2b29b54b81cdefb9b3e9c37d7fd5f63270bcc9e1a6f6a439"),
                 },
                 "\"enode://1dd9d65c4552b5eb43d5ad55a2ee3f56c6cbc1c64a5c8d659f51fcd51bace24351232b8d7821617d2b29b54b81cdefb9b3e9c37d7fd5f63270bcc9e1a6f6a439@[2001:db8:3c4d:15::abcd:ef12]:52150?discport=52151\"",
             )
@@ -388,7 +399,7 @@ mod tests {
                     address: IpAddr::V4([10, 3, 58, 6].into()),
                     tcp_port: 30303u16,
                     udp_port: 30301u16,
-                    id: PeerId::from_str("6f8a80d14311c39f35f516fa664deaaaa13e85b2f7493f37f6144d86991ec012937307647bd3b9a82abe2974e1407241d54947bbb39763a4cac9f77166ad92a0").unwrap(),
+                    id: b512!("6f8a80d14311c39f35f516fa664deaaaa13e85b2f7493f37f6144d86991ec012937307647bd3b9a82abe2974e1407241d54947bbb39763a4cac9f77166ad92a0"),
                 }
             ),
             // IPv6
@@ -398,7 +409,7 @@ mod tests {
                     address: Ipv6Addr::new(0x2001, 0xdb8, 0x3c4d, 0x15, 0x0, 0x0, 0xabcd, 0xef12).into(),
                     tcp_port: 52150u16,
                     udp_port: 52151u16,
-                    id: PeerId::from_str("1dd9d65c4552b5eb43d5ad55a2ee3f56c6cbc1c64a5c8d659f51fcd51bace24351232b8d7821617d2b29b54b81cdefb9b3e9c37d7fd5f63270bcc9e1a6f6a439").unwrap(),
+                    id: b512!("1dd9d65c4552b5eb43d5ad55a2ee3f56c6cbc1c64a5c8d659f51fcd51bace24351232b8d7821617d2b29b54b81cdefb9b3e9c37d7fd5f63270bcc9e1a6f6a439"),
                 }
             ),
         ];
@@ -407,5 +418,59 @@ mod tests {
             let node: NodeRecord = serde_json::from_str(url).expect("couldn't deserialize");
             assert_eq!(node, expected);
         }
+    }
+
+    #[test]
+    #[cfg(feature = "secp256k1")]
+    fn tcp_less_enr_converts_with_port_zero() {
+        // A discovery-only ENR (no tcp key, e.g. a devp2p bootnode) must convert with tcp port 0.
+        let sk = secp256k1::SecretKey::from_byte_array(&[1u8; 32]).unwrap();
+        let enr = Enr::builder().ip4("1.2.3.4".parse().unwrap()).udp4(30301).build(&sk).unwrap();
+
+        let record = NodeRecord::try_from(&enr).unwrap();
+
+        assert_eq!(record.tcp_port, 0);
+        assert_eq!(record.udp_port, 30301);
+    }
+
+    #[test]
+    #[cfg(feature = "secp256k1")]
+    fn enr_endpoint_keeps_ip_and_ports_together() {
+        let sk = secp256k1::SecretKey::from_byte_array(&[1u8; 32]).unwrap();
+        let mut builder = Enr::builder();
+        builder.ip4("10.0.0.1".parse().unwrap()).ip6("::1".parse().unwrap());
+        builder.udp6(30401).tcp6(30403);
+        let enr = builder.build(&sk).unwrap();
+        let record = NodeRecord::try_from(&enr).unwrap();
+
+        assert_eq!(record.address, "::1".parse::<IpAddr>().unwrap());
+        assert_eq!(record.udp_port, 30401);
+        assert_eq!(record.tcp_port, 30403);
+
+        // IPv6-only record with the RLPx port only under the generic `tcp` key, the shape geth
+        // publishes: the generic entry applies to the IPv6 endpoint.
+        let mut builder = Enr::builder();
+        builder.ip6("::1".parse().unwrap()).udp6(30401).tcp4(30303);
+        let enr = builder.build(&sk).unwrap();
+        let record = NodeRecord::try_from(&enr).unwrap();
+
+        assert_eq!(record.address, "::1".parse::<IpAddr>().unwrap());
+        assert_eq!(record.udp_port, 30401);
+        assert_eq!(record.tcp_port, 30303);
+
+        // A full dual-stack record resolves to the IPv4 endpoint.
+        let mut builder = Enr::builder();
+        builder.ip4("10.0.0.1".parse().unwrap()).udp4(30301).tcp4(30303);
+        builder.ip6("::1".parse().unwrap()).udp6(30401).tcp6(30403);
+        let enr = builder.build(&sk).unwrap();
+        let record = NodeRecord::try_from(&enr).unwrap();
+
+        assert_eq!(record.address, "10.0.0.1".parse::<IpAddr>().unwrap());
+        assert_eq!(record.udp_port, 30301);
+        assert_eq!(record.tcp_port, 30303);
+
+        // No udp port in any family is rejected.
+        let enr = Enr::builder().ip4("10.0.0.1".parse().unwrap()).tcp4(30303).build(&sk).unwrap();
+        assert!(NodeRecord::try_from(&enr).is_err());
     }
 }

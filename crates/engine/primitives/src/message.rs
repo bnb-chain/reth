@@ -1,10 +1,10 @@
 use crate::{
-    error::BeaconForkChoiceUpdateError, BSCEngineMessageError, BeaconOnNewPayloadError,
-    ExecutionPayload, ForkchoiceStatus,
+    error::BeaconForkChoiceUpdateError, BeaconOnNewPayloadError, ExecutionPayload, ForkchoiceStatus,
 };
-use alloy_primitives::{BlockHash, BlockNumber, U256};
+use alloy_eips::eip4895::Withdrawal;
+use alloy_primitives::{Bytes, B256};
 use alloy_rpc_types_engine::{
-    ForkChoiceUpdateResult, ForkchoiceState, ForkchoiceUpdateError, ForkchoiceUpdated, PayloadId,
+    ExecutionData, ForkchoiceState, ForkchoiceUpdateError, ForkchoiceUpdated, PayloadId,
     PayloadStatus, PayloadStatusEnum,
 };
 use core::{
@@ -19,14 +19,18 @@ use reth_payload_builder_primitives::PayloadBuilderError;
 use reth_payload_primitives::PayloadTypes;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc::UnboundedSender, oneshot};
+use tracing::Span;
 
 /// Type alias for backwards compat
 #[deprecated(note = "Use ConsensusEngineHandle instead")]
 pub type BeaconConsensusEngineHandle<Payload> = ConsensusEngineHandle<Payload>;
 
+/// The result of a forkchoice update, or the error to return to the consensus client.
+pub type OnForkChoiceUpdatedResult = Result<ForkchoiceUpdated, BeaconForkChoiceUpdateError>;
+
 /// Represents the outcome of forkchoice update.
 ///
-/// This is a future that resolves to [`ForkChoiceUpdateResult`]
+/// This is a future that resolves to [`OnForkChoiceUpdatedResult`]
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 #[derive(Debug)]
 pub struct OnForkChoiceUpdated {
@@ -36,7 +40,7 @@ pub struct OnForkChoiceUpdated {
     /// depending on the payload attributes, even if the forkchoice update itself is valid.
     forkchoice_status: ForkchoiceStatus,
     /// Returns the result of the forkchoice update.
-    fut: Either<futures::future::Ready<ForkChoiceUpdateResult>, PendingPayloadId>,
+    fut: Either<futures::future::Ready<OnForkChoiceUpdatedResult>, PendingPayloadId>,
 }
 
 // === impl OnForkChoiceUpdated ===
@@ -79,7 +83,20 @@ impl OnForkChoiceUpdated {
     pub fn invalid_state() -> Self {
         Self {
             forkchoice_status: ForkchoiceStatus::Invalid,
-            fut: Either::Left(futures::future::ready(Err(ForkchoiceUpdateError::InvalidState))),
+            fut: Either::Left(futures::future::ready(Err(
+                ForkchoiceUpdateError::InvalidState.into()
+            ))),
+        }
+    }
+
+    /// Creates a new instance of `OnForkChoiceUpdated` if the forkchoice update failed because the
+    /// requested reorg to the head block exceeds the supported reorg depth.
+    pub fn too_deep_reorg() -> Self {
+        Self {
+            forkchoice_status: ForkchoiceStatus::Invalid,
+            fut: Either::Left(futures::future::ready(Err(
+                ForkchoiceUpdateError::TooDeepReorg.into()
+            ))),
         }
     }
 
@@ -90,12 +107,14 @@ impl OnForkChoiceUpdated {
             // This is valid because this is only reachable if the state and payload is valid
             forkchoice_status: ForkchoiceStatus::Valid,
             fut: Either::Left(futures::future::ready(Err(
-                ForkchoiceUpdateError::UpdatedInvalidPayloadAttributes,
+                ForkchoiceUpdateError::UpdatedInvalidPayloadAttributes.into(),
             ))),
         }
     }
 
-    /// If the forkchoice update was successful and no payload attributes were provided, this method
+    /// Creates a new instance of `OnForkChoiceUpdated` that resolves to the id of the payload job
+    /// started for the payload attributes, or to [`BeaconForkChoiceUpdateError::PayloadJob`] if the
+    /// job cannot be started.
     pub const fn updated_with_pending_payload_id(
         payload_status: PayloadStatus,
         pending_payload_id: oneshot::Receiver<Result<PayloadId, PayloadBuilderError>>,
@@ -111,7 +130,7 @@ impl OnForkChoiceUpdated {
 }
 
 impl Future for OnForkChoiceUpdated {
-    type Output = ForkChoiceUpdateResult;
+    type Output = OnForkChoiceUpdatedResult;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.get_mut().fut.poll_unpin(cx)
@@ -127,21 +146,17 @@ struct PendingPayloadId {
 }
 
 impl Future for PendingPayloadId {
-    type Output = ForkChoiceUpdateResult;
+    type Output = OnForkChoiceUpdatedResult;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        let res = ready!(this.pending_payload_id.poll_unpin(cx));
-        match res {
-            Ok(Ok(payload_id)) => Poll::Ready(Ok(ForkchoiceUpdated {
-                payload_status: this.payload_status.take().expect("Polled after completion"),
-                payload_id: Some(payload_id),
-            })),
-            Err(_) | Ok(Err(_)) => {
-                // failed to initiate a payload build job
-                Poll::Ready(Err(ForkchoiceUpdateError::UpdatedInvalidPayloadAttributes))
-            }
-        }
+        let payload_id = ready!(this.pending_payload_id.poll_unpin(cx))
+            .unwrap_or_else(|err| Err(err.into()))
+            .map_err(BeaconForkChoiceUpdateError::PayloadJob)?;
+        Poll::Ready(Ok(ForkchoiceUpdated {
+            payload_status: this.payload_status.take().expect("Polled after completion"),
+            payload_id: Some(payload_id),
+        }))
     }
 }
 
@@ -175,25 +190,76 @@ pub struct BigBlockData<ExecutionData> {
     ///
     /// The first entry at index 0 represents the **original unmutated** base block's
     /// `ExecutionData`, which must be used to derive the initial EVM environment.
-    pub env_switches: Vec<(usize, ExecutionData)>,
+    pub env_switches: Vec<ExecutionData>,
     /// Block number → real block hash for blocks covered by previous big blocks in a sequence.
     /// When replaying chained big blocks, the BLOCKHASH opcode needs real hashes for blocks
     /// that were merged into earlier big blocks (and thus not individually persisted).
     pub prior_block_hashes: Vec<(u64, alloy_primitives::B256)>,
+    /// Block number for this big block.
+    pub block_number: u64,
+    /// Merged block access list for this big block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merged_block_access_list: Option<Bytes>,
 }
 
-impl<T> Default for BigBlockData<T> {
-    fn default() -> Self {
-        Self { env_switches: Vec::new(), prior_block_hashes: Vec::new() }
+impl ExecutionPayload for BigBlockData<ExecutionData> {
+    fn parent_hash(&self) -> B256 {
+        self.env_switches[0].parent_hash()
+    }
+
+    fn block_hash(&self) -> B256 {
+        self.env_switches.last().unwrap().block_hash()
+    }
+
+    fn block_number(&self) -> u64 {
+        self.block_number
+    }
+
+    fn withdrawals(&self) -> Option<&Vec<Withdrawal>> {
+        self.env_switches[0].withdrawals()
+    }
+
+    fn block_access_list(&self) -> Option<&Bytes> {
+        self.merged_block_access_list.as_ref()
+    }
+
+    fn parent_beacon_block_root(&self) -> Option<B256> {
+        self.env_switches[0].parent_beacon_block_root()
+    }
+
+    fn timestamp(&self) -> u64 {
+        self.env_switches[0].timestamp()
+    }
+
+    fn gas_used(&self) -> u64 {
+        self.env_switches.iter().map(|data| data.gas_used()).sum()
+    }
+
+    fn gas_limit(&self) -> u64 {
+        self.env_switches.iter().map(|data| data.gas_limit()).sum()
+    }
+
+    fn transaction_count(&self) -> usize {
+        self.env_switches.iter().map(|data| data.transaction_count()).sum()
+    }
+
+    fn slot_number(&self) -> Option<u64> {
+        self.env_switches[0].payload.slot_number()
     }
 }
 
 /// A message for the beacon engine from other components of the node (engine RPC API invoked by the
 /// consensus layer).
+///
+/// The `cause` span carries in-process tracing context across the engine queue. Callers
+/// constructing messages directly should capture [`Span::current`], or use [`Span::none`] when no
+/// context exists.
 #[derive(Debug)]
 pub enum BeaconEngineMessage<Payload: PayloadTypes> {
     /// Message with new payload.
     NewPayload {
+        /// The caller span that caused this message.
+        cause: Span,
         /// The execution payload received by Engine API.
         payload: Payload::ExecutionData,
         /// The sender for returning payload status result.
@@ -206,6 +272,8 @@ pub enum BeaconEngineMessage<Payload: PayloadTypes> {
     ///
     /// Returns detailed timing breakdown alongside the payload status.
     RethNewPayload {
+        /// The caller span that caused this message.
+        cause: Span,
         /// The execution payload received by Engine API.
         payload: Payload::ExecutionData,
         /// Whether to wait for in-flight persistence to complete before processing.
@@ -219,22 +287,14 @@ pub enum BeaconEngineMessage<Payload: PayloadTypes> {
     },
     /// Message with updated forkchoice state.
     ForkchoiceUpdated {
+        /// The caller span that caused this message.
+        cause: Span,
         /// The updated forkchoice state.
         state: ForkchoiceState,
         /// The payload attributes for block building.
         payload_attrs: Option<Payload::PayloadAttributes>,
         /// The sender for returning forkchoice updated result.
         tx: oneshot::Sender<RethResult<OnForkChoiceUpdated>>,
-    },
-
-    /// BSC specific engine message
-    QueryTd {
-        /// The block number to query the TD of.
-        number: BlockNumber,
-        /// The block hash to query the TD of.
-        hash: BlockHash,
-        /// The sender for returning the TD.
-        tx: oneshot::Sender<RethResult<Option<U256>>>,
     },
 }
 
@@ -268,9 +328,6 @@ impl<Payload: PayloadTypes> Display for BeaconEngineMessage<Payload> {
                     payload_attrs.is_some()
                 )
             }
-            Self::QueryTd { number, hash, .. } => {
-                write!(f, "QueryHeaderWithTd {{ number: {}, hash: {} }}", number, hash)
-            }
         }
     }
 }
@@ -303,14 +360,19 @@ where
         payload: Payload::ExecutionData,
     ) -> Result<PayloadStatus, BeaconOnNewPayloadError> {
         let (tx, rx) = oneshot::channel();
-        let _ = self.to_engine.send(BeaconEngineMessage::NewPayload { payload, tx });
+        let _ = self.to_engine.send(BeaconEngineMessage::NewPayload {
+            cause: Span::current(),
+            payload,
+            tx,
+        });
         rx.await.map_err(|_| BeaconOnNewPayloadError::EngineUnavailable)?
     }
 
     /// Sends a new payload message used by `reth_newPayload` endpoint.
     ///
     /// `wait_for_persistence`: waits for in-flight persistence to complete.
-    /// `wait_for_caches`: waits for execution cache and sparse trie locks.
+    /// `wait_for_caches`: waits for execution cache and sparse trie locks, excluding destruction
+    /// of removed execution-cache allocations after unlocking.
     ///
     /// Returns detailed timing breakdown alongside the payload status.
     pub async fn reth_new_payload(
@@ -321,6 +383,7 @@ where
     ) -> Result<(PayloadStatus, NewPayloadTimings), BeaconOnNewPayloadError> {
         let (tx, rx) = oneshot::channel();
         let _ = self.to_engine.send(BeaconEngineMessage::RethNewPayload {
+            cause: Span::current(),
             payload,
             wait_for_persistence,
             wait_for_caches,
@@ -338,12 +401,11 @@ where
         state: ForkchoiceState,
         payload_attrs: Option<Payload::PayloadAttributes>,
     ) -> Result<ForkchoiceUpdated, BeaconForkChoiceUpdateError> {
-        Ok(self
-            .send_fork_choice_updated(state, payload_attrs)
+        self.send_fork_choice_updated(state, payload_attrs)
             .map_err(|_| BeaconForkChoiceUpdateError::EngineUnavailable)
             .await?
             .map_err(BeaconForkChoiceUpdateError::internal)?
-            .await?)
+            .await
     }
 
     /// Sends a forkchoice update message to the beacon consensus engine and returns the receiver to
@@ -355,21 +417,53 @@ where
     ) -> oneshot::Receiver<RethResult<OnForkChoiceUpdated>> {
         let (tx, rx) = oneshot::channel();
         let _ = self.to_engine.send(BeaconEngineMessage::ForkchoiceUpdated {
+            cause: Span::current(),
             state,
             payload_attrs,
             tx,
         });
         rx
     }
+}
 
-    /// Sends a query TD message to the beacon consensus engine and waits for a response.
-    pub async fn query_td(
-        &self,
-        number: BlockNumber,
-        hash: BlockHash,
-    ) -> Result<Option<U256>, BSCEngineMessageError> {
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Resolves the forkchoice update for a payload job that answers with `result`, or whose sender
+    /// is dropped if `result` is `None`.
+    fn on_payload_job(
+        result: Option<Result<PayloadId, PayloadBuilderError>>,
+    ) -> OnForkChoiceUpdatedResult {
         let (tx, rx) = oneshot::channel();
-        let _ = self.to_engine.send(BeaconEngineMessage::QueryTd { number, hash, tx });
-        rx.await.map_err(BSCEngineMessageError::internal)?.map_err(BSCEngineMessageError::internal)
+        match result {
+            Some(result) => tx.send(result).unwrap(),
+            None => drop(tx),
+        }
+        OnForkChoiceUpdated::updated_with_pending_payload_id(
+            PayloadStatus::from_status(PayloadStatusEnum::Valid),
+            rx,
+        )
+        .now_or_never()
+        .expect("payload job result is ready")
+    }
+
+    #[test]
+    fn payload_job_start_errors_are_returned() {
+        let id = PayloadId::new([1; 8]);
+        assert_eq!(on_payload_job(Some(Ok(id))).unwrap().payload_id, Some(id));
+
+        let err = on_payload_job(Some(Err(PayloadBuilderError::MissingParentHeader(B256::ZERO))))
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            BeaconForkChoiceUpdateError::PayloadJob(PayloadBuilderError::MissingParentHeader(_))
+        ));
+
+        let err = on_payload_job(None).unwrap_err();
+        assert!(matches!(
+            err,
+            BeaconForkChoiceUpdateError::PayloadJob(PayloadBuilderError::ChannelClosed)
+        ));
     }
 }

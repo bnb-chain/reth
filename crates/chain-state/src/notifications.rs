@@ -1,10 +1,9 @@
 //! Canonical chain state notification trait and types.
 
-use alloy_eips::{eip2718::Encodable2718, BlockNumHash};
+use alloy_eips::BlockNumHash;
 use derive_more::{Deref, DerefMut};
 use reth_execution_types::{BlockReceipts, Chain};
 use reth_primitives_traits::{NodePrimitives, RecoveredBlock, SealedHeader};
-use reth_storage_api::NodePrimitivesProvider;
 use std::{
     pin::Pin,
     sync::Arc,
@@ -26,7 +25,10 @@ pub type CanonStateNotificationSender<N = reth_ethereum_primitives::EthPrimitive
     broadcast::Sender<CanonStateNotification<N>>;
 
 /// A type that allows to register chain related event subscriptions.
-pub trait CanonStateSubscriptions: NodePrimitivesProvider + Send + Sync {
+pub trait CanonStateSubscriptions: Send + Sync {
+    /// The node primitive types.
+    type Primitives: NodePrimitives;
+
     /// Get notified when a new canonical chain was imported.
     ///
     /// A canonical chain be one or more blocks, a reorg or a revert.
@@ -41,6 +43,8 @@ pub trait CanonStateSubscriptions: NodePrimitivesProvider + Send + Sync {
 }
 
 impl<T: CanonStateSubscriptions> CanonStateSubscriptions for &T {
+    type Primitives = T::Primitives;
+
     fn subscribe_to_canonical_state(&self) -> CanonStateNotifications<Self::Primitives> {
         (*self).subscribe_to_canonical_state()
     }
@@ -157,10 +161,7 @@ impl<N: NodePrimitives> CanonStateNotification<N> {
     ///
     /// The boolean in the tuple (2nd element) denotes whether the receipt was from the reverted
     /// chain segment.
-    pub fn block_receipts(&self) -> Vec<(BlockReceipts<N::Receipt>, bool)>
-    where
-        N::SignedTx: Encodable2718,
-    {
+    pub fn block_receipts(&self) -> Vec<(BlockReceipts<N::Receipt>, bool)> {
         let mut receipts = Vec::new();
 
         // get old receipts
@@ -265,8 +266,8 @@ mod tests {
     #[test]
     fn test_commit_notification() {
         let block: RecoveredBlock<reth_ethereum_primitives::Block> = Default::default();
-        let block1_hash = B256::new([0x01; 32]);
-        let block2_hash = B256::new([0x02; 32]);
+        let block1_hash = B256::repeat_byte(0x01);
+        let block2_hash = B256::repeat_byte(0x02);
 
         let mut block1 = block.clone();
         block1.set_block_number(1);
@@ -298,9 +299,9 @@ mod tests {
     #[test]
     fn test_reorg_notification() {
         let block: RecoveredBlock<reth_ethereum_primitives::Block> = Default::default();
-        let block1_hash = B256::new([0x01; 32]);
-        let block2_hash = B256::new([0x02; 32]);
-        let block3_hash = B256::new([0x03; 32]);
+        let block1_hash = B256::repeat_byte(0x01);
+        let block2_hash = B256::repeat_byte(0x02);
+        let block3_hash = B256::repeat_byte(0x03);
 
         let mut block1 = block.clone();
         block1.set_block_number(1);
@@ -345,8 +346,8 @@ mod tests {
         let mut body = BlockBody::<TransactionSigned>::default();
 
         // Define unique hashes for two blocks to differentiate them in the chain.
-        let block1_hash = B256::new([0x01; 32]);
-        let block2_hash = B256::new([0x02; 32]);
+        let block1_hash = B256::repeat_byte(0x01);
+        let block2_hash = B256::repeat_byte(0x02);
 
         // Create a default transaction to include in block1's transactions.
         let tx = TxLegacy::default().into_signed(Signature::test_signature()).into();
@@ -430,7 +431,7 @@ mod tests {
             .try_recover()
             .unwrap();
         old_block1.set_block_number(1);
-        old_block1.set_hash(B256::new([0x01; 32]));
+        old_block1.set_hash(B256::repeat_byte(0x01));
 
         // Create a receipt for a transaction in the reverted block.
         let old_receipt = Receipt {
@@ -459,7 +460,7 @@ mod tests {
             .try_recover()
             .unwrap();
         new_block1.set_block_number(2);
-        new_block1.set_hash(B256::new([0x02; 32]));
+        new_block1.set_hash(B256::repeat_byte(0x02));
 
         // Create a receipt for a transaction in the new committed block.
         let new_receipt = Receipt {

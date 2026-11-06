@@ -50,11 +50,11 @@ where
 /// Convenience type to override cli or default pool configuration during build.
 #[derive(Debug, Clone, Default)]
 pub struct PoolBuilderConfigOverrides {
-    /// Max number of transaction in the pending sub-pool
+    /// Max number of transactions in the pending sub-pool
     pub pending_limit: Option<SubPoolLimit>,
-    /// Max number of transaction in the basefee sub-pool
+    /// Max number of transactions in the basefee sub-pool
     pub basefee_limit: Option<SubPoolLimit>,
-    /// Max number of transaction in the queued sub-pool
+    /// Max number of transactions in the queued sub-pool
     pub queued_limit: Option<SubPoolLimit>,
     /// Max number of transactions in the blob sub-pool
     pub blob_limit: Option<SubPoolLimit>,
@@ -173,7 +173,7 @@ where
         >,
     >
     where
-        BS: BlobStore,
+        BS: BlobStore + Clone,
     {
         self.build_with_ordering_and_spawn_maintenance_task(
             CoinbaseTipOrdering::default(),
@@ -191,7 +191,7 @@ where
         pool_config: PoolConfig,
     ) -> eyre::Result<reth_transaction_pool::Pool<TransactionValidationTaskExecutor<V>, O, BS>>
     where
-        BS: BlobStore,
+        BS: BlobStore + Clone,
         O: TransactionOrdering<Transaction = V::Transaction>,
     {
         let TxPoolBuilder { ctx, validator, .. } = self;
@@ -234,7 +234,7 @@ pub fn create_blob_store_with_cache<Node: FullNodeTypes>(
 fn spawn_local_backup_task<Node, Pool>(ctx: &BuilderContext<Node>, pool: Pool) -> eyre::Result<()>
 where
     Node: FullNodeTypes,
-    Pool: TransactionPool + Clone + 'static,
+    Pool: TransactionPool + 'static,
 {
     if !ctx.config().txpool.disable_transactions_backup {
         let data_dir = ctx.config().datadir();
@@ -272,7 +272,7 @@ fn spawn_pool_maintenance_task<Node, Pool>(
 ) -> eyre::Result<()>
 where
     Node: FullNodeTypes<Types: NodeTypes<ChainSpec: EthereumHardforks>>,
-    Pool: reth_transaction_pool::TransactionPoolExt<Block = BlockTy<Node::Types>> + Clone + 'static,
+    Pool: reth_transaction_pool::TransactionPoolExt<Block = BlockTy<Node::Types>> + 'static,
     Pool::Transaction: PoolTransaction<Consensus = TxTy<Node::Types>>,
 {
     let chain_events = ctx.provider().canonical_state_stream();
@@ -309,7 +309,7 @@ pub fn spawn_maintenance_tasks<Node, Pool>(
 ) -> eyre::Result<()>
 where
     Node: FullNodeTypes<Types: NodeTypes<ChainSpec: EthereumHardforks>>,
-    Pool: reth_transaction_pool::TransactionPoolExt<Block = BlockTy<Node::Types>> + Clone + 'static,
+    Pool: reth_transaction_pool::TransactionPoolExt<Block = BlockTy<Node::Types>> + 'static,
     Pool::Transaction: PoolTransaction<Consensus = TxTy<Node::Types>>,
 {
     spawn_local_backup_task(ctx, pool.clone())?;

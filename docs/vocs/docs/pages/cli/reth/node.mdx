@@ -94,7 +94,9 @@ Networking:
           Disable Nat discovery
 
       --discovery.addr <DISCOVERY_ADDR>
-          The UDP address to use for devp2p peer discovery version 4
+          The UDP address to use for devp2p peer discovery version 4.
+
+          If unset and `--net-if.experimental` is used, discv4 binds to the resolved interface address.
 
           [default: 0.0.0.0]
 
@@ -115,7 +117,9 @@ Networking:
           [default: 9200]
 
       --discovery.v5.port.ipv6 <DISCOVERY_V5_PORT_IPV6>
-          The UDP IPv6 port to use for devp2p peer discovery version 5. Not used unless `--addr` is IPv6, or `--discovery.addr.ipv6` is set
+          The UDP IPv6 port to use for devp2p peer discovery version 5. Not used unless `--addr` is IPv6, or `--discovery.addr.ipv6` is set.
+
+          If not provided, discovery V5 defaults to same port as discovery V4 (--discovery.port).
 
           [default: 9200]
 
@@ -134,8 +138,11 @@ Networking:
 
           [default: 200]
 
+      --snap.v2
+          Advertise and serve experimental snap/2. `reth node` also bootstraps a fresh database with it, and uses the staged pipeline while the chain head predates block access lists
+
       --trusted-peers <TRUSTED_PEERS>
-          Comma separated enode URLs of trusted peers for P2P connections.
+          Comma separated enode URLs or ENRs of trusted peers for P2P connections.
 
           --trusted-peers enode://abcd@192.168.0.1:30303
 
@@ -143,7 +150,7 @@ Networking:
           Connect to or accept from trusted peers only
 
       --bootnodes <BOOTNODES>
-          Comma separated enode URLs for P2P discovery bootstrap.
+          Comma separated enode URLs or ENRs for P2P discovery bootstrap.
 
           Will fall back to a network-specific default if not specified.
 
@@ -245,7 +252,7 @@ Networking:
           [default: 131072]
 
       --max-tx-pending-fetch <COUNT>
-          Max capacity of cache of hashes for transactions pending fetch.
+          Maximum number of announced transaction hashes to track, including inflight requests.
 
           [default: 25600]
 
@@ -262,7 +269,7 @@ Networking:
       --net-if.experimental <IF_NAME>
           Name of network interface used to communicate with peers.
 
-          If flag is set, but no value is passed, the default interface for docker `eth0` is tried.
+          If flag is set, but no value is passed, the default interface for docker `eth0` is tried. If `--discovery.addr` is left at its default, discv4 will also bind to the resolved interface address.
 
       --tx-propagation-policy <TX_PROPAGATION_POLICY>
           Transaction Propagation Policy
@@ -326,7 +333,25 @@ RPC:
           [default: 8545]
 
       --http.disable-compression
-          Disable compression for HTTP responses
+          Disable compression for HTTP responses.
+
+          Servers listening on a loopback address never compress responses.
+
+      --http.compression <ALGOS>
+          Comma-separated list of allowed compression algorithms for HTTP responses.
+
+          If not specified, all supported algorithms are enabled.
+
+          Client `Accept-Encoding` quality values select among allowed algorithms; ties prefer zstd > br > gzip > deflate. Omitted quality values default to 1; without an acceptable allowed algorithm, the response is uncompressed. List order is ignored.
+
+          [possible values: zstd, gzip, deflate, br]
+
+      --http.decompression <ALGOS>
+          Comma-separated list of allowed decompression algorithms for HTTP requests.
+
+          Request decompression is disabled when not specified.
+
+          [possible values: zstd, gzip, deflate, br]
 
       --http.api <HTTP_API>
           Rpc Modules to be configured for the HTTP server
@@ -387,6 +412,11 @@ RPC:
 
           If no path is provided, a secret will be generated and stored in the datadir under `<DIR>/<CHAIN_ID>/jwt.hex`. For mainnet this would be `~/.local/share/reth/mainnet/jwt.hex` by default.
 
+      --authrpc.jwtsecret-hex <HEX>
+          Hex encoded JWT secret to use for the authenticated engine-API RPC server.
+
+          This will enforce JWT authentication for all requests coming from the consensus layer. Cannot be used together with `--authrpc.jwtsecret`.
+
       --auth-ipc
           Enable auth engine API over IPC
 
@@ -405,8 +435,13 @@ RPC:
 
           This is __not__ used for the authenticated engine-API RPC server, see `--authrpc.jwtsecret`.
 
+      --rpc.disable-metrics
+          Disable built-in RPC request metrics
+
       --rpc.max-request-size <RPC_MAX_REQUEST_SIZE>
-          Set the maximum RPC request payload size for both HTTP and WS in megabytes
+          Set the maximum RPC request payload size for both HTTP and WS in megabytes.
+
+          For compressed HTTP requests, this limit applies to both the compressed and decompressed payloads.
 
           [default: 15]
 
@@ -414,7 +449,7 @@ RPC:
           Set the maximum RPC response payload size for both HTTP and WS in megabytes
 
           [default: 160]
-          [aliases: --rpc.returndata.limit]
+          [alias: --rpc.returndata.limit]
 
       --rpc.batchrequestlimit <RPC_BATCH_REQUEST_LIMIT>
           Maximum number of calls in a single JSON-RPC batch request. Set to 0 to disable the limit
@@ -461,7 +496,7 @@ RPC:
           [default: 20000]
 
       --rpc.gascap <GAS_CAP>
-          Maximum gas limit for `eth_call` and call tracing RPC methods
+          Maximum gas limit for `eth_call`, `eth_estimateGas`, and call tracing RPC methods
 
           [default: 50000000]
 
@@ -473,12 +508,17 @@ RPC:
       --rpc.txfeecap <TX_FEE_CAP>
           Maximum eth transaction fee (in ether) that can be sent via the RPC APIs (0 = no cap)
 
-          [default: 1.0]
+          [default: 1]
 
       --rpc.max-simulate-blocks <BLOCKS_COUNT>
           Maximum number of blocks for `eth_simulateV1` call
 
           [default: 256]
+
+      --rpc.compute-state-root-for-eth-simulate
+          Compute state roots for `eth_simulateV1` responses
+
+          [env: RETH_RPC_COMPUTE_STATE_ROOT_FOR_ETH_SIMULATE=]
 
       --rpc.eth-proof-window <RPC_ETH_PROOF_WINDOW>
           The maximum proof window for historical proof generation. This value allows for generating historical proofs up to configured number of blocks from current tip (up to `tip - window`)
@@ -507,17 +547,45 @@ RPC State Cache:
       --rpc-cache.max-blocks <MAX_BLOCKS>
           Max number of blocks in cache
 
-          [default: 5000]
+          [default: 1000]
 
       --rpc-cache.max-receipts <MAX_RECEIPTS>
           Max number receipts in cache
 
-          [default: 2000]
+          [default: 500]
 
-      --rpc-cache.max-headers <MAX_HEADERS>
-          Max number of headers in cache
+      --rpc-cache.max-bals <MAX_BALS>
+          Max number of block access lists in cache
 
           [default: 1000]
+
+      --rpc-cache.max-blocks-bytes <BYTES>
+          Maximum estimated block cache memory in bytes or with a unit (e.g. 1GB, 500MB). Units use powers of 1024. Zero disables caching. The entry count limit also applies
+
+          [default: 2147483648]
+
+      --rpc-cache.max-receipts-bytes <BYTES>
+          Maximum estimated receipts cache memory in bytes or with a unit (e.g. 1GB, 500MB). Units use powers of 1024. Zero disables caching. The entry count limit also applies
+
+          [default: 1073741824]
+
+      --rpc-cache.max-bals-bytes <BYTES>
+          Maximum estimated block access list cache memory in bytes or with a unit (e.g. 1GB, 500MB). Units use powers of 1024. Zero disables caching. The entry count limit also applies
+
+          [default: 524288000]
+
+      --rpc-cache.idle-timeout <DURATION>
+          Evict blocks, receipts, and block access lists after this duration without a cache hit (e.g. 5m, 30s). Zero disables expiration. Cleanup starts every 1 to 60 seconds and removes at most five entries per cache per poll
+
+          [default: 1h]
+
+      --rpc-cache.cache-computed-bals
+          Cache block access lists computed by RPC requests for transaction tracing
+
+      --rpc-cache.prewarm-bals[=<BLOCKS>]
+          Replay new canonical blocks to cache block access lists until native BAL support.
+
+          Optionally replay the latest BLOCKS blocks sequentially on startup. Without a count, only new blocks are prewarmed. Implies --rpc-cache.cache-computed-bals. Prewarming stops when a canonical block with a block access list hash is received.
 
       --rpc-cache.max-concurrent-db-requests <MAX_CONCURRENT_DB_REQUESTS>
           Max number of concurrent database requests
@@ -527,7 +595,7 @@ RPC State Cache:
       --rpc-cache.max-cached-tx-hashes <MAX_CACHED_TX_HASHES>
           Maximum number of transaction hashes to cache for transaction lookups
 
-          [default: 30000]
+          [default: 100000]
 
 Gas Price Oracle:
       --gpo.blocks <BLOCKS>
@@ -538,7 +606,7 @@ Gas Price Oracle:
       --gpo.ignoreprice <IGNORE_PRICE>
           Gas Price below which gpo will ignore transactions
 
-          [default: 0]
+          [default: 2]
 
       --gpo.maxprice <MAX_PRICE>
           Maximum transaction priority fee(or gasprice before London Fork) to be recommended by gpo
@@ -556,7 +624,7 @@ Gas Price Oracle:
       --rpc.send-raw-transaction-sync-timeout <SECONDS>
           Timeout for `send_raw_transaction_sync` RPC method
 
-          [default: 30s]
+          [default: 30]
 
       --testing.skip-invalid-transactions
           Skip invalid transactions in `testing_buildBlockV1` instead of failing.
@@ -570,7 +638,7 @@ Gas Price Oracle:
 
 TxPool:
       --txpool.pending-max-count <PENDING_MAX_COUNT>
-          Max number of transaction in the pending sub-pool
+          Max number of transactions in the pending sub-pool
 
           [default: 10000]
 
@@ -580,7 +648,7 @@ TxPool:
           [default: 20]
 
       --txpool.basefee-max-count <BASEFEE_MAX_COUNT>
-          Max number of transaction in the basefee sub-pool
+          Max number of transactions in the basefee sub-pool
 
           [default: 10000]
 
@@ -590,7 +658,7 @@ TxPool:
           [default: 20]
 
       --txpool.queued-max-count <QUEUED_MAX_COUNT>
-          Max number of transaction in the queued sub-pool
+          Max number of transactions in the queued sub-pool
 
           [default: 10000]
 
@@ -600,7 +668,7 @@ TxPool:
           [default: 20]
 
       --txpool.blobpool-max-count <BLOBPOOL_MAX_COUNT>
-          Max number of transaction in the blobpool
+          Max number of transactions in the blobpool
 
           [default: 10000]
 
@@ -631,7 +699,7 @@ TxPool:
           [default: 7]
 
       --txpool.minimum-priority-fee <MINIMUM_PRIORITY_FEE>
-          Minimum priority fee required for transaction acceptance into the pool. Transactions with priority fee below this value will be rejected
+          Minimum priority fee required for transaction acceptance into the pool. Transactions with priority fee below this value will be rejected. For legacy and EIP-2930 transactions the gas price is used as the priority fee
 
       --txpool.gas-limit <ENFORCED_GAS_LIMIT>
           The default enforced gas limit for transactions entering the pool
@@ -689,13 +757,6 @@ TxPool:
           Maximum amount of time non-executable transaction are queued
 
           [default: 10800]
-
-      --txpool.reannouncetime <DURATION>
-          Age threshold for hash-only reannouncement of local pending transactions.
-
-          Default is effectively disabled at 10 years. Minimum is 1 minute.
-
-          [default: 315360000]
 
       --txpool.transactions-backup <PATH>
           Path to store the local transaction backup at, to survive node restarts
@@ -763,6 +824,9 @@ Debug:
       --debug.skip-new-payload <SKIP_NEW_PAYLOAD>
           If provided, the engine will skip `n` consecutive new payloads
 
+      --debug.skip-genesis-validation
+          If set, bypasses genesis hash validation during init. Intended for tools that direct-write the database (e.g. snapshot importers, state-actor) and want reth to trust the DB-resident genesis state instead of recomputing it from the chainspec's alloc. When the bypass fires, a structured `tracing::warn!` is emitted so the divergence stays observable in operator logs
+
       --debug.reorg-frequency <REORG_FREQUENCY>
           If provided, the chain will be reorged at specified frequency
 
@@ -825,16 +889,11 @@ Database:
       --db.page-size <PAGE_SIZE>
           Database page size (e.g., 4KB, 8KB, 16KB).
 
-          NOTE: Page size can only be set when creating a new database and cannot be changed later.
-          The page size must be a power of 2 between 256 bytes and 64KB.
-          If not specified, uses the system default (typically 4KB on Linux, 16KB on macOS).
+          Specifies the page size used by the MDBX database.
 
-          The page size determines the maximum database size.
-          MDBX supports up to 2^31 pages, so with the default 4KB page size, the maximum
-          database size is 8TB. To allow larger databases, increase this value to 8KB or higher.
+          The page size determines the maximum database size. MDBX supports up to 2^31 pages, so with the default 4KB page size, the maximum database size is 8TB. To allow larger databases, increase this value to 8KB or higher.
 
-          WARNING: Changing page size on an existing database will cause errors.
-          Only use this flag when initializing a new node.
+          WARNING: This setting is only configurable at database creation; changing it later requires re-syncing.
 
       --db.growth-step <GROWTH_STEP>
           Database growth step (e.g., 4GB, 4KB)
@@ -848,10 +907,18 @@ Database:
       --db.sync-mode <SYNC_MODE>
           Controls how aggressively the database synchronizes data to disk
 
+          [env: RETH_DB_SYNC_MODE=]
+
       --db.rocksdb-block-cache-size <ROCKSDB_BLOCK_CACHE_SIZE>
           `RocksDB` block cache size (e.g., 512MB, 4GB).
 
           Controls the size of the in-memory LRU cache for decompressed `RocksDB` blocks. A larger cache reduces repeated decompression of hot blocks, improving read performance for history lookups.
+
+      --db.balstore-cache-size <BALSTORE_CACHE_SIZE>
+          Number of recent blocks to keep in the in-memory BAL store cache
+
+      --db.disable-metrics
+          Disable built-in database metrics
 
 Dev testnet:
       --dev
@@ -871,6 +938,13 @@ Dev testnet:
 
           Parses strings using [`humantime::parse_duration`]
           --dev.block-time 12s
+
+      --dev.finality-depth <FINALITY_DEPTH>
+          Number of confirmations required before a block is finalized.
+
+          A depth of `1` finalizes the canonical head immediately.
+
+          [default: 64]
 
       --dev.payload-wait-time <PAYLOAD_WAIT_TIME>
           Time to wait after initiating payload building before resolving.
@@ -966,21 +1040,36 @@ Engine:
       --engine.persistence-threshold <PERSISTENCE_THRESHOLD>
           Configure persistence threshold for the engine. This determines how many canonical blocks must be in-memory, ahead of the last persisted block, before flushing canonical blocks to disk again.
 
-          To persist blocks as fast as the node receives them, set this value to zero. This will cause more frequent DB writes.
+          To persist blocks as fast as the node receives them, set this value to zero. This disables state masking and causes more frequent DB writes.
 
-          [default: 2]
+          [env: RETH_ENGINE_PERSISTENCE_THRESHOLD=]
+          [default: 50]
 
       --engine.persistence-backpressure-threshold <PERSISTENCE_BACKPRESSURE_THRESHOLD>
-          Configure the maximum canonical-minus-persisted gap before engine API processing stalls.
+          Configure the maximum number of blocks beyond the in-memory buffer target that may await persistence before engine API processing stalls.
+
+          If omitted, this defaults to the larger of the minimum backpressure threshold and twice `--engine.persistence-threshold`.
 
           This value must be greater than `--engine.persistence-threshold`.
 
-          [default: 16]
+      --engine.num-state-masking-blocks <NUM_STATE_MASKING_BLOCKS>
+          Configure how many of the blocks being persisted should only mask state/trie writes instead of durably persisting their state/trie updates in the current cycle
+
+          [env: RETH_ENGINE_NUM_STATE_MASKING_BLOCKS=]
+          [default: 30]
 
       --engine.memory-block-buffer-target <MEMORY_BLOCK_BUFFER_TARGET>
-          Configure the target number of blocks to keep in memory
+          Configure the target number of blocks to keep in memory.
 
-          [default: 0]
+          If omitted, this defaults to the lesser of `--engine.persistence-threshold` and the configured default memory block buffer target.
+
+      --engine.backfill-threshold <BACKFILL_RUN_THRESHOLD>
+          Configure the largest gap, in blocks, between the local head and the forkchoice head that is closed by downloading the missing blocks directly. Larger gaps trigger a full pipeline (backfill) run instead.
+
+          On chains with short block times a pipeline run may take longer than it takes the chain to produce another gap of this size, in which case raising this value lets the node catch up via live sync. Values above 1024 are clamped to the peer header response limit.
+
+          [env: RETH_ENGINE_BACKFILL_THRESHOLD=]
+          [default: 32]
 
       --engine.invalid-header-cache-hit-eviction-threshold <INVALID_HEADER_HIT_EVICTION_THRESHOLD>
           Configure how many cache hits an invalid header can accumulate before it is evicted and reprocessed.
@@ -989,14 +1078,25 @@ Engine:
 
           [default: 128]
 
-      --engine.legacy-state-root
-          Enable legacy state root
-
       --engine.disable-state-cache
           Disable state cache
 
       --engine.disable-prewarming
           Disable parallel prewarming
+
+      --engine.txpool-prewarming
+          Enable best-effort txpool transaction prewarming between payloads
+
+          [env: RETH_ENGINE_TXPOOL_PREWARMING=]
+
+      --engine.sender-recovery-cache [<SENDER_RECOVERY_CACHE_ENABLED>]
+          Cache recovered transaction senders across transaction ingress and payload execution.
+
+          Enabled by default, use `--engine.sender-recovery-cache=false` to disable it.
+
+          [env: RETH_ENGINE_SENDER_RECOVERY_CACHE=]
+          [default: true]
+          [possible values: true, false]
 
       --engine.state-provider-metrics
           Enable state provider latency metrics. This allows the engine to collect and report stats about how long state provider calls took during execution, but this does introduce slight overhead to state provider calls
@@ -1022,6 +1122,9 @@ Engine:
 
           [default: 1]
 
+      --cpu-cores <COUNT>
+          Override the available CPU count for node thread pools and parallel execution decisions. Does not change CPU affinity. Explicit thread counts take precedence
+
       --engine.disable-precompile-cache
           Disable precompile cache
 
@@ -1037,29 +1140,16 @@ Engine:
           Allow unwinding canonical header to ancestor during forkchoice updates. See `TreeConfig::unwind_canonical_header` for more details
 
       --engine.storage-worker-count <STORAGE_WORKER_COUNT>
-          Configure the number of storage proof workers in the Tokio blocking pool. If not specified, defaults to 2x available parallelism
+          Configure the number of storage proof workers spawned for each block. If not specified or zero, the count is derived from the block: 2x available parallelism, halved for blocks with few transactions and doubled for blocks at or above 100M gas
 
       --engine.account-worker-count <ACCOUNT_WORKER_COUNT>
-          Configure the number of account proof workers in the Tokio blocking pool. If not specified, defaults to the same count as storage workers
-
-      --engine.skip-state-root-validation
-          Skip state root validation for fastnode mode. This disables validation of state root hashes during live sync and also automatically disables hashing stages for maximum sync speed at the cost of reduced validation
+          Configure the number of account proof workers spawned for each block. If not specified or zero, the count is derived from the block the same way as for storage workers
 
       --engine.prewarming-threads <PREWARMING_THREADS>
           Configure the number of prewarming threads. If not specified, defaults to available parallelism
 
       --engine.disable-cache-metrics
           Disable cache metrics recording, which can take up to 50ms with large cached state
-
-      --engine.sparse-trie-max-hot-slots <SPARSE_TRIE_MAX_HOT_SLOTS>
-          LFU hot-slot capacity: max storage slots retained across sparse trie prune cycles
-
-          [default: 1500]
-
-      --engine.sparse-trie-max-hot-accounts <SPARSE_TRIE_MAX_HOT_ACCOUNTS>
-          LFU hot-account capacity: max account addresses retained across sparse trie prune cycles
-
-          [default: 1000]
 
       --engine.slow-block-threshold <DURATION>
           Configure the slow block logging threshold in milliseconds.
@@ -1076,11 +1166,11 @@ Engine:
       --engine.state-root-task-timeout <STATE_ROOT_TASK_TIMEOUT>
           Configure the timeout for the state root task before spawning a sequential fallback. If the state root task takes longer than this, a sequential computation starts in parallel and whichever finishes first is used.
 
-          --engine.state-root-task-timeout 1s --engine.state-root-task-timeout 400ms
+          --engine.state-root-task-timeout 4s --engine.state-root-task-timeout 400ms
 
           Set to 0s to disable.
 
-          [default: 1s]
+          [default: 4s]
 
       --engine.share-execution-cache-with-payload-builder
           Whether to share execution cache with the payload builder.
@@ -1101,24 +1191,21 @@ Engine:
       --engine.suppress-persistence-during-build
           Suppress persistence while building a payload.
 
-          When enabled, persistence cycles are deferred from the moment an FCU with payload attributes arrives until the next FCU clears the build. Useful on chains with short block times where persistence I/O can interfere with block building latency.
+          When enabled, persistence cycles are deferred while a payload build is active. Useful on chains with short block times where persistence I/O can interfere with block building latency.
 
       --engine.disable-bal-parallel-execution
-          Disable BAL (Block Access List, EIP-7928) based parallel execution. Defaults to disabled, falling back to transaction-based prewarming even when a BAL is available
+          Disable BAL (Block Access List, EIP-7928) based parallel execution
 
       --engine.disable-bal-parallel-state-root
-          Disable BAL-driven parallel state root computation. When set, the BAL hashed post state is not sent to the multiproof task for early parallel state root computation
+          Disable BAL-driven parallel state root computation. This is only valid together with `--engine.disable-bal-parallel-execution`
 
       --engine.disable-bal-batch-io
           Disable BAL (Block Access List) storage prefetch IO during prewarming. When set, BAL storage slots are not read into the execution cache
 
-      --engine.min-blocks-for-pipeline-run <MIN_BLOCKS_FOR_PIPELINE_RUN>
-          Configure the minimum number of blocks required to trigger a pipeline run for backfilling. When the local head is behind the forkchoice head by more than this threshold, the pipeline will be used to backfill blocks instead of downloading them individually
+      --engine.prewarm-reuse
+          Reuse transaction prewarming results during block execution instead of executing transactions again when their prewarm reads are still valid
 
-          [default: 32]
-
-      --engine.enable-proof-v2
-          Enable V2 storage proofs for state root calculations
+          [env: RETH_ENGINE_PREWARM_REUSE=]
 
 ERA:
       --era.enable
@@ -1154,10 +1241,6 @@ Static Files:
       --static-files.blocks-per-file.storage-change-sets <BLOCKS_PER_FILE_STORAGE_CHANGE_SETS>
           Number of blocks per file for the storage changesets segment
 
-State Database:
-      --statedb.triedb
-          Use `TrieDB` instead of MDBX for state database
-
 Storage:
       --storage.v2 [<V2>]
           Enable V2 (hot/cold) storage layout for new databases.
@@ -1167,12 +1250,55 @@ Storage:
           [default: true]
           [possible values: true, false]
 
+JIT:
+      --jit
+          Enable JIT compilation of EVM bytecode
+
+      --jit.hot-threshold <HOT_THRESHOLD>
+          Number of observed misses before a bytecode is promoted to JIT compilation
+
+          [default: 8]
+
+      --jit.worker-count <WORKER_COUNT>
+          Number of JIT compilation worker threads
+
+      --jit.channel-capacity <CHANNEL_CAPACITY>
+          Capacity of the lookup-observed event channel. Events are silently dropped when the channel is full
+
+          [default: 4096]
+
+      --jit.max-pending-jobs <MAX_PENDING_JOBS>
+          Maximum number of pending JIT compilation jobs
+
+          [default: 2048]
+
+      --jit.max-bytecode-len <MAX_BYTECODE_LEN>
+          Maximum bytecode length eligible for JIT compilation. Contracts with bytecode larger than this are never promoted to JIT. 0 means no limit
+
+          [default: 0]
+
+      --jit.code-cache-bytes <CODE_CACHE_BYTES>
+          Maximum total resident compiled code size in bytes. When exceeded, the backend evicts least-recently-used entries. 0 means no limit
+
+          [default: 1073741824]
+
+      --jit.idle-evict-duration <IDLE_EVICT_DURATION>
+          Duration after which a compiled program with no lookup hits is evicted
+
+          [default: 1h]
+
+      --jit.debug
+          Enable compiler debug dumps.
+
+          IR, assembly, and bytecode are written to `<datadir>/jit/<spec_id>/<code_hash>/` for each compiled contract. Note that this is not ever cleaned up, and has a non negligible performance overhead.
+
 Logging:
       --log.stdout.format <FORMAT>
           The format to use for logs written to stdout
 
           Possible values:
           - json:     Represents JSON formatting for logs. This format outputs log records as JSON objects, making it suitable for structured logging
+          - log-fmt:  Represents logfmt (key=value) formatting for logs. This format is concise and human-readable, typically used in command-line applications
           - terminal: Represents terminal-friendly formatting for logs
 
           [default: terminal]
@@ -1187,6 +1313,7 @@ Logging:
 
           Possible values:
           - json:     Represents JSON formatting for logs. This format outputs log records as JSON objects, making it suitable for structured logging
+          - log-fmt:  Represents logfmt (key=value) formatting for logs. This format is concise and human-readable, typically used in command-line applications
           - terminal: Represents terminal-friendly formatting for logs
 
           [default: terminal]

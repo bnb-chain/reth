@@ -24,20 +24,6 @@ where
     EthApiError: FromEvmError<N::Evm>,
     Rpc: RpcConvert<Primitives = N::Primitives, Error = EthApiError, Evm = N::Evm>,
 {
-    #[inline]
-    fn call_gas_limit(&self) -> u64 {
-        self.inner.gas_cap()
-    }
-
-    #[inline]
-    fn max_simulate_blocks(&self) -> u64 {
-        self.inner.max_simulate_blocks()
-    }
-
-    #[inline]
-    fn evm_memory_limit(&self) -> u64 {
-        self.inner.evm_memory_limit()
-    }
 }
 
 impl<N, Rpc> EstimateCall for EthApi<N, Rpc>

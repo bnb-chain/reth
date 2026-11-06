@@ -42,7 +42,7 @@ use crate::{
 use futures::{Future, StreamExt};
 use parking_lot::Mutex;
 use reth_chainspec::EnrForkIdEntry;
-use reth_eth_wire::{DisconnectReason, EthNetworkPrimitives, NetworkPrimitives};
+use reth_eth_wire::{DisconnectReason, EthNetworkPrimitives, NetworkPrimitives, NewBlockPayload};
 use reth_fs_util::{self as fs, FsPathError};
 use reth_metrics::common::mpsc::MemoryBoundedSender;
 use reth_network_api::{
@@ -298,6 +298,7 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
             discovery_v4_config,
             discovery_v5_config,
             dns_discovery_config,
+            nat.clone(),
         )
         .await?;
         // need to retrieve the addr here since provided port could be `0`
@@ -462,7 +463,8 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
 
     /// Returns a new [`FetchClient`] that can be cloned and shared.
     ///
-    /// The [`FetchClient`] is the entrypoint for sending requests to the network.
+    /// The [`FetchClient`] is the entrypoint for sending requests to the network, including
+    /// `snap/2` requests via its [`SnapClient`](reth_network_p2p::snap::client::SnapClient) impl.
     pub fn fetch_client(&self) -> FetchClient<N> {
         self.swarm.state().fetch_client()
     }
@@ -573,6 +575,8 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
                     response,
                 })
             }
+            PeerRequest::GetCells { request, response } => self
+                .delegate_eth_request(IncomingEthRequest::GetCells { peer_id, request, response }),
             PeerRequest::GetPooledTransactions { request, response } => {
                 self.notify_tx_manager(NetworkTransactionEvent::GetPooledTransactions {
                     peer_id,
@@ -580,6 +584,8 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
                     response,
                 });
             }
+            PeerRequest::GetSnap { request, response } => self
+                .delegate_eth_request(IncomingEthRequest::GetSnap { peer_id, request, response }),
         }
     }
 
@@ -654,17 +660,11 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
             }
             PeerMessage::NewBlock(block) => {
                 self.within_pow_or_disconnect(peer_id, move |this| {
-                    // Extract TD from the NewBlock message
-                    let td = block.td();
-
-                    // Update the session's current TD (important for BSC and other chains)
-                    if let Some(session) = this.swarm.sessions().active_sessions().get(&peer_id) {
-                        session.update_td(td);
+                    // BSC vote propagation compares this live TD with the local head.
+                    if let Some(td) = block.block.td() {
+                        this.swarm.sessions_mut().update_peer_td(&peer_id, td);
                     }
-
-                    // Update NetworkState's ActivePeer TD
-                    this.swarm.state_mut().on_new_block_with_td(peer_id, block.hash, td);
-
+                    this.swarm.state_mut().on_new_block(peer_id, block.hash);
                     // start block import process
                     this.block_import.on_new_block(peer_id, NewBlockEvent::Block(block));
                 });
@@ -684,7 +684,7 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
                     msg,
                 });
             }
-            PeerMessage::SendTransactions(_) => {
+            PeerMessage::SendTransactions(_) | PeerMessage::SendBroadcastPoolTransactions(_) => {
                 unreachable!("Not emitted by session")
             }
             PeerMessage::BlockRangeUpdated(_) => {}
@@ -700,15 +700,13 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
             NetworkHandleMessage::DiscoveryListener(tx) => {
                 self.swarm.state_mut().discovery_mut().add_listener(tx);
             }
-            NetworkHandleMessage::AnnounceBlock(block, hash, total_difficulty) => {
+            NetworkHandleMessage::AnnounceBlock(block, hash) => {
                 if self.handle.mode().is_stake() {
                     // See [EIP-3675](https://eips.ethereum.org/EIPS/eip-3675#devp2p)
                     warn!(target: "net", "Peer performed block propagation, but it is not supported in proof of stake (EIP-3675)");
-                    return;
+                    return
                 }
-                // Include the total_difficulty when announcing our own block
-                // This is essential for BSC and other chains that rely on TD
-                let msg = NewBlockMessage { hash, block: Arc::new(block), td: total_difficulty };
+                let msg = NewBlockMessage { hash, block: Arc::new(block) };
                 self.swarm.state_mut().announce_new_block(msg);
             }
             NetworkHandleMessage::EthRequest { peer_id, request } => {
@@ -717,12 +715,21 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
             NetworkHandleMessage::SendTransaction { peer_id, msg } => {
                 self.swarm.sessions_mut().send_message(&peer_id, PeerMessage::SendTransactions(msg))
             }
+            NetworkHandleMessage::SendBroadcastPoolTransactions { peer_id, msg } => self
+                .swarm
+                .sessions_mut()
+                .send_message(&peer_id, PeerMessage::SendBroadcastPoolTransactions(msg)),
             NetworkHandleMessage::SendPooledTransactionHashes { peer_id, msg } => self
                 .swarm
                 .sessions_mut()
                 .send_message(&peer_id, PeerMessage::PooledTransactions(msg)),
             NetworkHandleMessage::AddTrustedPeerId(peer_id) => {
                 self.swarm.state_mut().add_trusted_peer_id(peer_id);
+            }
+            NetworkHandleMessage::AddTrustedPeerNode(trusted_peer) => {
+                if !self.swarm.is_shutting_down() {
+                    self.swarm.state_mut().add_trusted_peer_node(trusted_peer);
+                }
             }
             NetworkHandleMessage::AddPeerAddress(peer, kind, addr) => {
                 // only add peer if we are not shutting down
@@ -735,6 +742,12 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
             }
             NetworkHandleMessage::DisconnectPeer(peer_id, reason) => {
                 self.swarm.sessions_mut().disconnect(peer_id, reason);
+            }
+            NetworkHandleMessage::BanPeer(peer_id) => {
+                self.swarm.peers_mut().ban_peer_by_admin(peer_id);
+            }
+            NetworkHandleMessage::UnbanPeer(peer_id) => {
+                self.swarm.peers_mut().unban_peer_by_admin(peer_id);
             }
             NetworkHandleMessage::ConnectPeer(peer_id, kind, addr) => {
                 self.swarm.state_mut().add_and_connect(peer_id, kind, addr);
@@ -767,6 +780,10 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
                 if let Some(transition) = self.swarm.sessions_mut().on_status_update(head) {
                     self.swarm.state_mut().update_fork_id(transition.current);
                 }
+            }
+            NetworkHandleMessage::SetForkFilter { fork_filter } => {
+                let fork_id = self.swarm.sessions_mut().set_fork_filter(fork_filter);
+                self.swarm.state_mut().update_fork_id(fork_id);
             }
             NetworkHandleMessage::GetPeerInfos(tx) => {
                 let _ = tx.send(self.get_peer_infos());
@@ -811,6 +828,7 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
             SwarmEvent::IncomingTcpConnection { remote_addr, session_id } => {
                 trace!(target: "net", ?session_id, ?remote_addr, "Incoming connection");
                 self.metrics.total_incoming_connections.increment(1);
+                self.update_pending_connection_metrics();
                 self.metrics
                     .incoming_connections
                     .set(self.swarm.peers().num_inbound_connections() as f64);
@@ -855,6 +873,7 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
                 }
 
                 self.update_active_connection_metrics();
+                self.update_pending_connection_metrics();
 
                 let peer_kind = self
                     .swarm
@@ -954,6 +973,7 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
                         .on_incoming_pending_session_gracefully_closed();
                 }
                 self.closed_sessions_metrics.incoming_pending.increment(1);
+                self.update_pending_connection_metrics();
                 self.metrics
                     .incoming_connections
                     .set(self.swarm.peers().num_inbound_connections() as f64);
@@ -1032,20 +1052,11 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
             .active_sessions()
             .iter()
             .filter_map(|(&peer_id, session)| {
-                let (record, kind) = self.swarm.state().peers().peer_by_id(peer_id)?;
-
-                // Get real-time block info from NetworkState
-                let (best_hash, best_number, best_td) =
-                    self.swarm.state().get_peer_best_block(&peer_id).unwrap_or_else(|| {
-                        // Fallback to status from handshake if no real-time data
-                        (
-                            session.status.blockhash,
-                            session.status.latest_block,
-                            session.status.total_difficulty,
-                        )
-                    });
-
-                Some(session.peer_info(&record, kind, best_hash, best_number, best_td))
+                self.swarm
+                    .state()
+                    .peers()
+                    .peer_by_id(peer_id)
+                    .map(|(record, kind)| session.peer_info(&record, kind))
             })
             .collect()
     }
@@ -1054,21 +1065,13 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
     ///
     /// Returns `None` if there's no active session to the peer.
     fn get_peer_info_by_id(&self, peer_id: PeerId) -> Option<PeerInfo> {
-        let session = self.swarm.sessions().active_sessions().get(&peer_id)?;
-        let (record, kind) = self.swarm.state().peers().peer_by_id(peer_id)?;
-
-        // Get real-time block info from NetworkState
-        let (best_hash, best_number, best_td) =
-            self.swarm.state().get_peer_best_block(&peer_id).unwrap_or_else(|| {
-                // Fallback to status from handshake if no real-time data
-                (
-                    session.status.blockhash,
-                    session.status.latest_block,
-                    session.status.total_difficulty,
-                )
-            });
-
-        Some(session.peer_info(&record, kind, best_hash, best_number, best_td))
+        self.swarm.sessions().active_sessions().get(&peer_id).and_then(|session| {
+            self.swarm
+                .state()
+                .peers()
+                .peer_by_id(peer_id)
+                .map(|(record, kind)| session.peer_info(&record, kind))
+        })
     }
 
     /// Returns [`PeerInfo`] for a given peers.
@@ -1198,7 +1201,7 @@ impl<N: NetworkPrimitives> Future for NetworkManager<N> {
         if maybe_more_handle_messages || maybe_more_swarm_events {
             // make sure we're woken up again
             cx.waker().wake_by_ref();
-            return Poll::Pending;
+            return Poll::Pending
         }
 
         this.update_poll_metrics(start, poll_durations);
@@ -1211,4 +1214,242 @@ impl<N: NetworkPrimitives> Future for NetworkManager<N> {
 struct NetworkManagerPollDurations {
     acc_network_handle: Duration,
     acc_swarm: Duration,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{NetworkConfigBuilder, PeersConfig, SessionsConfig};
+    use alloy_primitives::{U128, U256};
+    use futures::{future::poll_fn, task::noop_waker_ref};
+    use metrics::{atomics::AtomicU64, Gauge};
+    use reth_eth_wire::{EthVersion, HelloMessageWithProtocols, NewBlock};
+    use reth_ethereum_primitives::Block;
+    use reth_network_types::{PeerAddr, PeerKind, SessionLimits};
+    use reth_storage_api::noop::NoopProvider;
+    use reth_tasks::Runtime;
+    use tokio::net::{TcpListener, TcpStream};
+
+    #[tokio::test]
+    async fn rejected_dials_release_slots_and_refill() {
+        for limit in [Some(0), Some(1), None] {
+            let mut networks = Vec::new();
+            for index in 0..3 {
+                let sessions = SessionsConfig {
+                    limits: SessionLimits {
+                        max_pending_outbound: if index == 0 { limit } else { None },
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
+                let config = NetworkConfigBuilder::<EthNetworkPrimitives>::new(
+                    SecretKey::new(&mut rand_08::thread_rng()),
+                    Runtime::test(),
+                )
+                .disable_discovery()
+                .listener_addr("127.0.0.1:0".parse().unwrap())
+                .peer_config(PeersConfig::test().with_max_outbound(2))
+                .sessions_config(sessions)
+                .build(NoopProvider::default());
+                networks.push(NetworkManager::new(config).await.unwrap());
+            }
+            let (local, remotes) = networks.split_first_mut().unwrap();
+            for remote in remotes.iter() {
+                local.swarm.peers_mut().add_and_connect_kind(
+                    *remote.peer_id(),
+                    PeerKind::Basic,
+                    PeerAddr::from_tcp(remote.swarm.listener().local_address()),
+                    None,
+                );
+            }
+            let mut cx = Context::from_waker(noop_waker_ref());
+            assert!(Pin::new(&mut *local).poll(&mut cx).is_pending());
+            assert_eq!(
+                local.swarm.peers().num_pending_outbound_connections(),
+                limit.map_or(2, |limit| limit as usize),
+            );
+            assert_eq!(local.swarm.peers().num_outbound_connections(), 0);
+            if limit == Some(0) {
+                continue
+            }
+
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                poll_fn(|cx| {
+                    assert!(Pin::new(&mut *local).poll(cx).is_pending());
+                    for remote in remotes.iter_mut() {
+                        assert!(Pin::new(remote).poll(cx).is_pending());
+                    }
+                    if local.swarm.peers().num_outbound_connections() == 2 {
+                        Poll::Ready(())
+                    } else {
+                        Poll::Pending
+                    }
+                }),
+            )
+            .await
+            .expect("rejected peers must be retried after session capacity becomes available");
+            assert_eq!(local.swarm.peers().num_pending_outbound_connections(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn inbound_replacement_refreshes_pending_connection_metrics() {
+        let config = || {
+            NetworkConfigBuilder::<EthNetworkPrimitives>::new(
+                SecretKey::new(&mut rand_08::thread_rng()),
+                Runtime::test(),
+            )
+            .disable_discovery()
+            .listener_addr("127.0.0.1:0".parse().unwrap())
+            .peer_config(PeersConfig::test())
+            .build(NoopProvider::default())
+        };
+        let mut local = NetworkManager::new(config()).await.unwrap();
+        let mut remote = NetworkManager::new(config()).await.unwrap();
+        let stalled = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let pending_outgoing = Arc::new(AtomicU64::new(0));
+        let total_pending = Arc::new(AtomicU64::new(0));
+        local.metrics.pending_outgoing_connections = Gauge::from_arc(pending_outgoing.clone());
+        local.metrics.total_pending_connections = Gauge::from_arc(total_pending.clone());
+        local.swarm.peers_mut().add_and_connect_kind(
+            *remote.peer_id(),
+            PeerKind::Basic,
+            PeerAddr::from_tcp(stalled.local_addr().unwrap()),
+            None,
+        );
+        assert!(futures::poll!(Pin::new(&mut local)).is_pending());
+        assert_eq!(f64::from_bits(pending_outgoing.load(Ordering::Relaxed)), 1.0);
+        remote.swarm.peers_mut().add_and_connect_kind(
+            *local.peer_id(),
+            PeerKind::Basic,
+            PeerAddr::from_tcp(local.local_addr()),
+            None,
+        );
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            poll_fn(|cx| {
+                assert!(Pin::new(&mut local).poll(cx).is_pending());
+                assert!(Pin::new(&mut remote).poll(cx).is_pending());
+                if local.swarm.peers().num_inbound_connections() == 1 {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(local.swarm.peers().num_pending_outbound_connections(), 0);
+        assert_eq!(f64::from_bits(pending_outgoing.load(Ordering::Relaxed)), 0.0);
+        assert_eq!(f64::from_bits(total_pending.load(Ordering::Relaxed)), 0.0);
+    }
+
+    #[tokio::test]
+    async fn incoming_handshake_failure_refreshes_pending_connection_metrics() {
+        let config = NetworkConfigBuilder::<EthNetworkPrimitives>::new(
+            SecretKey::new(&mut rand_08::thread_rng()),
+            Runtime::test(),
+        )
+        .disable_discovery()
+        .listener_addr("127.0.0.1:0".parse().unwrap())
+        .peer_config(PeersConfig::test())
+        .build(NoopProvider::default());
+        let mut network = NetworkManager::new(config).await.unwrap();
+        let total_pending = Arc::new(AtomicU64::new(0));
+        network.metrics.total_pending_connections = Gauge::from_arc(total_pending.clone());
+        let stream = TcpStream::connect(network.local_addr()).await.unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            poll_fn(|cx| {
+                assert!(Pin::new(&mut network).poll(cx).is_pending());
+                if network.swarm.sessions().num_pending_connections() == 1 {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(f64::from_bits(total_pending.load(Ordering::Relaxed)), 1.0);
+        drop(stream);
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            poll_fn(|cx| {
+                assert!(Pin::new(&mut network).poll(cx).is_pending());
+                if network.swarm.sessions().num_pending_connections() == 0 {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(f64::from_bits(total_pending.load(Ordering::Relaxed)), 0.0);
+    }
+
+    #[tokio::test]
+    async fn peer_info_tracks_total_difficulty_after_handshake() {
+        let config = || {
+            let builder = NetworkConfigBuilder::<EthNetworkPrimitives>::new(
+                SecretKey::new(&mut rand_08::thread_rng()),
+                Runtime::test(),
+            )
+            .disable_discovery()
+            .listener_addr("127.0.0.1:0".parse().unwrap())
+            .peer_config(PeersConfig::test())
+            .with_pow();
+            let hello = HelloMessageWithProtocols::builder(builder.get_peer_id())
+                .protocols([EthVersion::Eth68.into()])
+                .build();
+            builder.hello_message(hello).build(NoopProvider::default())
+        };
+        let mut local = NetworkManager::new(config()).await.unwrap();
+        let mut remote = NetworkManager::new(config()).await.unwrap();
+        let peer_id = *remote.peer_id();
+        local.swarm.peers_mut().add_and_connect_kind(
+            peer_id,
+            PeerKind::Basic,
+            PeerAddr::from_tcp(remote.swarm.listener().local_address()),
+            None,
+        );
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            poll_fn(|cx| {
+                assert!(Pin::new(&mut local).poll(cx).is_pending());
+                assert!(Pin::new(&mut remote).poll(cx).is_pending());
+                if local.get_peer_info_by_id(peer_id).is_some() {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            }),
+        )
+        .await
+        .unwrap();
+        let handshake_td = local.get_peer_info_by_id(peer_id).unwrap().best_td.unwrap();
+        // BSC stops forwarding votes once peer TD trails the local head by more than 1000.
+        for delta in [1002, 2004] {
+            let td = handshake_td + U256::from(delta);
+            let mut block = NewBlock { block: Block::default(), td: U128::from(td) };
+            block.block.header.number = delta / 2;
+            block.block.header.difficulty = U256::from(2);
+            local.on_peer_message(
+                peer_id,
+                PeerMessage::NewBlock(NewBlockMessage {
+                    hash: block.block.header.hash_slow(),
+                    block: Arc::new(block),
+                }),
+            );
+            assert_eq!(local.get_peer_info_by_id(peer_id).unwrap().best_td, Some(td));
+            assert_eq!(local.get_peer_infos()[0].best_td, Some(td));
+            assert_eq!(local.get_peer_infos_by_ids([peer_id])[0].best_td, Some(td));
+            assert_eq!(
+                local.swarm.sessions().active_sessions()[&peer_id].status.total_difficulty,
+                Some(handshake_td),
+            );
+        }
+    }
 }

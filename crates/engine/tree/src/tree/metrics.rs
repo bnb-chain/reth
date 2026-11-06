@@ -1,11 +1,12 @@
-use crate::tree::{error::InsertBlockFatalError, TreeOutcome};
+use crate::tree::{payload_processor::reuse::ReuseMiss, TreeOutcome};
 use alloy_rpc_types_engine::{PayloadStatus, PayloadStatusEnum};
-use reth_engine_primitives::{ForkchoiceStatus, OnForkChoiceUpdated};
+use reth_engine_primitives::{ForkchoiceStatus, InsertBlockProcessingError, OnForkChoiceUpdated};
 use reth_errors::ProviderError;
 use reth_evm::metrics::ExecutorMetrics;
 use reth_execution_types::BlockExecutionOutput;
 use reth_metrics::{
     metrics::{Counter, Gauge, Histogram},
+    thread::{ThreadResourceUsage, ThreadResourceUsageDelta},
     Metrics,
 };
 use reth_primitives_traits::{constants::gas_units::MEGAGAS, FastInstant as Instant};
@@ -38,6 +39,8 @@ pub struct EngineApiMetrics {
     pub(crate) execution_gas_buckets: ExecutionGasBucketMetrics,
     /// Gas-bucketed block validation sub-phase metrics.
     pub(crate) block_validation_gas_buckets: BlockValidationGasBucketMetrics,
+    /// Metrics for reusing transaction prewarming results.
+    pub(crate) prewarm_reuse: PrewarmReuseMetrics,
 }
 
 impl EngineApiMetrics {
@@ -61,7 +64,7 @@ impl EngineApiMetrics {
         self.executor.execution_duration.set(execution_secs);
 
         // Update the metrics for the number of accounts, storage slots and bytecodes
-        let accounts = output.state.state.len();
+        let accounts = output.state.len();
         let storage_slots =
             output.state.state.values().map(|account| account.storage.len()).sum::<usize>();
         let bytecodes = output.state.contracts.len();
@@ -110,6 +113,46 @@ impl EngineApiMetrics {
     /// Records the duration of a single transaction execution.
     pub fn record_transaction_execution(&self, elapsed: Duration) {
         self.executor.transaction_execution_histogram.record(elapsed);
+    }
+}
+
+/// Metrics for reusing transaction prewarming results during block execution.
+#[derive(Metrics)]
+#[metrics(scope = "sync.prewarm.reuse")]
+pub(crate) struct PrewarmReuseMetrics {
+    /// Transactions committed from prewarm results.
+    reused_transactions: Counter,
+    /// Transactions executed because prewarming had not finished them.
+    missing_transactions: Counter,
+    /// Transactions executed because a prewarm result was unusable or failed reuse checks.
+    stale_transactions: Counter,
+}
+
+impl PrewarmReuseMetrics {
+    /// Records the reuse outcomes of a block.
+    pub(crate) fn record(&self, stats: PrewarmReuseStats) {
+        self.reused_transactions.increment(stats.reused);
+        self.missing_transactions.increment(stats.missing);
+        self.stale_transactions.increment(stats.stale);
+    }
+}
+
+/// Prewarm result reuse outcomes of a block.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct PrewarmReuseStats {
+    reused: u64,
+    missing: u64,
+    stale: u64,
+}
+
+impl PrewarmReuseStats {
+    /// Records the reuse outcome of a transaction.
+    pub(crate) const fn record(&mut self, outcome: Result<(), ReuseMiss>) {
+        match outcome {
+            Ok(()) => self.reused += 1,
+            Err(ReuseMiss::Missing) => self.missing += 1,
+            Err(ReuseMiss::Stale) => self.stale += 1,
+        }
     }
 }
 
@@ -185,11 +228,6 @@ pub struct EngineMetrics {
     pub(crate) failed_forkchoice_updated_response_deliveries: Counter,
     /// block insert duration
     pub(crate) block_insert_total_duration: Histogram,
-    /// Block insert throughput in mgas/s
-    pub(crate) block_insert_mgasps: Gauge,
-    /// Block insertion delay: the difference between current timestamp and block header timestamp
-    /// (in nanoseconds)
-    pub(crate) block_insert_timestamp_delay: Histogram,
 }
 
 /// Metrics for engine forkchoiceUpdated responses.
@@ -396,6 +434,9 @@ pub(crate) struct NewPayloadStatusMetrics {
     /// Gas-bucket-labeled latency and gas/s histograms.
     #[metric(skip)]
     pub(crate) gas_bucket: GasBucketMetrics,
+    /// Resource usage on the engine thread while processing new payloads.
+    #[metric(skip)]
+    thread_resource_usage: NewPayloadThreadResourceMetrics,
     /// The total count of new payload messages received.
     pub(crate) new_payload_messages: Counter,
     /// The total count of new payload messages that we responded to with
@@ -434,12 +475,17 @@ pub(crate) struct NewPayloadStatusMetrics {
 }
 
 impl NewPayloadStatusMetrics {
+    /// Starts measuring resource usage on the current thread.
+    pub(crate) fn measure_thread_resource_usage(&self) -> NewPayloadThreadResourceGuard {
+        self.thread_resource_usage.measure()
+    }
+
     /// Increment the newPayload counter based on the given result
     pub(crate) fn update_response_metrics(
         &mut self,
         start: Instant,
         latest_forkchoice_updated_at: &mut Option<Instant>,
-        result: &Result<TreeOutcome<PayloadStatus>, InsertBlockFatalError>,
+        result: &Result<TreeOutcome<PayloadStatus>, InsertBlockProcessingError>,
         gas_used: u64,
     ) {
         let finish = Instant::now();
@@ -483,6 +529,64 @@ impl NewPayloadStatusMetrics {
     }
 }
 
+/// Per-newPayload engine thread resource usage metrics.
+#[derive(Clone, Metrics)]
+#[metrics(scope = "consensus.engine.beacon")]
+struct NewPayloadThreadResourceMetrics {
+    /// User-mode CPU time used while processing a new payload.
+    new_payload_thread_user_cpu_seconds: Histogram,
+    /// Kernel-mode CPU time used while processing a new payload.
+    new_payload_thread_system_cpu_seconds: Histogram,
+    /// Minor page faults incurred while processing a new payload.
+    new_payload_thread_minor_page_faults: Histogram,
+    /// Major page faults incurred while processing a new payload.
+    new_payload_thread_major_page_faults: Histogram,
+    /// Voluntary context switches while processing a new payload.
+    new_payload_thread_voluntary_context_switches: Histogram,
+    /// Involuntary context switches while processing a new payload.
+    new_payload_thread_involuntary_context_switches: Histogram,
+    /// Block input operations while processing a new payload.
+    new_payload_thread_block_input_operations: Histogram,
+    /// Block output operations while processing a new payload.
+    new_payload_thread_block_output_operations: Histogram,
+}
+
+impl NewPayloadThreadResourceMetrics {
+    fn measure(&self) -> NewPayloadThreadResourceGuard {
+        let metrics = self.clone();
+        let start = ThreadResourceUsage::now();
+        NewPayloadThreadResourceGuard { start, metrics }
+    }
+
+    fn record(&self, usage: &ThreadResourceUsageDelta) {
+        self.new_payload_thread_user_cpu_seconds.record(usage.user_cpu_time);
+        self.new_payload_thread_system_cpu_seconds.record(usage.system_cpu_time);
+        self.new_payload_thread_minor_page_faults.record(usage.minor_page_faults as f64);
+        self.new_payload_thread_major_page_faults.record(usage.major_page_faults as f64);
+        self.new_payload_thread_voluntary_context_switches
+            .record(usage.voluntary_context_switches as f64);
+        self.new_payload_thread_involuntary_context_switches
+            .record(usage.involuntary_context_switches as f64);
+        self.new_payload_thread_block_input_operations.record(usage.block_input_operations as f64);
+        self.new_payload_thread_block_output_operations
+            .record(usage.block_output_operations as f64);
+    }
+}
+
+/// Records engine thread resource usage when dropped.
+pub(crate) struct NewPayloadThreadResourceGuard {
+    start: ThreadResourceUsage,
+    metrics: NewPayloadThreadResourceMetrics,
+}
+
+impl Drop for NewPayloadThreadResourceGuard {
+    fn drop(&mut self) {
+        if let Some(usage) = self.start.elapsed() {
+            self.metrics.record(&usage);
+        }
+    }
+}
+
 /// Metrics for EIP-7928 Block-Level Access Lists (BAL).
 ///
 /// See also <https://github.com/ethereum/execution-metrics/issues/5>
@@ -516,8 +620,6 @@ pub(crate) struct BalMetrics {
 pub struct BlockValidationMetrics {
     /// Total number of storage tries updated in the state root calculation
     pub state_root_storage_tries_updated_total: Counter,
-    /// Total number of times the parallel state root computation fell back to regular.
-    pub state_root_parallel_fallback_total: Counter,
     /// Total number of times the state root task failed but the fallback succeeded.
     pub state_root_task_fallback_success_total: Counter,
     /// Total number of times the state root task timed out and a sequential fallback was spawned.
@@ -542,18 +644,6 @@ pub struct BlockValidationMetrics {
     pub hashed_post_state_size: Histogram,
     /// Size of `TrieUpdatesSorted` (`total_len`)
     pub trie_updates_sorted_size: Histogram,
-    /// Size of `AnchoredTrieInput` overlay `TrieUpdatesSorted` (`total_len`)
-    pub anchored_overlay_trie_updates_size: Histogram,
-    /// Size of `AnchoredTrieInput` overlay `HashedPostStateSorted` (`total_len`)
-    pub anchored_overlay_hashed_state_size: Histogram,
-    /// triedb validate execution duration
-    pub triedb_validate_execution_duration: Histogram,
-    /// triedb validate root duration
-    pub triedb_validate_root_duration: Histogram,
-    /// Total number of times the triedb validation path was entered.
-    pub triedb_validate_entry_total: Counter,
-    /// Histogram of triedb validation duration.
-    pub triedb_validate_entry_duration: Histogram,
 }
 
 impl BlockValidationMetrics {
@@ -618,19 +708,33 @@ mod tests {
         };
 
         metrics.record_block_execution(&output, Duration::from_millis(100));
+        metrics.engine.new_payload.thread_resource_usage.record(&ThreadResourceUsageDelta {
+            user_cpu_time: Duration::from_millis(1),
+            system_cpu_time: Duration::from_millis(2),
+            minor_page_faults: 3,
+            major_page_faults: 4,
+            voluntary_context_switches: 5,
+            involuntary_context_switches: 6,
+            block_input_operations: 7,
+            block_output_operations: 8,
+        });
 
         let snapshot = snapshotter.snapshot().into_vec();
 
         // Verify that metrics were registered
-        let mut found_metrics = false;
+        let mut found_execution_metrics = false;
+        let mut found_thread_resource_metrics = false;
         for (key, _unit, _desc, _value) in snapshot {
             let metric_name = key.key().name();
             if metric_name.starts_with("sync.execution") {
-                found_metrics = true;
-                break;
+                found_execution_metrics = true;
+            }
+            if metric_name == "consensus.engine.beacon.new_payload_thread_major_page_faults" {
+                found_thread_resource_metrics = true;
             }
         }
 
-        assert!(found_metrics, "Expected to find sync.execution metrics");
+        assert!(found_execution_metrics, "Expected to find sync.execution metrics");
+        assert!(found_thread_resource_metrics, "Expected to find thread resource metrics");
     }
 }

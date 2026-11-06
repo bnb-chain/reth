@@ -39,15 +39,19 @@ jobs:
           # - name: 'Build and push the nightly profiling op-reth image'
           #   command: 'make IMAGE_NAME=$OP_IMAGE_NAME DOCKER_IMAGE_NAME=$OP_DOCKER_IMAGE_NAME PROFILE=profiling op-docker-build-push-nightly-profiling'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
       - name: Remove bloatware
-        uses: laverdet/remove-bloatware@v1.0.0
+        uses: laverdet/remove-bloatware@a027d55a72759ee60f8e538ffd01f114e982fd57 # v1.0.0
         with:
           docker: true
           lang: rust
-      - uses: rui314/setup-mold@v1
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: rui314/setup-mold@339e96b4ff1f3bd865856ba4cbbe8818a7acb038 # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           cache-on-failure: true
       - name: Install cross main
@@ -56,7 +60,7 @@ jobs:
           cargo install cross --git https://github.com/cross-rs/cross
       - name: Log in to Docker
         run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io --username ${DOCKER_USERNAME} --password-stdin
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io --username "${DOCKER_USERNAME}" --password-stdin
       - name: Set up Docker builder
         run: |
           docker run --privileged --rm tonistiigi/binfmt --install arm64,amd64

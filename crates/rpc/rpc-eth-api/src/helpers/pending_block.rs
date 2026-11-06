@@ -1,14 +1,14 @@
-//! Loads a pending block from database. Helper trait for `eth_` block, transaction, call and trace
-//! RPC methods.
+//! Loads provider pending blocks or builds them from the transaction pool for `eth_` block,
+//! transaction, call and trace RPC methods.
 
 use super::SpawnBlocking;
 use crate::{EthApiTypes, FromEthApiError, FromEvmError, RpcNodeCore};
 use alloy_consensus::{BlockHeader, Transaction};
-use alloy_eips::eip7840::BlobParams;
+use alloy_eips::{eip7840::BlobParams, BlockId};
 use alloy_primitives::{B256, U256};
-use alloy_rpc_types_eth::BlockNumberOrTag;
+use alloy_rpc_types_eth::BlockOverrides;
 use futures::Future;
-use reth_chain_state::{BlockState, ComputedTrieData, ExecutedBlock};
+use reth_chain_state::ExecutedBlock;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec, EthereumHardforks};
 use reth_errors::{BlockExecutionError, BlockValidationError, ProviderError, RethError};
 use reth_evm::{
@@ -16,7 +16,9 @@ use reth_evm::{
     execute::{BlockBuilder, BlockBuilderOutcome, BlockExecutionOutput},
     ConfigureEvm, Evm, EvmEnvFor, NextBlockEnvAttributes,
 };
-use reth_primitives_traits::{transaction::error::InvalidTransactionError, HeaderTy, SealedHeader};
+use reth_primitives_traits::{
+    transaction::error::InvalidTransactionError, HeaderTy, NodePrimitives, SealedHeader,
+};
 use reth_revm::{database::StateProviderDatabase, db::State};
 use reth_rpc_convert::RpcConvert;
 use reth_rpc_eth_types::{
@@ -24,13 +26,14 @@ use reth_rpc_eth_types::{
     PendingBlockEnv, PendingBlockEnvOrigin,
 };
 use reth_storage_api::{
-    noop::NoopProvider, BlockReader, BlockReaderIdExt, ProviderHeader, ProviderTx,
+    noop::NoopProvider, BlockReader, BlockReaderIdExt, ProviderHeader, ProviderTx, StateProvider,
     StateProviderBox, StateProviderFactory,
 };
 use reth_transaction_pool::{
     error::InvalidPoolTransactionError, BestTransactions, BestTransactionsAttributes,
     PoolTransaction, TransactionPool,
 };
+use reth_trie_common::SortedTrieData;
 use revm::context_interface::{Block, Cfg as _};
 use std::{
     sync::Arc,
@@ -39,7 +42,7 @@ use std::{
 use tokio::sync::Mutex;
 use tracing::debug;
 
-/// Loads a pending block from database.
+/// Loads a provider pending block or builds one from the transaction pool.
 ///
 /// Behaviour shared by several `eth_` RPC methods, not exclusive to `eth_` blocks RPC methods.
 pub trait LoadPendingBlock:
@@ -56,16 +59,21 @@ pub trait LoadPendingBlock:
     /// Returns a [`PendingEnvBuilder`] for the pending block.
     fn pending_env_builder(&self) -> &dyn PendingEnvBuilder<Self::Evm>;
 
-    /// Returns the pending block kind
-    fn pending_block_kind(&self) -> PendingBlockKind;
+    /// Returns the pending block kind.
+    fn pending_block_kind(&self) -> PendingBlockKind {
+        self.eth_api_settings().pending_block_kind
+    }
 
-    /// Configures the [`PendingBlockEnv`] for the pending block
+    /// Returns the pending block environment and its origin.
     ///
-    /// If no pending block is available, this will derive it from the `latest` block
+    /// Uses the provider's pending block when available; otherwise derives the next block
+    /// environment from the latest header. This method performs synchronous provider reads.
     fn pending_block_env_and_cfg(&self) -> Result<PendingBlockEnv<Self::Evm>, Self::Error> {
-        if let Some((block, receipts)) =
+        if let Some(pending) =
             self.provider().pending_block_and_receipts().map_err(Self::Error::from_eth_err)?
         {
+            let (block, output) = pending.into_parts();
+
             // Note: for the PENDING block we assume it is past the known merge block and
             // thus this will not fail when looking up the total
             // difficulty value for the blockenv.
@@ -77,7 +85,7 @@ pub trait LoadPendingBlock:
 
             return Ok(PendingBlockEnv::new(
                 evm_env,
-                PendingBlockEnvOrigin::ActualPending(Arc::new(block), Arc::new(receipts)),
+                PendingBlockEnvOrigin::ActualPending(block, output.into()),
             ));
         }
 
@@ -87,7 +95,7 @@ pub trait LoadPendingBlock:
             .provider()
             .latest_header()
             .map_err(Self::Error::from_eth_err)?
-            .ok_or(EthApiError::HeaderNotFound(BlockNumberOrTag::Latest.into()))?;
+            .ok_or(EthApiError::HeaderNotFound(BlockId::latest()))?;
 
         let evm_env = self
             .evm_config()
@@ -103,10 +111,14 @@ pub trait LoadPendingBlock:
         &self,
         parent: &SealedHeader<ProviderHeader<Self::Provider>>,
     ) -> Result<<Self::Evm as ConfigureEvm>::NextBlockEnvCtx, Self::Error> {
-        Ok(self.pending_env_builder().pending_env_attributes(parent)?)
+        Ok(self.pending_env_builder().pending_env_attributes(parent, None)?)
     }
 
     /// Returns a [`StateProviderBox`] on a mem-pool built pending block overlaying latest.
+    ///
+    /// This is used by `state_at_block_id` and, by default, by
+    /// [`Self::local_pending_block_or_state`]. This method's default opens the provider state on a
+    /// blocking task after building the pending block.
     fn local_pending_state(
         &self,
     ) -> impl Future<Output = Result<Option<StateProviderBox>, Self::Error>> + Send
@@ -118,18 +130,40 @@ pub trait LoadPendingBlock:
                 return Ok(None);
             };
 
-            let latest_historical = self
-                .provider()
-                .history_by_block_hash(pending_block.block().parent_hash())
-                .map_err(Self::Error::from_eth_err)?;
-
-            let state = BlockState::from(pending_block);
-
-            Ok(Some(Box::new(state.state_provider(latest_historical)) as StateProviderBox))
+            self.spawn_blocking_io(move |this| {
+                Ok(Some(
+                    this.provider()
+                        .state_with_block_appended(
+                            pending_block.block().parent_hash(),
+                            pending_block.executed_block,
+                        )
+                        .map_err(Self::Error::from_eth_err)?,
+                ))
+            })
+            .await
         }
     }
 
-    /// Returns a mem-pool built pending block.
+    /// Selects the local pending source for state RPCs.
+    ///
+    /// By default, delegates to [`Self::local_pending_state`] so existing chain-specific overrides
+    /// continue to apply. Implementations can return [`PendingStateSource::Block`] to defer opening
+    /// the block's state provider until the state RPC's blocking task. Returning `None` falls back
+    /// to the provider's pending state.
+    fn local_pending_block_or_state(
+        &self,
+    ) -> impl Future<Output = Result<Option<PendingStateSource<Self::Primitives>>, Self::Error>> + Send
+    where
+        Self: SpawnBlocking,
+    {
+        async move { Ok(self.local_pending_state().await?.map(PendingStateSource::State)) }
+    }
+
+    /// Returns a cached or newly built pending block from the transaction pool.
+    ///
+    /// Returns `None` if local pending blocks are disabled or the provider has an actual pending
+    /// block. Resolves the environment before awaiting the cache lock, then may spawn a blocking
+    /// task to build the block. Callers must await this outside a blocking task.
     fn pool_pending_block(
         &self,
     ) -> impl Future<Output = Result<Option<PendingBlock<Self::Primitives>>, Self::Error>> + Send
@@ -150,10 +184,10 @@ pub trait LoadPendingBlock:
         }
     }
 
-    /// Builds or returns a cached pending block from the transaction pool.
+    /// Returns a cached or newly built pending block for the given parent and environment.
     ///
-    /// This is the shared implementation used by both [`Self::pool_pending_block`] and
-    /// [`Self::local_pending_block`] to avoid resolving the pending block environment twice.
+    /// Holds the async cache lock while rebuilding, which may spawn blocking work. The resolved
+    /// parent and environment let callers reuse the result of their provider lookup.
     fn build_pool_pending_block(
         &self,
         parent: SealedHeader<ProviderHeader<Self::Provider>>,
@@ -204,7 +238,7 @@ pub trait LoadPendingBlock:
         }
     }
 
-    /// Returns the locally built pending block
+    /// When enabled, returns the provider's pending block or builds one from the pool.
     fn local_pending_block(
         &self,
     ) -> impl Future<Output = Result<Option<BlockAndReceipts<Self::Primitives>>, Self::Error>> + Send
@@ -252,7 +286,7 @@ pub trait LoadPendingBlock:
             .provider()
             .history_by_block_hash(parent.hash())
             .map_err(Self::Error::from_eth_err)?;
-        let state = StateProviderDatabase::new(state_provider);
+        let state = StateProviderDatabase::new(state_provider.into_evm_state_provider());
         let mut db = State::builder().with_database(state).with_bundle_update().build();
 
         let mut builder = self
@@ -321,7 +355,7 @@ pub trait LoadPendingBlock:
                     // the iterator before we can continue
                     best_txs.mark_invalid(
                         &pool_tx,
-                        &InvalidPoolTransactionError::ExceedsGasLimit(
+                        InvalidPoolTransactionError::ExceedsGasLimit(
                             transaction_gas_limit,
                             block_available_gas,
                         ),
@@ -335,7 +369,7 @@ pub trait LoadPendingBlock:
                     // transactions from the iteratorbefore we can continue
                     best_txs.mark_invalid(
                         &pool_tx,
-                        &InvalidPoolTransactionError::Consensus(
+                        InvalidPoolTransactionError::Consensus(
                             InvalidTransactionError::TxTypeNotSupported,
                         ),
                     );
@@ -357,7 +391,7 @@ pub trait LoadPendingBlock:
                     // for regular transactions above.
                     best_txs.mark_invalid(
                         &pool_tx,
-                        &InvalidPoolTransactionError::ExceedsGasLimit(
+                        InvalidPoolTransactionError::ExceedsGasLimit(
                             tx_blob_gas,
                             blob_params.max_blob_gas_per_block(),
                         ),
@@ -382,7 +416,7 @@ pub trait LoadPendingBlock:
                                 // descendants
                                 best_txs.mark_invalid(
                                     &pool_tx,
-                                    &InvalidPoolTransactionError::Consensus(
+                                    InvalidPoolTransactionError::Consensus(
                                         InvalidTransactionError::TxTypeNotSupported,
                                     ),
                                 );
@@ -397,7 +431,7 @@ pub trait LoadPendingBlock:
                         )) => {
                             best_txs.mark_invalid(
                                 &pool_tx,
-                                &InvalidPoolTransactionError::ExceedsGasLimit(
+                                InvalidPoolTransactionError::ExceedsGasLimit(
                                     transaction_gas_limit,
                                     block_available_gas,
                                 ),
@@ -435,7 +469,7 @@ pub trait LoadPendingBlock:
         Ok(ExecutedBlock::new(
             block.into(),
             Arc::new(execution_outcome),
-            ComputedTrieData::without_trie_input(
+            SortedTrieData::new(
                 Arc::new(hashed_state.into_sorted()),
                 Arc::new(trie_updates.into_sorted()),
             ),
@@ -443,12 +477,34 @@ pub trait LoadPendingBlock:
     }
 }
 
+/// Local pending state selected for a state RPC.
+pub enum PendingStateSource<N: NodePrimitives> {
+    /// A block whose state provider must be opened on the state RPC's blocking task.
+    Block(PendingBlock<N>),
+    /// A chain-specific state provider that is already open.
+    State(StateProviderBox),
+}
+
+impl<N: NodePrimitives> std::fmt::Debug for PendingStateSource<N> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Block(_) => f.write_str("PendingStateSource::Block(..)"),
+            Self::State(_) => f.write_str("PendingStateSource::State(..)"),
+        }
+    }
+}
+
 /// A type that knows how to build a [`ConfigureEvm::NextBlockEnvCtx`] for a pending block.
 pub trait PendingEnvBuilder<Evm: ConfigureEvm>: Send + Sync + Unpin + 'static {
-    /// Builds a [`ConfigureEvm::NextBlockEnvCtx`] for pending block.
+    /// Builds a [`ConfigureEvm::NextBlockEnvCtx`] for a pending block.
+    ///
+    /// `block_overrides` can be used for values that need to be part of the next block context
+    /// before the EVM environment is constructed. Other block overrides are applied directly to the
+    /// EVM environment after construction.
     fn pending_env_attributes(
         &self,
         parent: &SealedHeader<HeaderTy<Evm::Primitives>>,
+        block_overrides: Option<&BlockOverrides>,
     ) -> Result<Evm::NextBlockEnvCtx, EthApiError>;
 }
 
@@ -458,8 +514,15 @@ pub trait PendingEnvBuilder<Evm: ConfigureEvm>: Send + Sync + Unpin + 'static {
 /// This assumes that next environment building doesn't require any additional context, for more
 /// complex implementations one should implement [`PendingEnvBuilder`] on their custom type.
 pub trait BuildPendingEnv<Header> {
-    /// Builds a [`ConfigureEvm::NextBlockEnvCtx`] for pending block.
-    fn build_pending_env(parent: &SealedHeader<Header>) -> Self;
+    /// Builds a [`ConfigureEvm::NextBlockEnvCtx`] for a pending block.
+    ///
+    /// `block_overrides` can be used for values that need to be part of the next block context
+    /// before the EVM environment is constructed. Other block overrides are applied directly to the
+    /// EVM environment after construction.
+    fn build_pending_env(
+        parent: &SealedHeader<Header>,
+        block_overrides: Option<&BlockOverrides>,
+    ) -> Self;
 }
 
 impl<Evm> PendingEnvBuilder<Evm> for ()
@@ -469,23 +532,35 @@ where
     fn pending_env_attributes(
         &self,
         parent: &SealedHeader<HeaderTy<Evm::Primitives>>,
+        block_overrides: Option<&BlockOverrides>,
     ) -> Result<Evm::NextBlockEnvCtx, EthApiError> {
-        Ok(Evm::NextBlockEnvCtx::build_pending_env(parent))
+        Ok(Evm::NextBlockEnvCtx::build_pending_env(parent, block_overrides))
     }
 }
 
 impl<H: BlockHeader> BuildPendingEnv<H> for NextBlockEnvAttributes {
-    fn build_pending_env(parent: &SealedHeader<H>) -> Self {
-        Self {
+    fn build_pending_env(
+        parent: &SealedHeader<H>,
+        block_overrides: Option<&BlockOverrides>,
+    ) -> Self {
+        let mut attributes = Self {
             timestamp: parent.timestamp().saturating_add(12),
             suggested_fee_recipient: parent.beneficiary(),
             prev_randao: B256::random(),
             gas_limit: parent.gas_limit(),
-            parent_beacon_block_root: parent.parent_beacon_block_root(),
+            parent_beacon_block_root: parent.parent_beacon_block_root().map(|_| B256::ZERO),
             withdrawals: parent.withdrawals_root().map(|_| Default::default()),
             extra_data: parent.extra_data().clone(),
             slot_number: parent.slot_number().map(|slot| slot.saturating_add(1)),
+        };
+
+        if attributes.parent_beacon_block_root.is_some() &&
+            let Some(beacon_root) = block_overrides.and_then(|overrides| overrides.beacon_root)
+        {
+            attributes.parent_beacon_block_root = Some(beacon_root);
         }
+
+        attributes
     }
 }
 
@@ -497,15 +572,40 @@ mod tests {
     use reth_primitives_traits::SealedHeader;
 
     #[test]
-    fn pending_env_keeps_parent_beacon_root() {
+    fn pending_env_defaults_parent_beacon_root() {
         let mut header = Header::default();
         let beacon_root = B256::repeat_byte(0x42);
         header.parent_beacon_block_root = Some(beacon_root);
         let sealed = SealedHeader::new(header, B256::ZERO);
 
-        let attrs = NextBlockEnvAttributes::build_pending_env(&sealed);
+        let attrs = NextBlockEnvAttributes::build_pending_env(&sealed, None);
+
+        assert_eq!(attrs.parent_beacon_block_root, Some(B256::ZERO));
+    }
+
+    #[test]
+    fn pending_env_applies_parent_beacon_root_override() {
+        let header = Header { parent_beacon_block_root: Some(B256::ZERO), ..Default::default() };
+        let sealed = SealedHeader::new(header, B256::ZERO);
+        let beacon_root = B256::repeat_byte(0x42);
+        let block_overrides =
+            BlockOverrides { beacon_root: Some(beacon_root), ..Default::default() };
+
+        let attrs = NextBlockEnvAttributes::build_pending_env(&sealed, Some(&block_overrides));
 
         assert_eq!(attrs.parent_beacon_block_root, Some(beacon_root));
+    }
+
+    #[test]
+    fn pending_env_ignores_parent_beacon_root_override_before_fork() {
+        let sealed = SealedHeader::new(Header::default(), B256::ZERO);
+        let beacon_root = B256::repeat_byte(0x42);
+        let block_overrides =
+            BlockOverrides { beacon_root: Some(beacon_root), ..Default::default() };
+
+        let attrs = NextBlockEnvAttributes::build_pending_env(&sealed, Some(&block_overrides));
+
+        assert_eq!(attrs.parent_beacon_block_root, None);
     }
 
     #[test]
@@ -513,7 +613,7 @@ mod tests {
         let header = Header { slot_number: Some(7), ..Default::default() };
         let sealed = SealedHeader::new(header, B256::ZERO);
 
-        let attrs = NextBlockEnvAttributes::build_pending_env(&sealed);
+        let attrs = NextBlockEnvAttributes::build_pending_env(&sealed, None);
 
         assert_eq!(attrs.slot_number, Some(8));
     }

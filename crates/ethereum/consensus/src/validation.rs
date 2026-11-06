@@ -13,6 +13,7 @@ use reth_primitives_traits::{
 ///
 /// - Compares the receipts root in the block header to the block body
 /// - Compares the gas used in the block header to the actual gas usage after execution
+/// - Compares the computed Block Access List Hash to the value in the header if Amsterdam is active
 ///
 /// If `receipt_root_bloom` is provided, the pre-computed receipt root and logs bloom are used
 /// instead of computing them from the receipts.
@@ -21,6 +22,31 @@ pub fn validate_block_post_execution<B, R, ChainSpec>(
     chain_spec: &ChainSpec,
     result: &BlockExecutionResult<R>,
     receipt_root_bloom: Option<(B256, Bloom)>,
+    block_access_list_hash: Option<B256>,
+) -> Result<(), ConsensusError>
+where
+    B: Block,
+    R: Receipt,
+    ChainSpec: EthereumHardforks,
+{
+    validate_block_post_execution_with_bal_hashes(
+        block,
+        chain_spec,
+        result,
+        receipt_root_bloom,
+        block_access_list_hash,
+        false,
+    )
+}
+
+/// Validate a block with regard to execution results, optionally allowing pre-Amsterdam BAL hashes.
+pub(crate) fn validate_block_post_execution_with_bal_hashes<B, R, ChainSpec>(
+    block: &RecoveredBlock<B>,
+    chain_spec: &ChainSpec,
+    result: &BlockExecutionResult<R>,
+    receipt_root_bloom: Option<(B256, Bloom)>,
+    block_access_list_hash: Option<B256>,
+    allow_bal_hashes: bool,
 ) -> Result<(), ConsensusError>
 where
     B: Block,
@@ -79,12 +105,33 @@ where
         }
     }
 
+    // Validate that the header block access list hash matches the calculated block access list hash
+    let is_allowed_pre_amsterdam_bal_hash = allow_bal_hashes &&
+        !chain_spec.is_amsterdam_active_at_timestamp(block.header().timestamp()) &&
+        block.header().block_access_list_hash().is_some();
+
+    let is_amsterdam = chain_spec.is_amsterdam_active_at_timestamp(block.header().timestamp());
+    if is_amsterdam && block_access_list_hash.is_none() {
+        return Err(ConsensusError::BlockAccessListHashMissing)
+    }
+
+    if (is_amsterdam || is_allowed_pre_amsterdam_bal_hash) &&
+        let Some(block_access_list_hash) = block_access_list_hash
+    {
+        let block_bal_hash = block.header().block_access_list_hash().unwrap_or_default();
+        if block_access_list_hash != block_bal_hash {
+            return Err(ConsensusError::BlockAccessListHashMismatch(
+                GotExpected::new(block_access_list_hash, block_bal_hash).into(),
+            ))
+        }
+    }
+
     Ok(())
 }
 
 /// Calculate the receipts root, and compare it against the expected receipts root and logs
 /// bloom.
-fn verify_receipts<R: Receipt>(
+pub fn verify_receipts<R: Receipt>(
     expected_receipts_root: B256,
     expected_logs_bloom: Bloom,
     receipts: &[R],
@@ -106,7 +153,7 @@ fn verify_receipts<R: Receipt>(
 
 /// Compare the calculated receipts root with the expected receipts root, also compare
 /// the calculated logs bloom with the expected logs bloom.
-fn compare_receipts_root_and_logs_bloom(
+pub fn compare_receipts_root_and_logs_bloom(
     calculated_receipts_root: B256,
     calculated_logs_bloom: Bloom,
     expected_receipts_root: B256,
@@ -129,8 +176,9 @@ fn compare_receipts_root_and_logs_bloom(
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
-    use alloy_primitives::{b256, hex};
+    use alloy_primitives::b256;
     use reth_ethereum_primitives::Receipt;
 
     #[test]
@@ -141,7 +189,7 @@ mod tests {
         // Compare against expected values
         assert!(verify_receipts(
             b256!("0x61353b4fb714dc1fccacbf7eafc4273e62f3d1eed716fe41b2a0cd2e12c63ebc"),
-            Bloom::from(hex!("00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000")),
+            Bloom::ZERO,
             &receipts
         )
         .is_ok());
