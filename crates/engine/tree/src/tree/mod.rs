@@ -3115,6 +3115,18 @@ where
         block: SealedBlockWithAccessList<N::Block>,
     ) -> Result<Option<TreeEvent>, InsertBlockFatalError> {
         let block_num_hash = block.num_hash();
+        // Downloads can finish after forkchoice has finalized a different branch. Such blocks
+        // cannot change the local chain and must not be re-executed after leaving the tree cache.
+        // Use locally established finality, not a sync target we may not have downloaded yet.
+        if let Some(finalized) = self.canonical_in_memory_state.get_finalized_num_hash() &&
+            finalized.number <= self.state.tree_state.canonical_block_number() &&
+            block_num_hash.number <= finalized.number
+        {
+            self.metrics.engine.downloaded_blocks_ignored_finalized_total.increment(1);
+            debug!(target: "engine::tree", block = ?block_num_hash, ?finalized, "Ignoring downloaded block at or below local finalized height");
+            return Ok(None)
+        }
+
         let lowest_buffered_ancestor = self.lowest_buffered_ancestor_or(block_num_hash.hash);
         if self.check_invalid_ancestor_with_head(lowest_buffered_ancestor, &block)?.is_some() {
             return Ok(None)
