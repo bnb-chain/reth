@@ -1,6 +1,7 @@
 //! Canonical chain state notification trait and types.
 
 use alloy_eips::{eip2718::Encodable2718, BlockNumHash};
+use alloy_primitives::B256;
 use derive_more::{Deref, DerefMut};
 use reth_execution_types::{BlockReceipts, Chain};
 use reth_primitives_traits::{NodePrimitives, RecoveredBlock, SealedHeader};
@@ -182,6 +183,10 @@ pub struct ForkChoiceNotifications<T = alloy_consensus::Header>(
     pub watch::Receiver<Option<SealedHeader<T>>>,
 );
 
+/// Buffered finalized header hashes. Receivers must handle lag instead of silently
+/// dropping intermediate finality updates.
+pub type FinalizedHeaderNotifications = broadcast::Receiver<B256>;
+
 /// A trait that allows to register to fork choice related events
 /// and get notified when a new fork choice is available.
 pub trait ForkChoiceSubscriptions: Send + Sync {
@@ -193,6 +198,12 @@ pub trait ForkChoiceSubscriptions: Send + Sync {
 
     /// Get notified when a new finalized block of the chain is selected.
     fn subscribe_finalized_block(&self) -> ForkChoiceNotifications<Self::Header>;
+
+    /// Subscribe to future finalized header hashes, retaining intermediate updates.
+    ///
+    /// Unlike the watch-based subscription, this does not coalesce events. Consumers
+    /// must handle lag explicitly: the bounded buffer can overflow for slow receivers.
+    fn subscribe_finalized_header_hashes(&self) -> FinalizedHeaderNotifications;
 
     /// Convenience method to get a stream of the new safe blocks of the chain.
     fn safe_block_stream(&self) -> ForkChoiceStream<SealedHeader<Self::Header>> {

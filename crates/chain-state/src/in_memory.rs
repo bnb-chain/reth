@@ -526,6 +526,11 @@ impl<N: NodePrimitives> CanonicalInMemoryState<N> {
         self.inner.chain_info_tracker.subscribe_finalized_block()
     }
 
+    /// Subscribe to buffered finalized header hashes.
+    pub fn subscribe_finalized_header_hashes(&self) -> broadcast::Receiver<B256> {
+        self.inner.chain_info_tracker.subscribe_finalized_header_hashes()
+    }
+
     /// Subscribe to new persisted block events.
     pub fn subscribe_persisted_block(&self) -> watch::Receiver<Option<BlockNumHash>> {
         self.inner.chain_info_tracker.subscribe_persisted_block()

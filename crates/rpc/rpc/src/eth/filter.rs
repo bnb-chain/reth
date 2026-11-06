@@ -2,7 +2,7 @@
 
 use alloy_consensus::BlockHeader;
 use alloy_eips::BlockNumberOrTag;
-use alloy_primitives::{Sealable, TxHash};
+use alloy_primitives::{Sealable, TxHash, B256};
 use alloy_rpc_types_eth::{
     BlockNumHash, Filter, FilterBlockOption, FilterChanges, FilterId, Log,
     PendingTransactionFilterKind,
@@ -15,6 +15,7 @@ use futures::{
 };
 use itertools::Itertools;
 use jsonrpsee::{core::RpcResult, server::IdProvider};
+use reth_chain_state::ForkChoiceSubscriptions;
 use reth_errors::ProviderError;
 use reth_primitives_traits::{NodePrimitives, SealedHeader};
 use reth_rpc_eth_api::{
@@ -43,7 +44,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::{
-    sync::{mpsc::Receiver, Mutex},
+    sync::{broadcast, mpsc::Receiver, Mutex},
     time::MissedTickBehavior,
 };
 use tracing::{debug, error, trace};
@@ -222,6 +223,35 @@ where
         &self,
         id: FilterId,
     ) -> Result<FilterChanges<RpcTransaction<Eth::NetworkTypes>>, EthFilterError> {
+        // Finality can advance without a new head. Drain its events before the block
+        // cursor check, and refresh the timeout even when there are no new events.
+        {
+            let mut filters = self.inner.active_filters.inner.lock().await;
+            let filter =
+                filters.get_mut(&id).ok_or_else(|| EthFilterError::FilterNotFound(id.clone()))?;
+            if let FilterKind::FinalizedHeader(receiver) = &filter.kind {
+                let mut receiver = receiver.lock().await;
+                let mut hashes = Vec::new();
+                let valid = loop {
+                    match receiver.try_recv() {
+                        Ok(hash) => hashes.push(hash),
+                        Err(broadcast::error::TryRecvError::Empty) => break true,
+                        // Never report a partial history as a successful poll.
+                        Err(
+                            broadcast::error::TryRecvError::Lagged(_) |
+                            broadcast::error::TryRecvError::Closed,
+                        ) => break false,
+                    }
+                };
+                drop(receiver);
+                if !valid {
+                    filters.remove(&id);
+                    return Err(EthFilterError::FilterNotFound(id))
+                }
+                filter.last_poll_timestamp = Instant::now();
+                return Ok(FilterChanges::Hashes(hashes))
+            }
+        }
         let info = self.provider().chain_info()?;
         let best_number = info.best_number;
 
@@ -247,6 +277,7 @@ where
         };
 
         match kind {
+            FilterKind::FinalizedHeader(_) => unreachable!("finalized filters are drained above"),
             FilterKind::PendingTransaction(filter) => Ok(filter.drain().await),
             FilterKind::Block => {
                 // Note: we need to fetch the block hashes from inclusive range
@@ -332,7 +363,11 @@ where
 #[async_trait]
 impl<Eth> EthFilterApiServer<RpcTransaction<Eth::NetworkTypes>> for EthFilter<Eth>
 where
-    Eth: FullEthApiTypes + RpcNodeCoreExt + LoadReceipt + EthBlocks + 'static,
+    Eth: FullEthApiTypes
+        + RpcNodeCoreExt<Provider: ForkChoiceSubscriptions>
+        + LoadReceipt
+        + EthBlocks
+        + 'static,
 {
     /// Handler for `eth_newFilter`
     async fn new_filter(&self, filter: LogFilter) -> RpcResult<FilterId> {
@@ -348,6 +383,11 @@ where
     async fn new_block_filter(&self) -> RpcResult<FilterId> {
         trace!(target: "rpc::eth", "Serving eth_newBlockFilter");
         self.inner.install_filter(FilterKind::<RpcTransaction<Eth::NetworkTypes>>::Block).await
+    }
+
+    async fn new_finalized_header_filter(&self) -> RpcResult<FilterId> {
+        let receiver = self.provider().subscribe_finalized_header_hashes();
+        self.inner.install_filter(FilterKind::FinalizedHeader(Arc::new(Mutex::new(receiver)))).await
     }
 
     /// Handler for `eth_newPendingTransactionFilter`
@@ -604,7 +644,12 @@ where
         &self,
         kind: FilterKind<RpcTransaction<Eth::NetworkTypes>>,
     ) -> RpcResult<FilterId> {
-        let last_poll_block_number = self.provider().best_block_number().to_rpc_result()?;
+        // Event filters do not use a canonical block cursor.
+        let last_poll_block_number = if matches!(&kind, FilterKind::FinalizedHeader(_)) {
+            0
+        } else {
+            self.provider().best_block_number().to_rpc_result()?
+        };
         let subscription_id = self.id_provider.next_id();
 
         let id = match subscription_id {
@@ -934,6 +979,7 @@ impl<T: 'static> PendingTransactionKind<T> {
 enum FilterKind<T> {
     Log(Box<LogFilter>),
     Block,
+    FinalizedHeader(Arc<Mutex<broadcast::Receiver<B256>>>),
     PendingTransaction(PendingTransactionKind<T>),
 }
 
@@ -1438,6 +1484,122 @@ mod tests {
     use reth_testing_utils::generators;
     use reth_transaction_pool::test_utils::{testing_pool, TestPool};
     use std::{collections::VecDeque, sync::Arc};
+
+    #[tokio::test]
+    async fn finalized_header_filter_rpc_lifecycle() {
+        let provider = MockEthProvider::default();
+        let mut rng = generators::rng();
+        let initial = generators::random_header(&mut rng, 10, None);
+        provider.chain_info_tracker.set_finalized(initial.clone());
+        let filter = EthFilter::new(
+            build_test_eth_api(provider.clone()),
+            Default::default(),
+            Runtime::test(),
+        );
+        let module = filter.clone().into_rpc();
+        let id: FilterId =
+            module.call("eth_newFinalizedHeaderFilter", jsonrpsee::rpc_params![]).await.unwrap();
+        let empty: Vec<B256> =
+            module.call("eth_getFilterChanges", jsonrpsee::rpc_params![id.clone()]).await.unwrap();
+        assert!(empty.is_empty(), "creation does not replay the current finalized head");
+        let other = filter.new_finalized_header_filter().await.unwrap();
+        let first = generators::random_header(&mut rng, 11, None);
+        let second = generators::random_header(&mut rng, 15, None);
+        provider.chain_info_tracker.set_finalized(first.clone());
+        provider.chain_info_tracker.set_finalized(first.clone());
+        provider.chain_info_tracker.set_finalized(second.clone());
+        // Finality advanced without updating the provider's latest block. Both
+        // events must survive, including when no task was scheduled between them.
+        let hashes: Vec<B256> =
+            module.call("eth_getFilterChanges", jsonrpsee::rpc_params![id.clone()]).await.unwrap();
+        assert_eq!(hashes, vec![first.hash(), second.hash()]);
+        assert_eq!(
+            filter.filter_changes(other.clone()).await.unwrap(),
+            FilterChanges::Hashes(hashes)
+        );
+        assert_eq!(filter.filter_changes(id.clone()).await.unwrap(), FilterChanges::Hashes(vec![]));
+        assert!(
+            filter.filter_logs(id.clone()).await.is_err(),
+            "a finalized filter is not a log filter"
+        );
+        let removed: bool =
+            module.call("eth_uninstallFilter", jsonrpsee::rpc_params![id.clone()]).await.unwrap();
+        assert!(removed);
+        assert!(!filter.uninstall_filter(id.clone()).await.unwrap());
+        assert!(matches!(filter.filter_changes(id).await, Err(EthFilterError::FilterNotFound(_))));
+        assert_eq!(filter.filter_changes(other).await.unwrap(), FilterChanges::Hashes(vec![]));
+        // Existing filter routes still share the same manager and lifecycle.
+        provider.add_header(second.hash(), second.unseal());
+        let block = filter.new_block_filter().await.unwrap();
+        let log = filter.new_filter(Filter::default().into()).await.unwrap();
+        assert!(filter.uninstall_filter(block).await.unwrap());
+        assert!(filter.uninstall_filter(log).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn finalized_header_filter_empty_polls_refresh_expiration() {
+        let ttl = Duration::from_secs(300);
+        let filter = EthFilter::new(
+            build_test_eth_api(MockEthProvider::default()),
+            EthFilterConfig { stale_filter_ttl: ttl, ..Default::default() },
+            Runtime::test(),
+        );
+        let active = filter.new_finalized_header_filter().await.unwrap();
+        let stale = filter.new_finalized_header_filter().await.unwrap();
+        let old = Instant::now() - ttl;
+        {
+            let mut filters = filter.active_filters().inner.lock().await;
+            filters.get_mut(&active).unwrap().last_poll_timestamp = old;
+            filters.get_mut(&stale).unwrap().last_poll_timestamp = old;
+        }
+        assert_eq!(
+            filter.filter_changes(active.clone()).await.unwrap(),
+            FilterChanges::Hashes(vec![])
+        );
+        filter.clear_stale_filters(Instant::now()).await;
+        assert!(filter.filter_changes(active).await.is_ok());
+        assert!(matches!(
+            filter.filter_changes(stale.clone()).await,
+            Err(EthFilterError::FilterNotFound(_))
+        ));
+        assert!(!filter.uninstall_filter(stale).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn finalized_header_filter_invalidates_lagged_or_closed_receivers() {
+        let filter = EthFilter::new(
+            build_test_eth_api(MockEthProvider::default()),
+            Default::default(),
+            Runtime::test(),
+        );
+        let (sender, receiver) = broadcast::channel(2);
+        let id = filter
+            .inner
+            .install_filter(FilterKind::FinalizedHeader(Arc::new(Mutex::new(receiver))))
+            .await
+            .unwrap();
+        for value in 1..=3 {
+            sender.send(B256::repeat_byte(value)).unwrap();
+        }
+        assert!(matches!(
+            filter.filter_changes(id.clone()).await,
+            Err(EthFilterError::FilterNotFound(_))
+        ));
+        assert!(!filter.uninstall_filter(id).await.unwrap());
+        let receiver = sender.subscribe();
+        let id = filter
+            .inner
+            .install_filter(FilterKind::FinalizedHeader(Arc::new(Mutex::new(receiver))))
+            .await
+            .unwrap();
+        sender.send(B256::repeat_byte(4)).unwrap();
+        drop(sender);
+        assert!(matches!(
+            filter.filter_changes(id.clone()).await,
+            Err(EthFilterError::FilterNotFound(_))
+        ));
+        assert!(!filter.uninstall_filter(id).await.unwrap());
+    }
 
     #[test]
     fn test_block_range_iter() {

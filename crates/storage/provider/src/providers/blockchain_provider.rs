@@ -714,6 +714,10 @@ impl<N: ProviderNodeTypes> ForkChoiceSubscriptions for BlockchainProvider<N> {
         let receiver = self.canonical_in_memory_state.subscribe_finalized_block();
         ForkChoiceNotifications(receiver)
     }
+
+    fn subscribe_finalized_header_hashes(&self) -> reth_chain_state::FinalizedHeaderNotifications {
+        self.canonical_in_memory_state.subscribe_finalized_header_hashes()
+    }
 }
 
 impl<N: ProviderNodeTypes> PersistedBlockSubscriptions for BlockchainProvider<N> {
