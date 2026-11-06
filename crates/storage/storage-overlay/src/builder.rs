@@ -636,7 +636,8 @@ impl<N: NodePrimitives> OverlayBuilder<N> {
             + StorageChangeSetReader
             + DBProvider
             + BlockNumReader
-            + PruneCheckpointReader,
+            + PruneCheckpointReader
+            + StageCheckpointReader,
     {
         let anchor_for_parent =
             self.anchor_at_parent_with_frontiers(provider, state_trie_tip_block, finish_tip_block)?;
@@ -644,7 +645,14 @@ impl<N: NodePrimitives> OverlayBuilder<N> {
             AnchorForParent::RevertsRequired { anchor, .. } => {
                 (anchor.hash, Some(anchor.number + 1))
             }
-            AnchorForParent::NoReverts { anchor } => (anchor.hash, None),
+            AnchorForParent::NoReverts { anchor } => {
+                // Pipeline execution can commit state beyond Finish before the other stages
+                // catch up. Even an anchor at Finish then needs historical lookups.
+                let state_ahead_of_finish = provider
+                    .get_stage_checkpoint(StageId::Execution)?
+                    .is_some_and(|checkpoint| checkpoint.block_number > finish_tip_block.number);
+                (anchor.hash, state_ahead_of_finish.then(|| anchor.number + 1))
+            }
         };
         Ok((self.resolve_execution_overlay(anchor_hash)?, fallback_block_number))
     }

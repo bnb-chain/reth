@@ -1779,6 +1779,17 @@ impl<TX: DbTx + 'static, N: NodeTypes> DatabaseProvider<TX, N> {
             .as_ref()
             .map(OwnedRocksReadSnapshot::as_snapshot)
     }
+
+    /// Bounds history by the state committed in this MDBX snapshot. Pipeline execution can
+    /// advance state and its changesets beyond Finish before history indexing completes.
+    fn history_visible_tip(&self) -> ProviderResult<BlockNumber> {
+        let finish = self.best_block_number()?;
+        let execution = self
+            .get_stage_checkpoint(StageId::Execution)?
+            .map(|checkpoint| checkpoint.block_number)
+            .unwrap_or_default();
+        Ok(finish.max(execution))
+    }
 }
 
 impl<TX: DbTx + 'static, N: NodeTypes> HistoryReader for DatabaseProvider<TX, N> {
@@ -1788,7 +1799,7 @@ impl<TX: DbTx + 'static, N: NodeTypes> HistoryReader for DatabaseProvider<TX, N>
         block_number: BlockNumber,
         lowest_available_block_number: Option<BlockNumber>,
     ) -> ProviderResult<HistoryInfo> {
-        let visible_tip = self.best_block_number()?;
+        let visible_tip = self.history_visible_tip()?;
         let mut reader = EitherReader::new_accounts_history(self, self.history_rocksdb_snapshot())?;
         reader
             .account_history_info(address, block_number, lowest_available_block_number, visible_tip)
@@ -1802,7 +1813,7 @@ impl<TX: DbTx + 'static, N: NodeTypes> HistoryReader for DatabaseProvider<TX, N>
         block_number: BlockNumber,
         lowest_available_block_number: Option<BlockNumber>,
     ) -> ProviderResult<HistoryInfo> {
-        let visible_tip = self.best_block_number()?;
+        let visible_tip = self.history_visible_tip()?;
         let mut reader = EitherReader::new_storages_history(self, self.history_rocksdb_snapshot())?;
         reader
             .storage_history_info(
