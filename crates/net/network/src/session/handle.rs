@@ -240,7 +240,13 @@ impl<N: NetworkPrimitives> SessionCommandSender<N> {
     /// item limit). Non-broadcast messages that cannot fit in the bounded channel are dropped.
     ///
     /// Returns `true` if the message was accepted, `false` if it was dropped.
+    #[cfg(test)]
     pub(crate) fn send_message(&self, msg: PeerMessage<N>) -> bool {
+        self.send_message_at(msg, Instant::now())
+    }
+
+    /// Retains the original manager admission time through the session queues.
+    pub(crate) fn send_message_at(&self, msg: PeerMessage<N>, admitted: Instant) -> bool {
         let kind = MessageKind::of_peer(&msg);
         let broadcast = msg.is_broadcast();
         let permit = if broadcast {
@@ -255,7 +261,7 @@ impl<N: NetworkPrimitives> SessionCommandSender<N> {
         };
         let queued = QueuedSessionCommand {
             command: SessionCommand::Message(msg),
-            metadata: MessageMetadata { admitted: Instant::now(), kind, permit },
+            metadata: MessageMetadata { admitted, kind, permit },
         };
         if kind.is_block() {
             return match self.block_tx.try_send(queued) {
@@ -447,6 +453,25 @@ mod tests {
     use reth_eth_wire::{
         BlockHashNumber, EthNetworkPrimitives, NewBlockHashes, NewPooledTransactionHashes66,
     };
+
+    #[test]
+    fn manager_admission_timestamp_survives_session_admission() {
+        let (tx, _rx) = mpsc::channel(1);
+        let (block_tx, mut block_rx) = mpsc::channel(1);
+        let (overflow_tx, _overflow_rx) = mpsc::unbounded_channel();
+        let sender = SessionCommandSender::<EthNetworkPrimitives>::new(
+            tx,
+            block_tx,
+            overflow_tx,
+            BroadcastItemCounter::new(),
+        );
+        let admitted = Instant::now() - std::time::Duration::from_secs(2);
+        assert!(sender.send_message_at(
+            PeerMessage::NewBlockHashes(NewBlockHashes(vec![BlockHashNumber::default()])),
+            admitted
+        ));
+        assert_eq!(block_rx.try_recv().unwrap().metadata.admitted, admitted);
+    }
 
     #[test]
     fn independent_broadcast_budgets_cover_channels_and_reject_oversized_batches() {

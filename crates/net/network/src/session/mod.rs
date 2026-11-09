@@ -58,9 +58,9 @@ use tokio_util::sync::PollSender;
 use tracing::{instrument, trace};
 
 use crate::session::active::{
-    request_timeout_interval, BroadcastItemCounter, MessageKind, MAX_QUEUED_BLOCKS,
-    MAX_QUEUED_BLOCK_HASHES, RANGE_UPDATE_INTERVAL,
+    request_timeout_interval, BroadcastItemCounter, MAX_QUEUED_BLOCKS, RANGE_UPDATE_INTERVAL,
 };
+pub(crate) use active::{MessageKind, MAX_QUEUED_BLOCK_HASHES};
 pub use conn::EthRlpxConnection;
 use handle::SessionCommandSender;
 pub use handle::{
@@ -433,8 +433,17 @@ impl<N: NetworkPrimitives> SessionManager<N> {
     /// command channels and the outgoing queue. Blocks have a dedicated command lane; transaction
     /// gossip can overflow the ordinary lane only while its quota remains available.
     pub fn send_message(&self, peer_id: &PeerId, msg: PeerMessage<N>) -> bool {
+        self.send_message_at(peer_id, msg, Instant::now())
+    }
+
+    pub(crate) fn send_message_at(
+        &self,
+        peer_id: &PeerId,
+        msg: PeerMessage<N>,
+        admitted: Instant,
+    ) -> bool {
         let accepted = if let Some(session) = self.active_sessions.get(peer_id) {
-            session.commands.send_message(msg)
+            session.commands.send_message_at(msg, admitted)
         } else {
             MessageKind::of_peer(&msg).dropped("no_session");
             false

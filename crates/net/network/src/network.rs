@@ -1,6 +1,11 @@
 use crate::{
-    config::NetworkMode, message::PeerMessage, protocol::RlpxSubProtocol,
-    swarm::NetworkConnectionState, transactions::TransactionsHandle, FetchClient,
+    config::NetworkMode,
+    message::PeerMessage,
+    protocol::RlpxSubProtocol,
+    session::{MessageKind, MAX_QUEUED_BLOCK_HASHES},
+    swarm::NetworkConnectionState,
+    transactions::TransactionsHandle,
+    FetchClient,
 };
 use alloy_primitives::B256;
 use enr::Enr;
@@ -26,11 +31,13 @@ use reth_network_types::{PeerAddr, PeerKind, Reputation, ReputationChangeKind};
 use reth_tokio_util::{EventSender, EventStream};
 use secp256k1::SecretKey;
 use std::{
+    fmt,
     net::SocketAddr,
     sync::{
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc,
     },
+    time::Instant,
 };
 use tokio::sync::{
     mpsc::{self, UnboundedSender},
@@ -56,6 +63,8 @@ impl<N: NetworkPrimitives> NetworkHandle<N> {
         num_active_peers: Arc<AtomicUsize>,
         listener_address: Arc<Mutex<SocketAddr>>,
         to_manager_tx: UnboundedSender<NetworkHandleMessage<N>>,
+        full_blocks_tx: mpsc::Sender<QueuedBlockAnnouncement<N>>,
+        block_hashes_tx: mpsc::Sender<QueuedBlockAnnouncement<N>>,
         secret_key: SecretKey,
         local_peer_id: PeerId,
         peers: PeersHandle,
@@ -70,6 +79,8 @@ impl<N: NetworkPrimitives> NetworkHandle<N> {
         let inner = NetworkInner {
             num_active_peers,
             to_manager_tx,
+            full_blocks_tx,
+            block_hashes_tx,
             listener_address,
             secret_key,
             local_peer_id,
@@ -160,9 +171,65 @@ impl<N: NetworkPrimitives> NetworkHandle<N> {
         self.send_message(NetworkHandleMessage::SendBroadcastPoolTransactions { peer_id, msg })
     }
 
-    /// Send eth message to the peer.
+    /// Send an ETH message to the peer. Full blocks and block hashes use bounded manager lanes;
+    /// other messages retain the ordinary handle channel. Use
+    /// [`Self::try_send_block_announcement`] to observe block admission failures.
     pub fn send_eth_message(&self, peer_id: PeerId, message: PeerMessage<N>) {
-        self.send_message(NetworkHandleMessage::EthMessage { peer_id, message })
+        if MessageKind::of_peer(&message).is_block() {
+            if let Err(error) = self.try_send_block_announcement(peer_id, message, None) {
+                tracing::trace!(target: "net", %peer_id, %error, "Block announcement manager admission rejected");
+            }
+        } else {
+            self.send_message(NetworkHandleMessage::EthMessage { peer_id, message });
+        }
+    }
+
+    /// Tries to admit a targeted full block or block-hash announcement to the manager.
+    ///
+    /// Each kind has an independent global 64-message queue. Hash batches must also fit the
+    /// per-session hash-item limit. Success means manager admission only: the readiness guard,
+    /// peer session or transport can still reject it later. No retry is scheduled.
+    ///
+    /// The optional guard runs at manager dequeue and must perform only bounded, nonblocking
+    /// in-memory checks. It does not guarantee serviceability after session admission or delivery.
+    /// This targeted path preserves forced announcements; it does not consult peer known state.
+    /// The separate [`Self::announce_block`] fanout API retains its existing handle/Swarm path.
+    pub fn try_send_block_announcement(
+        &self,
+        peer_id: PeerId,
+        message: PeerMessage<N>,
+        guard: Option<BlockAnnouncementGuard<N>>,
+    ) -> Result<(), BlockAnnouncementAdmissionError> {
+        let admitted = Instant::now();
+        let kind = MessageKind::of_peer(&message);
+        let sender = match &message {
+            PeerMessage::NewBlock(_) => &self.inner.full_blocks_tx,
+            PeerMessage::NewBlockHashes(hashes) if hashes.len() <= MAX_QUEUED_BLOCK_HASHES => {
+                &self.inner.block_hashes_tx
+            }
+            PeerMessage::NewBlockHashes(_) => {
+                block_ingress_dropped(kind, "oversized");
+                return Err(BlockAnnouncementAdmissionError::TooManyHashes)
+            }
+            _ => {
+                block_ingress_dropped(kind, "invalid_type");
+                return Err(BlockAnnouncementAdmissionError::NotBlockAnnouncement)
+            }
+        };
+        sender.try_send(QueuedBlockAnnouncement { peer_id, message, admitted, guard }).map_err(
+            |error| {
+                let (error, reason) = match error {
+                    mpsc::error::TrySendError::Full(_) => {
+                        (BlockAnnouncementAdmissionError::Full, "capacity")
+                    }
+                    mpsc::error::TrySendError::Closed(_) => {
+                        (BlockAnnouncementAdmissionError::Closed, "closed")
+                    }
+                };
+                block_ingress_dropped(kind, reason);
+                error
+            },
+        )
     }
 
     /// Send message to get the [`TransactionsHandle`].
@@ -532,6 +599,9 @@ struct NetworkInner<N: NetworkPrimitives = EthNetworkPrimitives> {
     num_active_peers: Arc<AtomicUsize>,
     /// Sender half of the message channel to the [`crate::NetworkManager`].
     to_manager_tx: UnboundedSender<NetworkHandleMessage<N>>,
+    /// Targeted block announcements bypass ordinary transaction/control handle backlog.
+    full_blocks_tx: mpsc::Sender<QueuedBlockAnnouncement<N>>,
+    block_hashes_tx: mpsc::Sender<QueuedBlockAnnouncement<N>>,
     /// The local address that accepts incoming connections.
     listener_address: Arc<Mutex<SocketAddr>>,
     /// The secret key used for authenticating sessions.
@@ -662,4 +732,52 @@ pub(crate) enum NetworkHandleMessage<N: NetworkPrimitives = EthNetworkPrimitives
     ConnectPeer(PeerId, PeerKind, PeerAddr),
     /// Message to update the node's advertised block range information.
     InternalBlockRangeUpdate(BlockRangeUpdate),
+}
+
+/// Cache-only readiness predicate, shared across a targeted announcement fanout.
+///
+/// Called synchronously by NetworkManager after its queue wait. Implementations must not perform
+/// provider/database I/O, wait for execution, or retain execution/trie state.
+pub type BlockAnnouncementGuard<N> = Arc<dyn Fn(&PeerMessage<N>) -> bool + Send + Sync>;
+
+/// Failure to admit a targeted block announcement to the local manager.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum BlockAnnouncementAdmissionError {
+    /// This kind's global manager queue has no free slot.
+    #[error("block announcement manager queue is full")]
+    Full,
+    /// The manager no longer receives announcements.
+    #[error("block announcement manager queue is closed")]
+    Closed,
+    /// Only full blocks and block hashes use this API.
+    #[error("message is not a block announcement")]
+    NotBlockAnnouncement,
+    /// The hash batch exceeds the existing session item limit.
+    #[error("block hash batch exceeds the session limit")]
+    TooManyHashes,
+}
+
+/// Global manager limits are separate from the existing per-peer session quotas.
+pub(crate) const BLOCK_ANNOUNCEMENT_INGRESS_CAPACITY: usize = 64;
+pub(crate) const BLOCK_ANNOUNCEMENT_POLL_BUDGET: usize = 16;
+
+pub(crate) struct QueuedBlockAnnouncement<N: NetworkPrimitives> {
+    pub(crate) peer_id: PeerId,
+    pub(crate) message: PeerMessage<N>,
+    pub(crate) admitted: Instant,
+    pub(crate) guard: Option<BlockAnnouncementGuard<N>>,
+}
+
+impl<N: NetworkPrimitives> fmt::Debug for QueuedBlockAnnouncement<N> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("QueuedBlockAnnouncement")
+            .field("peer_id", &self.peer_id)
+            .field("kind", &MessageKind::of_peer(&self.message))
+            .field("admitted", &self.admitted)
+            .finish_non_exhaustive()
+    }
+}
+
+pub(crate) fn block_ingress_dropped(kind: MessageKind, reason: &'static str) {
+    metrics::counter!("network.block_announcement_ingress_dropped_total", "kind" => kind.label(), "reason" => reason).increment(1);
 }

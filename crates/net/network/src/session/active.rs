@@ -99,7 +99,7 @@ const RECEIVE_MESSAGE_BUDGET: usize = 16;
 /// Transaction gossip and block announcements reserve independent end-to-end budgets.
 const MAX_QUEUED_BROADCAST_ITEMS: usize = 4096;
 pub(super) const MAX_QUEUED_BLOCKS: usize = 16;
-pub(super) const MAX_QUEUED_BLOCK_HASHES: usize = 16;
+pub(crate) const MAX_QUEUED_BLOCK_HASHES: usize = 16;
 /// Drain work is bounded even if another task continuously refills a command channel.
 const SESSION_COMMAND_BUDGET: usize = 24;
 /// After this many block messages, serve an ordinary queued message (including responses).
