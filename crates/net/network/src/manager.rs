@@ -414,7 +414,12 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
 
     /// Create a [`NetworkBuilder`] to configure all components of the network
     pub const fn into_builder(self) -> NetworkBuilder<(), (), N> {
-        NetworkBuilder { network: self, transactions: (), request_handler: () }
+        NetworkBuilder {
+            network: self,
+            transactions: (),
+            request_handler: (),
+            eth_block_source: None,
+        }
     }
 
     /// Returns the [`SocketAddr`] that listens for incoming tcp connections.

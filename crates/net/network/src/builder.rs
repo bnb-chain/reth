@@ -1,7 +1,7 @@
 //! Builder support for configuring the entire setup.
 
 use crate::{
-    eth_requests::EthRequestHandler,
+    eth_requests::{EthBlockSource, EthRequestHandler},
     metrics::NETWORK_POOL_TRANSACTIONS_SCOPE,
     transactions::{
         config::{
@@ -17,6 +17,7 @@ use reth_metrics::common::mpsc::memory_bounded_channel;
 use reth_network_api::test_utils::PeersHandleProvider;
 use reth_storage_api::BalProvider;
 use reth_transaction_pool::{BlobStore, TransactionPool};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 /// We set the max channel capacity of the `EthRequestHandler` to 256
@@ -29,6 +30,7 @@ pub struct NetworkBuilder<Tx, Eth, N: NetworkPrimitives = EthNetworkPrimitives> 
     pub(crate) network: NetworkManager<N>,
     pub(crate) transactions: Tx,
     pub(crate) request_handler: Eth,
+    pub(crate) eth_block_source: Option<Arc<dyn EthBlockSource<N>>>,
 }
 
 // === impl NetworkBuilder ===
@@ -39,13 +41,13 @@ impl<Tx, Eth, N: NetworkPrimitives> NetworkBuilder<Tx, Eth, N> {
     where
         F: FnOnce(Tx) -> NewTx,
     {
-        let Self { network, transactions, request_handler } = self;
-        NetworkBuilder { network, transactions: f(transactions), request_handler }
+        let Self { network, transactions, request_handler, eth_block_source } = self;
+        NetworkBuilder { network, transactions: f(transactions), request_handler, eth_block_source }
     }
 
     /// Consumes the type and returns all fields.
     pub fn split(self) -> (NetworkManager<N>, Tx, Eth) {
-        let Self { network, transactions, request_handler } = self;
+        let Self { network, transactions, request_handler, .. } = self;
         (network, transactions, request_handler)
     }
 
@@ -66,7 +68,7 @@ impl<Tx, Eth, N: NetworkPrimitives> NetworkBuilder<Tx, Eth, N> {
 
     /// Consumes the type and returns all fields and also return a [`NetworkHandle`].
     pub fn split_with_handle(self) -> (NetworkHandle<N>, NetworkManager<N>, Tx, Eth) {
-        let Self { network, transactions, request_handler } = self;
+        let Self { network, transactions, request_handler, .. } = self;
         let handle = network.handle().clone();
         (handle, network, transactions, request_handler)
     }
@@ -79,12 +81,15 @@ impl<Tx, Eth, N: NetworkPrimitives> NetworkBuilder<Tx, Eth, N> {
     where
         Client: BalProvider,
     {
-        let Self { mut network, transactions, .. } = self;
+        let Self { mut network, transactions, eth_block_source, .. } = self;
         let (tx, rx) = mpsc::channel(ETH_REQUEST_CHANNEL_CAPACITY);
         network.set_eth_request_handler(tx);
         let peers = network.handle().peers_handle().clone();
-        let request_handler = EthRequestHandler::new(client, peers, rx);
-        NetworkBuilder { network, request_handler, transactions }
+        let mut request_handler = EthRequestHandler::new(client, peers, rx);
+        if let Some(source) = &eth_block_source {
+            request_handler = request_handler.with_block_source(Arc::clone(source));
+        }
+        NetworkBuilder { network, request_handler, transactions, eth_block_source }
     }
 
     /// Creates a new [`EthRequestHandler`] with access to a blob store and wires it to the network.
@@ -96,10 +101,10 @@ impl<Tx, Eth, N: NetworkPrimitives> NetworkBuilder<Tx, Eth, N> {
     where
         Client: BalProvider,
     {
-        let NetworkBuilder { network, transactions, request_handler } =
+        let NetworkBuilder { network, transactions, request_handler, eth_block_source } =
             self.request_handler(client);
         let request_handler = request_handler.with_blob_store(blob_store);
-        NetworkBuilder { network, request_handler, transactions }
+        NetworkBuilder { network, request_handler, transactions, eth_block_source }
     }
 
     /// Creates a new [`TransactionsManager`] and wires it to the network.
@@ -147,7 +152,7 @@ impl<Tx, Eth, N: NetworkPrimitives> NetworkBuilder<Tx, Eth, N> {
         propagation_policy: P,
         announcement_policy: A,
     ) -> NetworkBuilder<TransactionsManager<Pool, N>, Eth, N> {
-        let Self { mut network, request_handler, .. } = self;
+        let Self { mut network, request_handler, eth_block_source, .. } = self;
         let (tx, rx) = memory_bounded_channel(
             transactions_manager_config.tx_channel_memory_limit_bytes,
             NETWORK_POOL_TRANSACTIONS_SCOPE,
@@ -163,6 +168,15 @@ impl<Tx, Eth, N: NetworkPrimitives> NetworkBuilder<Tx, Eth, N> {
             transactions_manager_config,
             policies,
         );
-        NetworkBuilder { network, request_handler, transactions }
+        NetworkBuilder { network, request_handler, transactions, eth_block_source }
+    }
+
+    /// Installs immutable exact-hash data for the ETH handler created by this builder.
+    ///
+    /// Call before `request_handler` or starting network tasks. Other builder transformations
+    /// preserve the source; canonical-number, state, receipt and RPC providers remain unchanged.
+    pub fn with_eth_block_source(mut self, source: Arc<dyn EthBlockSource<N>>) -> Self {
+        self.eth_block_source = Some(source);
+        self
     }
 }
