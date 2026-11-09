@@ -36,6 +36,7 @@ use reth_transaction_pool::{blobstore::NoopBlobStore, BlobStore};
 use std::{
     future::Future,
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll},
     time::Duration,
 };
@@ -116,6 +117,17 @@ pub struct EthRequestHandler<C, N: NetworkPrimitives = EthNetworkPrimitives> {
     incoming_requests: ReceiverStream<IncomingEthRequest<N>>,
     /// Metrics for the eth request handler.
     metrics: EthRequestHandlerMetrics,
+    /// Optional immutable blocks retained solely for exact-hash network requests.
+    block_source: Option<Arc<dyn EthBlockSource<N>>>,
+}
+
+/// Additional exact-hash block data for ETH header/body serving only.
+///
+/// Implementations admit only validated, publicly serviceable blocks. Returning `None` leaves
+/// lookup to the regular provider. This source never supplies canonical heights, state or receipts.
+pub trait EthBlockSource<N: NetworkPrimitives>: std::fmt::Debug + Send + Sync {
+    /// Returns an immutable retained block, or `None` if unavailable or expired.
+    fn block_by_hash(&self, hash: B256) -> Option<Arc<N::Block>>;
 }
 
 // === impl EthRequestHandler ===
@@ -128,6 +140,7 @@ impl<C, N: NetworkPrimitives> EthRequestHandler<C, N> {
             peers,
             incoming_requests: ReceiverStream::new(incoming),
             metrics: Default::default(),
+            block_source: None,
         }
     }
 
@@ -136,12 +149,18 @@ impl<C, N: NetworkPrimitives> EthRequestHandler<C, N> {
         self.blob_store = blob_store;
         self
     }
+
+    /// Installs a source checked before provider reads for exact-hash header/body requests.
+    pub fn with_block_source(mut self, source: Arc<dyn EthBlockSource<N>>) -> Self {
+        self.block_source = Some(source);
+        self
+    }
 }
 
 impl<C, N> EthRequestHandler<C, N>
 where
     N: NetworkPrimitives,
-    C: HeaderProvider + BlockHashReader,
+    C: HeaderProvider<Header = N::BlockHeader> + BlockHashReader,
 {
     /// Hash queries and contiguous number queries stop when ancestry checks detect a reorg.
     /// Number queries with skips select the requested canonical heights, as in Geth.
@@ -222,10 +241,16 @@ where
 
     /// Height-indexed providers must not substitute another branch for an exact hash request.
     fn exact_header(&self, hash: B256, expected_number: Option<u64>) -> Option<C::Header> {
-        self.client.header(hash).ok()?.filter(|header| {
-            header.hash_slow() == hash &&
-                expected_number.is_none_or(|number| header.number() == number)
-        })
+        self.block_source
+            .as_ref()
+            .and_then(|source| source.block_by_hash(hash))
+            .filter(|block| block.header().hash_slow() == hash)
+            .map(|block| block.header().clone())
+            .or_else(|| self.client.header(hash).unwrap_or_default())
+            .filter(|header| {
+                header.hash_slow() == hash &&
+                    expected_number.is_none_or(|number| header.number() == number)
+            })
     }
 
     /// Follows exact parents, using Geth's checked canonical shortcut for long skips.
@@ -261,7 +286,7 @@ where
 impl<C, N> EthRequestHandler<C, N>
 where
     N: NetworkPrimitives,
-    C: BlockReader,
+    C: BlockReader<Block = N::Block> + HeaderProvider<Header = N::BlockHeader>,
 {
     fn on_headers_request(
         &self,
@@ -287,8 +312,20 @@ where
         let mut total_bytes = 0;
 
         for hash in request {
-            if let Some(block) = self.client.block_by_hash(hash).unwrap_or_default() {
-                let body = block.into_body();
+            let body = self
+                .block_source
+                .as_ref()
+                .and_then(|source| source.block_by_hash(hash))
+                .filter(|block| block.header().hash_slow() == hash)
+                .map(|block| block.body().clone())
+                .or_else(|| {
+                    self.client
+                        .block_by_hash(hash)
+                        .unwrap_or_default()
+                        .filter(|block| block.header().hash_slow() == hash)
+                        .map(Block::into_body)
+                });
+            if let Some(body) = body {
                 let len = body.length();
                 if bodies.is_empty() {
                     bodies.reserve(response_reserve_hint(count, len, MAX_BLOCKS_RESERVE));
@@ -297,7 +334,7 @@ where
                 bodies.push(body);
 
                 if bodies.len() >= MAX_BODIES_SERVE || total_bytes > SOFT_RESPONSE_LIMIT {
-                    break
+                    break;
                 }
             } else {
                 break
@@ -464,7 +501,7 @@ where
                 receipts.push(transformed_receipts);
 
                 if receipts.len() >= MAX_RECEIPTS_SERVE || total_bytes > SOFT_RESPONSE_LIMIT {
-                    break
+                    break;
                 }
             } else {
                 break
@@ -930,16 +967,20 @@ pub enum IncomingEthRequest<N: NetworkPrimitives = EthNetworkPrimitives> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_consensus::{constants::EMPTY_ROOT_HASH, Header, TxType};
+    use alloy_consensus::{constants::EMPTY_ROOT_HASH, Header, TxLegacy, TxType};
     use alloy_eips::{
         eip4844::{BlobAndProofV1, BlobAndProofV2, BlobCellsAndProofsV1},
         eip7594::{BlobCellMask, BlobTransactionSidecarVariant, Cell},
     };
-    use alloy_primitives::{keccak256, map::B256Map, Address, Log, LogData, TxHash, B128, U256};
+    use alloy_primitives::{
+        keccak256, map::B256Map, Address, Log, LogData, Signature, TxHash, B128, U256,
+    };
     use reth_eth_wire::{message::RequestPair, EthMessage, EthStreamInner, EthVersion};
-    use reth_ethereum_primitives::Receipt;
+    use reth_ethereum_primitives::{
+        Block as EthBlock, BlockBody, Receipt, Transaction, TransactionSigned,
+    };
     use reth_network_api::test_utils::PeersHandle;
-    use reth_primitives_traits::{Account, SealedHeader};
+    use reth_primitives_traits::{proofs::calculate_transaction_root, Account, SealedHeader};
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_storage_api::noop::NoopProvider;
     use reth_transaction_pool::blobstore::{
@@ -1162,6 +1203,94 @@ mod tests {
         let (peers_tx, _) = mpsc::unbounded_channel();
         let (_incoming_tx, incoming_rx) = mpsc::channel(1);
         EthRequestHandler::new(provider, PeersHandle::new(peers_tx), incoming_rx)
+    }
+
+    #[derive(Debug, Default)]
+    struct RetainedSource(parking_lot::Mutex<B256Map<Arc<EthBlock>>>);
+
+    impl EthBlockSource<EthNetworkPrimitives> for RetainedSource {
+        fn block_by_hash(&self, hash: B256) -> Option<Arc<EthBlock>> {
+            self.0.lock().get(&hash).cloned()
+        }
+    }
+
+    fn fork_block(parent_hash: B256, nonce: u64) -> EthBlock {
+        let body = BlockBody {
+            transactions: vec![TransactionSigned::new_unhashed(
+                Transaction::Legacy(TxLegacy { nonce, ..Default::default() }),
+                Signature::new(U256::from(1), U256::from(2), false),
+            )],
+            ..Default::default()
+        };
+        EthBlock {
+            header: Header {
+                number: 1,
+                parent_hash,
+                transactions_root: calculate_transaction_root(&body.transactions),
+                ..Default::default()
+            },
+            body,
+        }
+    }
+
+    #[tokio::test]
+    async fn retained_hash_serves_exact_fork_body_after_provider_reorg() {
+        let parent = Header::default().hash_slow();
+        let old = fork_block(parent, 1);
+        let new = fork_block(parent, 2);
+        let old_hash = old.header.hash_slow();
+        let new_hash = new.header.hash_slow();
+        assert_ne!(old.body, new.body);
+        let source = Arc::new(RetainedSource::default());
+        source.0.lock().insert(old_hash, Arc::new(old.clone()));
+        // The provider no longer has the announced branch. Its number index serves the new one.
+        let provider = MockEthProvider::default();
+        provider.headers.lock().insert(new_hash, new.header.clone());
+        provider.blocks.lock().insert(new_hash, new.clone());
+        let handler = snap_handler(provider.clone()).with_block_source(source.clone());
+        for (origin, expected) in [
+            (BlockHashOrNumber::Hash(old_hash), old.header.clone()),
+            (BlockHashOrNumber::Number(1), new.header.clone()),
+        ] {
+            assert_eq!(
+                handler.get_headers_response(GetBlockHeaders {
+                    start_block: origin,
+                    limit: 1,
+                    skip: 0,
+                    direction: HeadersDirection::Rising,
+                }),
+                vec![expected]
+            );
+        }
+        for (hash, expected) in [(old_hash, old.body.clone()), (new_hash, new.body.clone())] {
+            let (tx, rx) = oneshot::channel();
+            handler.on_bodies_request(PeerId::default(), GetBlockBodies(vec![hash]), tx);
+            assert_eq!(rx.await.unwrap().unwrap().0, vec![expected]);
+        }
+
+        // A source's bad key must neither leak another branch nor hide a correct provider value.
+        source.0.lock().insert(new_hash, Arc::new(old.clone()));
+        source.0.lock().insert(old_hash, Arc::new(new.clone()));
+        assert_eq!(
+            handler.get_headers_response(GetBlockHeaders {
+                start_block: new_hash.into(),
+                limit: 1,
+                skip: 0,
+                direction: HeadersDirection::Rising,
+            }),
+            vec![new.header.clone()]
+        );
+        assert!(handler
+            .get_headers_response(GetBlockHeaders {
+                start_block: old_hash.into(),
+                limit: 1,
+                skip: 0,
+                direction: HeadersDirection::Rising,
+            })
+            .is_empty());
+        let (tx, rx) = oneshot::channel();
+        handler.on_bodies_request(PeerId::default(), GetBlockBodies(vec![new_hash, old_hash]), tx);
+        assert_eq!(rx.await.unwrap().unwrap().0, vec![new.body]);
     }
 
     #[test_case(
