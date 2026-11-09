@@ -169,7 +169,9 @@ pub use fetch::FetchClient;
 pub use flattened_response::FlattenedResponse;
 pub use manager::NetworkManager;
 pub use metrics::TxTypesCounter;
-pub use network::{NetworkHandle, NetworkProtocols};
+pub use network::{
+    BlockAnnouncementAdmissionError, BlockAnnouncementGuard, NetworkHandle, NetworkProtocols,
+};
 pub use swarm::NetworkConnectionState;
 
 /// re-export p2p interfaces
