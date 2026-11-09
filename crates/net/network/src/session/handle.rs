@@ -2,7 +2,11 @@
 
 use crate::{
     message::PeerMessage,
-    session::{active::BroadcastItemCounter, conn::EthRlpxConnection, Direction, SessionId},
+    session::{
+        active::{BroadcastItemCounter, MessageKind, MessageMetadata},
+        conn::EthRlpxConnection,
+        Direction, SessionId,
+    },
     PendingSessionHandshakeError,
 };
 use alloy_primitives::U256;
@@ -19,7 +23,6 @@ use tokio::sync::{
     mpsc::{self, error::SendError},
     oneshot,
 };
-use tracing::trace;
 
 /// A handler attached to a peer session that's not authenticated yet, pending Handshake and hello
 /// message which exchanges the `capabilities` of the peer.
@@ -184,21 +187,17 @@ impl<N: NetworkPrimitives> ActiveSessionHandle<N> {
 
 /// Sender half of the session command channel with broadcast-aware backpressure.
 ///
-/// Commands are first sent through a bounded channel. If the bounded channel is full and the
-/// message is a broadcast with room under the broadcast item limit, it overflows to a dedicated
-/// unbounded channel that the session task drains alongside the bounded one.
-///
-/// The shared `broadcast_items` counter tracks items across **all** buffers (bounded channel,
-/// overflow channel, and the session's outgoing queue), so the
-/// [`SessionManager`](super::SessionManager) has an accurate view of total in-flight broadcast
-/// pressure.
+/// Blocks use a dedicated bounded command lane and independent full-block/hash quotas.
+/// Transaction gossip first uses the ordinary bounded lane, then a quota-limited overflow lane.
+/// Permits cover command channels and the outgoing queue until transport handoff or cancellation.
 #[derive(Debug)]
 pub(crate) struct SessionCommandSender<N: NetworkPrimitives> {
     /// Bounded channel for all commands (primary path).
-    tx: mpsc::Sender<SessionCommand<N>>,
+    tx: mpsc::Sender<QueuedSessionCommand<N>>,
+    block_tx: mpsc::Sender<QueuedSessionCommand<N>>,
     /// Unbounded channel used for broadcasts that overflow the bounded channel, and for
     /// disconnect commands (which must never be dropped due to backpressure).
-    unbounded_tx: mpsc::UnboundedSender<SessionCommand<N>>,
+    unbounded_tx: mpsc::UnboundedSender<QueuedSessionCommand<N>>,
     /// Shared counter of in-flight broadcast items (channels + outgoing queue).
     broadcast_items: BroadcastItemCounter,
 }
@@ -206,17 +205,18 @@ pub(crate) struct SessionCommandSender<N: NetworkPrimitives> {
 impl<N: NetworkPrimitives> SessionCommandSender<N> {
     /// Creates a new sender with the given bounded channel, unbounded channel, and shared counter.
     pub(crate) const fn new(
-        tx: mpsc::Sender<SessionCommand<N>>,
-        unbounded_tx: mpsc::UnboundedSender<SessionCommand<N>>,
+        tx: mpsc::Sender<QueuedSessionCommand<N>>,
+        block_tx: mpsc::Sender<QueuedSessionCommand<N>>,
+        unbounded_tx: mpsc::UnboundedSender<QueuedSessionCommand<N>>,
         broadcast_items: BroadcastItemCounter,
     ) -> Self {
-        Self { tx, unbounded_tx, broadcast_items }
+        Self { tx, block_tx, unbounded_tx, broadcast_items }
     }
 
     /// Sends a disconnect command via the unbounded channel so it is never dropped due to
     /// backpressure.
     pub(crate) fn disconnect(&self, reason: Option<DisconnectReason>) {
-        let _ = self.unbounded_tx.send(SessionCommand::Disconnect { reason });
+        let _ = self.unbounded_tx.send(QueuedSessionCommand::disconnect(reason));
     }
 
     /// Sends a disconnect command via the unbounded channel.
@@ -227,7 +227,9 @@ impl<N: NetworkPrimitives> SessionCommandSender<N> {
         &self,
         reason: Option<DisconnectReason>,
     ) -> Result<(), SendError<SessionCommand<N>>> {
-        self.unbounded_tx.send(SessionCommand::Disconnect { reason }).map_err(|e| SendError(e.0))
+        self.unbounded_tx
+            .send(QueuedSessionCommand::disconnect(reason))
+            .map_err(|e| SendError(e.0.command))
     }
 
     /// Sends a message to the session with broadcast-aware backpressure.
@@ -239,41 +241,52 @@ impl<N: NetworkPrimitives> SessionCommandSender<N> {
     ///
     /// Returns `true` if the message was accepted, `false` if it was dropped.
     pub(crate) fn send_message(&self, msg: PeerMessage<N>) -> bool {
-        if msg.is_broadcast() {
-            let items = msg.message_item_count();
-
-            // Check + increment atomically (optimistic)
-            if !self.broadcast_items.try_add(items) {
+        let kind = MessageKind::of_peer(&msg);
+        let broadcast = msg.is_broadcast();
+        let permit = if broadcast {
+            let Some(permit) = self.broadcast_items.try_acquire(kind, msg.message_item_count())
+            else {
+                kind.dropped("capacity");
                 return false;
-            }
-
-            // Try bounded channel first
-            match self.tx.try_send(SessionCommand::Message(msg)) {
-                Ok(()) => true,
-                Err(mpsc::error::TrySendError::Full(cmd)) => {
-                    // Overflow to unbounded channel (counter already incremented)
-                    let _ = self.unbounded_tx.send(cmd);
-                    true
-                }
-                Err(_) => {
-                    // Channel closed, undo increment
-                    self.broadcast_items.sub(items);
-                    false
-                }
-            }
+            };
+            Some(permit)
         } else {
-            // Non-broadcast: bounded channel only
-            match self.tx.try_send(SessionCommand::Message(msg)) {
+            None
+        };
+        let queued = QueuedSessionCommand {
+            command: SessionCommand::Message(msg),
+            metadata: MessageMetadata { admitted: Instant::now(), kind, permit },
+        };
+        if kind.is_block() {
+            return match self.block_tx.try_send(queued) {
                 Ok(()) => true,
-                Err(mpsc::error::TrySendError::Full(SessionCommand::Message(msg))) => {
-                    trace!(
-                        target: "net::session",
-                        msg_kind = msg.message_kind(),
-                        "session command buffer full, dropping non-broadcast message"
-                    );
+                Err(error) => {
+                    kind.dropped(if matches!(error, mpsc::error::TrySendError::Full(_)) {
+                        "command_full"
+                    } else {
+                        "closed"
+                    });
                     false
                 }
-                Err(_) => false,
+            };
+        }
+        match self.tx.try_send(queued) {
+            Ok(()) => true,
+            Err(mpsc::error::TrySendError::Full(queued)) if broadcast => {
+                if self.unbounded_tx.send(queued).is_ok() {
+                    true
+                } else {
+                    kind.dropped("closed");
+                    false
+                }
+            }
+            Err(error) => {
+                kind.dropped(if matches!(error, mpsc::error::TrySendError::Full(_)) {
+                    "command_full"
+                } else {
+                    "closed"
+                });
+                false
             }
         }
     }
@@ -352,6 +365,26 @@ pub enum PendingSessionEvent<N: NetworkPrimitives> {
     },
 }
 
+/// Internal envelope; the public SessionCommand stays independent of queue accounting.
+#[derive(Debug)]
+pub(crate) struct QueuedSessionCommand<N: NetworkPrimitives> {
+    pub(crate) command: SessionCommand<N>,
+    pub(crate) metadata: MessageMetadata,
+}
+
+impl<N: NetworkPrimitives> QueuedSessionCommand<N> {
+    fn disconnect(reason: Option<DisconnectReason>) -> Self {
+        Self {
+            command: SessionCommand::Disconnect { reason },
+            metadata: MessageMetadata {
+                admitted: Instant::now(),
+                kind: MessageKind::Other,
+                permit: None,
+            },
+        }
+    }
+}
+
 /// Commands that can be sent to the spawned session.
 #[derive(Debug)]
 pub enum SessionCommand<N: NetworkPrimitives> {
@@ -401,4 +434,99 @@ pub enum ActiveSessionMessage<N: NetworkPrimitives> {
         /// Identifier of the remote peer.
         peer_id: PeerId,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        message::NewBlockMessage,
+        session::active::{MAX_QUEUED_BLOCKS, MAX_QUEUED_BLOCK_HASHES},
+    };
+    use alloy_primitives::B256;
+    use reth_eth_wire::{
+        BlockHashNumber, EthNetworkPrimitives, NewBlockHashes, NewPooledTransactionHashes66,
+    };
+
+    #[test]
+    fn independent_broadcast_budgets_cover_channels_and_reject_oversized_batches() {
+        let (tx, rx) = mpsc::channel(1);
+        let (block_tx, block_rx) = mpsc::channel(32);
+        let (overflow_tx, overflow_rx) = mpsc::unbounded_channel();
+        let counter = BroadcastItemCounter::new();
+        let sender = SessionCommandSender::<EthNetworkPrimitives>::new(
+            tx,
+            block_tx,
+            overflow_tx,
+            counter.clone(),
+        );
+        let tx_hashes = |count| {
+            PeerMessage::PooledTransactions(
+                NewPooledTransactionHashes66(vec![B256::ZERO; count]).into(),
+            )
+        };
+        assert!(!sender.send_message(tx_hashes(4097)));
+        assert!(sender.send_message(tx_hashes(4095)));
+        assert!(sender.send_message(tx_hashes(0)), "empty batch reserves one slot in overflow");
+        assert!(!sender.send_message(tx_hashes(0)));
+        for _ in 0..MAX_QUEUED_BLOCKS {
+            assert!(sender.send_message(PeerMessage::NewBlock(NewBlockMessage {
+                hash: B256::ZERO,
+                block: Arc::default()
+            })));
+        }
+        assert!(!sender.send_message(PeerMessage::NewBlock(NewBlockMessage {
+            hash: B256::ZERO,
+            block: Arc::default()
+        })));
+        let blocks = |count| {
+            PeerMessage::NewBlockHashes(NewBlockHashes(vec![BlockHashNumber::default(); count]))
+        };
+        assert!(!sender.send_message(blocks(MAX_QUEUED_BLOCK_HASHES + 1)));
+        for _ in 0..MAX_QUEUED_BLOCK_HASHES {
+            assert!(sender.send_message(blocks(0)));
+        }
+        assert!(!sender.send_message(blocks(0)));
+        assert_eq!(counter.get(), 4096 + 16 + 16);
+        drop((rx, block_rx, overflow_rx));
+        assert_eq!(counter.get(), 0, "teardown releases all three channels");
+        assert!(!sender.send_message(blocks(1)));
+        assert!(!sender.send_message(tx_hashes(1)));
+        assert_eq!(counter.get(), 0, "closed channels cannot leak a reservation");
+    }
+
+    #[test]
+    fn closed_overflow_rejects_and_failed_admission_can_retry() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let (block_tx, mut block_rx) = mpsc::channel(1);
+        let (overflow_tx, overflow_rx) = mpsc::unbounded_channel();
+        let counter = BroadcastItemCounter::new();
+        let sender = SessionCommandSender::<EthNetworkPrimitives>::new(
+            tx,
+            block_tx,
+            overflow_tx,
+            counter.clone(),
+        );
+        let tx_message = || {
+            PeerMessage::PooledTransactions(NewPooledTransactionHashes66(vec![B256::ZERO]).into())
+        };
+        assert!(sender.send_message(tx_message()));
+        drop(overflow_rx);
+        assert!(!sender.send_message(tx_message()), "closed overflow is not successful admission");
+        assert_eq!(counter.get(), 1);
+        drop(rx.try_recv().unwrap());
+        assert!(sender.send_message(tx_message()));
+        let block_message =
+            || PeerMessage::NewBlockHashes(NewBlockHashes(vec![BlockHashNumber::default()]));
+        assert!(sender.send_message(block_message()));
+        assert!(
+            !sender.send_message(block_message()),
+            "full block command channel releases its permit"
+        );
+        assert_eq!(counter.get(), 2);
+        drop(block_rx.try_recv().unwrap());
+        assert!(sender.send_message(block_message()), "same block is eligible again");
+        drop((rx, block_rx));
+        assert_eq!(counter.get(), 0);
+    }
 }

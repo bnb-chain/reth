@@ -253,12 +253,24 @@ impl<N: NetworkPrimitives> Swarm<N> {
                 self.sessions.disconnect(peer_id, reason);
             }
             StateAction::NewBlock { peer_id, block: msg } => {
-                let msg = PeerMessage::NewBlock(msg);
-                self.sessions.send_message(&peer_id, msg);
+                if !self.state.peer_knows_block(&peer_id, &msg.hash) {
+                    let hash = msg.hash;
+                    let number = msg.number();
+                    if self.sessions.send_message(&peer_id, PeerMessage::NewBlock(msg)) {
+                        self.state.on_block_admitted(&peer_id, hash, number);
+                    }
+                }
             }
-            StateAction::NewBlockHashes { peer_id, hashes } => {
-                let msg = PeerMessage::NewBlockHashes(hashes);
-                self.sessions.send_message(&peer_id, msg);
+            StateAction::NewBlockHashes { peer_id, mut hashes } => {
+                hashes.0.retain(|block| !self.state.peer_knows_block(&peer_id, &block.hash));
+                if !hashes.is_empty() &&
+                    self.sessions
+                        .send_message(&peer_id, PeerMessage::NewBlockHashes(hashes.clone()))
+                {
+                    for block in hashes.0 {
+                        self.state.on_block_admitted(&peer_id, block.hash, block.number);
+                    }
+                }
             }
             StateAction::PeerAdded(peer_id) => return Some(SwarmEvent::PeerAdded(peer_id)),
             StateAction::PeerRemoved(peer_id) => return Some(SwarmEvent::PeerRemoved(peer_id)),

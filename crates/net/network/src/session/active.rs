@@ -18,7 +18,7 @@ use crate::{
     message::{NewBlockMessage, PeerMessage, PeerResponse, PeerResponseResult},
     session::{
         conn::EthRlpxConnection,
-        handle::{ActiveSessionMessage, SessionCommand},
+        handle::{ActiveSessionMessage, QueuedSessionCommand, SessionCommand},
         BlockRangeInfo, EthVersion, SessionId,
     },
 };
@@ -33,7 +33,7 @@ use reth_eth_wire::{
     NewBlockPayload,
 };
 use reth_eth_wire_types::{
-    message::RequestPair, snap::SnapProtocolMessage, NewPooledTransactionHashes,
+    message::RequestPair, snap::SnapProtocolMessage, EthMessageID, NewPooledTransactionHashes,
     RawCapabilityMessage,
 };
 use reth_metrics::common::mpsc::MeteredPollSender;
@@ -96,46 +96,143 @@ const SHRINK_CAPACITY_THRESHOLD: usize = 64;
 /// command channels, advancing the sink, flushing the transport) amortize over a larger batch.
 const RECEIVE_MESSAGE_BUDGET: usize = 16;
 
-/// Soft limit for the total number of buffered outgoing broadcast items (e.g. transaction hashes).
-///
-/// Many small broadcast messages carrying a single tx hash each are equivalent in cost to one
-/// message carrying many hashes. This limit counts individual items (hashes, transactions, blocks)
-/// rather than messages, so that many small messages don't trigger aggressive drops unnecessarily.
+/// Transaction gossip and block announcements reserve independent end-to-end budgets.
 const MAX_QUEUED_BROADCAST_ITEMS: usize = 4096;
+pub(super) const MAX_QUEUED_BLOCKS: usize = 16;
+pub(super) const MAX_QUEUED_BLOCK_HASHES: usize = 16;
+/// Drain work is bounded even if another task continuously refills a command channel.
+const SESSION_COMMAND_BUDGET: usize = 24;
+/// After this many block messages, serve an ordinary queued message (including responses).
+const BLOCK_SEND_BURST: usize = 4;
 
-/// Shared counter for in-flight broadcast items (tx hashes, transactions, blocks) across the
-/// bounded command channel, unbounded overflow channel, and session outgoing queue.
-///
-/// Wrapped in a newtype so the backing storage can be changed later (e.g. to track memory) without
-/// touching every call-site.
-#[derive(Debug, Clone)]
-pub(crate) struct BroadcastItemCounter(Arc<AtomicUsize>);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MessageKind {
+    Block,
+    BlockHashes,
+    Transactions,
+    TransactionHashes,
+    Request,
+    Response,
+    Other,
+}
 
-impl BroadcastItemCounter {
-    /// Creates a new counter starting at zero.
-    pub(crate) fn new() -> Self {
-        Self(Arc::new(AtomicUsize::new(0)))
-    }
-
-    /// Returns the current count.
-    pub(crate) fn get(&self) -> usize {
-        self.0.load(Ordering::Relaxed)
-    }
-
-    /// Attempts to add `n` items. Returns `true` if under the limit, `false` if over (no change).
-    pub(crate) fn try_add(&self, n: usize) -> bool {
-        let prev = self.0.fetch_add(n, Ordering::Relaxed);
-        if prev >= MAX_QUEUED_BROADCAST_ITEMS {
-            self.0.fetch_sub(n, Ordering::Relaxed);
-            false
-        } else {
-            true
+impl MessageKind {
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Block => "new_block",
+            Self::BlockHashes => "new_block_hashes",
+            Self::Transactions => "transactions",
+            Self::TransactionHashes => "transaction_hashes",
+            Self::Request => "request",
+            Self::Response => "response",
+            Self::Other => "other",
         }
     }
 
-    /// Subtracts `n` items from the counter.
-    pub(crate) fn sub(&self, n: usize) {
-        self.0.fetch_sub(n, Ordering::Relaxed);
+    pub(crate) const fn is_block(self) -> bool {
+        matches!(self, Self::Block | Self::BlockHashes)
+    }
+
+    pub(crate) const fn of_peer<N: NetworkPrimitives>(msg: &PeerMessage<N>) -> Self {
+        match msg {
+            PeerMessage::NewBlock(_) => Self::Block,
+            PeerMessage::NewBlockHashes(_) => Self::BlockHashes,
+            PeerMessage::SendTransactions(_) | PeerMessage::SendBroadcastPoolTransactions(_) => {
+                Self::Transactions
+            }
+            PeerMessage::PooledTransactions(_) => Self::TransactionHashes,
+            PeerMessage::EthRequest(_) => Self::Request,
+            _ => Self::Other,
+        }
+    }
+
+    pub(crate) fn dropped(self, reason: &'static str) {
+        metrics::counter!("network.outgoing_peer_messages_dropped_by_kind_total", "kind" => self.label(), "reason" => reason).increment(1);
+    }
+}
+
+#[derive(Debug, Default)]
+struct BroadcastCounts {
+    transactions: AtomicUsize,
+    blocks: AtomicUsize,
+    hashes: AtomicUsize,
+}
+
+/// Shared quotas across command channels and the outgoing queue. Permits release automatically
+/// on rejection, unsupported messages, session teardown, or handoff to the transport sink.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct BroadcastItemCounter(Arc<BroadcastCounts>);
+
+impl BroadcastItemCounter {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn get(&self) -> usize {
+        self.0.transactions.load(Ordering::Relaxed) +
+            self.0.blocks.load(Ordering::Relaxed) +
+            self.0.hashes.load(Ordering::Relaxed)
+    }
+
+    fn counter(&self, kind: MessageKind) -> (&AtomicUsize, usize) {
+        match kind {
+            MessageKind::Block => (&self.0.blocks, MAX_QUEUED_BLOCKS),
+            MessageKind::BlockHashes => (&self.0.hashes, MAX_QUEUED_BLOCK_HASHES),
+            _ => (&self.0.transactions, MAX_QUEUED_BROADCAST_ITEMS),
+        }
+    }
+
+    pub(crate) fn try_acquire(&self, kind: MessageKind, items: usize) -> Option<BroadcastPermit> {
+        // Empty batches still occupy a command slot and must not bypass the bounded quota.
+        let items = items.max(1);
+        let (counter, limit) = self.counter(kind);
+        counter
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                current.checked_add(items).filter(|next| *next <= limit)
+            })
+            .ok()?;
+        Some(BroadcastPermit { counter: self.clone(), kind, items })
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct BroadcastPermit {
+    counter: BroadcastItemCounter,
+    kind: MessageKind,
+    items: usize,
+}
+
+impl BroadcastPermit {
+    fn merge(&mut self, mut other: Self) {
+        debug_assert_eq!(self.kind, other.kind);
+        debug_assert!(Arc::ptr_eq(&self.counter.0, &other.counter.0));
+        self.items += other.items;
+        other.items = 0;
+    }
+}
+
+impl Drop for BroadcastPermit {
+    fn drop(&mut self) {
+        self.counter.counter(self.kind).0.fetch_sub(self.items, Ordering::Relaxed);
+    }
+}
+
+/// Preserves the first admission timestamp through command overflow and hash coalescing.
+#[derive(Debug)]
+pub(crate) struct MessageMetadata {
+    pub(crate) admitted: Instant,
+    pub(crate) kind: MessageKind,
+    pub(crate) permit: Option<BroadcastPermit>,
+}
+
+impl MessageMetadata {
+    fn merge(&mut self, other: Self) {
+        self.admitted = self.admitted.min(other.admitted);
+        match (&mut self.permit, other.permit) {
+            (Some(existing), Some(incoming)) => existing.merge(incoming),
+            (slot @ None, incoming) => *slot = incoming,
+            _ => {}
+        }
     }
 }
 
@@ -163,10 +260,12 @@ pub(crate) struct ActiveSession<N: NetworkPrimitives> {
     /// Internal identifier of this session
     pub(crate) session_id: SessionId,
     /// Incoming commands from the manager
-    pub(crate) commands_rx: ReceiverStream<SessionCommand<N>>,
+    pub(crate) commands_rx: ReceiverStream<QueuedSessionCommand<N>>,
+    /// Dedicated bounded block command lane, independent of transaction gossip.
+    pub(crate) block_commands_rx: ReceiverStream<QueuedSessionCommand<N>>,
     /// Unbounded channel for commands that couldn't fit in the bounded channel (broadcast
     /// overflow) and for disconnect commands that must never be dropped.
-    pub(crate) unbounded_rx: mpsc::UnboundedReceiver<SessionCommand<N>>,
+    pub(crate) unbounded_rx: mpsc::UnboundedReceiver<QueuedSessionCommand<N>>,
     /// Counter for broadcast messages received via the unbounded overflow channel.
     pub(crate) unbounded_broadcast_msgs: Counter,
     /// Sink to send messages to the [`SessionManager`](super::SessionManager).
@@ -240,14 +339,23 @@ impl<N: NetworkPrimitives> ActiveSession<N> {
     fn poll_send_queued(&mut self, cx: &mut Context<'_>) -> Result<bool, EthStreamError> {
         let mut progress = false;
         while self.conn.poll_ready_unpin(cx).is_ready() {
-            let Some(msg) = self.queued_outgoing.pop_front() else { break };
+            let Some(QueuedOutgoingMessage { message, metadata }) =
+                self.queued_outgoing.pop_front()
+            else {
+                break
+            };
             progress = true;
-            let res = match msg {
+            metrics::histogram!("network.outgoing_peer_queue_wait_seconds", "kind" => metadata.kind.label())
+                .record(metadata.admitted.elapsed().as_secs_f64());
+            let res = match message {
                 OutgoingMessage::Snap(msg) => self.conn.start_send_snap(msg),
                 OutgoingMessage::Eth(msg) => self.conn.start_send_unpin(msg),
                 OutgoingMessage::Broadcast(msg) => self.conn.start_send_broadcast(msg),
                 OutgoingMessage::Raw(msg) => self.conn.start_send_raw(msg),
             };
+            // Release only after start_send accepted or rejected the message, never while it
+            // remains in either command queue or the outgoing queue. This is not a TCP ACK.
+            drop(metadata);
             res?;
         }
         Ok(progress)
@@ -497,6 +605,15 @@ impl<N: NetworkPrimitives> ActiveSession<N> {
 
     /// Handle an internal peer request that will be sent to the remote.
     fn on_internal_peer_request(&mut self, request: PeerRequest<N>, deadline: Instant) {
+        self.on_internal_peer_request_at(request, deadline, Instant::now());
+    }
+
+    fn on_internal_peer_request_at(
+        &mut self,
+        request: PeerRequest<N>,
+        deadline: Instant,
+        admitted: Instant,
+    ) {
         let version = self.conn.version();
         if !Self::is_request_supported_for_version(&request, version) {
             debug!(
@@ -524,7 +641,10 @@ impl<N: NetworkPrimitives> ActiveSession<N> {
             RequestMessage::Snap(msg) => OutgoingMessage::Snap(msg),
         };
 
-        self.queued_outgoing.push_back(msg);
+        self.queued_outgoing.push_back_with_metadata(
+            msg,
+            MessageMetadata { admitted, kind: MessageKind::Request, permit: None },
+        );
         let req = InflightRequest {
             request: RequestState::Waiting(request),
             timestamp: Instant::now(),
@@ -539,40 +659,65 @@ impl<N: NetworkPrimitives> ActiveSession<N> {
     }
 
     /// Handle a message received from the internal network
-    fn on_internal_peer_message(&mut self, msg: PeerMessage<N>) {
+    fn on_internal_peer_message(&mut self, msg: PeerMessage<N>, metadata: MessageMetadata) {
         match msg {
             PeerMessage::NewBlockHashes(msg) => {
-                self.queued_outgoing.push_back(EthMessage::NewBlockHashes(msg).into());
+                self.queued_outgoing
+                    .push_back_with_metadata(EthMessage::NewBlockHashes(msg).into(), metadata);
             }
             PeerMessage::NewBlock(msg) => {
-                self.queued_outgoing.push_back(EthBroadcastMessage::NewBlock(msg.block).into());
+                self.queued_outgoing.push_back_with_metadata(
+                    EthBroadcastMessage::NewBlock(msg.block).into(),
+                    metadata,
+                );
             }
             PeerMessage::PooledTransactions(msg) => {
                 if msg.is_valid_for_version(self.conn.version()) {
-                    self.queued_outgoing.push_pooled_hashes(msg);
+                    self.queued_outgoing.push_pooled_hashes(msg, metadata);
                 } else {
-                    self.queued_outgoing.broadcast_items.sub(msg.len());
+                    metadata.kind.dropped("unsupported");
                     debug!(target: "net", ?msg,  version=?self.conn.version(), "Message is invalid for connection version, skipping");
                 }
             }
             PeerMessage::EthRequest(req) => {
                 let deadline = self.request_deadline();
-                self.on_internal_peer_request(req, deadline);
+                self.on_internal_peer_request_at(req, deadline, metadata.admitted);
             }
             PeerMessage::SendTransactions(msg) => {
-                self.queued_outgoing.push_back(EthBroadcastMessage::Transactions(msg).into());
+                self.queued_outgoing.push_back_with_metadata(
+                    EthBroadcastMessage::Transactions(msg).into(),
+                    metadata,
+                );
             }
             PeerMessage::SendBroadcastPoolTransactions(msg) => {
-                self.queued_outgoing
-                    .push_back(EthBroadcastMessage::BroadcastPoolTransactions(msg).into());
+                self.queued_outgoing.push_back_with_metadata(
+                    EthBroadcastMessage::BroadcastPoolTransactions(msg).into(),
+                    metadata,
+                );
             }
             PeerMessage::BlockRangeUpdated(_) => {}
             PeerMessage::ReceivedTransaction(_) => {
                 unreachable!("Not emitted by network")
             }
             PeerMessage::Other(other) => {
-                self.queued_outgoing.push_back(OutgoingMessage::Raw(other));
+                self.queued_outgoing.push_back_with_metadata(OutgoingMessage::Raw(other), metadata);
             }
+        }
+    }
+
+    fn on_queued_command(
+        &mut self,
+        queued: QueuedSessionCommand<N>,
+        cx: &mut Context<'_>,
+    ) -> Option<Poll<()>> {
+        match queued.command {
+            SessionCommand::Message(msg) => {
+                self.on_internal_peer_message(msg, queued.metadata);
+                None
+            }
+            SessionCommand::Disconnect { reason } => Some(
+                self.try_disconnect(reason.unwrap_or(DisconnectReason::DisconnectRequested), cx),
+            ),
         }
     }
 
@@ -786,56 +931,47 @@ impl<N: NetworkPrimitives> Future for ActiveSession<N> {
         // manual yield point should prevent situations where polling appears to be frozen. See also <https://tokio.rs/blog/2020-04-preemption>
         // And tokio's docs on cooperative scheduling <https://docs.rs/tokio/latest/tokio/task/#cooperative-scheduling>
         let mut budget = RECEIVE_MESSAGE_BUDGET;
+        let mut command_budgets = [SESSION_COMMAND_BUDGET; 3];
 
         // The main poll loop that drives the session
         'main: loop {
             let mut progress = false;
             let mut receive_pending = false;
 
-            // we prioritize incoming commands sent from the session manager
-            loop {
+            // A separate block ingress lane is visible even when ordinary command traffic is
+            // saturated. Bound work for this entire poll, not merely each outer-loop pass.
+            while command_budgets[0] > 0 {
+                let Poll::Ready(Some(cmd)) = this.block_commands_rx.poll_next_unpin(cx) else {
+                    break
+                };
+                command_budgets[0] -= 1;
+                progress = true;
+                if let Some(done) = this.on_queued_command(cmd, cx) {
+                    return done;
+                }
+            }
+            while command_budgets[1] > 0 {
                 match this.commands_rx.poll_next_unpin(cx) {
                     Poll::Pending => break,
-                    Poll::Ready(None) => {
-                        // this is only possible when the manager was dropped, in which case we also
-                        // terminate this session
-                        return Poll::Ready(())
-                    }
+                    Poll::Ready(None) => return Poll::Ready(()),
                     Poll::Ready(Some(cmd)) => {
+                        command_budgets[1] -= 1;
                         progress = true;
-                        match cmd {
-                            SessionCommand::Disconnect { reason } => {
-                                debug!(
-                                    target: "net::session",
-                                    ?reason,
-                                    remote_peer_id=?this.remote_peer_id,
-                                    "Received disconnect command for session"
-                                );
-                                let reason =
-                                    reason.unwrap_or(DisconnectReason::DisconnectRequested);
-
-                                return this.try_disconnect(reason, cx)
-                            }
-                            SessionCommand::Message(msg) => {
-                                this.on_internal_peer_message(msg);
-                            }
+                        if let Some(done) = this.on_queued_command(cmd, cx) {
+                            return done;
                         }
                     }
                 }
             }
-
-            // Drain the unbounded channel (broadcast overflow + disconnect commands)
-            while let Poll::Ready(Some(cmd)) = this.unbounded_rx.poll_recv(cx) {
+            while command_budgets[2] > 0 {
+                let Poll::Ready(Some(cmd)) = this.unbounded_rx.poll_recv(cx) else { break };
+                command_budgets[2] -= 1;
                 progress = true;
-                match cmd {
-                    SessionCommand::Message(msg) => {
-                        this.unbounded_broadcast_msgs.increment(1);
-                        this.on_internal_peer_message(msg);
-                    }
-                    SessionCommand::Disconnect { reason } => {
-                        let reason = reason.unwrap_or(DisconnectReason::DisconnectRequested);
-                        return this.try_disconnect(reason, cx);
-                    }
+                if matches!(cmd.command, SessionCommand::Message(_)) {
+                    this.unbounded_broadcast_msgs.increment(1);
+                }
+                if let Some(done) = this.on_queued_command(cmd, cx) {
+                    return done;
                 }
             }
 
@@ -972,6 +1108,13 @@ impl<N: NetworkPrimitives> Future for ActiveSession<N> {
                         }
                     }
                 }
+            }
+
+            // Each ingress lane gets its own finite share, including overflow/control. Wake
+            // before the idle-wire fast exit: buffered commands may not register another waker.
+            if command_budgets.contains(&0) {
+                cx.waker().wake_by_ref();
+                break 'main
             }
 
             // Avoid one extra empty outer-loop pass after the wire is pending, unless the receive
@@ -1129,6 +1272,31 @@ pub(crate) enum OutgoingMessage<N: NetworkPrimitives> {
 }
 
 impl<N: NetworkPrimitives> OutgoingMessage<N> {
+    fn kind(&self) -> MessageKind {
+        match self {
+            Self::Broadcast(EthBroadcastMessage::NewBlock(_)) => MessageKind::Block,
+            Self::Broadcast(_) => MessageKind::Transactions,
+            Self::Eth(message) if message.is_response() => MessageKind::Response,
+            Self::Eth(message) => match message.message_id() {
+                EthMessageID::NewBlock => MessageKind::Block,
+                EthMessageID::NewBlockHashes => MessageKind::BlockHashes,
+                EthMessageID::Transactions => MessageKind::Transactions,
+                EthMessageID::NewPooledTransactionHashes => MessageKind::TransactionHashes,
+                EthMessageID::GetBlockHeaders |
+                EthMessageID::GetBlockBodies |
+                EthMessageID::GetPooledTransactions |
+                EthMessageID::GetNodeData |
+                EthMessageID::GetReceipts |
+                EthMessageID::GetBlockAccessLists |
+                EthMessageID::GetCells => MessageKind::Request,
+                _ => MessageKind::Other,
+            },
+            Self::Snap(message) if message.is_response() => MessageKind::Response,
+            Self::Snap(_) => MessageKind::Request,
+            Self::Raw(_) => MessageKind::Other,
+        }
+    }
+
     /// Returns true if this is a response.
     const fn is_response(&self) -> bool {
         match self {
@@ -1137,29 +1305,6 @@ impl<N: NetworkPrimitives> OutgoingMessage<N> {
             // not. `SnapProtocolMessage::is_response` distinguishes the two.
             Self::Snap(msg) => msg.is_response(),
             Self::Broadcast(_) | Self::Raw(_) => false,
-        }
-    }
-
-    /// Returns the number of broadcast items in this message.
-    ///
-    /// For transaction hash announcements this is the number of hashes, for full transaction
-    /// broadcasts it is the number of transactions, and for blocks it is 1.
-    /// Request/response messages return 0.
-    fn broadcast_item_count(&self) -> usize {
-        match self {
-            Self::Eth(msg) => match msg {
-                EthMessage::NewBlockHashes(h) => h.len(),
-                EthMessage::NewPooledTransactionHashes66(h) => h.len(),
-                EthMessage::NewPooledTransactionHashes68(h) => h.hashes.len(),
-                EthMessage::NewPooledTransactionHashes72(h) => h.hashes.len(),
-                _ => 0,
-            },
-            Self::Broadcast(msg) => match msg {
-                EthBroadcastMessage::NewBlock(_) => 1,
-                EthBroadcastMessage::Transactions(txs) => txs.len(),
-                EthBroadcastMessage::BroadcastPoolTransactions(txs) => txs.len(),
-            },
-            Self::Raw(_) | Self::Snap(_) => 0,
         }
     }
 
@@ -1238,71 +1383,91 @@ fn calculate_new_timeout(current_timeout: Duration, estimated_rtt: Duration) -> 
     smoothened_timeout.clamp(MINIMUM_TIMEOUT, MAXIMUM_TIMEOUT)
 }
 
-/// A helper struct that wraps the queue of outgoing messages with broadcast-aware tracking.
-///
-/// Tracks both the total number of queued messages (via a metric gauge) and the total number of
-/// broadcast items (tx hashes, transactions, blocks) via a shared atomic counter. The atomic
-/// counter is shared with [`ActiveSessionHandle`](super::handle::ActiveSessionHandle) so the
-/// [`SessionManager`](super::SessionManager) can apply size-based backpressure.
+/// A message and its admission lifetime, retained until transport handoff or cancellation.
+#[derive(Debug)]
+pub(crate) struct QueuedOutgoingMessage<N: NetworkPrimitives> {
+    message: OutgoingMessage<N>,
+    metadata: MessageMetadata,
+}
+
+/// Block announcements have a separate priority lane. After a bounded block burst, the normal
+/// FIFO advances, including request/response and transaction traffic. Already serialized RLPx
+/// data cannot be preempted by this queue.
 pub(crate) struct QueuedOutgoingMessages<N: NetworkPrimitives> {
-    messages: VecDeque<OutgoingMessage<N>>,
-    /// Number of queued response messages, tracked separately so the session can apply
-    /// backpressure on incoming requests without scanning the whole queue.
+    messages: VecDeque<QueuedOutgoingMessage<N>>,
+    blocks: VecDeque<QueuedOutgoingMessage<N>>,
+    block_burst: usize,
     queued_responses: usize,
     count: Gauge,
-    /// Shared counter of buffered broadcast items for size-based backpressure.
-    broadcast_items: BroadcastItemCounter,
 }
 
 impl<N: NetworkPrimitives> QueuedOutgoingMessages<N> {
-    pub(crate) const fn new(metric: Gauge, broadcast_items: BroadcastItemCounter) -> Self {
-        Self { messages: VecDeque::new(), queued_responses: 0, count: metric, broadcast_items }
+    pub(crate) const fn new(metric: Gauge) -> Self {
+        Self {
+            messages: VecDeque::new(),
+            blocks: VecDeque::new(),
+            block_burst: 0,
+            queued_responses: 0,
+            count: metric,
+        }
     }
 
-    /// Returns the number of queued response messages.
     pub(crate) const fn response_count(&self) -> usize {
         self.queued_responses
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.messages.is_empty()
+        self.messages.is_empty() && self.blocks.is_empty()
     }
 
     pub(crate) fn push_back(&mut self, message: OutgoingMessage<N>) {
+        let kind = message.kind();
+        self.push_back_with_metadata(
+            message,
+            MessageMetadata { admitted: Instant::now(), kind, permit: None },
+        );
+    }
+
+    fn push_back_with_metadata(&mut self, message: OutgoingMessage<N>, metadata: MessageMetadata) {
         self.queued_responses += message.is_response() as usize;
-        self.messages.push_back(message);
+        let block = metadata.kind.is_block();
+        let queue = if block { &mut self.blocks } else { &mut self.messages };
+        queue.push_back(QueuedOutgoingMessage { message, metadata });
         self.count.increment(1);
     }
 
-    pub(crate) fn pop_front(&mut self) -> Option<OutgoingMessage<N>> {
-        self.messages.pop_front().inspect(|msg| {
+    pub(crate) fn pop_front(&mut self) -> Option<QueuedOutgoingMessage<N>> {
+        let next = if !self.blocks.is_empty() &&
+            (self.block_burst < BLOCK_SEND_BURST || self.messages.is_empty())
+        {
+            self.block_burst = (self.block_burst + 1).min(BLOCK_SEND_BURST);
+            self.blocks.pop_front()
+        } else {
+            self.block_burst = 0;
+            self.messages.pop_front()
+        };
+        next.inspect(|msg| {
             self.count.decrement(1);
-            self.queued_responses -= msg.is_response() as usize;
-            let items = msg.broadcast_item_count();
-            if items > 0 {
-                self.broadcast_items.sub(items);
-            }
+            self.queued_responses -= msg.message.is_response() as usize;
         })
     }
 
-    /// Pushes a pooled transaction hash announcement, merging into the last queued message if
-    /// it is the same variant (eth66, eth68, or eth72) and has a compatible cell mask.
-    pub(crate) fn push_pooled_hashes(&mut self, msg: NewPooledTransactionHashes) {
+    /// Coalesced hashes retain the oldest admission timestamp and every reserved item.
+    fn push_pooled_hashes(&mut self, msg: NewPooledTransactionHashes, metadata: MessageMetadata) {
         let msg = if let Some(last) = self.messages.back_mut() {
-            match last.try_merge_hashes(msg) {
-                None => return,
+            match last.message.try_merge_hashes(msg) {
+                None => {
+                    last.metadata.merge(metadata);
+                    return;
+                }
                 Some(msg) => msg,
             }
         } else {
             msg
         };
-        self.messages.push_back(EthMessage::from(msg).into());
-        self.count.increment(1);
+        self.push_back_with_metadata(EthMessage::from(msg).into(), metadata);
     }
 
-    /// Shrinks the queue's capacity back to its steady-state size once it is drained, if it grew
-    /// well beyond it. The threshold avoids a shrink/regrow reallocation cycle on every poll
-    /// under regular bursty traffic.
     pub(crate) fn shrink_to_fit(&mut self) {
         if self.messages.is_empty() && self.messages.capacity() > SHRINK_CAPACITY_THRESHOLD {
             self.messages.shrink_to(MAX_QUEUED_OUTGOING_RESPONSES);
@@ -1312,18 +1477,18 @@ impl<N: NetworkPrimitives> QueuedOutgoingMessages<N> {
 
 impl<N: NetworkPrimitives> Drop for QueuedOutgoingMessages<N> {
     fn drop(&mut self) {
-        // Ensure gauge is decremented for any remaining items to avoid metric leak on teardown.
-        let remaining = self.messages.len();
-        if remaining > 0 {
-            self.count.decrement(remaining as f64);
-        }
+        self.count.decrement((self.messages.len() + self.blocks.len()) as f64);
+        // Message metadata drops its permits after this; channels do likewise on teardown.
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::{handle::PendingSessionEvent, start_pending_incoming_session};
+    use crate::session::{
+        handle::{PendingSessionEvent, SessionCommandSender},
+        start_pending_incoming_session,
+    };
     use alloy_eips::eip2124::ForkFilter;
     use alloy_primitives::B256;
     use futures::task::noop_waker;
@@ -1341,7 +1506,7 @@ mod tests {
             AccountRangeMessage, BlockAccessListsMessage, GetAccountRangeMessage,
             GetBlockAccessListsMessage,
         },
-        BlockAccessLists, EthMessageID, NewPooledTransactionHashes72,
+        BlockAccessLists, NewPooledTransactionHashes72,
     };
     use reth_ethereum_forks::EthereumHardfork;
     use reth_network_p2p::error::RequestResult;
@@ -1362,7 +1527,7 @@ mod tests {
         _remote_capabilities: Arc<Capabilities>,
         active_session_tx: mpsc::Sender<ActiveSessionMessage<N>>,
         active_session_rx: ReceiverStream<ActiveSessionMessage<N>>,
-        to_sessions: Vec<mpsc::Sender<SessionCommand<N>>>,
+        to_sessions: Vec<mpsc::Sender<QueuedSessionCommand<N>>>,
         secret_key: SecretKey,
         local_peer_id: PeerId,
         hello: HelloMessageWithProtocols,
@@ -1445,6 +1610,8 @@ mod tests {
                 } => {
                     let (_to_session_tx, messages_rx) = mpsc::channel(10);
                     let (commands_to_session, commands_rx) = mpsc::channel(10);
+                    let (_block_tx, block_commands_rx) =
+                        mpsc::channel(MAX_QUEUED_BLOCKS + MAX_QUEUED_BLOCK_HASHES);
                     let (_unbounded_tx, unbounded_rx) = mpsc::unbounded_channel();
                     let poll_sender = PollSender::new(self.active_session_tx.clone());
 
@@ -1457,6 +1624,7 @@ mod tests {
                         remote_capabilities: Arc::clone(&capabilities),
                         session_id,
                         commands_rx: ReceiverStream::new(commands_rx),
+                        block_commands_rx: ReceiverStream::new(block_commands_rx),
                         unbounded_rx,
                         unbounded_broadcast_msgs: Counter::noop(),
                         to_session_manager: MeteredPollSender::new(
@@ -1467,10 +1635,7 @@ mod tests {
                         internal_request_rx: ReceiverStream::new(messages_rx).fuse(),
                         inflight_requests: Default::default(),
                         conn,
-                        queued_outgoing: QueuedOutgoingMessages::new(
-                            Gauge::noop(),
-                            BroadcastItemCounter::new(),
-                        ),
+                        queued_outgoing: QueuedOutgoingMessages::new(Gauge::noop()),
                         received_requests_from_remote: Default::default(),
                         internal_request_timeout_interval: request_timeout_interval(
                             INITIAL_REQUEST_TIMEOUT,
@@ -2023,7 +2188,7 @@ mod tests {
 
         // The reply goes out as a snap/2 message carrying the original request id, not an eth
         // message.
-        let msg = session.queued_outgoing.pop_front().expect("response queued for send");
+        let msg = session.queued_outgoing.pop_front().expect("response queued for send").message;
         assert!(matches!(
             msg,
             OutgoingMessage::Snap(SnapProtocolMessage::AccountRange(AccountRangeMessage {
@@ -2077,16 +2242,22 @@ mod tests {
     fn eth72_pooled_hashes_count_broadcast_items() {
         let hashes =
             vec![alloy_primitives::B256::repeat_byte(1), alloy_primitives::B256::repeat_byte(2)];
-        let msg: OutgoingMessage<EthNetworkPrimitives> =
-            EthMessage::NewPooledTransactionHashes72(NewPooledTransactionHashes72 {
+        let msg = PeerMessage::<EthNetworkPrimitives>::PooledTransactions(
+            NewPooledTransactionHashes72 {
                 types: vec![0; hashes.len()],
                 sizes: vec![1; hashes.len()],
                 hashes,
                 cell_mask: None,
-            })
-            .into();
-
-        assert_eq!(2, msg.broadcast_item_count());
+            }
+            .into(),
+        );
+        assert_eq!(2, msg.message_item_count());
+        let counter = BroadcastItemCounter::new();
+        let permit =
+            counter.try_acquire(MessageKind::of_peer(&msg), msg.message_item_count()).unwrap();
+        assert_eq!(counter.get(), 2);
+        drop(permit);
+        assert_eq!(counter.get(), 0);
     }
 
     #[test]
@@ -2203,5 +2374,147 @@ mod tests {
         assert!(calculate_new_timeout(timeout, rtt / 2) > timeout / 2);
         assert!(calculate_new_timeout(timeout, rtt * 2) > timeout);
         assert!(calculate_new_timeout(timeout, rtt * 2) < timeout * 2);
+    }
+
+    #[test]
+    fn coalesced_hashes_hold_permits_and_original_admission_time() {
+        let counter = BroadcastItemCounter::new();
+        let mut queue = QueuedOutgoingMessages::<EthNetworkPrimitives>::new(Gauge::noop());
+        let admitted = Instant::now() - Duration::from_secs(2);
+        for (items, at) in [(2, admitted), (3, Instant::now())] {
+            queue.push_pooled_hashes(
+                reth_eth_wire::NewPooledTransactionHashes66(vec![B256::ZERO; items]).into(),
+                MessageMetadata {
+                    admitted: at,
+                    kind: MessageKind::TransactionHashes,
+                    permit: counter.try_acquire(MessageKind::TransactionHashes, items),
+                },
+            );
+        }
+        assert_eq!(counter.get(), 5);
+        let outgoing = queue.pop_front().unwrap();
+        assert_eq!(outgoing.metadata.admitted, admitted);
+        assert_eq!(counter.get(), 5, "dequeue is not transport handoff");
+        assert!(queue.is_empty());
+        drop(outgoing);
+        assert_eq!(counter.get(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn actual_session_prioritizes_blocks_and_advances_requests_responses_and_transactions() {
+        let mut builder = SessionBuilder::default();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let local_addr = listener.local_addr().unwrap();
+        let (seen_tx, seen_rx) = oneshot::channel();
+        let client =
+            tokio::spawn(builder.with_client_stream(local_addr, async move |mut stream| {
+                let mut ids = Vec::new();
+                for _ in 0..16 {
+                    ids.push(stream.next().await.unwrap().unwrap().message_id());
+                }
+                seen_tx.send(ids).unwrap();
+            }));
+        let (incoming, _) = listener.accept().await.unwrap();
+        let mut session = builder.connect_incoming(incoming).await;
+        let (tx, rx) = mpsc::channel(16);
+        let (block_tx, block_rx) = mpsc::channel(32);
+        let (overflow_tx, overflow_rx) = mpsc::unbounded_channel();
+        let counter = BroadcastItemCounter::new();
+        let sender = SessionCommandSender::new(tx, block_tx, overflow_tx, counter.clone());
+        session.commands_rx = ReceiverStream::new(rx);
+        session.block_commands_rx = ReceiverStream::new(block_rx);
+        session.unbounded_rx = overflow_rx;
+        for _ in 0..2 {
+            assert!(sender.send_message(PeerMessage::SendTransactions(
+                reth_eth_wire::SharedTransactions(Vec::new())
+            )));
+        }
+        let (response, _response_rx) = oneshot::channel();
+        assert!(sender.send_message(PeerMessage::EthRequest(PeerRequest::GetBlockBodies {
+            request: GetBlockBodies(Vec::new()),
+            response
+        })));
+        for _ in 0..12 {
+            assert!(sender.send_message(PeerMessage::NewBlockHashes(Default::default())));
+        }
+        let (response_tx, response_rx) = oneshot::channel();
+        response_tx.send(Ok(BlockHeaders(Vec::new()))).unwrap();
+        session.received_requests_from_remote.push(ReceivedRequest {
+            request_id: 42,
+            rx: PeerResponse::BlockHeaders { response: response_rx },
+            received: Instant::now(),
+        });
+        assert!(Pin::new(&mut session).poll(&mut Context::from_waker(&noop_waker())).is_pending());
+        let ids = tokio::time::timeout(Duration::from_secs(5), seen_rx).await.unwrap().unwrap();
+        assert_eq!(&ids[..4], &[EthMessageID::NewBlockHashes; 4]);
+        assert_eq!(ids[4], EthMessageID::Transactions);
+        assert_eq!(ids[9], EthMessageID::Transactions);
+        assert_eq!(ids[14], EthMessageID::GetBlockBodies);
+        assert_eq!(ids[15], EthMessageID::BlockHeaders);
+        assert_eq!(counter.get(), 0, "all reservations end at transport handoff");
+        client.await.unwrap();
+    }
+
+    struct WakeCounter(AtomicUsize);
+    impl futures::task::ArcWake for WakeCounter {
+        fn wake_by_ref(arc_self: &Arc<Self>) {
+            arc_self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn saturated_bounded_ingress_cannot_starve_overflow_or_disconnect_and_self_wakes() {
+        let mut builder = SessionBuilder::default();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let local_addr = listener.local_addr().unwrap();
+        let client =
+            tokio::spawn(builder.with_client_stream(local_addr, async move |mut stream| {
+                while let Some(Ok(_)) = stream.next().await {}
+            }));
+        let (incoming, _) = listener.accept().await.unwrap();
+        let mut session = builder.connect_incoming(incoming).await;
+        let (tx, rx) = mpsc::channel(128);
+        let (block_tx, block_rx) = mpsc::channel(32);
+        let (overflow_tx, overflow_rx) = mpsc::unbounded_channel();
+        let counter = BroadcastItemCounter::new();
+        let sender =
+            SessionCommandSender::new(tx.clone(), block_tx, overflow_tx.clone(), counter.clone());
+        session.commands_rx = ReceiverStream::new(rx);
+        session.block_commands_rx = ReceiverStream::new(block_rx);
+        session.unbounded_rx = overflow_rx;
+        let wakes = Arc::new(WakeCounter(AtomicUsize::new(0)));
+        let waker = futures::task::waker(wakes.clone());
+        let mut cx = Context::from_waker(&waker);
+        for _ in 0..3 {
+            while tx.capacity() > 0 {
+                assert!(sender.send_message(PeerMessage::SendTransactions(
+                    reth_eth_wire::SharedTransactions(Vec::new())
+                )));
+            }
+            assert!(sender.send_message(PeerMessage::PooledTransactions(
+                reth_eth_wire::NewPooledTransactionHashes66(vec![B256::ZERO]).into()
+            )));
+            assert!(!session.unbounded_rx.is_empty());
+            wakes.0.store(0, Ordering::Relaxed);
+            assert!(Pin::new(&mut session).poll(&mut cx).is_pending());
+            assert!(
+                session.unbounded_rx.is_empty(),
+                "overflow advances while bounded commands stay ready"
+            );
+            assert!(tx.capacity() < 128, "ordinary commands remain buffered");
+            assert!(
+                wakes.0.load(Ordering::Relaxed) > 0,
+                "budget exhaustion wakes even with idle receive"
+            );
+        }
+        sender.disconnect(Some(DisconnectReason::UselessPeer));
+        let _ = Pin::new(&mut session).poll(&mut cx);
+        assert!(
+            session.is_disconnecting() || session.terminate_message.is_some(),
+            "control command is observed with bounded backlog"
+        );
+        drop(session);
+        assert_eq!(counter.get(), 0, "shutdown releases buffered command permits");
+        client.abort();
     }
 }

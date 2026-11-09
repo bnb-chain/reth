@@ -715,19 +715,23 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
                 self.swarm.state_mut().announce_new_block(msg);
             }
             NetworkHandleMessage::EthRequest { peer_id, request } => {
-                self.swarm.sessions_mut().send_message(&peer_id, PeerMessage::EthRequest(request))
+                self.swarm.sessions_mut().send_message(&peer_id, PeerMessage::EthRequest(request));
             }
             NetworkHandleMessage::SendTransaction { peer_id, msg } => {
-                self.swarm.sessions_mut().send_message(&peer_id, PeerMessage::SendTransactions(msg))
+                self.swarm
+                    .sessions_mut()
+                    .send_message(&peer_id, PeerMessage::SendTransactions(msg));
             }
-            NetworkHandleMessage::SendBroadcastPoolTransactions { peer_id, msg } => self
-                .swarm
-                .sessions_mut()
-                .send_message(&peer_id, PeerMessage::SendBroadcastPoolTransactions(msg)),
-            NetworkHandleMessage::SendPooledTransactionHashes { peer_id, msg } => self
-                .swarm
-                .sessions_mut()
-                .send_message(&peer_id, PeerMessage::PooledTransactions(msg)),
+            NetworkHandleMessage::SendBroadcastPoolTransactions { peer_id, msg } => {
+                self.swarm
+                    .sessions_mut()
+                    .send_message(&peer_id, PeerMessage::SendBroadcastPoolTransactions(msg));
+            }
+            NetworkHandleMessage::SendPooledTransactionHashes { peer_id, msg } => {
+                self.swarm
+                    .sessions_mut()
+                    .send_message(&peer_id, PeerMessage::PooledTransactions(msg));
+            }
             NetworkHandleMessage::AddTrustedPeerId(peer_id) => {
                 self.swarm.state_mut().add_trusted_peer_id(peer_id);
             }
@@ -815,7 +819,7 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
                 self.swarm.sessions_mut().update_advertised_block_range(block_range_update);
             }
             NetworkHandleMessage::EthMessage { peer_id, message } => {
-                self.swarm.sessions_mut().send_message(&peer_id, message)
+                self.swarm.sessions_mut().send_message(&peer_id, message);
             }
         }
     }
@@ -1225,7 +1229,7 @@ struct NetworkManagerPollDurations {
 mod tests {
     use super::*;
     use crate::{NetworkConfigBuilder, PeersConfig, SessionsConfig};
-    use alloy_primitives::{U128, U256};
+    use alloy_primitives::{B256, U128, U256};
     use futures::{future::poll_fn, task::noop_waker_ref};
     use metrics::{atomics::AtomicU64, Gauge};
     use reth_eth_wire::{EthVersion, HelloMessageWithProtocols, NewBlock};
@@ -1454,6 +1458,59 @@ mod tests {
             assert_eq!(
                 local.swarm.sessions().active_sessions()[&peer_id].status.total_difficulty,
                 Some(handshake_td),
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn swarm_rejected_block_admission_keeps_retry_eligible() {
+        let config = NetworkConfigBuilder::<EthNetworkPrimitives>::new(
+            SecretKey::new(&mut rand_08::thread_rng()),
+            Runtime::test(),
+        )
+        .disable_discovery()
+        .listener_addr("127.0.0.1:0".parse().unwrap())
+        .build(NoopProvider::default());
+        let mut network = NetworkManager::new(config).await.unwrap();
+        let peer = PeerId::random();
+        let (tx, _rx) = mpsc::channel(1);
+        network.swarm.state_mut().on_session_activated(crate::state::SessionActivation {
+            peer,
+            capabilities: Arc::new(reth_eth_wire::Capabilities::from(Vec::new())),
+            status: Arc::default(),
+            request_tx: reth_network_api::PeerRequestSender::new(peer, tx),
+            timeout: Arc::new(std::sync::atomic::AtomicU64::new(1)),
+            range_info: None,
+            supports_snap: false,
+        });
+        assert!(!network.swarm.sessions().active_sessions().contains_key(&peer));
+        let message = NewBlockMessage {
+            hash: B256::repeat_byte(42),
+            block: Arc::new(NewBlock { block: Block::default(), td: U128::ZERO }),
+        };
+        for hashes_only in [false, true] {
+            for _ in 0..2 {
+                if hashes_only {
+                    network.swarm.state_mut().announce_new_block_hash(message.clone());
+                } else {
+                    network.swarm.state_mut().announce_new_block(message.clone());
+                }
+                assert!(network
+                    .swarm
+                    .poll_next_unpin(&mut Context::from_waker(noop_waker_ref()))
+                    .is_pending());
+                assert!(
+                    !network.swarm.state().peer_knows_block(&peer, &message.hash),
+                    "Swarm must honor SessionManager rejection"
+                );
+            }
+            network.swarm.state_mut().announce_new_block_hash(message.clone());
+            assert!(
+                matches!(
+                    network.swarm.state_mut().poll(&mut Context::from_waker(noop_waker_ref())),
+                    Poll::Ready(crate::state::StateAction::NewBlockHashes { .. })
+                ),
+                "later announcement remains eligible"
             );
         }
     }
