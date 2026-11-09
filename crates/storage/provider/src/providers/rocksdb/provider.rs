@@ -1464,15 +1464,19 @@ impl RocksDBProvider {
 
             if write_account_history {
                 s.spawn(|_| {
-                    let _guard = span.enter();
-                    r_account_history = Some(self.write_account_history(blocks, &ctx));
+                    r_account_history = Some(runtime.history_pool().install(|| {
+                        let _guard = span.enter();
+                        self.write_account_history(blocks, &ctx)
+                    }));
                 });
             }
 
             if write_storage_history {
                 s.spawn(|_| {
-                    let _guard = span.enter();
-                    r_storage_history = Some(self.write_storage_history(blocks, &ctx));
+                    r_storage_history = Some(runtime.history_pool().install(|| {
+                        let _guard = span.enter();
+                        self.write_storage_history(blocks, &ctx)
+                    }));
                 });
             }
         });

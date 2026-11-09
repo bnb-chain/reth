@@ -4265,6 +4265,7 @@ mod tests {
     use reth_execution_types::{AccountRevertInit, BlockExecutionOutput, BlockExecutionResult};
     use reth_primitives_traits::SealedBlock;
     use reth_storage_api::{DatabaseProviderFactory, MetadataWriter};
+    use reth_tasks::{RayonConfig, RuntimeBuilder, RuntimeConfig, TokioConfig};
     use reth_testing_utils::generators::{self, random_block, BlockParams};
     use reth_trie::{
         HashedPostState, KeccakKeyHasher, Nibbles, SortedTrieData, StoredNibbles,
@@ -6131,7 +6132,22 @@ mod tests {
     fn run_save_blocks_and_verify(mode: StorageMode) {
         use alloy_primitives::map::{FbBuildHasher, HashMap};
 
-        let factory = create_test_provider_factory();
+        let mut factory = create_test_provider_factory();
+        if mode == StorageMode::V2 {
+            factory.runtime = RuntimeBuilder::new(
+                RuntimeConfig::default()
+                    .with_tokio(TokioConfig::with_worker_threads(1))
+                    .with_rayon(
+                        RayonConfig::default()
+                            .with_cpu_threads(2)
+                            .with_rpc_threads(2)
+                            .with_storage_threads(2),
+                    ),
+            )
+            .with_history_threads(std::num::NonZeroUsize::MIN)
+            .build()
+            .unwrap();
+        }
 
         match mode {
             StorageMode::V1 => factory.set_storage_settings_cache(StorageSettings::v1()),
