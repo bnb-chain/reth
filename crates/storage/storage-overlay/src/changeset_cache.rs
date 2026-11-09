@@ -204,6 +204,35 @@ impl ChangesetCache {
         self.inner.write().evict(up_to_block)
     }
 
+    /// Pins a complete ready range without starting cold work. No source gate is held here.
+    pub(crate) fn ready_range<P: BlockNumReader>(
+        &self,
+        provider: &P,
+        key: ChangesetRangeKey,
+    ) -> ProviderResult<Option<Arc<TrieUpdatesSorted>>> {
+        if let Some(ready) = self.inner.read().get(&key) {
+            return Ok(Some(ready))
+        }
+        let mut entries = Vec::new();
+        for number in (key.start_block..=key.end_block).rev() {
+            if entries.len() == crate::read_context::MAX_CAPTURE_BLOCKS {
+                return Err(ProviderError::other(crate::OverlayReadError::CaptureLimit))
+            }
+            let hash = if number == key.end_block {
+                key.end_block_hash
+            } else {
+                provider.block_hash(number)?.ok_or(ProviderError::HeaderNotFound(number.into()))?
+            };
+            let Some(ready) = self.inner.read().get(&ChangesetRangeKey::single(number, hash))
+            else {
+                return Ok(None)
+            };
+            entries.push(ready);
+        }
+        entries.reverse();
+        Ok(Some(Arc::new(TrieUpdatesSorted::merge_slice(&entries))))
+    }
+
     /// Gets changesets from cache, or computes them on-the-fly if missing.
     ///
     /// This is the primary API for retrieving changesets. It checks the cache first, then falls
@@ -326,6 +355,29 @@ impl ChangesetCache {
         })?;
         let range_key = ChangesetRangeKey::new(start_block, end_block, end_block_hash);
 
+        // Capture standalone callers before cold work; ready results remain valid without a bridge.
+        let captured;
+        let overlay_manager = if let Some(context) = &overlay_manager.read_context {
+            if (context.partial, context.finish) != (partial_state_trie, finish) {
+                return Err(ProviderError::other(crate::OverlayReadError::SnapshotMismatch))
+            }
+            if let Some((key, ready)) = &context.ready_reverts &&
+                *key == range_key
+            {
+                return Ok(Arc::clone(ready))
+            }
+            overlay_manager
+        } else {
+            captured = overlay_manager.capture(|| {
+                let mut bound = overlay_manager
+                    .overlay_builder(partial_state_trie.hash)
+                    .capture_at_frontiers(provider, partial_state_trie, finish)?;
+                bound.capture_forward_updates(start_block)?;
+                Ok(bound)
+            })?;
+            &captured.overlay_manager
+        };
+
         if let Some(accumulated_reverts) = self.inner.read().get(&range_key) {
             let elapsed = timer.elapsed();
 
@@ -406,6 +458,7 @@ impl ChangesetCache {
             "Changeset cache MISS in range, falling back to aggregate DB-based computation"
         );
 
+        overlay_manager.require_finish_bridge()?;
         let overlay = overlay_manager
             .overlay_builder(finish.hash)
             .with_no_reverts()
@@ -463,14 +516,18 @@ impl ChangesetCache {
 /// a different chain. For a single block, `start_block == end_block` and `end_block_hash` is that
 /// block's hash.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-struct ChangesetRangeKey {
+pub(crate) struct ChangesetRangeKey {
     start_block: BlockNumber,
     end_block: BlockNumber,
     end_block_hash: B256,
 }
 
 impl ChangesetRangeKey {
-    const fn new(start_block: BlockNumber, end_block: BlockNumber, end_block_hash: B256) -> Self {
+    pub(crate) const fn new(
+        start_block: BlockNumber,
+        end_block: BlockNumber,
+        end_block_hash: B256,
+    ) -> Self {
         Self { start_block, end_block, end_block_hash }
     }
 
