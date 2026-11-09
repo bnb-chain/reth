@@ -1,6 +1,7 @@
 use crate::{
+    changeset_cache::ChangesetRangeKey,
     manager::{OverlayCacheConfig, StateTrieOverlayError},
-    OverlayManager,
+    OverlayManager, OverlayReadError,
 };
 use alloy_eips::BlockNumHash;
 use alloy_primitives::{
@@ -193,14 +194,14 @@ impl ExecutionOverlay {
 #[derive(Debug, Clone)]
 pub struct OverlayBuilder<N: NodePrimitives = EthPrimitives> {
     /// Parent hash requested by the caller.
-    parent_hash: B256,
+    pub(crate) parent_hash: B256,
     /// Manager used for cached changesets and overlays.
-    overlay_manager: OverlayManager<N>,
+    pub(crate) overlay_manager: OverlayManager<N>,
     /// Snapshot of the in-memory chain ending at the requested parent.
     ///
     /// This is shared with the caller so that a chain that is already maintained elsewhere (for
     /// example the canonical in-memory chain) can be reused instead of rebuilt.
-    parent_state: Option<Arc<BlockState<N>>>,
+    pub(crate) parent_state: Option<Arc<BlockState<N>>>,
     /// Anchor hash of the reused sparse trie, if this task reused one.
     reused_sparse_trie_anchor_hash: Option<B256>,
     /// Whether building the overlay may query revert changesets.
@@ -267,7 +268,7 @@ impl<N: NodePrimitives> OverlayBuilder<N> {
     }
 
     /// Returns the durable anchor to use for this builder's parent using known frontiers.
-    fn anchor_at_parent_with_frontiers<Provider>(
+    pub(crate) fn anchor_at_parent_with_frontiers<Provider>(
         &self,
         provider: &Provider,
         partial_state_trie: BlockNumHash,
@@ -431,6 +432,24 @@ impl<N: NodePrimitives> OverlayBuilder<N> {
             + PruneCheckpointReader
             + StorageSettingsCache,
     {
+        if let Some(frontiers) = self.read_frontiers() {
+            if frontiers != (state_trie_tip_block, finish_tip_block) ||
+                database_state_frontiers(provider)? != frontiers
+            {
+                return Err(ProviderError::other(OverlayReadError::SnapshotMismatch))
+            }
+        } else {
+            let mut bound = self.overlay_manager.capture(|| {
+                self.capture_at_frontiers(provider, state_trie_tip_block, finish_tip_block)
+            })?;
+            bound.pin_ready_reverts(provider)?;
+            return bound.build_state_trie_overlay_at_frontiers(
+                provider,
+                state_trie_tip_block,
+                finish_tip_block,
+                trie_changesets,
+            )
+        }
         let retrieve_trie_reverts_duration;
         let retrieve_hashed_state_reverts_duration;
         let trie_updates_total_len;
@@ -469,28 +488,47 @@ impl<N: NodePrimitives> OverlayBuilder<N> {
                     retrieve_trie_reverts_duration = Duration::ZERO;
                     Arc::default()
                 } else {
-                    // Revert prefixes describe changes since the anchor, not stale hashes in
-                    // masked DB rows. Complete the trie at Finish before applying those prefixes.
+                    // Exact ready reverts restore the anchor directly. Without them, complete
+                    // the trie at Finish before invalidating changes since the anchor; prefixes
+                    // alone cannot remove stale hashes hidden in masked DB rows.
                     let start = Instant::now();
-                    let finish_state = self
+                    if let Some((_, ready)) = self
                         .overlay_manager
-                        .block_state(finish_tip_block.hash)
-                        .ok_or_else(|| {
-                            ProviderError::other(StateTrieOverlayError {
-                                tip_hash: finish_tip_block.hash,
-                                anchor_hash: state_trie_tip_block.hash,
-                            })
-                        })?;
-                    let (nodes, _) = self
-                        .overlay_manager
-                        .overlay_for_parent(
-                            &finish_state,
-                            state_trie_tip_block.hash,
-                            OverlayCacheConfig::default(),
-                        )
-                        .map_err(ProviderError::other)?;
-                    retrieve_trie_reverts_duration = start.elapsed();
-                    nodes
+                        .read_context
+                        .as_ref()
+                        .and_then(|context| context.ready_reverts.as_ref())
+                        .filter(|(key, _)| {
+                            *key == ChangesetRangeKey::new(
+                                *revert_blocks.start(),
+                                *revert_blocks.end(),
+                                finish_tip_block.hash,
+                            )
+                        })
+                    {
+                        retrieve_trie_reverts_duration = start.elapsed();
+                        Arc::clone(ready)
+                    } else {
+                        self.overlay_manager.require_finish_bridge()?;
+                        let finish_state = self
+                            .overlay_manager
+                            .block_state(finish_tip_block.hash)
+                            .ok_or_else(|| {
+                                ProviderError::other(StateTrieOverlayError {
+                                    tip_hash: finish_tip_block.hash,
+                                    anchor_hash: state_trie_tip_block.hash,
+                                })
+                            })?;
+                        let (nodes, _) = self
+                            .overlay_manager
+                            .overlay_for_parent(
+                                &finish_state,
+                                state_trie_tip_block.hash,
+                                OverlayCacheConfig::default(),
+                            )
+                            .map_err(ProviderError::other)?;
+                        retrieve_trie_reverts_duration = start.elapsed();
+                        nodes
+                    }
                 };
 
                 let mut hashed_state_reverts = {
@@ -817,7 +855,7 @@ fn anchor_for_parent_in<'a, N: NodePrimitives + 'a>(
 
 /// Describes whether an overlay must revert the database before using its anchor.
 #[derive(Debug)]
-enum AnchorForParent {
+pub(crate) enum AnchorForParent {
     /// The in-memory chain covers the durable frontiers through this anchor.
     NoReverts {
         /// Block to anchor the overlay to.
@@ -1401,9 +1439,13 @@ mod tests {
             .build_state_trie_overlay(&provider, true)
             .unwrap_err();
 
-        assert!(
-            error.to_string().contains("is after partial state trie frontier"),
-            "unexpected error: {error}"
+        assert_eq!(
+            error.downcast_other_ref::<OverlayReadError>(),
+            Some(&OverlayReadError::MissingBlock {
+                hash: blocks[3].recovered_block().hash(),
+                partial: blocks[1].recovered_block().num_hash(),
+                finish: blocks[3].recovered_block().num_hash(),
+            })
         );
     }
 

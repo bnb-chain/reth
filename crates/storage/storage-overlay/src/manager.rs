@@ -8,6 +8,7 @@ use crate::{
     changeset_cache::compute_block_trie_updates,
     database_state_frontiers,
     manager_metrics::{ExecutionOverlayMetrics, OverlayCacheMetrics, StateTrieOverlayMetrics},
+    read_context::{OverlayBlockSource, OverlayReadContext},
     ChangesetCache, ExecutionOverlay, OverlayBuilder,
 };
 use alloy_eips::BlockNumHash;
@@ -42,9 +43,11 @@ use tracing::{debug, trace};
 #[derive(Clone)]
 pub struct OverlayManager<N: NodePrimitives = EthPrimitives> {
     diagnostic_origin: &'static str,
-    blocks: Arc<DashMap<B256, ExecutedBlock<N>>>,
+    pub(crate) blocks: Arc<OverlayBlockSource<N>>,
     /// Read-only source for executed branches not managed by this instance.
-    block_source: Option<Arc<DashMap<B256, ExecutedBlock<N>>>>,
+    pub(crate) block_source: Option<Arc<OverlayBlockSource<N>>>,
+    /// Immutable block dependencies captured for one database snapshot.
+    pub(crate) read_context: Option<Arc<OverlayReadContext<N>>>,
     state_trie_overlays: OverlayCache<TrieInputSorted>,
     execution_overlays: OverlayCache<ExecutionOverlay>,
     changeset_cache: ChangesetCache,
@@ -61,6 +64,7 @@ impl<N: NodePrimitives> Default for OverlayManager<N> {
             diagnostic_origin: "engine",
             blocks: Default::default(),
             block_source: None,
+            read_context: None,
             state_trie_overlays: Default::default(),
             execution_overlays: Default::default(),
             changeset_cache: Default::default(),
@@ -98,6 +102,7 @@ impl<N: NodePrimitives> OverlayManager<N> {
             diagnostic_origin: origin,
             blocks: Default::default(),
             block_source: None,
+            read_context: None,
             state_trie_overlays: Default::default(),
             execution_overlays: Default::default(),
             changeset_cache: ChangesetCache::new_with_diagnostic_origin(origin),
@@ -353,10 +358,21 @@ impl<N: NodePrimitives> OverlayManager<N> {
         let mut block_count = 0usize;
         let mut removed_blocks = 0usize;
         let mut pruned_overlays = 0usize;
-        for hash in hashes {
-            block_count += 1;
-            removed_blocks += self.blocks.remove(&hash).is_some() as usize;
-        }
+        // Readers hold this gate only while opening a snapshot and capturing block references.
+        // Persistence must commit and release its database writer before removing live blocks.
+        let removed = {
+            let _guard = self.blocks.capture.write();
+            hashes
+                .into_iter()
+                .filter_map(|hash| {
+                    block_count += 1;
+                    self.blocks.remove(&hash)
+                })
+                .collect::<Vec<_>>()
+        };
+        removed_blocks += removed.len();
+        // Potentially large block destruction and cache pruning happen outside the capture gate.
+        drop(removed);
         span.record("block_count", block_count);
         span.record("removed_blocks", removed_blocks);
 
@@ -637,10 +653,13 @@ impl<N: NodePrimitives> OverlayManager<N> {
     ) -> impl Iterator<Item = ExecutedBlock<N>> + '_ {
         let mut hash = parent_hash;
         std::iter::from_fn(move || {
-            let block =
+            let block = if let Some(context) = &self.read_context {
+                context.blocks.get(&hash).cloned()
+            } else {
                 self.blocks.get(&hash).map(|block| block.value().clone()).or_else(|| {
                     self.block_source.as_ref()?.get(&hash).map(|block| block.value().clone())
-                })?;
+                })
+            }?;
             hash = block.recovered_block().parent_hash();
             Some(block)
         })

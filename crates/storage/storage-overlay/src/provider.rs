@@ -1,6 +1,6 @@
 use crate::{
     database_state_frontiers, multiproof_calculator::OverlayMultiProofCalculator, ExecutionOverlay,
-    OverlayBuilder, StateTrieOverlay,
+    OverlayBuilder, OverlayReadError, StateTrieOverlay,
 };
 use alloy_primitives::{map::B256Map, Address, BlockHash, BlockNumber, B256, U256};
 use metrics::{Counter, Histogram};
@@ -136,18 +136,18 @@ where
         let overall_start = Instant::now();
 
         // Get a read-only provider
-        let provider = {
+        let view = {
             let start = Instant::now();
-            let res = self.factory.database_provider_ro()?;
+            let res = self.overlay_builder.open_read_view(&self.factory)?;
             self.metrics.create_provider_duration.record(start.elapsed());
             res
         };
 
-        let is_v2 = provider.cached_storage_settings().is_v2();
+        let is_v2 = view.provider.cached_storage_settings().is_v2();
         self.metrics.database_provider_ro_duration.record(overall_start.elapsed());
         Ok(OverlayStateProvider::from_parts(
-            OwnedProvider(provider),
-            Some(self.overlay_builder.clone()),
+            OwnedProvider(view.provider),
+            Some(view.builder),
             Arc::clone(&self.state_trie_overlay_cache),
             self.metrics.clone(),
             self.proof_cursor_metrics.clone(),
@@ -172,6 +172,8 @@ where
     /// The `!Unpin` pointee preserves cached transaction borrows when the owning box moves.
     provider: Pin<Box<(Provider, PhantomPinned)>>,
     overlay_builder: Option<OverlayBuilder<N>>,
+    /// Compatibility constructors bind their existing snapshot before the first state read.
+    bound_overlay_builder: OnceCell<OverlayBuilder<N>>,
     state_trie_overlay_cache: StateTrieOverlayCache,
     metrics: OverlayStateProviderFactoryMetrics,
     proof_cursor_metrics: ProofCursorMetrics,
@@ -237,6 +239,10 @@ impl<Provider: DBProvider, N: NodePrimitives> OverlayStateProvider<OwnedProvider
 
 impl<'a, Provider: DBProvider, N: NodePrimitives> OverlayStateProvider<&'a Provider, N> {
     /// Creates an overlay state provider over a borrowed database provider.
+    ///
+    /// An unbound builder captures on the first fallible state read. Bind it with
+    /// [`OverlayBuilder::bind_read_view`] before pruning can remove its required blocks; this
+    /// constructor never reopens the borrowed snapshot.
     pub fn new_ref(provider: &'a Provider, overlay_builder: OverlayBuilder<N>) -> Self
     where
         Provider: StorageSettingsCache,
@@ -293,6 +299,7 @@ where
             multiproof_calculator: RefCell::new(None),
             provider: Box::pin((provider, PhantomPinned)),
             overlay_builder,
+            bound_overlay_builder: OnceCell::new(),
             state_trie_overlay_cache,
             metrics,
             proof_cursor_metrics,
@@ -318,12 +325,19 @@ where
             + BlockNumReader
             + StorageSettingsCache,
     {
+        // A supplied ready value must not hide pairing a bound builder with another snapshot.
+        if self.overlay_builder.as_ref().is_some_and(|builder| builder.read_frontiers().is_some()) {
+            self.bound_builder()?;
+        }
         let state_trie_overlay = self.state_trie_overlay_mut(trie_changesets);
         if let Some(overlay) = state_trie_overlay.get() {
             return Ok(overlay)
         }
 
-        let (state_trie_tip_block, finish_tip_block) = database_state_frontiers(self.provider())?;
+        let builder = self.bound_builder()?;
+        let (state_trie_tip_block, finish_tip_block) = builder
+            .read_frontiers()
+            .ok_or_else(|| ProviderError::other(OverlayReadError::SnapshotMismatch))?;
         let overlay = match self.state_trie_overlay_cache.entry((
             state_trie_tip_block.hash,
             finish_tip_block.hash,
@@ -332,16 +346,12 @@ where
             dashmap::Entry::Occupied(entry) => entry.get().clone(),
             dashmap::Entry::Vacant(entry) => {
                 self.metrics.state_trie_overlay_cache_misses.increment(1);
-                let overlay = self
-                    .overlay_builder
-                    .as_ref()
-                    .expect("state trie overlay must be initialized or lazily resolvable")
-                    .build_state_trie_overlay_at_frontiers(
-                        self.provider(),
-                        state_trie_tip_block,
-                        finish_tip_block,
-                        trie_changesets,
-                    )?;
+                let overlay = builder.build_state_trie_overlay_at_frontiers(
+                    self.provider(),
+                    state_trie_tip_block,
+                    finish_tip_block,
+                    trie_changesets,
+                )?;
                 if !overlay.skipped_for_reused_sparse_trie() {
                     entry.insert(overlay.clone());
                 }
@@ -409,16 +419,15 @@ where
             return Ok((&overlay.overlay, overlay.historical_fallback.as_ref()))
         }
 
-        let (state_trie_tip_block, finish_tip_block) = database_state_frontiers(self.provider())?;
-        let (overlay, fallback_block_number) = self
-            .overlay_builder
-            .as_ref()
-            .expect("execution overlay must be initialized or lazily resolvable")
-            .execution_overlay_at_frontiers(
-                self.provider(),
-                state_trie_tip_block,
-                finish_tip_block,
-            )?;
+        let builder = self.bound_builder()?;
+        let (state_trie_tip_block, finish_tip_block) = builder
+            .read_frontiers()
+            .ok_or_else(|| ProviderError::other(OverlayReadError::SnapshotMismatch))?;
+        let (overlay, fallback_block_number) = builder.execution_overlay_at_frontiers(
+            self.provider(),
+            state_trie_tip_block,
+            finish_tip_block,
+        )?;
         let historical_fallback = fallback_block_number
             .map(|block_number| {
                 let account_history_block_number = self
@@ -450,6 +459,25 @@ where
         let _ = self.execution_overlay.set(overlay);
         let overlay = self.execution_overlay.get().expect("execution overlay was just initialized");
         Ok((&overlay.overlay, overlay.historical_fallback.as_ref()))
+    }
+
+    fn bound_builder(&self) -> ProviderResult<&OverlayBuilder<N>>
+    where
+        Provider::Target: StageCheckpointReader + BlockNumReader + PruneCheckpointReader,
+    {
+        if let Some(builder) = self.bound_overlay_builder.get() {
+            return Ok(builder)
+        }
+        let builder = self.overlay_builder.as_ref().ok_or(ProviderError::UnsupportedProvider)?;
+        let bound = if let Some(frontiers) = builder.read_frontiers() {
+            if database_state_frontiers(self.provider())? != frontiers {
+                return Err(ProviderError::other(OverlayReadError::SnapshotMismatch))
+            }
+            builder.clone()
+        } else {
+            builder.bind_read_view(self.provider())?
+        };
+        Ok(self.bound_overlay_builder.get_or_init(|| bound))
     }
 }
 
@@ -1132,7 +1160,7 @@ fn into_database_error(error: ProviderError) -> DatabaseError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ExecutionOverlay, OverlayManager};
+    use crate::{ExecutionOverlay, OverlayManager, OverlayReadError};
     use alloy_eips::BlockNumHash;
     use alloy_primitives::{keccak256, Address, U256};
     use reth_chain_state::{test_utils::TestBlockBuilder, ExecutedBlock};
@@ -1471,6 +1499,16 @@ mod tests {
 
         assert_eq!(provider.basic_account(&address).unwrap(), Some(account));
         assert_eq!(provider.storage(address, storage_key).unwrap(), Some(storage));
+        // The same view remains valid for execution but cannot invent a missing Finish bridge.
+        let error = provider.state_root(HashedPostState::default()).unwrap_err();
+        assert_eq!(
+            error.downcast_other_ref::<OverlayReadError>(),
+            Some(&OverlayReadError::MissingBlock {
+                hash: blocks[3].recovered_block().hash(),
+                partial: blocks[1].recovered_block().num_hash(),
+                finish: blocks[3].recovered_block().num_hash(),
+            })
+        );
     }
 
     /// Execution can commit state before Finish, even after both history indices catch up.

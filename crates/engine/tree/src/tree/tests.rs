@@ -8,7 +8,7 @@ use crate::{
         PersistTarget, TreeConfig,
     },
 };
-use reth_storage_overlay::OverlayManager;
+use reth_storage_overlay::{OverlayManager, OverlayReadError};
 
 use alloy_eip7928::bal::DecodedBal;
 use alloy_eips::eip1898::BlockWithParent;
@@ -685,6 +685,36 @@ fn test_tree_persist_block_batch() {
             assert_eq!(blocks.len(), tree_config.max_execute_block_batch_size());
         }
         _ => panic!("unexpected message: {msg:#?}"),
+    }
+}
+
+#[test]
+fn overlay_capture_failures_do_not_mark_payloads_invalid() {
+    let mut harness = TestHarness::new(MAINNET.clone());
+    let parent_hash = harness.tree.state.tree_state.canonical_block_hash();
+    for failure in [
+        OverlayReadError::SourceBusy,
+        OverlayReadError::MissingBlock {
+            hash: B256::with_last_byte(1),
+            partial: alloy_eips::BlockNumHash::new(1, B256::with_last_byte(2)),
+            finish: alloy_eips::BlockNumHash::new(2, B256::with_last_byte(3)),
+        },
+        OverlayReadError::CaptureLimit,
+        OverlayReadError::SnapshotMismatch,
+    ] {
+        let block = harness.block_builder.generate_random_block(1, parent_hash);
+        let hash = block.hash();
+        let error = InsertBlockError::new(
+            block,
+            InsertBlockErrorKind::Provider(ProviderError::other(failure.clone())),
+        );
+        let Err(InsertBlockProcessingError::Fatal(InsertBlockFatalError::Provider(error))) =
+            harness.tree.on_insert_block_error(error)
+        else {
+            panic!("overlay capture failure must remain an internal provider error")
+        };
+        assert_eq!(error.downcast_other_ref::<OverlayReadError>(), Some(&failure));
+        assert!(harness.tree.state.invalid_headers.get(&hash).is_none());
     }
 }
 
