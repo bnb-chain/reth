@@ -94,6 +94,12 @@ impl<N> Default for StaticFileWriters<N> {
 }
 
 impl<N: NodePrimitives> StaticFileWriters<N> {
+    /// Excludes in-place header rewrites without making an existing database reader wait.
+    pub(crate) fn try_read_headers<T>(&self, read: impl FnOnce() -> T) -> Option<T> {
+        let _guard = self.headers.try_read()?;
+        Some(read())
+    }
+
     pub(crate) fn get_or_create(
         &self,
         segment: StaticFileSegment,
@@ -1804,4 +1810,26 @@ fn create_jar(
     }
 
     jar
+}
+
+#[cfg(test)]
+mod exact_td_tests {
+    use super::*;
+    use reth_ethereum_primitives::EthPrimitives;
+
+    #[test]
+    fn exact_td_read_gate_excludes_header_writer_and_releases_on_error() {
+        let writers = StaticFileWriters::<EthPrimitives>::default();
+        assert_eq!(
+            writers.try_read_headers(|| {
+                assert!(writers.headers.try_write().is_none());
+                Err::<(), _>("read error")
+            }),
+            Some(Err("read error"))
+        );
+        let writer = writers.headers.try_write().unwrap();
+        assert!(writers.try_read_headers(|| panic!("busy reader must not run")).is_none());
+        drop(writer);
+        assert_eq!(writers.try_read_headers(|| 7), Some(7));
+    }
 }

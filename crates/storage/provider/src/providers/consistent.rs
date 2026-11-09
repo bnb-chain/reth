@@ -8,17 +8,21 @@ use crate::{
 };
 use alloy_consensus::{
     transaction::{TransactionMeta, TxHashRef},
-    BlockHeader,
+    BlockHeader, Sealable,
 };
 use alloy_eips::{BlockHashOrNumber, BlockId, BlockNumHash, BlockNumberOrTag, HashOrNumber};
-use alloy_primitives::{Address, BlockHash, BlockNumber, TxHash, TxNumber, B256};
+use alloy_primitives::{Address, BlockHash, BlockNumber, TxHash, TxNumber, B256, U256};
 use reth_chain_state::{BlockState, CanonicalInMemoryState};
-use reth_chainspec::ChainInfo;
-use reth_db_api::models::{AccountBeforeTx, BlockNumberAddress, StoredBlockBodyIndices};
+use reth_chainspec::{ChainInfo, EthChainSpec};
+use reth_db_api::{
+    models::{AccountBeforeTx, BlockNumberAddress, StoredBlockBodyIndices},
+    tables,
+    transaction::DbTx,
+};
 use reth_execution_types::RecoveredBlockAndExecutionOutput;
 use reth_node_types::{BlockTy, HeaderTy, ReceiptTy, TxTy};
 use reth_primitives_traits::{
-    BlockBody, RecoveredBlock, SealedHeader, SealedOrRecoveredBlock, StorageEntry,
+    Block as _, BlockBody, RecoveredBlock, SealedHeader, SealedOrRecoveredBlock, StorageEntry,
 };
 use reth_prune_types::{PruneCheckpoint, PruneSegment};
 use reth_stages_types::{StageCheckpoint, StageId};
@@ -33,6 +37,9 @@ use std::{
     ops::{Add, Bound, RangeBounds, RangeInclusive, Sub},
     sync::Arc,
 };
+
+/// Includes the initial memory search, ancestor visits and durable-row reads.
+const MAX_EXACT_TD_STEPS: usize = 4096;
 
 /// Type that interacts with a snapshot view of the blockchain (storage and in-memory) at time of
 /// instantiation, EXCEPT for pending, safe and finalized block which might change while holding
@@ -78,6 +85,118 @@ impl<N: ProviderNodeTypes> ConsistentProvider<N> {
         self,
     ) -> <ProviderFactory<N> as DatabaseProviderFactory>::Provider {
         self.storage_provider
+    }
+
+    /// Traverses the captured chain once; no height-only TD can terminate the walk.
+    fn block_with_td_by_hash_budget(
+        &self,
+        hash: B256,
+        remaining: &mut usize,
+    ) -> ProviderResult<Option<(BlockTy<N>, U256)>> {
+        let mut chain = self.head_block.as_deref().into_iter().flat_map(BlockState::chain);
+        let mut lowest_memory = None;
+        let mut target = None;
+        for state in chain.by_ref() {
+            let Some(next) = remaining.checked_sub(1) else { return Ok(None) };
+            *remaining = next;
+            lowest_memory = Some(state.number());
+            if state.hash() == hash {
+                target = Some(state);
+                break
+            }
+        }
+
+        let number = if let Some(state) = target {
+            state.number()
+        } else {
+            let Some(next) = remaining.checked_sub(1) else { return Ok(None) };
+            *remaining = next;
+            let Some(number) = self.storage_provider.block_number(hash)? else { return Ok(None) };
+            // A durable block covered by a different captured memory branch is not canonical in
+            // this view. Do not turn an old hash-to-number mapping into a canonical result.
+            if lowest_memory.is_some_and(|lowest| number >= lowest) {
+                return Ok(None)
+            }
+            number
+        };
+
+        let mut expected = BlockNumHash::new(number, hash);
+        let mut memory = target;
+        let mut suffix = U256::ZERO;
+        let chain_spec = self.chain_spec();
+        let td = loop {
+            if expected.number == chain_spec.genesis_header().number() {
+                if expected.hash != chain_spec.genesis_hash() {
+                    return Ok(None)
+                }
+                let Some(td) = suffix.checked_add(chain_spec.genesis_header().difficulty()) else {
+                    return Ok(None)
+                };
+                break td
+            }
+
+            let Some(next) = remaining.checked_sub(1) else { return Ok(None) };
+            *remaining = next;
+            let durable = self
+                .storage_provider
+                .static_file_provider()
+                .header_with_td(expected.number)?
+                .filter(|(header, _)| header.hash_slow() == expected.hash);
+            if let Some((_, stored_td)) = &durable {
+                let mut td = *stored_td;
+                // Legacy zero placeholders are useful only with a canonical hash binding in
+                // this same MDBX snapshot. HeaderNumbers alone does not prove that binding.
+                if td.is_zero() &&
+                    self.storage_provider
+                        .tx_ref()
+                        .get::<tables::CanonicalHeaders>(expected.number)? ==
+                        Some(expected.hash)
+                {
+                    td = self
+                        .storage_provider
+                        .tx_ref()
+                        .get::<tables::HeaderTerminalDifficulties>(expected.number)?
+                        .map_or(U256::ZERO, |td| td.0);
+                }
+                if !td.is_zero() {
+                    let Some(td) = suffix.checked_add(td) else { return Ok(None) };
+                    break td
+                }
+            }
+
+            let header = if let Some(state) = memory {
+                if state.hash() != expected.hash || state.number() != expected.number {
+                    return Ok(None)
+                }
+                state.block_ref().recovered_block().header()
+            } else if let Some((header, _)) = &durable {
+                header
+            } else {
+                return Ok(None)
+            };
+            let Some(next_suffix) = suffix.checked_add(header.difficulty()) else {
+                return Ok(None)
+            };
+            suffix = next_suffix;
+            let Some(parent_number) = expected.number.checked_sub(1) else { return Ok(None) };
+            expected = BlockNumHash::new(parent_number, header.parent_hash());
+            memory = chain.next();
+            if memory.is_some() {
+                let Some(next) = remaining.checked_sub(1) else { return Ok(None) };
+                *remaining = next;
+            }
+        };
+
+        let block = if let Some(state) = target {
+            state.block_ref().recovered_block().clone_block()
+        } else {
+            let Some(block) = self.storage_provider.block_by_hash(hash)? else { return Ok(None) };
+            if block.header().hash_slow() != hash || block.header().number() != number {
+                return Ok(None)
+            }
+            block
+        };
+        Ok(Some((block, td)))
     }
 
     // Helper function to convert range bounds
@@ -662,6 +781,11 @@ impl<N: ProviderNodeTypes> BlockReader for ConsistentProvider<N> {
             |db_provider| db_provider.block(id),
             |block_state| Ok(Some(block_state.block_ref().recovered_block().clone_block())),
         )
+    }
+
+    fn block_with_td_by_hash(&self, hash: B256) -> ProviderResult<Option<(Self::Block, U256)>> {
+        let mut remaining = MAX_EXACT_TD_STEPS;
+        self.block_with_td_by_hash_budget(hash, &mut remaining)
     }
 
     fn pending_block(&self) -> ProviderResult<Option<Arc<RecoveredBlock<Self::Block>>>> {
@@ -1448,16 +1572,19 @@ impl<N: ProviderNodeTypes> ChangeSetReader for ConsistentProvider<N> {
 #[cfg(test)]
 #[allow(clippy::clone_on_copy)]
 mod tests {
+    use super::*;
     use crate::{
-        providers::blockchain_provider::BlockchainProvider,
-        test_utils::create_test_provider_factory, BlockWriter,
+        providers::{blockchain_provider::BlockchainProvider, StaticFileWriter},
+        test_utils::{create_test_provider_factory, MockNodeTypesWithDB},
+        BlockWriter,
     };
+    use alloy_consensus::Header;
     use alloy_eips::BlockHashOrNumber;
     use alloy_primitives::B256;
     use itertools::Itertools;
     use rand::Rng;
     use reth_chain_state::{ExecutedBlock, NewCanonicalChain};
-    use reth_db_api::models::AccountBeforeTx;
+    use reth_db_api::{models::AccountBeforeTx, transaction::DbTxMut};
     use reth_ethereum_primitives::Block;
     use reth_execution_types::{BlockExecutionOutput, BlockExecutionResult, ExecutionOutcome};
     use reth_primitives_traits::{RecoveredBlock, SealedBlock};
@@ -1472,6 +1599,238 @@ mod tests {
     };
 
     const TEST_BLOCKS_COUNT: usize = 5;
+
+    fn td_child(parent: &SealedBlock<Block>, difficulty: u64) -> SealedBlock<Block> {
+        Block {
+            header: Header {
+                number: parent.number() + 1,
+                parent_hash: parent.hash(),
+                difficulty: U256::from(difficulty),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+        .seal_slow()
+    }
+
+    fn td_executed(block: &SealedBlock<Block>) -> ExecutedBlock {
+        ExecutedBlock {
+            recovered_block: Arc::new(block.clone().try_recover().unwrap()),
+            ..Default::default()
+        }
+    }
+
+    struct TdFixture {
+        factory: ProviderFactory<MockNodeTypesWithDB>,
+        provider: BlockchainProvider<MockNodeTypesWithDB>,
+        common: SealedBlock<Block>,
+        old: Vec<SealedBlock<Block>>,
+        new: Vec<SealedBlock<Block>>,
+    }
+
+    fn td_fixture() -> eyre::Result<TdFixture> {
+        let factory = create_test_provider_factory();
+        let genesis =
+            Block { header: factory.chain_spec().genesis_header().clone(), ..Default::default() }
+                .seal_slow();
+        let common = td_child(&genesis, 2);
+        let old_one = td_child(&common, 3);
+        let old_two = td_child(&old_one, 5);
+        let new_one = td_child(&common, 7);
+        let new_two = td_child(&new_one, 11);
+        let writer = factory.provider_rw()?;
+        for block in [&genesis, &common, &old_one, &old_two] {
+            writer.insert_block(&block.clone().try_recover().unwrap())?;
+        }
+        writer.commit()?;
+        let provider = BlockchainProvider::new(factory.clone())?;
+        Ok(TdFixture {
+            factory,
+            provider,
+            common,
+            old: vec![old_one, old_two],
+            new: vec![new_one, new_two],
+        })
+    }
+
+    #[test]
+    fn exact_td_follows_memory_fork_to_common_durable_anchor() -> eyre::Result<()> {
+        let fixture = td_fixture()?;
+        fixture.provider.canonical_in_memory_state().update_chain(NewCanonicalChain::Commit {
+            new: fixture.new.iter().map(td_executed).collect(),
+        });
+        let view = fixture.provider.consistent_provider()?;
+        let anchor_td = fixture.factory.provider()?.header_td_by_number(1)?.unwrap();
+        let expected = anchor_td + U256::from(18);
+        assert_eq!(view.block_hash(3)?, Some(fixture.new[1].hash()));
+        assert_eq!(view.header_td_by_number(3)?, Some(anchor_td + U256::from(8)));
+        let (block, td) = fixture
+            .provider
+            .block_with_td_by_hash(fixture.new[1].hash())?
+            .expect("new branch must remain propagatable before durable unwind");
+        assert_eq!(block, fixture.new[1].clone().into_block());
+        assert_eq!(td, expected);
+        assert!(view.block_with_td_by_hash(fixture.old[1].hash())?.is_none());
+        // Wrapper implementations must not silently fall back to the default unavailable method.
+        let wrapped = Arc::new(fixture.provider);
+        assert_eq!(wrapped.block_with_td_by_hash(fixture.new[1].hash())?.unwrap().1, expected);
+        assert_eq!(
+            BlockReader::block_with_td_by_hash(&wrapped.as_ref(), fixture.new[1].hash())?
+                .unwrap()
+                .1,
+            expected
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn exact_td_captured_view_survives_live_a_b_a_reorg() -> eyre::Result<()> {
+        let fixture = td_fixture()?;
+        let state = fixture.provider.canonical_in_memory_state();
+        state.update_chain(NewCanonicalChain::Commit {
+            new: fixture.new.iter().map(td_executed).collect(),
+        });
+        let view = fixture.provider.consistent_provider()?;
+        let expected =
+            fixture.factory.provider()?.header_td_by_number(1)?.unwrap() + U256::from(18);
+        state.update_chain(NewCanonicalChain::Reorg {
+            old: fixture.new.iter().map(td_executed).collect(),
+            new: fixture.old.iter().map(td_executed).collect(),
+        });
+        assert_eq!(fixture.provider.block_hash(3)?, Some(fixture.old[1].hash()));
+        assert_eq!(view.block_with_td_by_hash(fixture.new[1].hash())?.unwrap().1, expected);
+        state.update_chain(NewCanonicalChain::Reorg {
+            old: fixture.old.iter().map(td_executed).collect(),
+            new: fixture.new.iter().map(td_executed).collect(),
+        });
+        assert_eq!(view.block_with_td_by_hash(fixture.new[1].hash())?.unwrap().1, expected);
+        assert_eq!(
+            fixture.provider.block_with_td_by_hash(fixture.new[1].hash())?.unwrap().1,
+            expected
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn exact_td_budget_includes_search_and_anchor_without_quadratic_walks() -> eyre::Result<()> {
+        let fixture = td_fixture()?;
+        let mut blocks = fixture.new;
+        for _ in 0..62 {
+            blocks.push(td_child(blocks.last().unwrap(), 2));
+        }
+        fixture.provider.canonical_in_memory_state().update_chain(NewCanonicalChain::Commit {
+            new: blocks.iter().map(td_executed).collect(),
+        });
+        let view = fixture.provider.consistent_provider()?;
+        for index in [0, 31, 63] {
+            let steps = 64 + index + 2;
+            let mut remaining = steps;
+            let result = view.block_with_td_by_hash_budget(blocks[index].hash(), &mut remaining)?;
+            assert!(result.is_some());
+            assert_eq!(remaining, 0, "search + each memory ancestor + durable attempts");
+            assert!(view
+                .block_with_td_by_hash_budget(blocks[index].hash(), &mut (steps - 1))?
+                .is_none());
+        }
+        let mut remaining = 10;
+        assert!(view
+            .block_with_td_by_hash_budget(fixture.common.hash(), &mut remaining)?
+            .is_none());
+        assert_eq!(remaining, 0, "initial target search also consumes the limit");
+        Ok(())
+    }
+
+    #[test]
+    fn exact_td_writer_contention_is_unavailable_and_retry_succeeds() -> eyre::Result<()> {
+        let fixture = td_fixture()?;
+        let view = fixture.provider.consistent_provider()?;
+        let static_files = fixture.factory.static_file_provider();
+        let writer = static_files.latest_writer(StaticFileSegment::Headers)?;
+        assert!(view.block_with_td_by_hash(fixture.old[1].hash())?.is_none());
+        drop(writer);
+        let (block, td) = view.block_with_td_by_hash(fixture.old[1].hash())?.unwrap();
+        assert_eq!(block, fixture.old[1].clone().into_block());
+        assert_eq!(td, fixture.factory.provider()?.header_td_by_number(3)?.unwrap());
+        Ok(())
+    }
+
+    #[test]
+    fn exact_td_rejects_wrong_parent_and_overflow_without_poisoning_later_reads() -> eyre::Result<()>
+    {
+        let fixture = td_fixture()?;
+        let mut view = fixture.provider.consistent_provider()?;
+        let child = td_child(&fixture.new[0], 1);
+        view.head_block = Some(Arc::new(BlockState::with_parent(
+            td_executed(&child),
+            Some(Arc::new(BlockState::new(td_executed(&fixture.old[0])))),
+        )));
+        assert!(view.block_with_td_by_hash(child.hash())?.is_none());
+        view.head_block = Some(Arc::new(BlockState::new(td_executed(&child))));
+        assert!(
+            view.block_with_td_by_hash(child.hash())?.is_none(),
+            "missing parent is not a height fallback"
+        );
+        let mut overflow = td_child(&fixture.common, 1).into_block();
+        overflow.header.difficulty = U256::MAX;
+        let overflow = overflow.seal_slow();
+        view.head_block = Some(Arc::new(BlockState::new(td_executed(&overflow))));
+        assert!(view.block_with_td_by_hash(overflow.hash())?.is_none());
+        view.head_block = None;
+        assert!(view.block_with_td_by_hash(fixture.old[1].hash())?.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn exact_td_legacy_anchor_requires_same_ro_canonical_hash_binding() -> eyre::Result<()> {
+        let fixture = td_fixture()?;
+        let genesis = fixture.factory.chain_spec().genesis_header().clone();
+        let expected_parent = fixture.factory.provider()?.header_td_by_number(3)?.unwrap();
+        let writer = fixture.factory.provider_rw()?;
+        {
+            let static_files = fixture.factory.static_file_provider();
+            let mut headers = static_files.get_writer(0, StaticFileSegment::Headers)?;
+            headers.prune_headers(4)?;
+            headers.commit()?;
+            headers.append_header(&genesis, &genesis.hash_slow())?;
+            for block in [&fixture.common, &fixture.old[0], &fixture.old[1]] {
+                headers.append_header(block.header(), &block.hash())?;
+            }
+        }
+        writer.tx_ref().put::<tables::HeaderTerminalDifficulties>(3, expected_parent.into())?;
+        writer.commit()?;
+        let child = td_child(&fixture.old[1], 7);
+        fixture
+            .provider
+            .canonical_in_memory_state()
+            .update_chain(NewCanonicalChain::Commit { new: vec![td_executed(&child)] });
+        let old_view = fixture.provider.consistent_provider()?;
+        assert_eq!(old_view.storage_provider.block_number(fixture.old[1].hash())?, Some(3));
+        assert!(
+            old_view.block_with_td_by_hash_budget(child.hash(), &mut 3)?.is_none(),
+            "HeaderNumbers is not a canonical proof for legacy TD"
+        );
+        let writer = fixture.factory.provider_rw()?;
+        writer.tx_ref().put::<tables::CanonicalHeaders>(3, fixture.old[1].hash())?;
+        writer.commit()?;
+        assert!(
+            old_view.block_with_td_by_hash_budget(child.hash(), &mut 3)?.is_none(),
+            "existing RO cannot borrow a newer binding"
+        );
+        let view = fixture.provider.consistent_provider()?;
+        assert_eq!(
+            view.block_with_td_by_hash_budget(child.hash(), &mut 3)?.unwrap().1,
+            expected_parent + U256::from(7)
+        );
+        let writer = fixture.factory.provider_rw()?;
+        writer.tx_ref().put::<tables::CanonicalHeaders>(3, B256::repeat_byte(9))?;
+        writer.commit()?;
+        assert!(fixture
+            .provider
+            .consistent_provider()?
+            .block_with_td_by_hash_budget(child.hash(), &mut 3)?
+            .is_none());
+        Ok(())
+    }
 
     fn random_blocks(
         rng: &mut impl Rng,
