@@ -259,6 +259,9 @@ struct RuntimeInner {
     /// Storage I/O pool.
     #[cfg(feature = "rayon")]
     storage_pool: rayon::ThreadPool,
+    /// Optional shared pool for account and storage history preparation.
+    #[cfg(feature = "rayon")]
+    history_pool: Option<rayon::ThreadPool>,
     /// Rate limiter for expensive RPC operations.
     #[cfg(feature = "rayon")]
     blocking_guard: BlockingTaskGuard,
@@ -333,6 +336,12 @@ impl Runtime {
     #[cfg(feature = "rayon")]
     pub fn storage_pool(&self) -> &rayon::ThreadPool {
         &self.0.storage_pool
+    }
+
+    /// Get the history pool, falling back to the storage pool when not configured.
+    #[cfg(feature = "rayon")]
+    pub fn history_pool(&self) -> &rayon::ThreadPool {
+        self.0.history_pool.as_ref().unwrap_or(&self.0.storage_pool)
     }
 
     /// Get a clone of the [`BlockingTaskGuard`].
@@ -728,12 +737,25 @@ impl Runtime {
 #[derive(Debug, Clone)]
 pub struct RuntimeBuilder {
     config: RuntimeConfig,
+    #[cfg(feature = "rayon")]
+    history_threads: Option<NonZeroUsize>,
 }
 
 impl RuntimeBuilder {
     /// Create a new builder with the given configuration.
     pub const fn new(config: RuntimeConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            #[cfg(feature = "rayon")]
+            history_threads: None,
+        }
+    }
+
+    /// Isolate account and storage history in one pool with the given thread budget.
+    #[cfg(feature = "rayon")]
+    pub const fn with_history_threads(mut self, threads: NonZeroUsize) -> Self {
+        self.history_threads = Some(threads);
+        self
     }
 
     /// Build the [`Runtime`].
@@ -745,6 +767,17 @@ impl RuntimeBuilder {
     pub fn build(self) -> Result<Runtime, RuntimeBuildError> {
         debug!(?self.config, "Building runtime");
         let config = self.config;
+        #[cfg(feature = "rayon")]
+        let history_pool = self
+            .history_threads
+            .map(|threads| {
+                build_pool_with_panic_handler(
+                    rayon::ThreadPoolBuilder::new()
+                        .num_threads(threads.get())
+                        .thread_name(|i| format!("history-{i:02}")),
+                )
+            })
+            .transpose()?;
 
         let (owned_runtime, handle) = match &config.tokio {
             TokioConfig::Owned { worker_threads, thread_keep_alive, thread_name } => {
@@ -868,6 +901,8 @@ impl RuntimeBuilder {
             #[cfg(feature = "rayon")]
             storage_pool,
             #[cfg(feature = "rayon")]
+            history_pool,
+            #[cfg(feature = "rayon")]
             blocking_guard,
             #[cfg(feature = "rayon")]
             proof_storage_worker_pool,
@@ -936,6 +971,34 @@ mod tests {
             Runtime::test_config().with_tokio(TokioConfig::existing_handle(rt.handle().clone()));
         let runtime = RuntimeBuilder::new(config).build().unwrap();
         let _ = runtime.handle();
+        #[cfg(feature = "rayon")]
+        assert!(std::ptr::eq(runtime.history_pool(), runtime.storage_pool()));
+    }
+
+    #[cfg(feature = "rayon")]
+    #[test]
+    fn test_history_budget_is_shared_and_isolated() {
+        use rayon::prelude::*;
+
+        let runtime = RuntimeBuilder::new(Runtime::test_config())
+            .with_history_threads(NonZeroUsize::MIN)
+            .build()
+            .unwrap();
+        let cloned = runtime.clone();
+        assert_eq!(runtime.storage_pool().current_num_threads(), 2);
+        assert!(std::ptr::eq(runtime.history_pool(), cloned.history_pool()));
+        runtime.storage_pool().scope(|s| {
+            for runtime in [&runtime, &cloned] {
+                s.spawn(move |_| {
+                    runtime.history_pool().install(|| {
+                        (0..128).into_par_iter().for_each(|_| {
+                            assert_eq!(rayon::current_num_threads(), 1);
+                            assert!(std::thread::current().name().unwrap().starts_with("history-"));
+                        });
+                    })
+                });
+            }
+        });
     }
 
     #[cfg(feature = "rayon")]
