@@ -125,10 +125,12 @@ impl<N: ProviderNodeTypes> ConsistentProvider<N> {
         let mut suffix = U256::ZERO;
         let chain_spec = self.chain_spec();
         let td = loop {
-            if expected.number == chain_spec.genesis_header().number() {
-                if expected.hash != chain_spec.genesis_hash() {
-                    return Ok(None)
-                }
+            // A configured genesis hash can be an alias for a different header. Only a
+            // self-consistent declaration proves the header's difficulty without a stored row.
+            if expected.number == chain_spec.genesis_header().number() &&
+                expected.hash == chain_spec.genesis_hash() &&
+                expected.hash == chain_spec.genesis_header().hash_slow()
+            {
                 let Some(td) = suffix.checked_add(chain_spec.genesis_header().difficulty()) else {
                     return Ok(None)
                 };
@@ -162,6 +164,10 @@ impl<N: ProviderNodeTypes> ConsistentProvider<N> {
                     let Some(td) = suffix.checked_add(td) else { return Ok(None) };
                     break td
                 }
+            }
+
+            if expected.number == chain_spec.genesis_header().number() {
+                return Ok(None)
             }
 
             let header = if let Some(state) = memory {
@@ -1575,7 +1581,10 @@ mod tests {
     use super::*;
     use crate::{
         providers::{blockchain_provider::BlockchainProvider, StaticFileWriter},
-        test_utils::{create_test_provider_factory, MockNodeTypesWithDB},
+        test_utils::{
+            create_test_provider_factory, create_test_provider_factory_with_chain_spec,
+            MockNodeTypesWithDB,
+        },
         BlockWriter,
     };
     use alloy_consensus::Header;
@@ -1584,6 +1593,7 @@ mod tests {
     use itertools::Itertools;
     use rand::Rng;
     use reth_chain_state::{ExecutedBlock, NewCanonicalChain};
+    use reth_chainspec::MAINNET;
     use reth_db_api::{models::AccountBeforeTx, transaction::DbTxMut};
     use reth_ethereum_primitives::Block;
     use reth_execution_types::{BlockExecutionOutput, BlockExecutionResult, ExecutionOutcome};
@@ -1829,6 +1839,47 @@ mod tests {
             .consistent_provider()?
             .block_with_td_by_hash_budget(child.hash(), &mut 3)?
             .is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn exact_td_genesis_alias_requires_real_header_or_stored_pair() -> eyre::Result<()> {
+        let mut spec = MAINNET.as_ref().clone();
+        let genesis =
+            Block { header: spec.genesis_header().clone(), ..Default::default() }.seal_slow();
+        let alias = B256::repeat_byte(9);
+        assert_ne!(alias, genesis.hash());
+        spec.genesis_header = SealedHeader::new(genesis.header().clone(), alias);
+        let factory = create_test_provider_factory_with_chain_spec(Arc::new(spec));
+        let writer = factory.provider_rw()?;
+        writer.insert_block(&genesis.clone().try_recover().unwrap())?;
+        writer.commit()?;
+        let provider = BlockchainProvider::new(factory)?;
+        let real_child = td_child(&genesis, 2);
+        let mut aliased = real_child.clone().into_block();
+        aliased.header.parent_hash = alias;
+        let aliased = aliased.seal_slow();
+        provider
+            .canonical_in_memory_state()
+            .update_chain(NewCanonicalChain::Commit { new: vec![td_executed(&aliased)] });
+        assert!(
+            provider.block_with_td_by_hash(aliased.hash())?.is_none(),
+            "a declared alias must not borrow an unrelated genesis header's difficulty"
+        );
+        provider.canonical_in_memory_state().update_chain(NewCanonicalChain::Reorg {
+            old: vec![td_executed(&aliased)],
+            new: vec![td_executed(&real_child)],
+        });
+        let view = provider.consistent_provider()?;
+        // The mismatched declaration does not invalidate a real hash-bound stored genesis row.
+        assert_eq!(view.block_with_td_by_hash(genesis.hash())?.unwrap().1, genesis.difficulty);
+        let mut remaining = 3;
+        assert_eq!(
+            view.block_with_td_by_hash_budget(real_child.hash(), &mut remaining)?.unwrap().1,
+            genesis.difficulty + U256::from(2)
+        );
+        assert_eq!(remaining, 0, "the fallback genesis row read consumes the shared budget");
+        assert!(view.block_with_td_by_hash_budget(real_child.hash(), &mut 2)?.is_none());
         Ok(())
     }
 
