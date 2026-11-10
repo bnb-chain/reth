@@ -200,6 +200,33 @@ impl<N: NetworkPrimitives> NetworkHandle<N> {
         message: PeerMessage<N>,
         guard: Option<BlockAnnouncementGuard<N>>,
     ) -> Result<(), BlockAnnouncementAdmissionError> {
+        self.enqueue_block_announcement(peer_id, message, guard, false)
+    }
+
+    /// Admits a targeted announcement that shares ordinary gossip's per-peer known-block cache.
+    ///
+    /// Success acknowledges only the bounded manager queue. At dequeue, known hashes are
+    /// skipped and eligible hashes become known only after the peer session accepts them.
+    /// Failed session admission leaves them retryable. This does not acknowledge delivery or
+    /// advance the peer's advertised head. Use [`Self::try_send_block_announcement`] for an
+    /// explicitly forced recovery announcement that must bypass peer knowledge.
+    /// Deduplication expires when the hash leaves the peer's bounded history or the session closes.
+    pub fn try_send_block_announcement_once(
+        &self,
+        peer_id: PeerId,
+        message: PeerMessage<N>,
+        guard: Option<BlockAnnouncementGuard<N>>,
+    ) -> Result<(), BlockAnnouncementAdmissionError> {
+        self.enqueue_block_announcement(peer_id, message, guard, true)
+    }
+
+    fn enqueue_block_announcement(
+        &self,
+        peer_id: PeerId,
+        message: PeerMessage<N>,
+        guard: Option<BlockAnnouncementGuard<N>>,
+        deduplicate: bool,
+    ) -> Result<(), BlockAnnouncementAdmissionError> {
         let admitted = Instant::now();
         let kind = MessageKind::of_peer(&message);
         let sender = match &message {
@@ -216,8 +243,9 @@ impl<N: NetworkPrimitives> NetworkHandle<N> {
                 return Err(BlockAnnouncementAdmissionError::NotBlockAnnouncement)
             }
         };
-        sender.try_send(QueuedBlockAnnouncement { peer_id, message, admitted, guard }).map_err(
-            |error| {
+        sender
+            .try_send(QueuedBlockAnnouncement { peer_id, message, admitted, guard, deduplicate })
+            .map_err(|error| {
                 let (error, reason) = match error {
                     mpsc::error::TrySendError::Full(_) => {
                         (BlockAnnouncementAdmissionError::Full, "capacity")
@@ -228,8 +256,7 @@ impl<N: NetworkPrimitives> NetworkHandle<N> {
                 };
                 block_ingress_dropped(kind, reason);
                 error
-            },
-        )
+            })
     }
 
     /// Send message to get the [`TransactionsHandle`].
@@ -766,6 +793,7 @@ pub(crate) struct QueuedBlockAnnouncement<N: NetworkPrimitives> {
     pub(crate) message: PeerMessage<N>,
     pub(crate) admitted: Instant,
     pub(crate) guard: Option<BlockAnnouncementGuard<N>>,
+    pub(crate) deduplicate: bool,
 }
 
 impl<N: NetworkPrimitives> fmt::Debug for QueuedBlockAnnouncement<N> {
@@ -774,6 +802,7 @@ impl<N: NetworkPrimitives> fmt::Debug for QueuedBlockAnnouncement<N> {
             .field("peer_id", &self.peer_id)
             .field("kind", &MessageKind::of_peer(&self.message))
             .field("admitted", &self.admitted)
+            .field("deduplicate", &self.deduplicate)
             .finish_non_exhaustive()
     }
 }
