@@ -44,6 +44,7 @@ use crate::{
     cache::LruCache,
     duration_metered_exec, metered_poll_nested_stream_with_budget,
     metrics::{AnnouncedTxTypesMetrics, TransactionsManagerMetrics},
+    peer_diagnostics::{HistoryDiagnostics, HistorySource},
     transactions::config::{StrictEthAnnouncementFilter, TransactionPropagationKind},
     NetworkHandle, TxTypesCounter,
 };
@@ -692,8 +693,10 @@ impl<Pool: TransactionPool, N: NetworkPrimitives> TransactionsManager<Pool, N> {
         let has_duplicates = announcement.len() != msg.len();
 
         // keep track of the transactions the peer knows
-        let count_txns_already_seen_by_peer =
-            msg.iter_hashes().filter(|hash| !peer.seen_transactions.insert(**hash)).count();
+        let count_txns_already_seen_by_peer = msg
+            .iter_hashes()
+            .filter(|hash| !peer.record_seen(**hash, HistorySource::Announcement))
+            .count();
         drop(msg);
         if count_txns_already_seen_by_peer > 0 {
             // this may occur if transactions are sent or announced to a peer, at the same time as
@@ -879,7 +882,14 @@ where
             for hash in new_pooled_hashes.iter_hashes().copied() {
                 propagated.record(hash, PropagateKind::Hash(peer_id));
                 // mark transaction as seen by peer
-                peer.seen_transactions.insert(hash);
+                peer.record_seen(
+                    hash,
+                    if propagation_mode.is_forced() {
+                        HistorySource::Forced
+                    } else {
+                        HistorySource::Propagate
+                    },
+                );
             }
 
             // send hashes of transactions
@@ -891,7 +901,14 @@ where
             for hash in new_full_transactions.iter_hashes() {
                 propagated.record(*hash, PropagateKind::Full(peer_id));
                 // mark transaction as seen by peer
-                peer.seen_transactions.insert(*hash);
+                peer.record_seen(
+                    *hash,
+                    if propagation_mode.is_forced() {
+                        HistorySource::Forced
+                    } else {
+                        HistorySource::Propagate
+                    },
+                );
             }
 
             // send full transactions
@@ -955,7 +972,7 @@ where
 
             for hash in new_pooled_hashes.iter_hashes().copied() {
                 propagated.record(hash, PropagateKind::Hash(peer_id));
-                peer.seen_transactions.insert(hash);
+                peer.record_seen(hash, HistorySource::Forced);
             }
 
             trace!(target: "net::tx::propagation", ?peer_id, ?new_pooled_hashes, "Propagating transactions to peer");
@@ -1014,7 +1031,7 @@ where
             // message, see `PeerMetadata::seen_transactions`.
             if propagation_mode.is_forced() {
                 for tx in &to_propagate {
-                    peer.seen_transactions.insert(*tx.tx_hash());
+                    peer.record_seen(*tx.tx_hash(), HistorySource::Forced);
                     builder.push(tx);
                 }
             } else {
@@ -1023,7 +1040,7 @@ where
                 // the peer.
                 for tx in &to_propagate {
                     // Only include the transaction if the peer hasn't seen it yet
-                    if peer.seen_transactions.insert(*tx.tx_hash()) {
+                    if peer.record_seen(*tx.tx_hash(), HistorySource::Propagate) {
                         builder.push(tx);
                     }
                 }
@@ -1135,7 +1152,9 @@ where
 
             // we sent a response at which point we assume that the peer is aware of the
             // transactions
-            peer.seen_transactions.extend(transactions.iter().map(|tx| *tx.tx_hash()));
+            for tx in &transactions {
+                peer.record_seen(*tx.tx_hash(), HistorySource::Reply);
+            }
 
             let resp = PooledTransactions(transactions);
             let _ = response.send(Ok(resp));
@@ -1241,7 +1260,7 @@ where
         // Build and send transaction hashes message
         let mut msg_builder = PooledTransactionsHashesBuilder::new(version);
         for pooled_tx in pooled_txs {
-            peer.seen_transactions.insert(*pooled_tx.hash());
+            peer.record_seen(*pooled_tx.hash(), HistorySource::Bootstrap);
             msg_builder.push_pooled(pooled_tx);
         }
 
@@ -1390,7 +1409,7 @@ where
         let mut num_already_seen_by_peer = 0;
         if is_broadcast && let Some(peer) = self.peers.get_mut(&peer_id) {
             for tx in &transactions {
-                if !peer.seen_transactions.insert(*tx.tx_hash()) {
+                if !peer.record_seen(*tx.tx_hash(), HistorySource::Broadcast) {
                     num_already_seen_by_peer += 1;
                 }
             }
@@ -2173,6 +2192,7 @@ pub struct PeerMetadata<N: NetworkPrimitives = EthNetworkPrimitives> {
     /// the sense that transactions are preemptively marked as seen by peer when they are sent to
     /// the peer.
     seen_transactions: LruCache<TxHash, FbBuildHasher<32>>,
+    history_diagnostics: Option<HistoryDiagnostics>,
     /// A communication channel directly to the peer's session task.
     request_tx: PeerRequestSender<PeerRequest<N>>,
     /// negotiated version of the session.
@@ -2192,7 +2212,9 @@ impl<N: NetworkPrimitives> PeerMetadata<N> {
         max_transactions_seen_by_peer: u32,
         peer_kind: PeerKind,
     ) -> Self {
+        let history_diagnostics = HistoryDiagnostics::for_peer(*request_tx.peer_id());
         Self {
+            history_diagnostics,
             seen_transactions: LruCache::with_hasher(
                 max_transactions_seen_by_peer,
                 Default::default(),
@@ -2204,12 +2226,29 @@ impl<N: NetworkPrimitives> PeerMetadata<N> {
         }
     }
 
+    /// Preserve the optimistic peer-knowledge decision; the optional sidecar only observes it.
+    fn record_seen(&mut self, hash: TxHash, source: HistorySource) -> bool {
+        if let Some(diagnostics) = &mut self.history_diagnostics {
+            diagnostics.insert(&mut self.seen_transactions, hash, source)
+        } else {
+            self.seen_transactions.insert(hash)
+        }
+    }
+
+    /// Exercise the production history path in diagnostics benchmarks without sending traffic.
+    #[cfg(feature = "test-utils")]
+    pub fn record_received_hash_for_benchmark(&mut self, hash: TxHash) -> bool {
+        self.record_seen(hash, HistorySource::Announcement)
+    }
+
     /// Returns a reference to the peer's request sender channel.
     pub const fn request_tx(&self) -> &PeerRequestSender<PeerRequest<N>> {
         &self.request_tx
     }
 
     /// Returns a mutable reference to the seen transactions LRU cache.
+    ///
+    /// Raw external writes bypass the optional diagnostic sidecar.
     pub const fn seen_transactions_mut(&mut self) -> &mut LruCache<TxHash, FbBuildHasher<32>> {
         &mut self.seen_transactions
     }
