@@ -674,7 +674,11 @@ impl<N: NetworkPrimitives> SessionManager<N> {
                     conn.set_reject_block_announcements(true);
                 }
 
+                let diagnostics = crate::peer_diagnostics::PeerSendDiagnostics::for_peer(peer_id);
                 let session = ActiveSession {
+                    diagnostics: diagnostics
+                        .clone()
+                        .map(crate::peer_diagnostics::SessionDiagnostics::new),
                     next_id: 0,
                     remote_peer_id: peer_id,
                     remote_addr,
@@ -723,7 +727,8 @@ impl<N: NetworkPrimitives> SessionManager<N> {
                         block_commands_tx,
                         unbounded_tx,
                         broadcast_items,
-                    ),
+                    )
+                    .with_diagnostics(diagnostics),
                     client_version: Arc::clone(&client_version),
                     remote_addr,
                     local_addr,

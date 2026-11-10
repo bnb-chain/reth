@@ -53,6 +53,19 @@ impl<T: Hash + Eq + fmt::Debug, S: BuildHasher> LruCache<T, S> {
         is_new
     }
 
+    /// Observe the automatic eviction without changing `insert`'s historical limit+1 capacity
+    /// or its LRU promotion rules. The older `insert_and_get_evicted` has different boundaries.
+    pub(crate) fn insert_with_capacity_eviction(&mut self, entry: T) -> (bool, Option<T>)
+    where
+        T: Copy,
+    {
+        let oldest = (self.inner.len() > self.limit as usize)
+            .then(|| self.inner.peek_oldest().map(|(key, _)| *key))
+            .flatten();
+        let new = self.insert(entry);
+        (new, oldest.filter(|_| new))
+    }
+
     /// Same as [`insert`](Self::insert) but returns a tuple, where the second index is the evicted
     /// value, if one was evicted.
     pub fn insert_and_get_evicted(&mut self, entry: T) -> (bool, Option<T>) {

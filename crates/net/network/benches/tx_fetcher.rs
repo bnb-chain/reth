@@ -6,7 +6,7 @@
 use alloy_consensus::transaction::Recovered;
 use alloy_primitives::{
     map::{B256Map, FbBuildHasher, HashMap},
-    TxHash,
+    TxHash, B256, U256,
 };
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
 use futures::{task::noop_waker_ref, StreamExt};
@@ -265,5 +265,39 @@ fn bench_fetch(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_announce, bench_dispatch, bench_fetch);
+/// Compare the actual cache hook with and without the optional sidecar. Run with
+/// RETH_NETWORK_DIAGNOSTIC_PEERS set to the 128 hex digits `01` repeated 64 times.
+/// No recorder is installed: this isolates cache, sampling and batching cost, not exporter cost.
+fn bench_peer_history(c: &mut Criterion) {
+    let mut group = c.benchmark_group("peer_history");
+    group.throughput(Throughput::Elements(1024));
+    for (name, peer_id) in
+        [("disabled", PeerId::repeat_byte(2)), ("enabled", PeerId::repeat_byte(1))]
+    {
+        let (sender, _rx) = mpsc::channel(1);
+        let mut peer = PeerMetadata::<reth_eth_wire::EthNetworkPrimitives>::new(
+            reth_network_api::PeerRequestSender::new(peer_id, sender),
+            EthVersion::Eth68,
+            std::sync::Arc::from(""),
+            32768,
+            reth_network_types::PeerKind::Trusted,
+        );
+        // A larger working set exercises actual capacity eviction. Little-endian hashes spread
+        // the deterministic 1/256 sample selector instead of sampling every synthetic hash.
+        let hashes: Vec<_> =
+            (0..131072u64).map(|i| B256::from(U256::from(i).to_le_bytes::<32>())).collect();
+        let mut cursor = 0;
+        group.bench_function(name, |b| {
+            b.iter(|| {
+                for hash in &hashes[cursor..cursor + 1024] {
+                    std::hint::black_box(peer.record_received_hash_for_benchmark(*hash));
+                }
+                cursor = (cursor + 1024) % hashes.len();
+            })
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(benches, bench_announce, bench_dispatch, bench_fetch, bench_peer_history);
 criterion_main!(benches);

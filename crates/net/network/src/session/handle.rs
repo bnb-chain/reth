@@ -2,6 +2,7 @@
 
 use crate::{
     message::PeerMessage,
+    peer_diagnostics::PeerSendDiagnostics,
     session::{
         active::{BroadcastItemCounter, MessageKind, MessageMetadata},
         conn::EthRlpxConnection,
@@ -200,6 +201,7 @@ pub(crate) struct SessionCommandSender<N: NetworkPrimitives> {
     unbounded_tx: mpsc::UnboundedSender<QueuedSessionCommand<N>>,
     /// Shared counter of in-flight broadcast items (channels + outgoing queue).
     broadcast_items: BroadcastItemCounter,
+    diagnostics: Option<Arc<PeerSendDiagnostics>>,
 }
 
 impl<N: NetworkPrimitives> SessionCommandSender<N> {
@@ -210,7 +212,7 @@ impl<N: NetworkPrimitives> SessionCommandSender<N> {
         unbounded_tx: mpsc::UnboundedSender<QueuedSessionCommand<N>>,
         broadcast_items: BroadcastItemCounter,
     ) -> Self {
-        Self { tx, block_tx, unbounded_tx, broadcast_items }
+        Self { tx, block_tx, unbounded_tx, broadcast_items, diagnostics: None }
     }
 
     /// Sends a disconnect command via the unbounded channel so it is never dropped due to
@@ -252,7 +254,7 @@ impl<N: NetworkPrimitives> SessionCommandSender<N> {
         let permit = if broadcast {
             let Some(permit) = self.broadcast_items.try_acquire(kind, msg.message_item_count())
             else {
-                kind.dropped("capacity");
+                self.dropped(kind, "capacity");
                 return false;
             };
             Some(permit)
@@ -267,11 +269,14 @@ impl<N: NetworkPrimitives> SessionCommandSender<N> {
             return match self.block_tx.try_send(queued) {
                 Ok(()) => true,
                 Err(error) => {
-                    kind.dropped(if matches!(error, mpsc::error::TrySendError::Full(_)) {
-                        "command_full"
-                    } else {
-                        "closed"
-                    });
+                    self.dropped(
+                        kind,
+                        if matches!(error, mpsc::error::TrySendError::Full(_)) {
+                            "command_full"
+                        } else {
+                            "closed"
+                        },
+                    );
                     false
                 }
             };
@@ -282,16 +287,19 @@ impl<N: NetworkPrimitives> SessionCommandSender<N> {
                 if self.unbounded_tx.send(queued).is_ok() {
                     true
                 } else {
-                    kind.dropped("closed");
+                    self.dropped(kind, "closed");
                     false
                 }
             }
             Err(error) => {
-                kind.dropped(if matches!(error, mpsc::error::TrySendError::Full(_)) {
-                    "command_full"
-                } else {
-                    "closed"
-                });
+                self.dropped(
+                    kind,
+                    if matches!(error, mpsc::error::TrySendError::Full(_)) {
+                        "command_full"
+                    } else {
+                        "closed"
+                    },
+                );
                 false
             }
         }
@@ -300,6 +308,21 @@ impl<N: NetworkPrimitives> SessionCommandSender<N> {
     /// Returns the current number of in-flight broadcast items.
     pub(crate) fn queued_broadcast_items(&self) -> usize {
         self.broadcast_items.get()
+    }
+
+    pub(crate) fn with_diagnostics(
+        mut self,
+        diagnostics: Option<Arc<PeerSendDiagnostics>>,
+    ) -> Self {
+        self.diagnostics = diagnostics;
+        self
+    }
+
+    fn dropped(&self, kind: MessageKind, reason: &'static str) {
+        kind.dropped(reason);
+        if let Some(diagnostics) = &self.diagnostics {
+            diagnostics.rejected(kind, reason);
+        }
     }
 }
 
@@ -475,83 +498,100 @@ mod tests {
 
     #[test]
     fn independent_broadcast_budgets_cover_channels_and_reject_oversized_batches() {
-        let (tx, rx) = mpsc::channel(1);
-        let (block_tx, block_rx) = mpsc::channel(32);
-        let (overflow_tx, overflow_rx) = mpsc::unbounded_channel();
-        let counter = BroadcastItemCounter::new();
-        let sender = SessionCommandSender::<EthNetworkPrimitives>::new(
-            tx,
-            block_tx,
-            overflow_tx,
-            counter.clone(),
-        );
-        let tx_hashes = |count| {
-            PeerMessage::PooledTransactions(
-                NewPooledTransactionHashes66(vec![B256::ZERO; count]).into(),
+        for diagnostics_enabled in [false, true] {
+            let (tx, rx) = mpsc::channel(1);
+            let (block_tx, block_rx) = mpsc::channel(32);
+            let (overflow_tx, overflow_rx) = mpsc::unbounded_channel();
+            let counter = BroadcastItemCounter::new();
+            let sender = SessionCommandSender::<EthNetworkPrimitives>::new(
+                tx,
+                block_tx,
+                overflow_tx,
+                counter.clone(),
             )
-        };
-        assert!(!sender.send_message(tx_hashes(4097)));
-        assert!(sender.send_message(tx_hashes(4095)));
-        assert!(sender.send_message(tx_hashes(0)), "empty batch reserves one slot in overflow");
-        assert!(!sender.send_message(tx_hashes(0)));
-        for _ in 0..MAX_QUEUED_BLOCKS {
-            assert!(sender.send_message(PeerMessage::NewBlock(NewBlockMessage {
+            .with_diagnostics(
+                diagnostics_enabled
+                    .then(|| PeerSendDiagnostics::for_test(reth_network_peers::PeerId::ZERO)),
+            );
+            let tx_hashes = |count| {
+                PeerMessage::PooledTransactions(
+                    NewPooledTransactionHashes66(vec![B256::ZERO; count]).into(),
+                )
+            };
+            assert!(!sender.send_message(tx_hashes(4097)));
+            assert!(sender.send_message(tx_hashes(4095)));
+            assert!(sender.send_message(tx_hashes(0)), "empty batch reserves one slot in overflow");
+            assert!(!sender.send_message(tx_hashes(0)));
+            for _ in 0..MAX_QUEUED_BLOCKS {
+                assert!(sender.send_message(PeerMessage::NewBlock(NewBlockMessage {
+                    hash: B256::ZERO,
+                    block: Arc::default()
+                })));
+            }
+            assert!(!sender.send_message(PeerMessage::NewBlock(NewBlockMessage {
                 hash: B256::ZERO,
                 block: Arc::default()
             })));
+            let blocks = |count| {
+                PeerMessage::NewBlockHashes(NewBlockHashes(vec![BlockHashNumber::default(); count]))
+            };
+            assert!(!sender.send_message(blocks(MAX_QUEUED_BLOCK_HASHES + 1)));
+            for _ in 0..MAX_QUEUED_BLOCK_HASHES {
+                assert!(sender.send_message(blocks(0)));
+            }
+            assert!(!sender.send_message(blocks(0)));
+            assert_eq!(counter.get(), 4096 + 16 + 16);
+            drop((rx, block_rx, overflow_rx));
+            assert_eq!(counter.get(), 0, "teardown releases all three channels");
+            assert!(!sender.send_message(blocks(1)));
+            assert!(!sender.send_message(tx_hashes(1)));
+            assert_eq!(counter.get(), 0, "closed channels cannot leak a reservation");
         }
-        assert!(!sender.send_message(PeerMessage::NewBlock(NewBlockMessage {
-            hash: B256::ZERO,
-            block: Arc::default()
-        })));
-        let blocks = |count| {
-            PeerMessage::NewBlockHashes(NewBlockHashes(vec![BlockHashNumber::default(); count]))
-        };
-        assert!(!sender.send_message(blocks(MAX_QUEUED_BLOCK_HASHES + 1)));
-        for _ in 0..MAX_QUEUED_BLOCK_HASHES {
-            assert!(sender.send_message(blocks(0)));
-        }
-        assert!(!sender.send_message(blocks(0)));
-        assert_eq!(counter.get(), 4096 + 16 + 16);
-        drop((rx, block_rx, overflow_rx));
-        assert_eq!(counter.get(), 0, "teardown releases all three channels");
-        assert!(!sender.send_message(blocks(1)));
-        assert!(!sender.send_message(tx_hashes(1)));
-        assert_eq!(counter.get(), 0, "closed channels cannot leak a reservation");
     }
 
     #[test]
     fn closed_overflow_rejects_and_failed_admission_can_retry() {
-        let (tx, mut rx) = mpsc::channel(1);
-        let (block_tx, mut block_rx) = mpsc::channel(1);
-        let (overflow_tx, overflow_rx) = mpsc::unbounded_channel();
-        let counter = BroadcastItemCounter::new();
-        let sender = SessionCommandSender::<EthNetworkPrimitives>::new(
-            tx,
-            block_tx,
-            overflow_tx,
-            counter.clone(),
-        );
-        let tx_message = || {
-            PeerMessage::PooledTransactions(NewPooledTransactionHashes66(vec![B256::ZERO]).into())
-        };
-        assert!(sender.send_message(tx_message()));
-        drop(overflow_rx);
-        assert!(!sender.send_message(tx_message()), "closed overflow is not successful admission");
-        assert_eq!(counter.get(), 1);
-        drop(rx.try_recv().unwrap());
-        assert!(sender.send_message(tx_message()));
-        let block_message =
-            || PeerMessage::NewBlockHashes(NewBlockHashes(vec![BlockHashNumber::default()]));
-        assert!(sender.send_message(block_message()));
-        assert!(
-            !sender.send_message(block_message()),
-            "full block command channel releases its permit"
-        );
-        assert_eq!(counter.get(), 2);
-        drop(block_rx.try_recv().unwrap());
-        assert!(sender.send_message(block_message()), "same block is eligible again");
-        drop((rx, block_rx));
-        assert_eq!(counter.get(), 0);
+        for diagnostics_enabled in [false, true] {
+            let (tx, mut rx) = mpsc::channel(1);
+            let (block_tx, mut block_rx) = mpsc::channel(1);
+            let (overflow_tx, overflow_rx) = mpsc::unbounded_channel();
+            let counter = BroadcastItemCounter::new();
+            let sender = SessionCommandSender::<EthNetworkPrimitives>::new(
+                tx,
+                block_tx,
+                overflow_tx,
+                counter.clone(),
+            )
+            .with_diagnostics(
+                diagnostics_enabled
+                    .then(|| PeerSendDiagnostics::for_test(reth_network_peers::PeerId::ZERO)),
+            );
+            let tx_message = || {
+                PeerMessage::PooledTransactions(
+                    NewPooledTransactionHashes66(vec![B256::ZERO]).into(),
+                )
+            };
+            assert!(sender.send_message(tx_message()));
+            drop(overflow_rx);
+            assert!(
+                !sender.send_message(tx_message()),
+                "closed overflow is not successful admission"
+            );
+            assert_eq!(counter.get(), 1);
+            drop(rx.try_recv().unwrap());
+            assert!(sender.send_message(tx_message()));
+            let block_message =
+                || PeerMessage::NewBlockHashes(NewBlockHashes(vec![BlockHashNumber::default()]));
+            assert!(sender.send_message(block_message()));
+            assert!(
+                !sender.send_message(block_message()),
+                "full block command channel releases its permit"
+            );
+            assert_eq!(counter.get(), 2);
+            drop(block_rx.try_recv().unwrap());
+            assert!(sender.send_message(block_message()), "same block is eligible again");
+            drop((rx, block_rx));
+            assert_eq!(counter.get(), 0);
+        }
     }
 }

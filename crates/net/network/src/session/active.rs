@@ -16,6 +16,7 @@ use std::{
 
 use crate::{
     message::{NewBlockMessage, PeerMessage, PeerResponse, PeerResponseResult},
+    peer_diagnostics::SessionDiagnostics,
     session::{
         conn::EthRlpxConnection,
         handle::{ActiveSessionMessage, QueuedSessionCommand, SessionCommand},
@@ -253,6 +254,7 @@ pub(crate) struct ActiveSession<N: NetworkPrimitives> {
     pub(crate) conn: EthRlpxConnection<N>,
     /// Identifier of the node we're connected to.
     pub(crate) remote_peer_id: PeerId,
+    pub(crate) diagnostics: Option<SessionDiagnostics>,
     /// The address we're connected to.
     pub(crate) remote_addr: SocketAddr,
     /// All capabilities the peer announced
@@ -338,15 +340,27 @@ impl<N: NetworkPrimitives> ActiveSession<N> {
     /// Returns `true` if at least one message was handed to the connection.
     fn poll_send_queued(&mut self, cx: &mut Context<'_>) -> Result<bool, EthStreamError> {
         let mut progress = false;
-        while self.conn.poll_ready_unpin(cx).is_ready() {
+        loop {
+            let ready = self.conn.poll_ready_unpin(cx).is_ready();
+            if let Some(diagnostics) = &mut self.diagnostics {
+                diagnostics.readiness(ready, !self.queued_outgoing.is_empty(), Instant::now());
+            }
+            if !ready {
+                break
+            }
+
             let Some(QueuedOutgoingMessage { message, metadata }) =
                 self.queued_outgoing.pop_front()
             else {
                 break
             };
             progress = true;
+            let elapsed = metadata.admitted.elapsed();
             metrics::histogram!("network.outgoing_peer_queue_wait_seconds", "kind" => metadata.kind.label())
-                .record(metadata.admitted.elapsed().as_secs_f64());
+                .record(elapsed.as_secs_f64());
+            if let Some(diagnostics) = &self.diagnostics {
+                diagnostics.handoff(metadata.kind, elapsed);
+            }
             let res = match message {
                 OutgoingMessage::Snap(msg) => self.conn.start_send_snap(msg),
                 OutgoingMessage::Eth(msg) => self.conn.start_send_unpin(msg),
@@ -676,6 +690,9 @@ impl<N: NetworkPrimitives> ActiveSession<N> {
                     self.queued_outgoing.push_pooled_hashes(msg, metadata);
                 } else {
                     metadata.kind.dropped("unsupported");
+                    if let Some(diagnostics) = &self.diagnostics {
+                        diagnostics.peer.rejected(metadata.kind, "unsupported");
+                    }
                     debug!(target: "net", ?msg,  version=?self.conn.version(), "Message is invalid for connection version, skipping");
                 }
             }
@@ -1620,6 +1637,7 @@ mod tests {
                     ActiveSession {
                         next_id: 0,
                         remote_peer_id: peer_id,
+                        diagnostics: None,
                         remote_addr,
                         remote_capabilities: Arc::clone(&capabilities),
                         session_id,
@@ -2402,57 +2420,66 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn actual_session_prioritizes_blocks_and_advances_requests_responses_and_transactions() {
-        let mut builder = SessionBuilder::default();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let local_addr = listener.local_addr().unwrap();
-        let (seen_tx, seen_rx) = oneshot::channel();
-        let client =
-            tokio::spawn(builder.with_client_stream(local_addr, async move |mut stream| {
-                let mut ids = Vec::new();
-                for _ in 0..16 {
-                    ids.push(stream.next().await.unwrap().unwrap().message_id());
-                }
-                seen_tx.send(ids).unwrap();
-            }));
-        let (incoming, _) = listener.accept().await.unwrap();
-        let mut session = builder.connect_incoming(incoming).await;
-        let (tx, rx) = mpsc::channel(16);
-        let (block_tx, block_rx) = mpsc::channel(32);
-        let (overflow_tx, overflow_rx) = mpsc::unbounded_channel();
-        let counter = BroadcastItemCounter::new();
-        let sender = SessionCommandSender::new(tx, block_tx, overflow_tx, counter.clone());
-        session.commands_rx = ReceiverStream::new(rx);
-        session.block_commands_rx = ReceiverStream::new(block_rx);
-        session.unbounded_rx = overflow_rx;
-        for _ in 0..2 {
-            assert!(sender.send_message(PeerMessage::SendTransactions(
-                reth_eth_wire::SharedTransactions(Vec::new())
-            )));
+        for diagnostics_enabled in [false, true] {
+            let mut builder = SessionBuilder::default();
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let local_addr = listener.local_addr().unwrap();
+            let (seen_tx, seen_rx) = oneshot::channel();
+            let client =
+                tokio::spawn(builder.with_client_stream(local_addr, async move |mut stream| {
+                    let mut ids = Vec::new();
+                    for _ in 0..16 {
+                        ids.push(stream.next().await.unwrap().unwrap().message_id());
+                    }
+                    seen_tx.send(ids).unwrap();
+                }));
+            let (incoming, _) = listener.accept().await.unwrap();
+            let mut session = builder.connect_incoming(incoming).await;
+            let diagnostics = diagnostics_enabled.then(|| {
+                crate::peer_diagnostics::PeerSendDiagnostics::for_test(session.remote_peer_id)
+            });
+            session.diagnostics = diagnostics.clone().map(SessionDiagnostics::new);
+            let (tx, rx) = mpsc::channel(16);
+            let (block_tx, block_rx) = mpsc::channel(32);
+            let (overflow_tx, overflow_rx) = mpsc::unbounded_channel();
+            let counter = BroadcastItemCounter::new();
+            let sender = SessionCommandSender::new(tx, block_tx, overflow_tx, counter.clone())
+                .with_diagnostics(diagnostics);
+            session.commands_rx = ReceiverStream::new(rx);
+            session.block_commands_rx = ReceiverStream::new(block_rx);
+            session.unbounded_rx = overflow_rx;
+            for _ in 0..2 {
+                assert!(sender.send_message(PeerMessage::SendTransactions(
+                    reth_eth_wire::SharedTransactions(Vec::new())
+                )));
+            }
+            let (response, _response_rx) = oneshot::channel();
+            assert!(sender.send_message(PeerMessage::EthRequest(PeerRequest::GetBlockBodies {
+                request: GetBlockBodies(Vec::new()),
+                response
+            })));
+            for _ in 0..12 {
+                assert!(sender.send_message(PeerMessage::NewBlockHashes(Default::default())));
+            }
+            let (response_tx, response_rx) = oneshot::channel();
+            response_tx.send(Ok(BlockHeaders(Vec::new()))).unwrap();
+            session.received_requests_from_remote.push(ReceivedRequest {
+                request_id: 42,
+                rx: PeerResponse::BlockHeaders { response: response_rx },
+                received: Instant::now(),
+            });
+            assert!(Pin::new(&mut session)
+                .poll(&mut Context::from_waker(&noop_waker()))
+                .is_pending());
+            let ids = tokio::time::timeout(Duration::from_secs(5), seen_rx).await.unwrap().unwrap();
+            assert_eq!(&ids[..4], &[EthMessageID::NewBlockHashes; 4]);
+            assert_eq!(ids[4], EthMessageID::Transactions);
+            assert_eq!(ids[9], EthMessageID::Transactions);
+            assert_eq!(ids[14], EthMessageID::GetBlockBodies);
+            assert_eq!(ids[15], EthMessageID::BlockHeaders);
+            assert_eq!(counter.get(), 0, "all reservations end at transport handoff");
+            client.await.unwrap();
         }
-        let (response, _response_rx) = oneshot::channel();
-        assert!(sender.send_message(PeerMessage::EthRequest(PeerRequest::GetBlockBodies {
-            request: GetBlockBodies(Vec::new()),
-            response
-        })));
-        for _ in 0..12 {
-            assert!(sender.send_message(PeerMessage::NewBlockHashes(Default::default())));
-        }
-        let (response_tx, response_rx) = oneshot::channel();
-        response_tx.send(Ok(BlockHeaders(Vec::new()))).unwrap();
-        session.received_requests_from_remote.push(ReceivedRequest {
-            request_id: 42,
-            rx: PeerResponse::BlockHeaders { response: response_rx },
-            received: Instant::now(),
-        });
-        assert!(Pin::new(&mut session).poll(&mut Context::from_waker(&noop_waker())).is_pending());
-        let ids = tokio::time::timeout(Duration::from_secs(5), seen_rx).await.unwrap().unwrap();
-        assert_eq!(&ids[..4], &[EthMessageID::NewBlockHashes; 4]);
-        assert_eq!(ids[4], EthMessageID::Transactions);
-        assert_eq!(ids[9], EthMessageID::Transactions);
-        assert_eq!(ids[14], EthMessageID::GetBlockBodies);
-        assert_eq!(ids[15], EthMessageID::BlockHeaders);
-        assert_eq!(counter.get(), 0, "all reservations end at transport handoff");
-        client.await.unwrap();
     }
 
     struct WakeCounter(AtomicUsize);
