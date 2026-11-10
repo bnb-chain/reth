@@ -281,10 +281,8 @@ impl<N: NetworkPrimitives> NetworkState<N> {
         self.discovery.update_fork_id(fork_id)
     }
 
-    /// Invoked after a `NewBlock` message was received by the peer.
-    ///
-    /// This will keep track of blocks we know a peer has
-    pub(crate) fn on_new_block(&mut self, peer_id: PeerId, hash: B256) {
+    /// Records received or successfully admitted block knowledge without advancing the peer head.
+    pub(crate) fn mark_peer_knows_block(&mut self, peer_id: PeerId, hash: B256) {
         // Mark the blocks as seen
         if let Some(peer) = self.active_peers.get_mut(&peer_id) {
             peer.blocks.insert(hash);
@@ -826,7 +824,7 @@ mod tests {
         state.announce_new_block_hash(msg.clone());
         assert!(state.queued_messages.is_empty());
         let inbound = B256::repeat_byte(8);
-        state.on_new_block(peer_id, inbound);
+        state.mark_peer_knows_block(peer_id, inbound);
         let another = crate::message::NewBlockMessage { hash: B256::repeat_byte(9), ..msg.clone() };
         state.announce_new_block_hash(another.clone());
         state.queued_messages.clear();

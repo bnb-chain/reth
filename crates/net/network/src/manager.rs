@@ -681,7 +681,7 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
                     if let Some(td) = block.block.td() {
                         this.swarm.sessions_mut().update_peer_td(&peer_id, td);
                     }
-                    this.swarm.state_mut().on_new_block(peer_id, block.hash);
+                    this.swarm.state_mut().mark_peer_knows_block(peer_id, block.hash);
                     // start block import process
                     this.block_import.on_new_block(peer_id, NewBlockEvent::Block(block));
                 });
@@ -730,7 +730,7 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
     }
 
     fn on_block_announcement(&mut self, queued: QueuedBlockAnnouncement<N>) {
-        let QueuedBlockAnnouncement { peer_id, message, admitted, guard } = queued;
+        let QueuedBlockAnnouncement { peer_id, message, admitted, guard, deduplicate } = queued;
         let kind = MessageKind::of_peer(&message);
         metrics::histogram!("network.block_announcement_manager_queue_wait_seconds", "kind" => kind.label())
             .record(admitted.elapsed().as_secs_f64());
@@ -738,7 +738,12 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
             block_ingress_dropped(kind, "guard_unready");
             return
         }
-        if !self.swarm.sessions().send_message_at(&peer_id, message, admitted) {
+        let accepted = if deduplicate {
+            self.swarm.send_block_announcement_once_at(peer_id, message, admitted)
+        } else {
+            self.swarm.sessions().send_message_at(&peer_id, message, admitted)
+        };
+        if !accepted {
             block_ingress_dropped(kind, "session_rejected");
         }
     }
@@ -1288,6 +1293,7 @@ mod tests {
     use metrics::{atomics::AtomicU64, Gauge};
     use reth_eth_wire::{EthVersion, HelloMessageWithProtocols, NewBlock};
     use reth_ethereum_primitives::Block;
+    use reth_network_api::Peers;
     use reth_network_types::{PeerAddr, PeerKind, SessionLimits};
     use reth_storage_api::noop::NoopProvider;
     use reth_tasks::Runtime;
@@ -1849,5 +1855,138 @@ mod tests {
                 "later announcement remains eligible"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn targeted_once_marks_shared_knowledge_only_after_guard_and_session_acceptance() {
+        let mut local = NetworkManager::new(ingress_test_config()).await.unwrap();
+        let mut remote = NetworkManager::new(ingress_test_config()).await.unwrap();
+        let peer = *remote.peer_id();
+        local.handle().add_peer(peer, remote.local_addr());
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            poll_fn(|cx| {
+                assert!(Pin::new(&mut local).poll(cx).is_pending());
+                assert!(Pin::new(&mut remote).poll(cx).is_pending());
+                if local.get_peer_info_by_id(peer).is_some() &&
+                    remote.get_peer_info_by_id(*local.peer_id()).is_some()
+                {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            }),
+        )
+        .await
+        .unwrap();
+        let before = local.get_peer_info_by_id(peer).unwrap();
+        let mut block = Block::default();
+        block.header.number = 42;
+        let block = NewBlockMessage {
+            hash: block.header.hash_slow(),
+            block: Arc::new(NewBlock { block, td: U128::ZERO }),
+        };
+        let handle = local.handle().clone();
+        let mut cx = Context::from_waker(noop_waker_ref());
+        assert_eq!(
+            handle.try_send_block_announcement_once(
+                peer,
+                PeerMessage::NewBlock(block.clone()),
+                Some(Arc::new(|_| false)),
+            ),
+            Ok(())
+        );
+        local.poll_block_announcements(&mut cx);
+        assert!(!local.swarm.state().peer_knows_block(&peer, &block.hash));
+        assert_eq!(
+            handle.try_send_block_announcement_once(
+                peer,
+                PeerMessage::NewBlock(block.clone()),
+                None,
+            ),
+            Ok(())
+        );
+        assert!(!local.swarm.state().peer_knows_block(&peer, &block.hash));
+        local.poll_block_announcements(&mut cx);
+        assert!(local.swarm.state().peer_knows_block(&peer, &block.hash));
+        let after = local.get_peer_info_by_id(peer).unwrap();
+        assert_eq!(after.best_number, before.best_number);
+        assert_eq!(after.best_td, before.best_td);
+        assert!(local.swarm.send_block_announcement_once_at(
+            peer,
+            PeerMessage::NewBlock(block.clone()),
+            Instant::now(),
+        ));
+        let other = B256::repeat_byte(7);
+        assert_eq!(
+            handle.try_send_block_announcement_once(
+                peer,
+                PeerMessage::NewBlockHashes(reth_eth_wire::NewBlockHashes(vec![
+                    reth_eth_wire::BlockHashNumber { hash: block.hash, number: 42 },
+                    reth_eth_wire::BlockHashNumber { hash: other, number: 43 },
+                ])),
+                None,
+            ),
+            Ok(())
+        );
+        local.poll_block_announcements(&mut cx);
+        assert!(local.swarm.state().peer_knows_block(&peer, &other));
+        assert!(local.swarm.send_block_announcement_once_at(
+            peer,
+            PeerMessage::NewBlockHashes(reth_eth_wire::NewBlockHashes(vec![
+                reth_eth_wire::BlockHashNumber { hash: block.hash, number: 42 },
+                reth_eth_wire::BlockHashNumber { hash: other, number: 43 },
+            ])),
+            Instant::now(),
+        ));
+        assert_eq!(local.get_peer_info_by_id(peer).unwrap().best_number, before.best_number);
+        assert_eq!(
+            handle.try_send_block_announcement_once(peer, ingress_hash_message(17), None),
+            Err(BlockAnnouncementAdmissionError::TooManyHashes)
+        );
+        assert_eq!(
+            handle.try_send_block_announcement_once(
+                peer,
+                PeerMessage::PooledTransactions(
+                    reth_eth_wire::NewPooledTransactionHashes66(Vec::new()).into()
+                ),
+                None,
+            ),
+            Err(BlockAnnouncementAdmissionError::NotBlockAnnouncement)
+        );
+    }
+
+    #[tokio::test]
+    async fn targeted_once_missing_session_keeps_each_peer_retryable() {
+        let mut local = NetworkManager::new(ingress_test_config()).await.unwrap();
+        let message = NewBlockMessage {
+            hash: B256::repeat_byte(42),
+            block: Arc::new(NewBlock { block: Block::default(), td: U128::ZERO }),
+        };
+        let first = PeerId::random();
+        let second = PeerId::random();
+        for peer in [first, second] {
+            let (tx, _rx) = mpsc::channel(1);
+            local.swarm.state_mut().on_session_activated(crate::state::SessionActivation {
+                peer,
+                capabilities: Arc::new(reth_eth_wire::Capabilities::from(Vec::new())),
+                status: Arc::default(),
+                request_tx: reth_network_api::PeerRequestSender::new(peer, tx),
+                timeout: Arc::new(std::sync::atomic::AtomicU64::new(1)),
+                range_info: None,
+                supports_snap: false,
+            });
+        }
+        local.swarm.state_mut().mark_peer_knows_block(first, message.hash);
+        for payload in [
+            PeerMessage::NewBlock(message.clone()),
+            PeerMessage::NewBlockHashes(reth_eth_wire::NewBlockHashes(vec![
+                reth_eth_wire::BlockHashNumber { hash: message.hash, number: 0 },
+            ])),
+        ] {
+            assert!(!local.swarm.send_block_announcement_once_at(second, payload, Instant::now()));
+            assert!(!local.swarm.state().peer_knows_block(&second, &message.hash));
+        }
+        assert!(local.swarm.state().peer_knows_block(&first, &message.hash));
     }
 }
