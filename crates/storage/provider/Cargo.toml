@@ -44,7 +44,6 @@ alloy-genesis.workspace = true
 alloy-primitives.workspace = true
 alloy-rpc-types-engine.workspace = true
 alloy-consensus.workspace = true
-revm.workspace = true
 
 # tracing
 tracing.workspace = true
@@ -64,6 +63,7 @@ tokio = { workspace = true, features = ["sync"], optional = true }
 
 # test-utils
 reth-ethereum-engine-primitives = { workspace = true, optional = true }
+evm2 = { workspace = true, optional = true }
 
 # parallel utils
 rayon.workspace = true
@@ -81,7 +81,7 @@ reth-trie = { workspace = true, features = ["test-utils"] }
 reth-testing-utils.workspace = true
 reth-ethereum-engine-primitives.workspace = true
 reth-ethereum-primitives.workspace = true
-reth-tracing.workspace = true
+evm2.workspace = true
 
 tempfile.workspace = true
 assert_matches.workspace = true
@@ -91,15 +91,16 @@ tokio = { workspace = true, features = ["sync", "macros", "rt-multi-thread"] }
 
 [features]
 jemalloc = [
-    "rocksdb/jemalloc",
     "reth-trie-db/jemalloc",
+    "rocksdb/jemalloc",
 ]
 asm-keccak = [
     "alloy-primitives/asm-keccak",
     "reth-trie-db/asm-keccak",
-    "revm/asm-keccak",
+    "evm2?/asm-keccak",
 ]
 test-utils = [
+    "dep:evm2",
     "reth-db/test-utils",
     "reth-nippy-jar/test-utils",
     "reth-trie/test-utils",
@@ -121,7 +122,8 @@ account-ext = [
     "alloy-genesis/account-ext",
     "reth-codecs/account-ext",
     "reth-primitives-traits/account-ext",
-    "revm/account-ext",
     "reth-trie/account-ext",
     "reth-trie-db/account-ext",
+    "reth-execution-types/account-ext",
+    "evm2?/account-ext",
 ]

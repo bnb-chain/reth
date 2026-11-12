@@ -17,6 +17,7 @@ use alloy_eips::{eip2718::Encodable2718, BlockId};
 use alloy_network::{TransactionBuilder, TransactionBuilder4844};
 use alloy_primitives::{Address, Bytes, TxHash, B256, U256};
 use alloy_rpc_types_eth::{state::EvmOverrides, TransactionInfo};
+use evm2::evm::Bal as EvmBal;
 use futures::{Future, StreamExt};
 use reth_chain_state::CanonStateSubscriptions;
 use reth_primitives_traits::{
@@ -37,7 +38,6 @@ use reth_transaction_pool::{
     AddedTransactionOutcome, PoolPooledTx, PoolTransaction, PoolTx, TransactionOrigin,
     TransactionPool,
 };
-use revm::state::bal::Bal as RevmBal;
 use std::{sync::Arc, time::Duration};
 
 /// Transaction related functions for the [`EthApiServer`](crate::EthApiServer) trait in
@@ -64,7 +64,7 @@ use std::{sync::Arc, time::Duration};
 /// This implementation follows the behaviour of Geth and disables the basefee check for tracing.
 pub trait EthTransactions: LoadTransaction<Provider: BlockReaderIdExt>
 where
-    reth_evm::BlockEnvFor<Self::Evm>: reth_rpc_eth_types::BlockOverridesExt,
+    reth_evm::EvmEnvFor<Self::Evm>: reth_rpc_eth_types::BlockOverridesExt,
 {
     /// Returns a handle for signing data.
     ///
@@ -1004,7 +1004,7 @@ pub trait LoadTransaction: SpawnBlocking + FullEthApiTypes + RpcNodeCoreExt {
             Option<(
                 TransactionSource<ProviderTx<Self::Provider>>,
                 Arc<RecoveredBlock<ProviderBlock<Self::Provider>>>,
-                Option<Arc<DecodedBal<Arc<RevmBal>>>>,
+                Option<Arc<DecodedBal<Arc<EvmBal>>>>,
             )>,
             Self::Error,
         >,
