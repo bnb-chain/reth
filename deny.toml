@@ -21,6 +21,9 @@ ignore = [
     # https://rustsec.org/advisories/RUSTSEC-2026-0387 crypto-bigint 0.5.5 is pinned by elliptic-curve 0.13 (k256/p256).
     # Match upstream Reth and Alloy until that dependency stack supports the fixed 0.7.6+ release.
     "RUSTSEC-2026-0387",
+    # https://rustsec.org/advisories/RUSTSEC-2026-0441 pin-utils is unmaintained, with no patched release.
+    # Transitive WASM dependency via wasmtimer; await its migration to pin-project-lite.
+    "RUSTSEC-2026-0441",
 ]
 
 # This section is considered when running `cargo deny check bans`.

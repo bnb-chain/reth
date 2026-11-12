@@ -11,8 +11,12 @@ on:
 permissions: {}
 
 jobs:
+  # Cyclops credentials and service trust policies are configured only for upstream.
   publish-label:
-    if: github.event_name == 'pull_request_target' && (github.event.label.name == 'cyclops' || github.event.label.name == 'agentic-audit')
+    if: >-
+      github.repository == 'paradigmxyz/reth' &&
+      github.event_name == 'pull_request_target' &&
+      (github.event.label.name == 'cyclops' || github.event.label.name == 'agentic-audit')
     runs-on: ubuntu-latest
     steps:
       - name: Publish event
@@ -47,6 +51,7 @@ jobs:
   # Push reviews for same-repo PRs. Labels stay on publish-label so fork PRs can still be audited.
   audit:
     if: >-
+      github.repository == 'paradigmxyz/reth' &&
       contains(fromJSON('["pull_request","pull_request_target"]'), github.event_name) &&
       github.event.action != 'labeled' &&
       github.event.pull_request.head.repo.full_name == github.repository
@@ -66,6 +71,7 @@ jobs:
 
   publish-comment:
     if: >-
+      github.repository == 'paradigmxyz/reth' &&
       github.event_name == 'issue_comment' &&
       github.event.issue.pull_request &&
       (

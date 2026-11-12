@@ -1134,24 +1134,26 @@ mod tests {
     use super::*;
     use crate::{ExecutionOverlay, OverlayManager};
     use alloy_eips::BlockNumHash;
-    use alloy_primitives::{Address, U256};
+    use alloy_primitives::{keccak256, Address, U256};
     use evm2::{bytecode::Bytecode, evm::AccountInfo};
     use reth_chain_state::{test_utils::TestBlockBuilder, ExecutedBlock};
     use reth_db_api::{
         models::{
-            storage_sharded_key::StorageShardedKey, AccountBeforeTx, BlockNumberAddress, ShardedKey,
+            storage_sharded_key::StorageShardedKey, AccountBeforeTx, BlockNumberAddress,
+            ShardedKey, StorageBeforeTx,
         },
         tables,
         transaction::DbTxMut,
         BlockNumberList,
     };
-    use reth_primitives_traits::Account;
+    use reth_primitives_traits::{Account, StorageEntry};
     use reth_provider::{
         test_utils::{create_test_provider_factory, MockNodeTypesWithDB},
-        BlockWriter, ProviderFactory,
+        BlockWriter, ProviderFactory, RocksDBProviderFactory, StaticFileProviderFactory,
+        StaticFileSegment, StaticFileWriter,
     };
     use reth_stages_types::{FinishCheckpoint, StageCheckpoint, StageId};
-    use reth_storage_api::StageCheckpointWriter;
+    use reth_storage_api::{StageCheckpointWriter, StorageSettings};
     use reth_trie::{
         updates::TrieUpdatesSorted, BranchNodeCompact, HashedPostState, HashedStorage, Nibbles,
         SortedTrieData,
@@ -1469,5 +1471,132 @@ mod tests {
 
         assert_eq!(provider.basic_account(&address).unwrap(), Some(account));
         assert_eq!(provider.storage(address, storage_key).unwrap(), Some(storage));
+    }
+
+    /// Execution can commit state before Finish, even after both history indices catch up.
+    #[test]
+    fn history_at_finish_ignores_state_ahead_of_finish() {
+        for settings in [StorageSettings::v1(), StorageSettings::v2()] {
+            let (factory, blocks) = setup_frontiers(4, 4);
+            factory.set_storage_settings_cache(settings);
+            let address = Address::with_last_byte(1);
+            let storage_key = B256::with_last_byte(2);
+            let old_account = Account { balance: U256::from(10), ..Default::default() };
+            let new_account = Account { balance: U256::from(20), ..Default::default() };
+            let old_storage = StorageEntry { key: storage_key, value: U256::from(10) };
+            let provider_rw = factory.provider_rw().unwrap();
+
+            if settings.storage_v2 {
+                provider_rw
+                    .tx_ref()
+                    .put::<tables::HashedAccounts>(keccak256(address), new_account)
+                    .unwrap();
+                provider_rw
+                    .tx_ref()
+                    .put::<tables::HashedStorages>(
+                        keccak256(address),
+                        StorageEntry { key: keccak256(storage_key), value: U256::from(20) },
+                    )
+                    .unwrap();
+                let rocksdb = factory.rocksdb_provider();
+                let mut batch = rocksdb.batch();
+                batch.append_account_history_shard(address, vec![4]).unwrap();
+                batch.append_storage_history_shard(address, storage_key, vec![4]).unwrap();
+                batch.commit().unwrap();
+
+                let static_files = factory.static_file_provider();
+                let mut accounts =
+                    static_files.get_writer(0, StaticFileSegment::AccountChangeSets).unwrap();
+                let mut storage =
+                    static_files.get_writer(0, StaticFileSegment::StorageChangeSets).unwrap();
+                for number in 0..4 {
+                    accounts.append_account_changeset(vec![], number).unwrap();
+                    storage.append_storage_changeset(vec![], number).unwrap();
+                }
+                accounts
+                    .append_account_changeset(
+                        vec![AccountBeforeTx { address, info: Some(old_account) }],
+                        4,
+                    )
+                    .unwrap();
+                storage
+                    .append_storage_changeset(
+                        vec![StorageBeforeTx { address, key: storage_key, value: U256::from(10) }],
+                        4,
+                    )
+                    .unwrap();
+            } else {
+                provider_rw
+                    .tx_ref()
+                    .put::<tables::PlainAccountState>(address, new_account)
+                    .unwrap();
+                provider_rw
+                    .tx_ref()
+                    .put::<tables::PlainStorageState>(
+                        address,
+                        StorageEntry { key: storage_key, value: U256::from(20) },
+                    )
+                    .unwrap();
+                provider_rw
+                    .tx_ref()
+                    .put::<tables::AccountsHistory>(
+                        ShardedKey::new(address, u64::MAX),
+                        BlockNumberList::new([4]).unwrap(),
+                    )
+                    .unwrap();
+                provider_rw
+                    .tx_ref()
+                    .put::<tables::StoragesHistory>(
+                        StorageShardedKey {
+                            address,
+                            sharded_key: ShardedKey::new(storage_key, u64::MAX),
+                        },
+                        BlockNumberList::new([4]).unwrap(),
+                    )
+                    .unwrap();
+                provider_rw
+                    .tx_ref()
+                    .put::<tables::AccountChangeSets>(
+                        4,
+                        AccountBeforeTx { address, info: Some(old_account) },
+                    )
+                    .unwrap();
+                provider_rw
+                    .tx_ref()
+                    .put::<tables::StorageChangeSets>(BlockNumberAddress((4, address)), old_storage)
+                    .unwrap();
+            }
+            provider_rw.commit().unwrap();
+
+            for (finish, execution, history, expected) in
+                [(4, 4, 4, 20), (3, 4, 4, 10), (3, 4, 3, 10)]
+            {
+                let provider_rw = factory.provider_rw().unwrap();
+                for (stage, number) in [
+                    (StageId::Finish, finish),
+                    (StageId::Execution, execution),
+                    (StageId::IndexAccountHistory, history),
+                    (StageId::IndexStorageHistory, history),
+                ] {
+                    provider_rw.save_stage_checkpoint(stage, StageCheckpoint::new(number)).unwrap();
+                }
+                provider_rw.commit().unwrap();
+
+                let state_provider_factory = OverlayStateProviderFactory::<_, EthPrimitives>::new(
+                    factory.clone(),
+                    OverlayManager::default()
+                        .overlay_builder(blocks[finish as usize].recovered_block().hash()),
+                );
+                let provider = state_provider_factory.database_provider_ro().unwrap();
+                assert_eq!(
+                    provider.basic_account(&address).unwrap().unwrap().balance,
+                    U256::from(expected)
+                );
+                assert_eq!(
+                    provider.storage(address, storage_key).unwrap(),
+                    Some(U256::from(expected))
+                );
+            }
+        }
     }
 }

@@ -38,7 +38,7 @@ use itertools::Itertools;
 use parking_lot::RwLock;
 use rayon::slice::ParallelSliceMut;
 use reth_chain_state::ExecutedBlock;
-use reth_chainspec::{ChainInfo, ChainSpecProvider, EthChainSpec};
+use reth_chainspec::{ChainInfo, ChainSpecProvider, EthChainSpec, EthereumHardforks};
 use reth_db_api::{
     cursor::{DbCursorRO, DbCursorRW, DbDupCursorRO, DbDupCursorRW},
     database::{Database, ReaderTxnTracker},
@@ -50,7 +50,7 @@ use reth_db_api::{
     table::Table,
     tables,
     transaction::{DbTx, DbTxMut},
-    BlockNumberList,
+    BlockNumberList, DbTxUnwindExt,
 };
 use reth_execution_types::{
     BlockExecutionOutput, BlockExecutionResult, Chain, ExecutionOutcome,
@@ -197,6 +197,9 @@ pub struct DatabaseProvider<TX, N: NodeTypes> {
     chain_spec: Arc<N::ChainSpec>,
     /// Static File provider
     static_file_provider: StaticFileProvider<N::Primitives>,
+    /// TD at the last header written by this transaction, before static-file metadata is
+    /// published.
+    pending_total_difficulty: RwLock<Option<(BlockNumber, alloy_primitives::U256)>>,
     /// Pruning configuration
     prune_modes: PruneModes,
     /// Node storage handler.
@@ -401,6 +404,7 @@ impl<TX: DbTxMut, N: NodeTypes> DatabaseProvider<TX, N> {
             db_path,
             rocksdb_history_snapshot: OnceLock::new(),
             pending_rocksdb_batches: Default::default(),
+            pending_total_difficulty: Default::default(),
             commit_order,
             minimum_pruning_distance: MINIMUM_UNWIND_SAFE_DISTANCE,
             metrics,
@@ -616,6 +620,13 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
         let mut timings =
             metrics::SaveBlocksTimings { batch_size: block_count, ..Default::default() };
 
+        // Resolve the anchor before starting any writes. Legacy datadirs may only have TD in
+        // MDBX; the static-file writer cannot read that transaction from its worker thread.
+        let starting_td = match first_number {
+            Some(number) if number > 0 => self.total_difficulty_at(number - 1)?,
+            _ => alloy_primitives::U256::ZERO,
+        };
+
         // avoid capturing &self.tx in scope below.
         let sf_provider = &self.static_file_provider;
         let rocksdb_provider = &self.rocksdb_provider;
@@ -646,7 +657,7 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
                         sf_ctx.expect("static file context exists when blocks are persisted");
                     sf_result = Some(
                         sf_provider
-                            .write_blocks_data(blocks, &tx_nums, sf_ctx, runtime)
+                            .write_blocks_data(blocks, &tx_nums, sf_ctx, starting_td, runtime)
                             .map(|()| start.elapsed()),
                     );
                 });
@@ -711,49 +722,6 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
                 let start = Instant::now();
                 self.insert_block_mdbx_only(recovered_block, tx_nums[i])?;
                 timings.insert_block += start.elapsed();
-
-                // BSC parlia: persist per-block total difficulty into the (otherwise deprecated)
-                // `HeaderTerminalDifficulties` MDBX table. Parlia fork choice ranks by cumulative
-                // difficulty, which upstream reth no longer tracks (#19151). Persisting it here
-                // lets `header_td`/`header_td_by_number` serve it without walking
-                // the chain to genesis on a cold restart, and lets the miner
-                // advertise the correct TD on `NewBlock`. TD(0) = genesis
-                // difficulty; TD(n) = TD(n-1) + difficulty(n). Blocks are written
-                // oldest-first, so the parent's TD is already in the table (this batch or a prior
-                // one).
-                {
-                    let number = recovered_block.number();
-                    let difficulty = recovered_block.header().difficulty();
-                    let td = if number == 0 {
-                        difficulty
-                    } else {
-                        // Rebuilds the parent TD when the entry is absent instead of defaulting
-                        // to zero, which would silently re-anchor the running sum. See
-                        // `total_difficulty_at`.
-                        match self.total_difficulty_at(number - 1) {
-                            Ok(parent_td) => parent_td + difficulty,
-                            // No ancestor headers at all, so there is no history to sum: this is
-                            // a snapshot import (`init-state --without-evm` inserts the tip
-                            // before backfilling placeholders), not a missing-row bug. Anchor
-                            // here rather than refusing the insert -- the chain genuinely has no
-                            // earlier difficulty to account for.
-                            Err(ProviderError::TotalDifficultyHistoryIncomplete {
-                                missing,
-                                ..
-                            }) => {
-                                debug!(
-                                    target: "providers::db",
-                                    number,
-                                    missing,
-                                    "No ancestor headers; anchoring total difficulty at this block"
-                                );
-                                difficulty
-                            }
-                            Err(err) => return Err(err),
-                        }
-                    };
-                    self.tx.put::<tables::HeaderTerminalDifficulties>(number, td.into())?;
-                }
 
                 if save_mode.with_state() {
                     let execution_output = block.execution_outcome();
@@ -848,6 +816,12 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
             })??;
         }
 
+        if let Some(last) = blocks.last() {
+            let td = blocks
+                .iter()
+                .fold(starting_td, |td, block| td + block.recovered_block().header().difficulty());
+            *self.pending_total_difficulty.write() = Some((last.recovered_block().number(), td));
+        }
         timings.total = total_start.elapsed();
 
         self.metrics.record_save_blocks(&timings);
@@ -1089,6 +1063,7 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> DatabaseProvider<TX, N> {
             db_path,
             rocksdb_history_snapshot: OnceLock::new(),
             pending_rocksdb_batches: Default::default(),
+            pending_total_difficulty: Default::default(),
             commit_order: CommitOrder::Normal,
             minimum_pruning_distance: MINIMUM_UNWIND_SAFE_DISTANCE,
             metrics,
@@ -1802,6 +1777,17 @@ impl<TX: DbTx + 'static, N: NodeTypes> DatabaseProvider<TX, N> {
             .as_ref()
             .map(OwnedRocksReadSnapshot::as_snapshot)
     }
+
+    /// Bounds history by the state committed in this MDBX snapshot. Pipeline execution can
+    /// advance state and its changesets beyond Finish before history indexing completes.
+    fn history_visible_tip(&self) -> ProviderResult<BlockNumber> {
+        let finish = self.best_block_number()?;
+        let execution = self
+            .get_stage_checkpoint(StageId::Execution)?
+            .map(|checkpoint| checkpoint.block_number)
+            .unwrap_or_default();
+        Ok(finish.max(execution))
+    }
 }
 
 impl<TX: DbTx + 'static, N: NodeTypes> HistoryReader for DatabaseProvider<TX, N> {
@@ -1811,7 +1797,7 @@ impl<TX: DbTx + 'static, N: NodeTypes> HistoryReader for DatabaseProvider<TX, N>
         block_number: BlockNumber,
         lowest_available_block_number: Option<BlockNumber>,
     ) -> ProviderResult<HistoryInfo> {
-        let visible_tip = self.best_block_number()?;
+        let visible_tip = self.history_visible_tip()?;
         let mut reader = EitherReader::new_accounts_history(self, self.history_rocksdb_snapshot())?;
         reader
             .account_history_info(address, block_number, lowest_available_block_number, visible_tip)
@@ -1825,7 +1811,7 @@ impl<TX: DbTx + 'static, N: NodeTypes> HistoryReader for DatabaseProvider<TX, N>
         block_number: BlockNumber,
         lowest_available_block_number: Option<BlockNumber>,
     ) -> ProviderResult<HistoryInfo> {
-        let visible_tip = self.best_block_number()?;
+        let visible_tip = self.history_visible_tip()?;
         let mut reader = EitherReader::new_storages_history(self, self.history_rocksdb_snapshot())?;
         reader
             .storage_history_info(
@@ -1916,30 +1902,38 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> HeaderProvider for DatabasePro
         &self,
         number: BlockNumber,
     ) -> ProviderResult<Option<alloy_primitives::U256>> {
-        // Persisted per-block total difficulty (BSC parlia; see the write in `save_blocks`).
+        if let Some((pending_number, td)) = *self.pending_total_difficulty.read() &&
+            pending_number == number
+        {
+            return Ok(Some(td));
+        }
+        let static_td = self.static_file_provider.header_td_by_number(number)?;
+        if let Some(td) = static_td.filter(|td| !td.is_zero()) {
+            return Ok(Some(td));
+        }
+        // Older writers left zero placeholders in static files and kept the real TD in MDBX.
+        // Require the header to exist so a stale legacy row cannot resurrect an unwound block.
+        let Some(header) = self.header_by_number(number)? else { return Ok(None) };
+        if number == self.chain_spec.genesis_header().number() {
+            return Ok(Some(header.difficulty()));
+        }
         if let Some(td) = self.tx.get::<tables::HeaderTerminalDifficulties>(number)? {
             return Ok(Some(td.0));
         }
-        // Genesis is initialized outside `save_blocks`, so its TD isn't in the table: fall back
-        // to the genesis header's own difficulty.
-        if number == 0 {
-            return Ok(self.header_by_number(0)?.map(|h| h.difficulty()));
+        // A chain that started after the Merge has genuinely zero TD. On other chains, zero
+        // may be a placeholder even if this particular header has zero difficulty.
+        if static_td == Some(alloy_primitives::U256::ZERO) &&
+            header.difficulty().is_zero() &&
+            self.chain_spec.is_paris_active_at_block(0) &&
+            self.chain_spec.genesis_header().difficulty().is_zero()
+        {
+            return Ok(static_td);
         }
         Ok(None)
     }
 
-    /// Overrides the trait default with a direct table seek: an unwind can leave a gap, and
-    /// seeking the closest stored ancestor avoids walking back to genesis when one exists.
-    ///
-    /// `HeaderTerminalDifficulties` is a BSC/parlia addition, so a datadir created before it
-    /// landed holds no rows at all, and static files are no help either (the header writer
-    /// stores `U256::ZERO` in the TD column). Treating an absent parent as zero re-anchors the
-    /// running sum at whatever block this node happened to write first, producing a TD far below
-    /// the real one — geth peers then rank us below their own head and never sync from us.
-    ///
-    /// So rebuild instead: seek the closest ancestor that does have a TD (genesis at worst) and
-    /// sum header difficulties forward from it. Only the first block written after an upgrade
-    /// pays the full walk; every later block finds its parent already stored.
+    /// Rebuilds a missing TD from the closest legacy MDBX anchor, or genesis. New static-file
+    /// entries are served directly; old zero placeholders still require bounded recovery.
     fn total_difficulty_at(&self, number: BlockNumber) -> ProviderResult<alloy_primitives::U256> {
         if let Some(td) = self.header_td_by_number(number)? {
             return Ok(td)
@@ -1955,7 +1949,7 @@ impl<TX: DbTx + 'static, N: NodeTypesForProvider> HeaderProvider for DatabasePro
             };
             match ancestor {
                 Some((block, td)) => (block, td.0),
-                // Genesis TD is never written by `save_blocks`; take it from the header.
+                // Without a legacy anchor, derive the genesis TD from its header.
                 None => (
                     0,
                     self.header_by_number(0)?
@@ -3886,6 +3880,9 @@ impl<TX: DbTxMut + DbTx + 'static, N: NodeTypesForProvider> BlockWriter
     }
 
     fn remove_blocks_above(&self, block: BlockNumber) -> ProviderResult<()> {
+        self.pending_total_difficulty.write().take();
+        // Legacy TD rows are keyed by height and must not survive a canonical-chain unwind.
+        self.tx.unwind_table_by_num::<tables::HeaderTerminalDifficulties>(block)?;
         let last_block_number = self.last_block_number()?;
         // Clean up HeaderNumbers for blocks being removed, we must clear all indexes from MDBX.
         for hash in self.canonical_hashes_range(block + 1, last_block_number + 1)? {
@@ -4300,9 +4297,13 @@ mod tests {
         let data = BlockchainTestData::default();
 
         let provider_rw = factory.provider_rw().unwrap();
-        provider_rw.insert_block(&data.genesis.try_recover().unwrap()).unwrap();
-        for (block, _) in &data.blocks[..3] {
-            provider_rw.insert_block(block).unwrap();
+        {
+            let mut writer =
+                provider_rw.static_file_provider.get_writer(0, StaticFileSegment::Headers).unwrap();
+            writer.append_header(data.genesis.header(), &data.genesis.hash()).unwrap();
+            for (block, _) in &data.blocks[..3] {
+                writer.append_header(block.header(), &block.hash()).unwrap();
+            }
         }
         // Drop every row, reproducing a pre-feature datadir (and the state left behind by the
         // `db clear mdbx HeaderTerminalDifficulties` repair).
@@ -4329,9 +4330,13 @@ mod tests {
         let data = BlockchainTestData::default();
 
         let provider_rw = factory.provider_rw().unwrap();
-        provider_rw.insert_block(&data.genesis.try_recover().unwrap()).unwrap();
-        for (block, _) in &data.blocks[..3] {
-            provider_rw.insert_block(block).unwrap();
+        {
+            let mut writer =
+                provider_rw.static_file_provider.get_writer(0, StaticFileSegment::Headers).unwrap();
+            writer.append_header(data.genesis.header(), &data.genesis.hash()).unwrap();
+            for (block, _) in &data.blocks[..3] {
+                writer.append_header(block.header(), &block.hash()).unwrap();
+            }
         }
         provider_rw.tx_ref().clear::<tables::HeaderTerminalDifficulties>().unwrap();
         // A deliberately implausible anchor: if the walk restarted from genesis instead of
@@ -4346,6 +4351,230 @@ mod tests {
             .fold(anchor, |acc, d| acc + d);
 
         assert_eq!(provider.total_difficulty_at(3).unwrap(), expected);
+    }
+
+    #[test]
+    fn total_difficulty_persists_in_static_files_across_reopen_and_unwind() {
+        let mut factory = create_test_provider_factory();
+        let static_dir = tempfile::tempdir().unwrap();
+        factory.static_file_provider =
+            crate::providers::StaticFileProviderBuilder::read_write(static_dir.path())
+                .with_blocks_per_file(2)
+                .build()
+                .unwrap();
+        let data = BlockchainTestData::default();
+        let provider_rw = factory.provider_rw().unwrap();
+        provider_rw.insert_block(&data.genesis.clone().try_recover().unwrap()).unwrap();
+        let mut expected = data.genesis.difficulty();
+        for (block, _) in &data.blocks[..3] {
+            provider_rw.insert_block(block).unwrap();
+            expected += block.difficulty();
+            // Multiple inserts in one transaction must continue from its pending TD.
+            assert_eq!(provider_rw.header_td_by_number(block.number()).unwrap(), Some(expected));
+        }
+        assert_eq!(
+            provider_rw.tx_ref().entries::<tables::HeaderTerminalDifficulties>().unwrap(),
+            0
+        );
+        provider_rw.commit().unwrap();
+
+        {
+            let reopened =
+                crate::providers::StaticFileProviderBuilder::read_only(static_dir.path())
+                    .with_blocks_per_file(2)
+                    .build::<reth_ethereum_primitives::EthPrimitives>()
+                    .unwrap();
+            assert_eq!(reopened.header_td_by_number(0).unwrap(), Some(data.genesis.difficulty()));
+            assert_eq!(reopened.header_td_by_number(3).unwrap(), Some(expected));
+        }
+
+        // Static-file totals take precedence over leftover table entries.
+        let provider_rw = factory.provider_rw().unwrap();
+        provider_rw
+            .tx_ref()
+            .put::<tables::HeaderTerminalDifficulties>(3, U256::from(1).into())
+            .unwrap();
+        assert_eq!(provider_rw.header_td_by_number(3).unwrap(), Some(expected));
+        provider_rw.commit().unwrap();
+
+        let provider_rw = factory.unwind_provider_rw().unwrap();
+        provider_rw.remove_blocks_above(1).unwrap();
+        assert!(provider_rw
+            .tx_ref()
+            .get::<tables::HeaderTerminalDifficulties>(3)
+            .unwrap()
+            .is_none());
+        provider_rw.commit().unwrap();
+        assert_eq!(factory.provider().unwrap().header_td_by_number(3).unwrap(), None);
+
+        let provider_rw = factory.provider_rw().unwrap();
+        for (block, _) in &data.blocks[1..3] {
+            provider_rw.insert_block(block).unwrap();
+        }
+        provider_rw.commit().unwrap();
+        assert_eq!(factory.provider().unwrap().header_td_by_number(3).unwrap(), Some(expected));
+    }
+
+    #[test]
+    fn total_difficulty_continues_from_legacy_mdbx() {
+        let factory = create_test_provider_factory();
+        let data = BlockchainTestData::default();
+        let provider_rw = factory.provider_rw().unwrap();
+        provider_rw.insert_block(&data.genesis.clone().try_recover().unwrap()).unwrap();
+        provider_rw.insert_block(&data.blocks[0].0).unwrap();
+        provider_rw.commit().unwrap();
+        let provider_rw = factory.provider_rw().unwrap();
+        let expected_parent = data.genesis.difficulty() + data.blocks[0].0.difficulty();
+        {
+            let mut writer =
+                provider_rw.static_file_provider.get_writer(0, StaticFileSegment::Headers).unwrap();
+            // Replace only the header rows with the zero placeholders written by older binaries.
+            writer.prune_headers(2).unwrap();
+            writer.commit().unwrap();
+            writer.append_header(data.genesis.header(), &data.genesis.hash()).unwrap();
+            let parent = &data.blocks[0].0;
+            writer.append_header(parent.header(), &parent.hash()).unwrap();
+        }
+        provider_rw
+            .tx_ref()
+            .put::<tables::HeaderTerminalDifficulties>(1, expected_parent.into())
+            .unwrap();
+        // A stale row beyond the available headers must not be served.
+        provider_rw
+            .tx_ref()
+            .put::<tables::HeaderTerminalDifficulties>(10, U256::from(99).into())
+            .unwrap();
+        provider_rw.commit().unwrap();
+
+        let provider_rw = factory.provider_rw().unwrap();
+        assert_eq!(provider_rw.header_td_by_number(1).unwrap(), Some(expected_parent));
+        assert_eq!(provider_rw.header_td_by_number(10).unwrap(), None);
+        let next = &data.blocks[1].0;
+        provider_rw.insert_block(next).unwrap();
+        assert!(provider_rw
+            .tx_ref()
+            .get::<tables::HeaderTerminalDifficulties>(2)
+            .unwrap()
+            .is_none());
+        provider_rw.commit().unwrap();
+
+        let expected = expected_parent + next.difficulty();
+        assert_eq!(factory.static_file_provider().header_td_by_number(2).unwrap(), Some(expected));
+        assert_eq!(factory.provider().unwrap().header_td_by_number(2).unwrap(), Some(expected));
+        assert_eq!(
+            factory.static_file_provider().header_td_by_number(1).unwrap(),
+            Some(U256::ZERO)
+        );
+    }
+
+    #[test]
+    fn total_difficulty_missing_parent_fails_before_writing() {
+        let factory = create_test_provider_factory();
+        let data = BlockchainTestData::default();
+        let provider_rw = factory.provider_rw().unwrap();
+        assert!(matches!(
+            provider_rw.insert_block(&data.blocks[0].0),
+            Err(ProviderError::HeaderNotFound(BlockHashOrNumber::Number(0)))
+        ));
+        assert_eq!(provider_rw.tx_ref().entries::<tables::HeaderNumbers>().unwrap(), 0);
+        assert_eq!(
+            factory
+                .static_file_provider()
+                .get_highest_static_file_block(StaticFileSegment::Headers),
+            None
+        );
+        drop(provider_rw);
+        let provider_rw = factory.provider_rw().unwrap();
+        provider_rw.insert_block(&data.genesis.try_recover().unwrap()).unwrap();
+        provider_rw.commit().unwrap();
+        let provider_rw = factory.provider_rw().unwrap();
+        assert!(matches!(
+            provider_rw.insert_block(&data.blocks[1].0),
+            Err(ProviderError::TotalDifficultyHistoryIncomplete { number: 1, missing: 1 })
+        ));
+        assert_eq!(
+            factory
+                .static_file_provider()
+                .get_highest_static_file_block(StaticFileSegment::Headers),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn total_difficulty_supports_nonzero_genesis_height() {
+        for difficulty in [0, 2] {
+            let mut genesis = reth_chainspec::MAINNET.genesis.clone();
+            genesis.number = Some(100);
+            genesis.difficulty = U256::from(difficulty);
+            let spec = reth_chainspec::ChainSpecBuilder::mainnet().genesis(genesis).build();
+            let factory =
+                crate::test_utils::create_test_provider_factory_with_chain_spec(Arc::new(spec));
+            let provider_rw = factory.provider_rw().unwrap();
+            {
+                let header = factory.chain_spec().genesis_header().clone();
+                let mut writer = provider_rw
+                    .static_file_provider
+                    .get_writer(100, StaticFileSegment::Headers)
+                    .unwrap();
+                writer.user_header_mut().set_block_range(100, 100);
+                writer
+                    .append_header_direct(&header, header.difficulty, &header.hash_slow())
+                    .unwrap();
+            }
+            provider_rw.commit().unwrap();
+            assert_eq!(
+                factory.provider().unwrap().header_td_by_number(100).unwrap(),
+                Some(U256::from(difficulty))
+            );
+        }
+    }
+
+    #[test]
+    fn total_difficulty_accepts_zero_difficulty_chains() {
+        let spec = reth_chainspec::ChainSpecBuilder::mainnet()
+            .genesis(alloy_genesis::Genesis::default())
+            .paris_activated()
+            .build();
+        let factory =
+            crate::test_utils::create_test_provider_factory_with_chain_spec(Arc::new(spec));
+        let provider_rw = factory.provider_rw().unwrap();
+        {
+            let mut writer =
+                provider_rw.static_file_provider.get_writer(0, StaticFileSegment::Headers).unwrap();
+            for number in 0..=1 {
+                let header = Header { number, ..Default::default() };
+                writer.append_header(&header, &header.hash_slow()).unwrap();
+            }
+        }
+        provider_rw.commit().unwrap();
+        assert_eq!(factory.provider().unwrap().header_td_by_number(1).unwrap(), Some(U256::ZERO));
+    }
+
+    #[test]
+    fn total_difficulty_does_not_accept_zero_placeholder_after_positive_blocks() {
+        let factory = create_test_provider_factory();
+        let provider_rw = factory.provider_rw().unwrap();
+        {
+            let mut writer =
+                provider_rw.static_file_provider.get_writer(0, StaticFileSegment::Headers).unwrap();
+            for (number, difficulty) in [0, 2, 0].into_iter().enumerate() {
+                let header = Header {
+                    number: number as u64,
+                    difficulty: U256::from(difficulty),
+                    ..Default::default()
+                };
+                writer.append_header(&header, &header.hash_slow()).unwrap();
+            }
+        }
+        provider_rw.commit().unwrap();
+        let provider = factory.provider().unwrap();
+        assert_eq!(provider.header_td_by_number(2).unwrap(), None);
+        assert_eq!(provider.total_difficulty_at(2).unwrap(), U256::from(2));
+        let number = 100_001;
+        assert!(matches!(
+            provider.total_difficulty_at(number),
+            Err(ProviderError::TotalDifficultyRebuildTooLarge { number: 100_001, span: 100_001 })
+        ));
     }
 
     #[test]

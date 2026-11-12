@@ -17,8 +17,8 @@ use reth_network_p2p::headers::{
 };
 use reth_primitives_traits::{FullBlockHeader, HeaderTy, NodePrimitives, SealedHeader};
 use reth_provider::{
-    providers::StaticFileWriter, BlockHashReader, DBProvider, HeaderSyncGapProvider,
-    StaticFileProviderFactory,
+    providers::StaticFileWriter, BlockHashReader, DBProvider, HeaderProvider,
+    HeaderSyncGapProvider, StaticFileProviderFactory,
 };
 use reth_stages_api::{
     CheckpointBlockRange, EntitiesCheckpoint, ExecInput, ExecOutput, HeadersCheckpoint, Stage,
@@ -99,7 +99,7 @@ where
     /// database table.
     fn write_headers<P>(&mut self, provider: &P) -> Result<BlockNumber, StageError>
     where
-        P: DBProvider<Tx: DbTxMut> + StaticFileProviderFactory,
+        P: DBProvider<Tx: DbTxMut> + StaticFileProviderFactory + HeaderProvider,
         Downloader: HeaderDownloader<Header = <P::Primitives as NodePrimitives>::BlockHeader>,
         <P::Primitives as NodePrimitives>::BlockHeader: Value + FullBlockHeader,
     {
@@ -114,6 +114,9 @@ where
         let mut last_header_number = static_file_provider
             .get_highest_static_file_block(StaticFileSegment::Headers)
             .unwrap_or_default();
+
+        // Resolve through the provider so legacy MDBX totals can anchor new static-file rows.
+        let mut total_difficulty = provider.total_difficulty_at(last_header_number)?;
 
         // Although headers were downloaded in reverse order, the collector iterates it in ascending
         // order
@@ -137,8 +140,8 @@ where
             }
             last_header_number = header.number();
 
-            // Append to Headers segment
-            writer.append_header(header, header_hash)?;
+            total_difficulty += header.difficulty();
+            writer.append_header_with_td(header, total_difficulty, header_hash)?;
         }
 
         info!(target: "sync::stages::headers", total = total_headers, "Writing headers hash index");
@@ -186,7 +189,7 @@ where
 
 impl<Provider, P, D> Stage<Provider> for HeaderStage<P, D>
 where
-    Provider: DBProvider<Tx: DbTxMut> + StaticFileProviderFactory,
+    Provider: DBProvider<Tx: DbTxMut> + StaticFileProviderFactory + HeaderProvider,
     P: HeaderSyncGapProvider<Header = <Provider::Primitives as NodePrimitives>::BlockHeader>,
     D: HeaderDownloader<Header = <Provider::Primitives as NodePrimitives>::BlockHeader>,
     <Provider::Primitives as NodePrimitives>::BlockHeader: FullBlockHeader + Value,
@@ -334,6 +337,9 @@ where
                 (input.unwind_to + 1)..,
             )?;
         provider.tx_ref().unwind_table_by_num::<tables::CanonicalHeaders>(input.unwind_to)?;
+        provider
+            .tx_ref()
+            .unwind_table_by_num::<tables::HeaderTerminalDifficulties>(input.unwind_to)?;
         let unfinalized_headers_unwound = provider.tx_ref().unwind_table_by_num::<tables::Headers<
             HeaderTy<Provider::Primitives>,
         >>(input.unwind_to)?;
@@ -460,6 +466,16 @@ mod tests {
                 let headers = random_header_range(&mut rng, 0..start + 1, B256::ZERO);
                 let head = headers.last().cloned().unwrap();
                 self.db.insert_headers(headers.iter())?;
+                // Model an MDBX-backed datadir whose static-file TD column contains placeholders.
+                let provider = self.db.factory.provider_rw()?;
+                let mut td = alloy_primitives::U256::ZERO;
+                for header in &headers {
+                    td += header.difficulty;
+                    provider
+                        .tx_ref()
+                        .put::<tables::HeaderTerminalDifficulties>(header.number, td.into())?;
+                }
+                provider.commit()?;
 
                 // use previous checkpoint as seed size
                 let end = input.target.unwrap_or_default() + 1;
@@ -483,6 +499,15 @@ mod tests {
                 match output {
                     Some(output) if output.checkpoint.block_number > initial_checkpoint => {
                         let provider = self.db.factory.provider()?;
+
+                        let mut td = provider.total_difficulty_at(initial_checkpoint)?;
+                        for number in initial_checkpoint + 1..=output.checkpoint.block_number {
+                            td += provider.header_by_number(number)?.unwrap().difficulty;
+                            assert_eq!(
+                                provider.static_file_provider().header_td_by_number(number)?,
+                                Some(td)
+                            );
+                        }
 
                         for block_num in initial_checkpoint..output.checkpoint.block_number {
                             // look up the header hash
@@ -550,6 +575,10 @@ mod tests {
                     .ensure_no_entry_above_by_value::<tables::HeaderNumbers, _>(block, |val| val)?;
                 self.db.ensure_no_entry_above::<tables::CanonicalHeaders, _>(block, |key| key)?;
                 self.db.ensure_no_entry_above::<tables::Headers, _>(block, |key| key)?;
+                self.db.ensure_no_entry_above::<tables::HeaderTerminalDifficulties, _>(
+                    block,
+                    |key| key,
+                )?;
                 Ok(())
             }
 
