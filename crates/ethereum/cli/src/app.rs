@@ -14,11 +14,11 @@ use reth_cli_runner::CliRunner;
 use reth_db::DatabaseEnv;
 use reth_node_api::NodePrimitives;
 use reth_node_builder::{NodeBuilder, WithLaunchContext};
-use reth_node_ethereum::{consensus::EthBeaconConsensus, EthEvmConfig, EthereumNode};
+use reth_node_ethereum::{consensus::EthBeaconConsensus, EthereumNode};
 use reth_node_metrics::recorder::install_prometheus_recorder;
 use reth_rpc_server_types::RpcModuleValidator;
 use reth_tasks::RayonConfig;
-use reth_tracing::{FileWorkerGuard, Layers};
+use reth_tracing::{Layers, TracingGuards};
 use std::{fmt, sync::Arc};
 
 /// A wrapper around a parsed CLI that handles command execution.
@@ -32,7 +32,7 @@ pub struct CliApp<
     cli: Cli<Spec, Ext, Rpc, SubCmd>,
     runner: Option<CliRunner>,
     layers: Option<Layers>,
-    guard: Option<FileWorkerGuard>,
+    guard: Option<TracingGuards>,
 }
 
 impl<C, Ext, Rpc, SubCmd> CliApp<C, Ext, Rpc, SubCmd>
@@ -69,8 +69,16 @@ where
     where
         C: ChainSpecParser<ChainSpec = ChainSpec>,
     {
-        let components = |spec: Arc<ChainSpec>| {
-            (EthEvmConfig::ethereum(spec.clone()), Arc::new(EthBeaconConsensus::new(spec)))
+        let jit_args = match &self.cli.command {
+            Commands::ReExecute(cmd) => cmd.jit.clone(),
+            _ => Default::default(),
+        };
+
+        let components = move |spec: Arc<ChainSpec>| {
+            let (evm_config, _) =
+                reth_node_ethereum::node::build_evm_config(spec.clone(), &jit_args, None)
+                    .expect("failed to start revmc JIT backend");
+            (evm_config, Arc::new(EthBeaconConsensus::new(spec)))
         };
 
         self.run_with_components::<EthereumNode>(components, async move |builder, ext| {
@@ -100,13 +108,18 @@ where
             None => {
                 let runtime_config = match &self.cli.command {
                     Commands::Node(command) => {
-                        reth_tasks::RuntimeConfig::default().with_rayon(RayonConfig {
+                        let config = reth_tasks::RuntimeConfig::default().with_rayon(RayonConfig {
                             reserved_cpu_cores: command.engine.reserved_cpu_cores,
                             proof_storage_worker_threads: command.engine.storage_worker_count,
                             proof_account_worker_threads: command.engine.account_worker_count,
                             prewarming_threads: command.engine.prewarming_threads,
                             ..Default::default()
-                        })
+                        });
+                        if let Some(cpu_cores) = command.engine.cpu_cores {
+                            config.with_cpu_cores(cpu_cores)
+                        } else {
+                            config
+                        }
                     }
                     _ => reth_tasks::RuntimeConfig::default(),
                 };
@@ -141,7 +154,7 @@ where
     /// See [`Cli::init_tracing`] for more information.
     pub fn init_tracing(&mut self, runner: &CliRunner) -> Result<()> {
         if let Some(layers) = self.layers.take() {
-            self.guard = self.cli.init_tracing(runner, layers)?;
+            self.guard = Some(self.cli.init_tracing(runner, layers)?);
         }
 
         Ok(())
@@ -193,7 +206,8 @@ where
         Commands::Db(command) => {
             runner.run_blocking_command_until_exit(|ctx| command.execute::<N>(ctx))
         }
-        Commands::Download(command) => runner.run_blocking_until_ctrl_c(command.execute::<N>()),
+        Commands::Download(command) => runner
+            .run_blocking_until_ctrl_c(async move { command.execute::<N>().await.map(|_| ()) }),
         Commands::SnapshotManifest(command) => command.execute(),
         Commands::Stage(command) => {
             runner.run_command_until_exit(|ctx| command.execute::<N, _>(ctx, components))

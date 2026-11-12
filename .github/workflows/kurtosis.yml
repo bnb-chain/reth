@@ -18,9 +18,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   prepare-reth:
-    uses: ./.github/workflows/prepare-reth.yml
+    uses: ./.github/workflows/prepare-reth.yml # zizmor: ignore[self-repository] -- actionlint 1.7.12 requires the ./ syntax.
     with:
       image_tag: ghcr.io/paradigmxyz/reth:kurtosis-ci
       binary_name: reth
@@ -34,12 +37,13 @@ jobs:
     needs:
       - prepare-reth
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Download reth image
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: artifacts
           path: /tmp
@@ -51,7 +55,7 @@ jobs:
           docker image ls -a
 
       - name: Run kurtosis
-        uses: ethpandaops/kurtosis-assertoor-github-action@v1
+        uses: ethpandaops/kurtosis-assertoor-github-action@5932604b244dbd2ddb811516b516a9094f4d2c2f # v1
         with:
           ethereum_package_args: ".github/assets/kurtosis_network_params.yaml"
 
@@ -61,7 +65,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Slack Webhook Action
-        uses: rtCamp/action-slack-notify@v2
+        uses: rtCamp/action-slack-notify@33ca3be66c6f378fe1610fd1d5258632dbed5e58 # v2.4.0
         env:
           SLACK_COLOR: ${{ job.status }}
           SLACK_MESSAGE: "Failed run: https://github.com/paradigmxyz/reth/actions/runs/${{ github.run_id }}"

@@ -9,4 +9,4 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod config;
-pub use config::{BodiesConfig, Config, PruneConfig, StateDbConfig};
+pub use config::{BodiesConfig, Config, PruneConfig};

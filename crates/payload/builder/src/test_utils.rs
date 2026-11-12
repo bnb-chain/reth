@@ -12,7 +12,7 @@ use reth_chain_state::CanonStateNotification;
 use reth_ethereum_engine_primitives::EthPayloadAttributes;
 use reth_payload_builder_primitives::PayloadBuilderError;
 use reth_payload_primitives::{PayloadKind, PayloadTypes};
-use reth_primitives_traits::Block as _;
+use reth_primitives_traits::{Block as _, RecoveredBlock};
 use std::{
     future::Future,
     pin::Pin,
@@ -30,8 +30,7 @@ pub fn test_payload_service<T>() -> (
     PayloadBuilderHandle<T>,
 )
 where
-    T: PayloadTypes<PayloadAttributes = EthPayloadAttributes, BuiltPayload = EthBuiltPayload>
-        + 'static,
+    T: PayloadTypes<PayloadAttributes = EthPayloadAttributes, BuiltPayload = EthBuiltPayload>,
 {
     PayloadBuilderService::new(Default::default(), futures_util::stream::empty())
 }
@@ -39,8 +38,7 @@ where
 /// Creates a new [`PayloadBuilderService`] for testing purposes and spawns it in the background.
 pub fn spawn_test_payload_service<T>() -> PayloadBuilderHandle<T>
 where
-    T: PayloadTypes<PayloadAttributes = EthPayloadAttributes, BuiltPayload = EthBuiltPayload>
-        + 'static,
+    T: PayloadTypes<PayloadAttributes = EthPayloadAttributes, BuiltPayload = EthBuiltPayload>,
 {
     let (service, handle) = test_payload_service();
     tokio::spawn(service);
@@ -86,7 +84,7 @@ impl PayloadJob for TestPayloadJob {
 
     fn best_payload(&self) -> Result<EthBuiltPayload, PayloadBuilderError> {
         Ok(EthBuiltPayload::new(
-            Arc::new(Block::<_>::default().seal_slow()),
+            Arc::new(RecoveredBlock::new_sealed(Block::<_>::default().seal_slow(), vec![])),
             U256::ZERO,
             Some(Default::default()),
             None,

@@ -4,7 +4,7 @@ use alloy_primitives::BlockNumber;
 use reth_db_models::StoredBlockBodyIndices;
 use reth_execution_types::{Chain, ExecutionOutcome};
 use reth_primitives_traits::{Block, NodePrimitives, RecoveredBlock};
-use reth_storage_errors::provider::ProviderResult;
+use reth_storage_errors::provider::{ProviderError, ProviderResult};
 use reth_trie_common::HashedPostStateSorted;
 
 /// `BlockExecution` Writer
@@ -22,7 +22,12 @@ pub trait BlockExecutionWriter:
     /// Remove all of the blocks above the provided number and their execution result
     ///
     /// The passed block number will stay in the database.
-    fn remove_block_and_execution_above(&self, block: BlockNumber) -> ProviderResult<()>;
+    ///
+    /// Returns the persistence frontiers after removal.
+    fn remove_block_and_execution_above(
+        &self,
+        block: BlockNumber,
+    ) -> ProviderResult<PersistenceFrontiers>;
 }
 
 impl<T: BlockExecutionWriter> BlockExecutionWriter for &T {
@@ -33,9 +38,23 @@ impl<T: BlockExecutionWriter> BlockExecutionWriter for &T {
         (*self).take_block_and_execution_above(block)
     }
 
-    fn remove_block_and_execution_above(&self, block: BlockNumber) -> ProviderResult<()> {
+    fn remove_block_and_execution_above(
+        &self,
+        block: BlockNumber,
+    ) -> ProviderResult<PersistenceFrontiers> {
         (*self).remove_block_and_execution_above(block)
     }
+}
+
+/// The database and state/trie persistence frontiers.
+///
+/// The state/trie frontier is never ahead of the database frontier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PersistenceFrontiers {
+    /// The highest block whose non-state/trie outputs are persisted.
+    pub db_tip: BlockNumber,
+    /// The highest block whose state/trie outputs are persisted.
+    pub partial_state_trie: BlockNumber,
 }
 
 /// Block Writer
@@ -78,7 +97,7 @@ pub trait BlockWriter {
     /// updates the post-state.
     ///
     /// Inserts the blocks into the database and updates the state with
-    /// provided `BundleState`. The database's trie state is _not_ updated.
+    /// provided execution state. The database's trie state is _not_ updated.
     ///
     /// # Parameters
     ///
@@ -94,4 +113,11 @@ pub trait BlockWriter {
         execution_outcome: &ExecutionOutcome<Self::Receipt>,
         hashed_state: HashedPostStateSorted,
     ) -> ProviderResult<()>;
+
+    /// Clears the active transaction lookup index. `RocksDB` changes take effect immediately.
+    ///
+    /// Errors by default, so writers without a lookup index don't have to implement it.
+    fn clear_transaction_lookup(&self) -> ProviderResult<()> {
+        Err(ProviderError::UnsupportedProvider)
+    }
 }

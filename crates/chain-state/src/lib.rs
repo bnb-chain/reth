@@ -14,13 +14,8 @@ pub use execution_stats::ExecutionTimingStats;
 mod in_memory;
 pub use in_memory::*;
 
-mod deferred_trie;
-pub use deferred_trie::*;
-
-mod lazy_overlay;
-pub use lazy_overlay::*;
-
-mod noop;
+mod preserved_sparse_trie;
+pub use preserved_sparse_trie::*;
 
 mod chain_info;
 pub use chain_info::ChainInfoTracker;
@@ -32,9 +27,6 @@ pub use notifications::{
     ForkChoiceSubscriptions, PersistedBlockNotifications, PersistedBlockSubscriptions,
     WatchValueStream,
 };
-
-mod memory_overlay;
-pub use memory_overlay::{MemoryOverlayStateProvider, MemoryOverlayStateProviderRef};
 
 #[cfg(any(test, feature = "test-utils"))]
 /// Common test helpers

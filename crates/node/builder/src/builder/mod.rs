@@ -8,6 +8,7 @@ use crate::{
     components::NodeComponentsBuilder,
     node::FullNode,
     rpc::{RethRpcAddOns, RethRpcServerHandles, RpcContext},
+    sync::PipelineBackfill,
     BlockReaderFor, DebugNode, DebugNodeLauncher, EngineNodeLauncher, LaunchNode, Node,
 };
 use alloy_eips::eip4844::env_settings::EnvKzgSettings;
@@ -282,6 +283,33 @@ impl<DB, ChainSpec: EthChainSpec> NodeBuilder<DB, ChainSpec> {
         let db = reth_db::test_utils::create_test_rw_db_with_datadir(data_dir.data_dir());
 
         WithLaunchContext { builder: self.with_database(db), task_executor }
+    }
+
+    /// Creates a preconfigured test node whose datadir is preserved when the node is dropped.
+    ///
+    /// The caller owns cleanup of `datadir`. This is useful for tests that stop a node and launch
+    /// a new instance against the same database and static files.
+    #[cfg(feature = "test-utils")]
+    pub fn testing_node_with_persistent_datadir(
+        mut self,
+        task_executor: TaskExecutor,
+        datadir: impl Into<std::path::PathBuf>,
+    ) -> WithLaunchContext<NodeBuilder<Arc<reth_db::DatabaseEnv>, ChainSpec>> {
+        let path = reth_node_core::dirs::MaybePlatformPath::<DataDirPath>::from(datadir.into());
+        self.config = self.config.with_datadir_args(reth_node_core::args::DatadirArgs {
+            datadir: path.clone(),
+            ..Default::default()
+        });
+
+        let data_dir =
+            path.unwrap_or_chain_default(self.config.chain.chain(), self.config.datadir.clone());
+        let db_path = data_dir.data_dir().join("db");
+        let db = reth_db::init_db(&db_path, reth_db::mdbx::DatabaseArguments::test())
+            .unwrap_or_else(|error| {
+                panic!("could not create test database at {db_path:?}: {error}")
+            });
+
+        WithLaunchContext { builder: self.with_database(Arc::new(db)), task_executor }
     }
 }
 
@@ -717,22 +745,29 @@ where
         T::Types: DebugNode<NodeAdapter<T, CB::Components>>,
         DebugNodeLauncher: LaunchNode<NodeBuilderWithComponents<T, CB, AO>>,
     {
-        let Self { builder, task_executor } = self;
+        self.launch_with_debug_capabilities_and_backfill(PipelineBackfill)
+    }
 
-        let engine_tree_config = builder.config.engine.tree_config();
-
-        let launcher = DebugNodeLauncher::new(EngineNodeLauncher::new(
-            task_executor,
-            builder.config.datadir(),
-            engine_tree_config,
-        ));
-        builder.launch_with(launcher)
+    /// Launches the node with the [`DebugNodeLauncher`], with the engine's backfill built by
+    /// `backfill` instead of the staged pipeline.
+    pub fn launch_with_debug_capabilities_and_backfill<B>(
+        self,
+        backfill: B,
+    ) -> <DebugNodeLauncher<EngineNodeLauncher<B>> as LaunchNode<
+        NodeBuilderWithComponents<T, CB, AO>,
+    >>::Future
+    where
+        T::Types: DebugNode<NodeAdapter<T, CB::Components>>,
+        DebugNodeLauncher<EngineNodeLauncher<B>>: LaunchNode<NodeBuilderWithComponents<T, CB, AO>>,
+    {
+        let launcher = DebugNodeLauncher::new(self.engine_api_launcher().with_backfill(backfill));
+        self.builder.launch_with(launcher)
     }
 
     /// Returns an [`EngineNodeLauncher`] that can be used to launch the node with engine API
     /// support.
     pub fn engine_api_launcher(&self) -> EngineNodeLauncher {
-        let engine_tree_config = self.builder.config.engine.tree_config();
+        let engine_tree_config = self.builder.config.tree_config();
         EngineNodeLauncher::new(
             self.task_executor.clone(),
             self.builder.config.datadir(),
@@ -751,17 +786,24 @@ pub struct BuilderContext<Node: FullNodeTypes> {
     pub(crate) executor: TaskExecutor,
     /// Config container
     pub(crate) config_container: WithConfigs<<Node::Types as NodeTypes>::ChainSpec>,
+    /// Cache of recovered transaction senders shared by node components, if enabled.
+    sender_recovery_cache: Option<reth_evm::SenderRecoveryCache>,
 }
 
 impl<Node: FullNodeTypes> BuilderContext<Node> {
     /// Create a new instance of [`BuilderContext`]
-    pub const fn new(
+    pub fn new(
         head: Head,
         provider: Node::Provider,
         executor: TaskExecutor,
         config_container: WithConfigs<<Node::Types as NodeTypes>::ChainSpec>,
     ) -> Self {
-        Self { head, provider, executor, config_container }
+        let sender_recovery_cache = config_container
+            .config
+            .engine
+            .sender_recovery_cache_enabled
+            .then(reth_evm::SenderRecoveryCache::default);
+        Self { head, provider, executor, config_container, sender_recovery_cache }
     }
 
     /// Returns the configured provider to interact with the blockchain.
@@ -794,6 +836,11 @@ impl<Node: FullNodeTypes> BuilderContext<Node> {
     /// This can be used to execute async tasks or functions during the setup.
     pub const fn task_executor(&self) -> &TaskExecutor {
         &self.executor
+    }
+
+    /// Returns the sender recovery cache shared by node components, if enabled.
+    pub const fn sender_recovery_cache(&self) -> Option<&reth_evm::SenderRecoveryCache> {
+        self.sender_recovery_cache.as_ref()
     }
 
     /// Returns the chain spec of the node.
@@ -841,13 +888,10 @@ impl<Node: FullNodeTypes> BuilderContext<Node> {
             + 'static,
         Node::Provider: BlockReaderFor<N>,
     {
-        let mut tx_config = self.config().network.transactions_manager_config();
-        tx_config.reannounce_time = self.config().txpool.reannounce_time;
-
         self.start_network_with(
             builder,
             pool,
-            tx_config,
+            self.config().network.transactions_manager_config(),
             self.config().network.tx_propagation_policy,
         )
     }
@@ -917,8 +961,20 @@ impl<Node: FullNodeTypes> BuilderContext<Node> {
         AnnPolicy: AnnouncementFilteringPolicy<N>,
     {
         let (handle, network, txpool, eth) = builder
-            .transactions_with_policies(pool, tx_config, propagation_policy, announcement_policy)
-            .request_handler(self.provider().clone())
+            .transactions_with_policies(
+                pool.clone(),
+                tx_config,
+                propagation_policy,
+                announcement_policy,
+            )
+            .map_transactions(|transactions| {
+                if let Some(cache) = self.sender_recovery_cache.clone() {
+                    transactions.with_sender_recovery_cache(cache)
+                } else {
+                    transactions
+                }
+            })
+            .request_handler_with_blob_store(self.provider().clone(), pool.blob_store())
             .split_with_handle();
 
         self.executor.spawn_critical_blocking_task("p2p txpool", txpool);
@@ -1019,5 +1075,31 @@ impl<Node: FullNodeTypes> std::fmt::Debug for BuilderContext<Node> {
             .field("executor", &self.executor)
             .field("config", &self.config())
             .finish()
+    }
+}
+
+#[cfg(all(test, feature = "test-utils"))]
+mod tests {
+    use super::*;
+    use reth_chainspec::ChainSpec;
+    use reth_tasks::Runtime;
+
+    #[test]
+    fn persistent_test_datadir_can_be_reopened() {
+        let root = tempfile::tempdir().unwrap();
+        let datadir = root.path().join("node");
+        let runtime = Runtime::test();
+
+        let config = || NodeConfig::new(Arc::new(ChainSpec::<alloy_consensus::Header>::default()));
+        let first = NodeBuilder::new(config())
+            .testing_node_with_persistent_datadir(runtime.clone(), datadir.clone());
+        assert!(datadir.join("db").exists());
+        drop(first);
+        assert!(datadir.join("db").exists());
+
+        let reopened = NodeBuilder::new(config())
+            .testing_node_with_persistent_datadir(runtime, datadir.clone());
+        drop(reopened);
+        assert!(datadir.join("db").exists());
     }
 }

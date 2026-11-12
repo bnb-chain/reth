@@ -1,28 +1,25 @@
 use core::fmt;
-use std::{fmt::Debug, str::FromStr, time::Duration};
+use std::{fmt::Debug, str::FromStr};
 
 use super::{
-    PeerMetadata, DEFAULT_MAX_COUNT_TRANSACTIONS_SEEN_BY_PEER, DEFAULT_REANNOUNCE_TIME,
+    PeerMetadata, DEFAULT_MAX_COUNT_TRANSACTIONS_SEEN_BY_PEER,
     DEFAULT_SOFT_LIMIT_BYTE_SIZE_POOLED_TRANSACTIONS_RESP_ON_PACK_GET_POOLED_TRANSACTIONS_REQ,
-    MIN_REANNOUNCE_TIME, SOFT_LIMIT_BYTE_SIZE_POOLED_TRANSACTIONS_RESPONSE,
+    SOFT_LIMIT_BYTE_SIZE_POOLED_TRANSACTIONS_RESPONSE,
 };
 use crate::transactions::constants::{
     tx_fetcher::{
-        DEFAULT_MAX_CAPACITY_CACHE_PENDING_FETCH, DEFAULT_MAX_COUNT_CONCURRENT_REQUESTS,
-        DEFAULT_MAX_COUNT_CONCURRENT_REQUESTS_PER_PEER,
+        DEFAULT_MAX_CAPACITY_CACHE_PENDING_FETCH, DEFAULT_MAX_COUNT_ANNOUNCED_HASHES_PER_PEER,
+        DEFAULT_MAX_COUNT_CONCURRENT_REQUESTS, DEFAULT_MAX_COUNT_CONCURRENT_REQUESTS_PER_PEER,
     },
-    tx_manager::DEFAULT_TX_MANAGER_CHANNEL_MEMORY_LIMIT_BYTES,
+    tx_manager::{
+        DEFAULT_MAX_COUNT_PENDING_POOL_IMPORTS, DEFAULT_TX_MANAGER_CHANNEL_MEMORY_LIMIT_BYTES,
+    },
 };
 use alloy_eips::eip2718::IsTyped2718;
 use alloy_primitives::B256;
-use derive_more::{Constructor, Display};
+use derive_more::Display;
 use reth_eth_wire::NetworkPrimitives;
 use reth_network_types::peers::kind::PeerKind;
-use tracing::warn;
-
-const fn default_reannounce_time() -> Duration {
-    DEFAULT_REANNOUNCE_TIME
-}
 
 /// Configuration for managing transactions within the network.
 #[derive(Debug, Clone)]
@@ -32,21 +29,27 @@ pub struct TransactionsManagerConfig {
     pub transaction_fetcher_config: TransactionFetcherConfig,
     /// Max number of seen transactions to store for each peer.
     pub max_transactions_seen_by_peer_history: u32,
+    /// Soft limit on concurrent transaction imports. A fetched response admitted while capacity
+    /// remains may exceed this limit by at most 255 transactions; broadcasts are truncated to fit.
+    #[cfg_attr(feature = "serde", serde(default = "default_max_pending_pool_imports"))]
+    pub max_pending_pool_imports: usize,
     /// How new pending transactions are propagated.
     #[cfg_attr(feature = "serde", serde(default))]
     pub propagation_mode: TransactionPropagationMode,
     /// Which peers we accept incoming transactions or announcements from.
     #[cfg_attr(feature = "serde", serde(default))]
     pub ingress_policy: TransactionIngressPolicy,
-    /// Age threshold for periodically reannouncing local pending transactions as hashes.
-    #[cfg_attr(feature = "serde", serde(default = "default_reannounce_time"))]
-    pub reannounce_time: Duration,
     /// Memory limit (in bytes) for the channel that carries
     /// `NetworkTransactionEvent`s from the `NetworkManager` to the `TransactionsManager`.
     ///
     /// When the budget is exhausted, new events are dropped.
     #[cfg_attr(feature = "serde", serde(default = "default_tx_channel_memory_limit_bytes"))]
     pub tx_channel_memory_limit_bytes: usize,
+}
+
+#[cfg(feature = "serde")]
+const fn default_max_pending_pool_imports() -> usize {
+    DEFAULT_MAX_COUNT_PENDING_POOL_IMPORTS
 }
 
 #[cfg(feature = "serde")]
@@ -59,28 +62,11 @@ impl Default for TransactionsManagerConfig {
         Self {
             transaction_fetcher_config: TransactionFetcherConfig::default(),
             max_transactions_seen_by_peer_history: DEFAULT_MAX_COUNT_TRANSACTIONS_SEEN_BY_PEER,
+            max_pending_pool_imports: DEFAULT_MAX_COUNT_PENDING_POOL_IMPORTS,
             propagation_mode: TransactionPropagationMode::default(),
             ingress_policy: TransactionIngressPolicy::default(),
-            reannounce_time: default_reannounce_time(),
             tx_channel_memory_limit_bytes: DEFAULT_TX_MANAGER_CHANNEL_MEMORY_LIMIT_BYTES,
         }
-    }
-}
-
-impl TransactionsManagerConfig {
-    /// Returns a config with any invalid reannounce interval clamped to the supported minimum.
-    pub fn sanitized(mut self) -> Self {
-        if self.reannounce_time < MIN_REANNOUNCE_TIME {
-            warn!(
-                target: "net::tx",
-                provided = ?self.reannounce_time,
-                updated = ?MIN_REANNOUNCE_TIME,
-                "Sanitizing invalid transaction reannounce time"
-            );
-            self.reannounce_time = MIN_REANNOUNCE_TIME;
-        }
-
-        self
     }
 }
 
@@ -139,7 +125,7 @@ impl FromStr for TransactionPropagationMode {
 }
 
 /// Configuration for fetching transactions.
-#[derive(Debug, Constructor, Clone)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TransactionFetcherConfig {
     /// Max inflight [`GetPooledTransactions`](reth_eth_wire::GetPooledTransactions) requests.
@@ -156,24 +142,52 @@ pub struct TransactionFetcherConfig {
     /// [`PooledTransactions`](reth_eth_wire::PooledTransactions) response on packing a
     /// [`GetPooledTransactions`](reth_eth_wire::GetPooledTransactions) request with hashes.
     pub soft_limit_byte_size_pooled_transactions_response_on_pack_request: usize,
-    /// Max capacity of the cache of transaction hashes, for transactions that weren't yet fetched.
-    /// A transaction is pending fetch if its hash didn't fit into a
-    /// [`GetPooledTransactions`](reth_eth_wire::GetPooledTransactions) yet, or it wasn't returned
-    /// upon request to peers.
+    /// Max number of announced transaction hashes to keep track of, i.e. hashes that were
+    /// announced but not fetched yet, both pending and inflight. Once reached, the peer tracking
+    /// the most hashes gives up its oldest unshared pending hash for a newly announced one.
+    /// If none is found, the oldest pending hash (including shared hashes) is evicted instead.
+    /// Inflight hashes are preserved; if no victim is found, the announcement is dropped.
     pub max_capacity_cache_txns_pending_fetch: u32,
+    /// Max number of tracked hashes a single peer can be a candidate for. Announcements from a
+    /// peer that exceed this limit are dropped.
+    #[cfg_attr(feature = "serde", serde(default = "default_max_announced_hashes_per_peer"))]
+    pub max_announced_hashes_per_peer: u32,
+}
+
+#[cfg(feature = "serde")]
+const fn default_max_announced_hashes_per_peer() -> u32 {
+    DEFAULT_MAX_COUNT_ANNOUNCED_HASHES_PER_PEER
+}
+
+impl TransactionFetcherConfig {
+    /// Creates a new config with the default limit on announced hashes per peer.
+    pub const fn new(
+        max_inflight_requests: u32,
+        max_inflight_requests_per_peer: u8,
+        soft_limit_byte_size_pooled_transactions_response: usize,
+        soft_limit_byte_size_pooled_transactions_response_on_pack_request: usize,
+        max_capacity_cache_txns_pending_fetch: u32,
+    ) -> Self {
+        Self {
+            max_inflight_requests,
+            max_inflight_requests_per_peer,
+            soft_limit_byte_size_pooled_transactions_response,
+            soft_limit_byte_size_pooled_transactions_response_on_pack_request,
+            max_capacity_cache_txns_pending_fetch,
+            max_announced_hashes_per_peer: DEFAULT_MAX_COUNT_ANNOUNCED_HASHES_PER_PEER,
+        }
+    }
 }
 
 impl Default for TransactionFetcherConfig {
     fn default() -> Self {
-        Self {
-            max_inflight_requests: DEFAULT_MAX_COUNT_CONCURRENT_REQUESTS,
-            max_inflight_requests_per_peer: DEFAULT_MAX_COUNT_CONCURRENT_REQUESTS_PER_PEER,
-            soft_limit_byte_size_pooled_transactions_response:
-                SOFT_LIMIT_BYTE_SIZE_POOLED_TRANSACTIONS_RESPONSE,
-            soft_limit_byte_size_pooled_transactions_response_on_pack_request:
-                DEFAULT_SOFT_LIMIT_BYTE_SIZE_POOLED_TRANSACTIONS_RESP_ON_PACK_GET_POOLED_TRANSACTIONS_REQ,
-                max_capacity_cache_txns_pending_fetch: DEFAULT_MAX_CAPACITY_CACHE_PENDING_FETCH,
-        }
+        Self::new(
+            DEFAULT_MAX_COUNT_CONCURRENT_REQUESTS,
+            DEFAULT_MAX_COUNT_CONCURRENT_REQUESTS_PER_PEER,
+            SOFT_LIMIT_BYTE_SIZE_POOLED_TRANSACTIONS_RESPONSE,
+            DEFAULT_SOFT_LIMIT_BYTE_SIZE_POOLED_TRANSACTIONS_RESP_ON_PACK_GET_POOLED_TRANSACTIONS_REQ,
+            DEFAULT_MAX_CAPACITY_CACHE_PENDING_FETCH,
+        )
     }
 }
 
@@ -183,7 +197,9 @@ pub trait TransactionPropagationPolicy<N: NetworkPrimitives>:
 {
     /// Filter a given peer based on the policy.
     ///
-    /// This determines whether transactions can be propagated to this peer.
+    /// This determines whether transactions can be propagated to this peer. Peers that are
+    /// filtered out also don't receive the pending pool announcement on session establishment and
+    /// are served empty responses to `GetPooledTransactions` requests.
     fn can_propagate(&self, peer: &mut PeerMetadata<N>) -> bool;
 
     /// A callback on the policy when a new peer session is established.
@@ -409,16 +425,5 @@ mod tests {
         assert!(TransactionPropagationMode::from_str("max:").is_err());
         assert!(TransactionPropagationMode::from_str("max").is_err());
         assert!(TransactionPropagationMode::from_str("").is_err());
-    }
-
-    #[test]
-    fn test_reannounce_time_sanitized() {
-        let config = TransactionsManagerConfig {
-            reannounce_time: Duration::from_secs(1),
-            ..Default::default()
-        }
-        .sanitized();
-
-        assert_eq!(config.reannounce_time, MIN_REANNOUNCE_TIME);
     }
 }

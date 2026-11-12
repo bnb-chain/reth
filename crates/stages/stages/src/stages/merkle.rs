@@ -1,4 +1,4 @@
-use alloy_consensus::{constants::KECCAK_EMPTY, BlockHeader};
+use alloy_consensus::BlockHeader;
 use alloy_primitives::{BlockNumber, Sealable, B256};
 use reth_codecs::Compact;
 use reth_consensus::ConsensusError;
@@ -90,7 +90,10 @@ pub enum MerkleStage {
         incremental_threshold: u64,
     },
     /// The unwind portion of the merkle stage.
-    Unwind,
+    Unwind {
+        /// Whether every child of a changed branch path should be walked.
+        walk_all_changed_branch_children: bool,
+    },
     /// Able to execute and unwind. Used for tests
     #[cfg(any(test, feature = "test-utils"))]
     Both {
@@ -115,7 +118,12 @@ impl MerkleStage {
 
     /// Stage default for the [`MerkleStage::Unwind`].
     pub const fn default_unwind() -> Self {
-        Self::Unwind
+        Self::new_unwind(false)
+    }
+
+    /// Create a new instance of [`MerkleStage::Unwind`].
+    pub const fn new_unwind(walk_all_changed_branch_children: bool) -> Self {
+        Self::Unwind { walk_all_changed_branch_children }
     }
 
     /// Create new instance of [`MerkleStage::Execution`].
@@ -174,7 +182,7 @@ where
     fn id(&self) -> StageId {
         match self {
             Self::Execution { .. } => StageId::MerkleExecute,
-            Self::Unwind => StageId::MerkleUnwind,
+            Self::Unwind { .. } => StageId::MerkleUnwind,
             #[cfg(any(test, feature = "test-utils"))]
             Self::Both { .. } => StageId::Other("MerkleBoth"),
         }
@@ -183,7 +191,7 @@ where
     /// Execute the stage.
     fn execute(&mut self, provider: &Provider, input: ExecInput) -> Result<ExecOutput, StageError> {
         let (threshold, incremental_threshold) = match self {
-            Self::Unwind => {
+            Self::Unwind { .. } => {
                 info!(target: "sync::stages::merkle::unwind", "Stage is always skipped");
                 return Ok(ExecOutput::done(StageCheckpoint::new(input.target())))
             }
@@ -284,21 +292,16 @@ where
                                     .map(StoredSubNode::from)
                                     .collect(),
                                 storage_state.state.hash_builder.into(),
-                                storage_state.account.nonce,
-                                storage_state.account.balance,
-                                storage_state.account.bytecode_hash.unwrap_or(KECCAK_EMPTY),
+                                storage_state.account,
                             ));
                     }
                     self.save_execution_checkpoint(provider, Some(checkpoint))?;
 
                     entities_checkpoint.processed += hashed_entries_walked as u64;
 
-                    return Ok(ExecOutput {
-                        checkpoint: input
-                            .checkpoint()
-                            .with_entities_stage_checkpoint(entities_checkpoint),
-                        done: false,
-                    })
+                    return Ok(ExecOutput::in_progress(
+                        input.checkpoint().with_entities_stage_checkpoint(entities_checkpoint),
+                    ))
                 }
                 StateRootProgress::Complete(root, hashed_entries_walked, updates) => {
                     provider.write_trie_updates(updates)?;
@@ -312,7 +315,7 @@ where
             debug!(target: "sync::stages::merkle::exec", current = ?current_block_number, target = ?to_block, "Updating trie in chunks");
             let mut final_root = None;
             for start_block in range.step_by(incremental_threshold as usize) {
-                let chunk_to = std::cmp::min(start_block + incremental_threshold, to_block);
+                let chunk_to = std::cmp::min(start_block + incremental_threshold - 1, to_block);
                 let chunk_range = start_block..=chunk_to;
                 debug!(
                     target: "sync::stages::merkle::exec",
@@ -358,11 +361,9 @@ where
 
         validate_state_root(trie_root, SealedHeader::seal_slow(target_block), to_block)?;
 
-        Ok(ExecOutput {
-            checkpoint: StageCheckpoint::new(to_block)
-                .with_entities_stage_checkpoint(entities_checkpoint),
-            done: true,
-        })
+        Ok(ExecOutput::done(
+            StageCheckpoint::new(to_block).with_entities_stage_checkpoint(entities_checkpoint),
+        ))
     }
 
     /// Unwind the stage.
@@ -377,6 +378,12 @@ where
             info!(target: "sync::stages::merkle::unwind", "Stage is always skipped");
             return Ok(UnwindOutput { checkpoint: StageCheckpoint::new(input.unwind_to) })
         }
+        let walk_all_changed_branch_children = match self {
+            Self::Unwind { walk_all_changed_branch_children } => *walk_all_changed_branch_children,
+            #[cfg(any(test, feature = "test-utils"))]
+            Self::Both { .. } => false,
+            Self::Execution { .. } => unreachable!(),
+        };
 
         let mut entities_checkpoint =
             input.checkpoint.entities_stage_checkpoint().unwrap_or(EntitiesCheckpoint {
@@ -402,7 +409,13 @@ where
             info!(target: "sync::stages::merkle::unwind", "Nothing to unwind");
         } else {
             let (block_root, updates) = reth_trie_db::with_adapter!(provider, |A| {
-                DbStateRoot::<_, A>::incremental_root_with_updates(provider, range)
+                DbStateRoot::<_, A>::incremental_root_calculator(provider, range).and_then(
+                    |calculator| {
+                        calculator
+                            .with_walk_all_changed_branch_children(walk_all_changed_branch_children)
+                            .root_with_updates()
+                    },
+                )
             })
             .map_err(|e| StageError::Fatal(Box::new(e)))?;
 
@@ -652,6 +665,7 @@ mod tests {
     impl ExecuteStageTestRunner for MerkleTestRunner {
         type Seed = Vec<SealedBlock<reth_ethereum_primitives::Block>>;
 
+        #[allow(clippy::clone_on_copy)]
         fn seed_execution(&mut self, input: ExecInput) -> Result<Self::Seed, TestRunnerError> {
             let stage_progress = input.checkpoint().block_number;
             let start = stage_progress + 1;
@@ -678,7 +692,7 @@ mod tests {
                 .collect::<BTreeMap<_, _>>();
 
             self.db.insert_accounts_and_storages(
-                accounts.iter().map(|(addr, acc)| (*addr, (*acc, std::iter::empty()))),
+                accounts.iter().map(|(addr, acc)| (*addr, (acc.clone(), std::iter::empty()))),
             )?;
 
             let (header, body) = random_block(

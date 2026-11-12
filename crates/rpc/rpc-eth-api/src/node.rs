@@ -8,7 +8,8 @@ use reth_node_api::{FullNodeComponents, NodePrimitives, PrimitivesTy};
 use reth_primitives_traits::{BlockTy, HeaderTy, ReceiptTy, TxTy};
 use reth_rpc_eth_types::EthStateCache;
 use reth_storage_api::{
-    BlockReader, BlockReaderIdExt, StageCheckpointReader, StateProviderFactory,
+    BalProvider, BlockReader, BlockReaderIdExt, NodePrimitivesProvider, PruneCheckpointReader,
+    StageCheckpointReader, StateProviderFactory,
 };
 use reth_transaction_pool::{PoolTransaction, TransactionPool};
 
@@ -34,18 +35,19 @@ pub trait RpcNodeCore: Clone + Send + Sync + Unpin + 'static {
             ChainSpec: EthChainSpec<Header = HeaderTy<Self::Primitives>>
                            + Hardforks
                            + EthereumHardforks,
-        > + StateProviderFactory
+        > + StateProviderFactory<Primitives = Self::Primitives>
+        + NodePrimitivesProvider<Primitives = Self::Primitives>
         + CanonStateSubscriptions<Primitives = Self::Primitives>
         + StageCheckpointReader
-        + Send
-        + Sync
+        + PruneCheckpointReader
+        + BalProvider
         + Clone
         + Unpin
         + 'static;
     /// The transaction pool of the node.
     type Pool: TransactionPool<Transaction: PoolTransaction<Consensus = TxTy<Self::Primitives>>>;
     /// The node's EVM configuration, defining settings for the Ethereum Virtual Machine.
-    type Evm: ConfigureEvm<Primitives = Self::Primitives> + Send + Sync + 'static;
+    type Evm: ConfigureEvm<Primitives = Self::Primitives> + 'static;
     /// Network API.
     type Network: NetworkInfo + Clone;
 
@@ -102,7 +104,8 @@ pub trait RpcNodeCoreExt: RpcNodeCore<Provider: BlockReader> {
     /// Returns the current active validator count for the latest snapshot.
     ///
     /// Default implementation returns `None` to preserve behavior for non-parlia chains.
-    /// BSC-compatible chains should override this to provide an active validator count.
+    /// BSC-compatible chains inject a resolver so `eth_getFinalizedBlock`/`eth_getFinalizedHeader`
+    /// can derive the probabilistic finalized height.
     fn current_validators_len(&self) -> Option<usize> {
         None
     }
@@ -135,15 +138,16 @@ where
             ChainSpec: EthChainSpec<Header = HeaderTy<Evm::Primitives>>
                            + Hardforks
                            + EthereumHardforks,
-        > + StateProviderFactory
+        > + StateProviderFactory<Primitives = Evm::Primitives>
+        + NodePrimitivesProvider<Primitives = Evm::Primitives>
         + CanonStateSubscriptions<Primitives = Evm::Primitives>
         + StageCheckpointReader
-        + Send
-        + Sync
+        + PruneCheckpointReader
+        + BalProvider
         + Unpin
         + Clone
         + 'static,
-    Evm: ConfigureEvm + Clone + 'static,
+    Evm: ConfigureEvm + 'static,
     Pool: TransactionPool<Transaction: PoolTransaction<Consensus = TxTy<Evm::Primitives>>>
         + Unpin
         + 'static,

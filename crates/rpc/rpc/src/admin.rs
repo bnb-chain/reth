@@ -1,20 +1,19 @@
 use std::sync::Arc;
 
-use alloy_genesis::ChainConfig;
+use alloy_primitives::keccak256;
 use alloy_rpc_types_admin::{
     EthInfo, EthPeerInfo, EthProtocolInfo, NodeInfo, PeerInfo, PeerNetworkInfo, PeerProtocolInfo,
     Ports, ProtocolInfo,
 };
 use async_trait::async_trait;
 use jsonrpsee::core::RpcResult;
-use reth_chainspec::{EthChainSpec, EthereumHardfork, EthereumHardforks, ForkCondition};
+use reth_chainspec::{EthChainSpec, EthereumHardforks};
 use reth_network_api::{NetworkInfo, Peers};
 use reth_network_peers::{AnyNode, NodeRecord};
 use reth_network_types::PeerKind;
 use reth_rpc_api::AdminApiServer;
 use reth_rpc_server_types::ToRpcResult;
 use reth_transaction_pool::TransactionPool;
-use revm_primitives::keccak256;
 
 /// `admin` API implementation.
 ///
@@ -39,7 +38,7 @@ impl<N, ChainSpec, Pool> AdminApi<N, ChainSpec, Pool> {
 impl<N, ChainSpec, Pool> AdminApiServer for AdminApi<N, ChainSpec, Pool>
 where
     N: NetworkInfo + Peers + 'static,
-    ChainSpec: EthChainSpec + EthereumHardforks + Send + Sync + 'static,
+    ChainSpec: EthChainSpec + EthereumHardforks + 'static,
     Pool: TransactionPool + 'static,
 {
     /// Handler for `admin_addPeer`
@@ -56,16 +55,36 @@ where
 
     /// Handler for `admin_addTrustedPeer`
     fn add_trusted_peer(&self, record: AnyNode) -> RpcResult<bool> {
-        if let Some(record) = record.node_record() {
-            self.network.add_trusted_peer_with_udp(record.id, record.tcp_addr(), record.udp_addr())
+        if let Some(trusted) = record.trusted_peer().cloned() {
+            self.network.add_trusted_peer_node(trusted);
+        } else {
+            if let Some(record) = record.node_record() {
+                self.network.add_trusted_peer_with_udp(
+                    record.id,
+                    record.tcp_addr(),
+                    record.udp_addr(),
+                )
+            }
+            self.network.add_trusted_peer_id(record.peer_id());
         }
-        self.network.add_trusted_peer_id(record.peer_id());
         Ok(true)
     }
 
     /// Handler for `admin_removeTrustedPeer`
     fn remove_trusted_peer(&self, record: AnyNode) -> RpcResult<bool> {
         self.network.remove_peer(record.peer_id(), PeerKind::Trusted);
+        Ok(true)
+    }
+
+    /// Handler for `admin_banPeer`
+    fn ban_peer(&self, record: AnyNode) -> RpcResult<bool> {
+        self.network.ban_peer(record.peer_id());
+        Ok(true)
+    }
+
+    /// Handler for `admin_unbanPeer`
+    fn unban_peer(&self, record: AnyNode) -> RpcResult<bool> {
+        self.network.unban_peer(record.peer_id());
         Ok(true)
     }
 
@@ -103,56 +122,7 @@ where
     async fn node_info(&self) -> RpcResult<NodeInfo> {
         let enode = self.network.local_node_record();
         let status = self.network.network_status().await.to_rpc_result()?;
-        let mut config = ChainConfig {
-            chain_id: self.chain_spec.chain().id(),
-            terminal_total_difficulty_passed: self
-                .chain_spec
-                .final_paris_total_difficulty()
-                .is_some(),
-            terminal_total_difficulty: self
-                .chain_spec
-                .ethereum_fork_activation(EthereumHardfork::Paris)
-                .ttd(),
-            deposit_contract_address: self.chain_spec.deposit_contract().map(|dc| dc.address),
-            ..self.chain_spec.genesis().config.clone()
-        };
-
-        // helper macro to set the block or time for a hardfork if known
-        macro_rules! set_block_or_time {
-            ($config:expr, [$( $field:ident => $fork:ident,)*]) => {
-                $(
-                    // don't overwrite if already set
-                    if $config.$field.is_none() {
-                        $config.$field = match self.chain_spec.ethereum_fork_activation(EthereumHardfork::$fork) {
-                            ForkCondition::Block(block) => Some(block),
-                            ForkCondition::TTD { fork_block, .. } => fork_block,
-                            ForkCondition::Timestamp(ts) => Some(ts),
-                            ForkCondition::Never => None,
-                        };
-                    }
-                )*
-            };
-        }
-
-        set_block_or_time!(config, [
-            homestead_block => Homestead,
-            dao_fork_block => Dao,
-            eip150_block => Tangerine,
-            eip155_block => SpuriousDragon,
-            eip158_block => SpuriousDragon,
-            byzantium_block => Byzantium,
-            constantinople_block => Constantinople,
-            petersburg_block => Petersburg,
-            istanbul_block => Istanbul,
-            muir_glacier_block => MuirGlacier,
-            berlin_block => Berlin,
-            london_block => London,
-            arrow_glacier_block => ArrowGlacier,
-            gray_glacier_block => GrayGlacier,
-            shanghai_time => Shanghai,
-            cancun_time => Cancun,
-            prague_time => Prague,
-        ]);
+        let config = crate::chain_config::chain_config(&*self.chain_spec);
 
         Ok(NodeInfo {
             id: alloy_primitives::hex::encode(keccak256(enode.id.as_slice())),

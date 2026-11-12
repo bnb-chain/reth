@@ -3,7 +3,7 @@
 use super::LoadBlock;
 use crate::FromEthApiError;
 use alloy_consensus::BlockHeader;
-use alloy_eips::eip7840::BlobParams;
+use alloy_eips::{eip7840::BlobParams, BlockId};
 use alloy_primitives::U256;
 use alloy_rpc_types_eth::{BlockNumberOrTag, FeeHistory};
 use futures::{Future, StreamExt};
@@ -41,6 +41,14 @@ pub trait EthFees:
         Self: LoadBlock,
     {
         LoadFee::blob_base_fee(self)
+    }
+
+    /// Returns the base fee for the next block, or `None` before London activation.
+    fn base_fee(&self) -> impl Future<Output = Result<Option<U256>, Self::Error>> + Send
+    where
+        Self: LoadBlock,
+    {
+        LoadFee::base_fee(self)
     }
 
     /// Returns a suggestion for the priority fee (the tip)
@@ -226,7 +234,6 @@ pub trait EthFees:
                         rewards.push(
                             calculate_reward_percentiles_for_block(
                                 percentiles,
-                                header.gas_used(),
                                 header.base_fee_per_gas().unwrap_or_default(),
                                 block.body().transactions(),
                                 &receipts,
@@ -339,7 +346,7 @@ where
                         .provider()
                         .latest_header()
                         .map_err(Self::Error::from_eth_err)?
-                        .ok_or(EthApiError::HeaderNotFound(BlockNumberOrTag::Latest.into()))?;
+                        .ok_or(EthApiError::HeaderNotFound(BlockId::latest()))?;
                     let pending_base_fee = self
                         .provider()
                         .chain_spec()
@@ -397,6 +404,22 @@ where
                 })
                 .ok_or(EthApiError::ExcessBlobGasNotSet.into())
                 .map(U256::from)
+        }
+    }
+
+    /// Returns the base fee for the next block, or `None` before London activation.
+    fn base_fee(&self) -> impl Future<Output = Result<Option<U256>, Self::Error>> + Send {
+        async move {
+            let header = self
+                .provider()
+                .latest_header()
+                .map_err(Self::Error::from_eth_err)?
+                .ok_or(EthApiError::HeaderNotFound(BlockId::latest()))?;
+            Ok(self
+                .provider()
+                .chain_spec()
+                .next_block_base_fee(&header, header.timestamp())
+                .map(U256::from))
         }
     }
 

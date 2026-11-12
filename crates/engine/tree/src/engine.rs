@@ -4,22 +4,21 @@ use crate::{
     backfill::BackfillAction,
     chain::{ChainHandler, FromOrchestrator, HandlerEvent},
     download::{BlockDownloader, DownloadAction, DownloadOutcome},
-    tree::CustomRequestMessage,
 };
 use alloy_primitives::{map::B256Set, B256};
 use crossbeam_channel::Sender;
 use futures::{Stream, StreamExt};
-use reth_chain_state::ExecutedBlock;
 use reth_engine_primitives::{BeaconEngineMessage, ConsensusEngineEvent};
 use reth_ethereum_primitives::EthPrimitives;
-use reth_evm::ConfigureEvm;
-use reth_payload_primitives::PayloadTypes;
-use reth_primitives_traits::{Block, NodePrimitives, SealedBlock};
+use reth_network_p2p::full_block::SealedBlockWithAccessList;
+use reth_payload_primitives::{BuiltPayloadExecutedBlock, PayloadTypes};
+use reth_primitives_traits::{Block, NodePrimitives};
 use std::{
     fmt::Display,
     task::{ready, Context, Poll},
+    time::Instant,
 };
-use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::{mpsc::UnboundedReceiver, oneshot};
 
 /// A [`ChainHandler`] that advances the chain based on incoming requests (CL engine API).
 ///
@@ -89,7 +88,10 @@ where
                         return match ev {
                             HandlerEvent::BackfillAction(target) => {
                                 // bubble up backfill sync request
-                                self.downloader.on_action(DownloadAction::Clear);
+                                // Only a new run, not a target update, makes downloads stale.
+                                if matches!(target, BackfillAction::Start(_)) {
+                                    self.downloader.on_action(DownloadAction::Clear);
+                                }
                                 Poll::Ready(HandlerEvent::BackfillAction(target))
                             }
                             HandlerEvent::Event(ev) => {
@@ -197,7 +199,13 @@ where
     type Block = N::Block;
 
     fn on_event(&mut self, event: FromEngine<Self::Request, Self::Block>) {
-        // delegate to the tree
+        // Timestamp only the service-to-tree queue, not the upstream API channel.
+        let event = match event {
+            FromEngine::Request(request) => {
+                FromEngine::TimedRequest { request, queued_at: Instant::now() }
+            }
+            event => event,
+        };
         let _ = self.to_tree.send(event);
     }
 
@@ -235,7 +243,7 @@ impl EngineApiKind {
         matches!(self, Self::Ethereum)
     }
 
-    /// Returns true if this is the ethereum variant
+    /// Returns true if this is the opstack variant
     pub const fn is_opstack(&self) -> bool {
         matches!(self, Self::OpStack)
     }
@@ -243,49 +251,47 @@ impl EngineApiKind {
 
 /// The request variants that the engine API handler can receive.
 #[derive(Debug)]
-pub enum EngineApiRequest<T: PayloadTypes, N: NodePrimitives, P, Evm>
-where
-    Evm: ConfigureEvm<Primitives = N>,
-{
+pub enum EngineApiRequest<T: PayloadTypes, N: NodePrimitives> {
     /// A request received from the consensus engine.
     Beacon(BeaconEngineMessage<T>),
-    /// A custom request received from the engine.
-    Custom(CustomRequestMessage<P, Evm, N>),
     /// Request to insert an already executed block, e.g. via payload building.
-    InsertExecutedBlock(ExecutedBlock<N>),
+    InsertExecutedBlock(BuiltPayloadExecutedBlock<N>),
+    /// Asks whether the engine knows the block with this hash, answered after every request
+    /// sent before it on the same channel has been handled.
+    ///
+    /// [`Self::InsertExecutedBlock`] does not report its outcome and skips a block whose height
+    /// is already canonical. Sending this right after it tells the sender whether that block was
+    /// kept, before it issues a forkchoice update that targets it.
+    IsBlockKnown {
+        /// Hash of the block to look up.
+        hash: B256,
+        /// Receives `true` if the block is in the engine tree or on the persisted chain.
+        tx: oneshot::Sender<bool>,
+    },
 }
 
-impl<T: PayloadTypes, N: NodePrimitives, P, Evm> Display for EngineApiRequest<T, N, P, Evm>
-where
-    Evm: ConfigureEvm<Primitives = N>,
-{
+impl<T: PayloadTypes, N: NodePrimitives> Display for EngineApiRequest<T, N> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Beacon(msg) => msg.fmt(f),
-            Self::Custom(msg) => msg.fmt(f),
-            Self::InsertExecutedBlock(block) => {
-                write!(f, "InsertExecutedBlock({:?})", block.recovered_block().num_hash())
+            Self::InsertExecutedBlock(payload) => {
+                write!(f, "InsertExecutedBlock({:?})", payload.recovered_block.num_hash())
             }
+            Self::IsBlockKnown { hash, .. } => write!(f, "IsBlockKnown({hash})"),
         }
     }
 }
 
-impl<T: PayloadTypes, N: NodePrimitives, P, Evm> From<BeaconEngineMessage<T>>
-    for EngineApiRequest<T, N, P, Evm>
-where
-    Evm: ConfigureEvm<Primitives = N>,
-{
+impl<T: PayloadTypes, N: NodePrimitives> From<BeaconEngineMessage<T>> for EngineApiRequest<T, N> {
     fn from(msg: BeaconEngineMessage<T>) -> Self {
         Self::Beacon(msg)
     }
 }
 
-impl<T: PayloadTypes, N: NodePrimitives, P, Evm> From<EngineApiRequest<T, N, P, Evm>>
-    for FromEngine<EngineApiRequest<T, N, P, Evm>, N::Block>
-where
-    Evm: ConfigureEvm<Primitives = N>,
+impl<T: PayloadTypes, N: NodePrimitives> From<EngineApiRequest<T, N>>
+    for FromEngine<EngineApiRequest<T, N>, N::Block>
 {
-    fn from(req: EngineApiRequest<T, N, P, Evm>) -> Self {
+    fn from(req: EngineApiRequest<T, N>) -> Self {
         Self::Request(req)
     }
 }
@@ -322,15 +328,24 @@ pub enum FromEngine<Req, B: Block> {
     Event(FromOrchestrator),
     /// Request from the engine.
     Request(Req),
+    /// Request timestamped immediately before submission to the tree queue.
+    TimedRequest {
+        /// Original request, unchanged by instrumentation.
+        request: Req,
+        /// Monotonic start of service-to-tree queue residence.
+        queued_at: Instant,
+    },
     /// Downloaded blocks from the network.
-    DownloadedBlocks(Vec<SealedBlock<B>>),
+    DownloadedBlocks(Vec<SealedBlockWithAccessList<B>>),
 }
 
 impl<Req: Display, B: Block> Display for FromEngine<Req, B> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Event(ev) => write!(f, "Event({ev:?})"),
-            Self::Request(req) => write!(f, "Request({req})"),
+            Self::Request(req) | Self::TimedRequest { request: req, .. } => {
+                write!(f, "Request({req})")
+            }
             Self::DownloadedBlocks(blocks) => {
                 write!(f, "DownloadedBlocks({} blocks)", blocks.len())
             }
@@ -357,14 +372,74 @@ pub enum RequestHandlerEvent<T> {
 #[derive(Debug)]
 pub enum DownloadRequest {
     /// Download the given set of blocks.
-    BlockSet(B256Set),
+    BlockSet {
+        /// The hashes of the blocks to download.
+        hashes: B256Set,
+        /// Whether to also attempt to download the blocks' access lists.
+        access_lists: bool,
+    },
     /// Download the given range of blocks.
-    BlockRange(B256, u64),
+    BlockRange {
+        /// The hash of the highest block of the range.
+        hash: B256,
+        /// The number of blocks to download.
+        count: u64,
+        /// Whether to also attempt to download the blocks' access lists.
+        access_lists: bool,
+    },
 }
 
 impl DownloadRequest {
     /// Returns a [`DownloadRequest`] for a single block.
     pub fn single_block(hash: B256) -> Self {
-        Self::BlockSet(B256Set::from_iter([hash]))
+        Self::block_set(B256Set::from_iter([hash]))
+    }
+
+    /// Returns a [`DownloadRequest`] for the given set of blocks.
+    pub const fn block_set(hashes: B256Set) -> Self {
+        Self::BlockSet { hashes, access_lists: false }
+    }
+
+    /// Returns a [`DownloadRequest`] for the given range of blocks.
+    pub const fn block_range(hash: B256, count: u64) -> Self {
+        Self::BlockRange { hash, count, access_lists: false }
+    }
+
+    /// Configures whether the download should also attempt to fetch the blocks' access lists.
+    ///
+    /// Access list downloads are best-effort: blocks are returned without access list data if no
+    /// peer can serve them.
+    pub const fn with_access_lists(mut self, access_lists: bool) -> Self {
+        match &mut self {
+            Self::BlockSet { access_lists: al, .. } | Self::BlockRange { access_lists: al, .. } => {
+                *al = access_lists
+            }
+        }
+        self
+    }
+}
+
+#[cfg(test)]
+mod handoff_tests {
+    use super::*;
+
+    #[test]
+    fn handoff_timestamps_preserve_request_order_and_payload() {
+        let (to_tree, received) = crossbeam_channel::unbounded();
+        let (_events, from_tree) = tokio::sync::mpsc::unbounded_channel();
+        let mut handler = EngineApiRequestHandler::<u64, EthPrimitives>::new(to_tree, from_tree);
+        let before = Instant::now();
+        handler.on_event(FromEngine::Request(11));
+        handler.on_event(FromEngine::Request(22));
+        let after = Instant::now();
+        for expected in [11, 22] {
+            let FromEngine::TimedRequest { request, queued_at } = received.try_recv().unwrap()
+            else {
+                panic!("request must retain its queue timestamp");
+            };
+            assert_eq!(request, expected);
+            assert!(queued_at >= before && queued_at <= after);
+        }
+        assert!(received.is_empty());
     }
 }

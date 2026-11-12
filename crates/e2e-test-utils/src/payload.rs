@@ -1,15 +1,30 @@
+use eyre::eyre;
 use futures_util::StreamExt;
-use reth_node_api::{BlockBody, PayloadAttributes, PayloadKind};
+use reth_node_api::{PayloadAttributes, PayloadKind};
 use reth_payload_builder::{PayloadBuilderHandle, PayloadId};
 use reth_payload_builder_primitives::Events;
-use reth_payload_primitives::{BuiltPayload, PayloadTypes};
+use reth_payload_primitives::PayloadTypes;
 use tokio_stream::wrappers::BroadcastStream;
 
 /// Helper for payload operations
 #[derive(derive_more::Debug)]
 pub struct PayloadTestContext<T: PayloadTypes> {
+    /// Events of all payload jobs of the node since the context was created.
+    ///
+    /// The harness does not read the stream, so it also yields the events of the payloads built by
+    /// [`NodeTestContext::new_payload`]. The payload builder only buffers the most recent events,
+    /// so a reader that falls behind receives a lagged error first.
+    ///
+    /// [`NodeTestContext::new_payload`]: crate::node::NodeTestContext::new_payload
     pub payload_event_stream: BroadcastStream<Events<T>>,
     payload_builder: PayloadBuilderHandle<T>,
+    /// Timestamp of the last generated payload attributes, or the starting point if none were
+    /// generated yet.
+    ///
+    /// [`Self::next_attributes`] increments it before generating the next attributes. Prefer
+    /// [`NodeTestContext::set_next_payload_timestamp`] over setting it directly.
+    ///
+    /// [`NodeTestContext::set_next_payload_timestamp`]: crate::node::NodeTestContext::set_next_payload_timestamp
     pub timestamp: u64,
     #[debug(skip)]
     attributes_generator: Box<dyn Fn(u64) -> T::PayloadAttributes + Send + Sync>,
@@ -49,30 +64,15 @@ impl<T: PayloadTypes> PayloadTestContext<T> {
         Ok(())
     }
 
-    /// Wait until the best built payload is ready.
+    /// Resolves the payload job with the given id like [`Self::resolve_payload`] and discards the
+    /// payload.
     ///
-    /// Panics if the payload builder does not produce a non-empty payload within 30 seconds.
+    /// # Panics
+    ///
+    /// If the payload job can not be resolved.
     pub async fn wait_for_built_payload(&self, payload_id: PayloadId) {
-        let start = std::time::Instant::now();
-        loop {
-            let payload =
-                self.payload_builder.best_payload(payload_id).await.transpose().ok().flatten();
-            if payload.is_none_or(|p| p.block().body().transactions().is_empty()) {
-                assert!(
-                    start.elapsed() < std::time::Duration::from_secs(30),
-                    "timed out waiting for a non-empty payload for {payload_id} — \
-                     check that the chain spec supports all generated tx types"
-                );
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-                continue
-            }
-            // Resolve payload once its built
-            self.payload_builder
-                .resolve_kind(payload_id, PayloadKind::Earliest)
-                .await
-                .unwrap()
-                .unwrap();
-            break;
+        if let Err(err) = self.resolve_payload(payload_id).await {
+            panic!("{err}")
         }
     }
 
@@ -84,5 +84,22 @@ impl<T: PayloadTypes> PayloadTestContext<T> {
         } else {
             panic!("Expect a built payload event.");
         }
+    }
+
+    /// Resolves the payload job with the given id and returns its payload.
+    ///
+    /// The job is resolved with [`PayloadKind::WaitForPending`], so if it has not built a payload
+    /// yet, this waits for its build in progress instead of racing an empty payload against it like
+    /// `engine_getPayload` does. The payload can still contain no transactions, e.g. if the pool
+    /// had none when the build started. This has no timeout of its own.
+    ///
+    /// Returns an error if the payload builder has no job with the given id, e.g. because the job
+    /// reached its deadline, or if the job fails to build a payload.
+    pub async fn resolve_payload(&self, payload_id: PayloadId) -> eyre::Result<T::BuiltPayload> {
+        self.payload_builder
+            .resolve_kind(payload_id, PayloadKind::WaitForPending)
+            .await
+            .ok_or_else(|| eyre!("payload builder has no payload job {payload_id}"))?
+            .map_err(|err| eyre!("failed to resolve payload job {payload_id}: {err}"))
     }
 }

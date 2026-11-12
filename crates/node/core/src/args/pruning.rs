@@ -96,6 +96,54 @@ impl Default for DefaultPruningValues {
     }
 }
 
+/// High-level pruning configuration profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PruneConfigKind {
+    /// Archive node with default pruning configuration.
+    Archive,
+    /// Full node pruning preset.
+    Full,
+    /// Minimal storage pruning preset.
+    Minimal,
+    /// Custom pruning configuration.
+    Custom,
+}
+
+impl PruneConfigKind {
+    /// Returns the string representation of the pruning profile.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Archive => "archive",
+            Self::Full => "full",
+            Self::Minimal => "minimal",
+            Self::Custom => "custom",
+        }
+    }
+
+    /// Classifies an effective pruning configuration.
+    pub fn from_config<ChainSpec>(config: &PruneConfig, chain_spec: &ChainSpec) -> Self
+    where
+        ChainSpec: EthereumHardforks,
+    {
+        if config.is_default() {
+            return Self::Archive
+        }
+
+        let full_config = PruningArgs { full: true, ..Default::default() }.prune_config(chain_spec);
+        if full_config.as_ref() == Some(config) {
+            return Self::Full
+        }
+
+        let minimal_config =
+            PruningArgs { minimal: true, ..Default::default() }.prune_config(chain_spec);
+        if minimal_config.as_ref() == Some(config) {
+            return Self::Minimal
+        }
+
+        Self::Custom
+    }
+}
+
 /// Parameters for pruning and full node
 #[derive(Debug, Clone, Args, PartialEq, Eq, Default)]
 #[command(next_help_heading = "Pruning")]
@@ -411,8 +459,8 @@ pub(crate) fn parse_receipts_log_filter(
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
-    use alloy_primitives::address;
     use clap::Parser;
     use reth_chainspec::MAINNET;
 
@@ -432,11 +480,36 @@ mod tests {
         ])
         .args;
         let mut config = ReceiptsLogPruneConfig::default();
-        config.0.insert(
-            address!("0x0000000000000000000000000000000000000003"),
-            PruneMode::Before(5000000),
-        );
+        config.0.insert(Address::with_last_byte(3), PruneMode::Before(5000000));
         assert_eq!(args.receipts_log_filter, Some(config));
+    }
+
+    #[test]
+    fn pruning_config_kind_classifies_presets() {
+        let chain_spec = MAINNET.as_ref();
+
+        assert_eq!(
+            PruneConfigKind::from_config(&PruneConfig::default(), chain_spec),
+            PruneConfigKind::Archive
+        );
+
+        let full_config =
+            PruningArgs { full: true, ..Default::default() }.prune_config(chain_spec).unwrap();
+        assert_eq!(PruneConfigKind::from_config(&full_config, chain_spec), PruneConfigKind::Full);
+
+        let minimal_config =
+            PruningArgs { minimal: true, ..Default::default() }.prune_config(chain_spec).unwrap();
+        assert_eq!(
+            PruneConfigKind::from_config(&minimal_config, chain_spec),
+            PruneConfigKind::Minimal
+        );
+
+        let mut custom_config = full_config;
+        custom_config.block_interval += 1;
+        assert_eq!(
+            PruneConfigKind::from_config(&custom_config, chain_spec),
+            PruneConfigKind::Custom
+        );
     }
 
     #[test]
@@ -475,9 +548,9 @@ mod tests {
         assert_eq!(config.0.len(), 3);
 
         // Check that the args were parsed correctly.
-        let addr1: Address = "0x0000000000000000000000000000000000000001".parse().unwrap();
-        let addr2: Address = "0x0000000000000000000000000000000000000002".parse().unwrap();
-        let addr3: Address = "0x0000000000000000000000000000000000000003".parse().unwrap();
+        let addr1 = Address::with_last_byte(1);
+        let addr2 = Address::with_last_byte(2);
+        let addr3 = Address::with_last_byte(3);
 
         assert_eq!(config.0.get(&addr1), Some(&PruneMode::Full));
         assert_eq!(config.0.get(&addr2), Some(&PruneMode::Distance(1000)));
@@ -494,8 +567,8 @@ mod tests {
         let config = result.unwrap();
         assert_eq!(config.0.len(), 2);
 
-        let addr1: Address = "0x0000000000000000000000000000000000000001".parse().unwrap();
-        let addr2: Address = "0x0000000000000000000000000000000000000002".parse().unwrap();
+        let addr1 = Address::with_last_byte(1);
+        let addr2 = Address::with_last_byte(2);
 
         assert_eq!(config.0.get(&addr1), Some(&PruneMode::Full));
         assert_eq!(config.0.get(&addr2), Some(&PruneMode::Distance(1000)));

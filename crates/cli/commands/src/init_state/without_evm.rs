@@ -1,16 +1,18 @@
 use alloy_consensus::BlockHeader;
-use alloy_primitives::{BlockNumber, B256};
+use alloy_primitives::{BlockNumber, B256, U256};
 use alloy_rlp::Decodable;
+use eyre::WrapErr;
 use reth_codecs::Compact;
+use reth_fs_util::FsPathError;
 use reth_node_builder::NodePrimitives;
 use reth_primitives_traits::{SealedBlock, SealedHeader, SealedHeaderFor};
 use reth_provider::{
-    providers::StaticFileProvider, BlockWriter, ProviderResult, StageCheckpointWriter,
-    StaticFileProviderFactory, StaticFileWriter,
+    providers::StaticFileProvider, BlockWriter, HeaderProvider, ProviderError, ProviderResult,
+    StageCheckpointWriter, StaticFileProviderFactory, StaticFileWriter,
 };
 use reth_stages::{StageCheckpoint, StageId};
 use reth_static_file_types::StaticFileSegment;
-use std::path::Path;
+use std::{io::ErrorKind, path::Path};
 use tracing::info;
 
 /// Reads the header RLP from a file and returns the Header.
@@ -20,15 +22,18 @@ pub(crate) fn read_header_from_file<H>(path: &Path) -> Result<H, eyre::Error>
 where
     H: Decodable,
 {
-    let buf = if let Ok(content) = reth_fs_util::read_to_string(path) {
-        alloy_primitives::hex::decode(content.trim())?
-    } else {
-        // If UTF-8 decoding fails, read as raw bytes
-        reth_fs_util::read(path)?
+    let buf = match reth_fs_util::read_to_string(path) {
+        Ok(content) => alloy_primitives::hex::decode(content.trim())
+            .wrap_err_with(|| format!("failed to hex-decode header file {}", path.display()))?,
+        // Non-UTF-8 content is raw RLP bytes.
+        Err(FsPathError::Read { source, .. }) if source.kind() == ErrorKind::InvalidData => {
+            reth_fs_util::read(path)?
+        }
+        Err(err) => return Err(err.into()),
     };
 
-    let header = H::decode(&mut &buf[..])?;
-    Ok(header)
+    H::decode(&mut &buf[..])
+        .wrap_err_with(|| format!("failed to RLP-decode header file {}", path.display()))
 }
 
 /// Creates a dummy chain (with no transactions) up to the last EVM block and appends the
@@ -40,6 +45,7 @@ pub fn setup_without_evm<Provider, F>(
 ) -> ProviderResult<()>
 where
     Provider: StaticFileProviderFactory
+        + HeaderProvider
         + StageCheckpointWriter
         + BlockWriter<Block = <Provider::Primitives as NodePrimitives>::Block>,
     F: Fn(BlockNumber) -> <Provider::Primitives as NodePrimitives>::BlockHeader
@@ -55,7 +61,14 @@ where
     // `u64::MAX`, sending `append_dummy_chain` into a 1..=u64::MAX loop that
     // exhausts memory before failing.
     if header.number() > 0 {
-        append_dummy_chain(&static_file_provider, header.number() - 1, header_factory)?;
+        append_dummy_chain(
+            &static_file_provider,
+            header.number() - 1,
+            provider_rw.total_difficulty_at(0)?,
+            header_factory,
+        )?;
+        // Publish the dummy headers and their TD before insert_block reads the parent anchor.
+        static_file_provider.commit()?;
     }
 
     info!(target: "reth::cli", "Appending first valid block.");
@@ -108,6 +121,7 @@ where
 fn append_dummy_chain<N, F>(
     sf_provider: &StaticFileProvider<N>,
     target_height: BlockNumber,
+    mut total_difficulty: U256,
     header_factory: F,
 ) -> ProviderResult<()>
 where
@@ -115,6 +129,8 @@ where
     F: Fn(BlockNumber) -> N::BlockHeader + Send + Sync + 'static,
 {
     let (tx, rx) = std::sync::mpsc::channel();
+
+    let mut handles = Vec::new();
 
     // Spawn jobs for incrementing the block end range of transactions, receipts, and senders.
     for segment in [
@@ -133,7 +149,7 @@ where
             StaticFileSegment::TransactionSenders => "init-state-senders",
             _ => "init-state-segment",
         };
-        reth_tasks::spawn_os_thread(thread_name, move || {
+        let handle = reth_tasks::spawn_os_thread(thread_name, move || {
             let result = provider.latest_writer(segment).and_then(|mut writer| {
                 for block_num in 1..=target_height {
                     writer.increment_block(block_num)?;
@@ -141,30 +157,43 @@ where
                 Ok(())
             });
 
-            tx_clone.send(result).unwrap();
+            // The receiver is gone if it already returned an earlier error.
+            let _ = tx_clone.send(result);
         });
+        handles.push((thread_name, handle));
     }
 
     // Spawn job for appending empty headers
     let provider = sf_provider.clone();
-    reth_tasks::spawn_os_thread("init-state-headers", move || {
+    let handle = reth_tasks::spawn_os_thread("init-state-headers", move || {
         let result = provider.latest_writer(StaticFileSegment::Headers).and_then(|mut writer| {
             for block_num in 1..=target_height {
                 // TODO: should we fill with real parent_hash?
                 let header = header_factory(block_num);
-                writer.append_header(&header, &B256::ZERO)?;
+                total_difficulty += header.difficulty();
+                writer.append_header_with_td(&header, total_difficulty, &B256::ZERO)?;
             }
             Ok(())
         });
 
-        tx.send(result).unwrap();
+        let _ = tx.send(result);
     });
+    handles.push(("init-state-headers", handle));
 
     // Catches any StaticFileWriter error.
     while let Ok(append_result) = rx.recv() {
         if let Err(err) = append_result {
             tracing::error!(target: "reth::cli", "Error appending dummy chain: {err}");
             return Err(err)
+        }
+    }
+
+    // A panicked worker drops its sender without reporting a result.
+    for (name, handle) in handles {
+        if handle.join().is_err() {
+            let err = std::io::Error::other(format!("init-state worker {name} panicked"));
+            tracing::error!(target: "reth::cli", "Error appending dummy chain: {err}");
+            return Err(ProviderError::other(err))
         }
     }
 
@@ -195,7 +224,9 @@ mod tests {
     use alloy_consensus::Header;
     use alloy_primitives::{address, b256};
     use reth_db_common::init::init_genesis;
-    use reth_provider::{test_utils::create_test_provider_factory, DatabaseProviderFactory};
+    use reth_provider::{
+        test_utils::create_test_provider_factory, DBProvider, DatabaseProviderFactory,
+    };
     use std::{
         io::Write,
         sync::{
@@ -256,24 +287,36 @@ mod tests {
         let header: Header = read_header_from_file(temp_file.path()).unwrap();
         let header_hash = b256!("4f05e4392969fc82e41f6d6a8cea379323b0b2d3ddf7def1a33eec03883e3a33");
 
-        let provider_factory = create_test_provider_factory();
+        for difficulty in [U256::ZERO, U256::from(2)] {
+            let provider_factory = create_test_provider_factory();
+            init_genesis(&provider_factory).unwrap();
+            let provider_rw = provider_factory.database_provider_rw().unwrap();
+            let genesis_td = provider_rw.total_difficulty_at(0).unwrap();
+            let header_difficulty = header.difficulty;
 
-        init_genesis(&provider_factory).unwrap();
+            setup_without_evm(
+                &provider_rw,
+                SealedHeader::new(header.clone(), header_hash),
+                move |number| Header { number, difficulty, ..Default::default() },
+            )
+            .unwrap();
+            provider_rw.commit().unwrap();
 
-        let provider_rw = provider_factory.database_provider_rw().unwrap();
+            let static_files = provider_factory.static_file_provider();
+            let writer = static_files.latest_writer(StaticFileSegment::Headers).unwrap();
+            assert_eq!(writer.next_block_number(), 1701);
+            drop(writer);
 
-        setup_without_evm(&provider_rw, SealedHeader::new(header, header_hash), |number| Header {
-            number,
-            ..Default::default()
-        })
-        .unwrap();
-
-        let static_files = provider_factory.static_file_provider();
-        let writer = static_files.latest_writer(StaticFileSegment::Headers).unwrap();
-        let actual_next_height = writer.next_block_number();
-        let expected_next_height = 1701;
-
-        assert_eq!(actual_next_height, expected_next_height);
+            // Verify the synthetic history and the first real block after reopening the provider.
+            let provider = provider_factory.database_provider_ro().unwrap();
+            for number in [1, 1699, 1700] {
+                let expected = genesis_td +
+                    difficulty * U256::from(number.min(1699)) +
+                    if number == 1700 { header_difficulty } else { U256::ZERO };
+                assert_eq!(static_files.header_td_by_number(number).unwrap(), Some(expected));
+                assert_eq!(provider.total_difficulty_at(number).unwrap(), expected);
+            }
+        }
     }
 
     /// Regression: a header at block 0 used to send `append_dummy_chain` into
