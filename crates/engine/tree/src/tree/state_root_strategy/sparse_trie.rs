@@ -242,7 +242,7 @@ where
         let hashing_metrics = metrics.clone();
         let diagnostics = proof_worker_handle.diagnostics().clone();
         executor.spawn_blocking_named("trie-hashing", move || {
-            let _span = trace_span!(parent: parent_span, "run_hashing_task").entered();
+            let _span = trace_span!(parent: &parent_span, "run_hashing_task").entered();
             Self::run_hashing_task(updates, hashed_state_tx, hashing_metrics, diagnostics)
         });
 

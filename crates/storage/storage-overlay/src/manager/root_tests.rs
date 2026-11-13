@@ -208,7 +208,7 @@ fn cached_ancestors_preserve_roots_and_proofs_across_deletions_and_forks() {
                     let held = TrieInputSorted::new(nodes, state, Default::default());
                     // A ready overlay at the same height on another fork must never be selected.
                     if cached > 4 && anchor <= 4 {
-                        manager.state_trie_overlays.entries.insert(
+                        manager.inner.state_trie_overlays.entries.insert(
                             OverlayCacheKey {
                                 anchor_hash,
                                 tip_hash: fork.blocks[cached].recovered_block().hash(),
@@ -229,7 +229,7 @@ fn cached_ancestors_preserve_roots_and_proofs_across_deletions_and_forks() {
                         )
                         .unwrap();
                     assert_eq!(
-                        manager.state_trie_overlays.entries.contains_key(&key),
+                        manager.inner.state_trie_overlays.entries.contains_key(&key),
                         !write_to_cache
                     );
                     let cold = merge_blocks(
@@ -271,6 +271,7 @@ fn persisted_anchor_change_does_not_reuse_old_overlay() {
     let tip = fixture.blocks[11].recovered_block().hash();
     let (nodes, state) = super::tests::overlay_for_parent(&manager, tip, anchor).unwrap();
     assert!(manager
+        .inner
         .state_trie_overlays
         .entries
         .contains_key(&OverlayCacheKey { anchor_hash: old_anchor, tip_hash: cached_hash }));

@@ -328,7 +328,9 @@ impl<C: ChainSpecParser<ChainSpec: EthChainSpec + Hardforks + EthereumHardforks>
                     )),
                     None,
                 ),
-                StageEnum::Hashing => eyre::bail!(HASHING_UNSUPPORTED),
+                StageEnum::Hashing => {
+                    eyre::bail!(HASHING_UNSUPPORTED);
+                }
             };
         let checkpoint = provider_rw.get_stage_checkpoint(exec_stage.id())?.unwrap_or_default();
 

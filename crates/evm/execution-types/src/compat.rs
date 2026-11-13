@@ -1,292 +1,11 @@
 //! State conversion at the evm2 execution boundary.
 
-use alloc::vec::Vec;
-use alloy_primitives::{
-    keccak256,
-    map::{hash_map::Entry, AddressMap, B256Map, U256Map},
-    Address, B256, U256,
-};
-use evm2::{bytecode::Bytecode, evm::AccountInfo};
+use alloy_primitives::{keccak256, B256};
+use evm2::evm::AccountInfo;
 use reth_primitives_traits::Account;
-use reth_trie_common::{
-    bundle_state::{
-        AccountStatus, BundleRetention, BundleState, StorageSlot, TransitionAccount,
-        TransitionState,
-    },
-    HashedPostState, HashedStorage,
-};
+use reth_trie_common::{HashedPostState, HashedStorage};
 
-/// One block's account transitions, finalized into a [`BundleState`] with their reverts.
-#[derive(Debug, Default)]
-pub struct BlockState {
-    transitions: AddressMap<TransitionAccount>,
-    contracts: B256Map<Bytecode>,
-}
-
-impl BlockState {
-    /// Creates an empty block accumulator.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Applies a collected transaction to the block's transitions.
-    pub fn commit(&mut self, changes: &TransactionChanges) {
-        self.contracts.extend(changes.contracts.iter().map(|(hash, code)| (*hash, code.clone())));
-        for (address, account) in &changes.accounts {
-            self.commit_account(
-                *address,
-                account.original.clone(),
-                (!account.selfdestructed).then(|| account.info.clone()),
-                account.created,
-                account.wiped,
-                account
-                    .storage
-                    .iter()
-                    .filter_map(|(key, slot)| slot.is_changed().then_some((*key, *slot))),
-            );
-        }
-    }
-
-    /// Commits one account's finalized evm2 transaction changes into the block without
-    /// materializing EVM state. Accounts that were only loaded are skipped.
-    ///
-    /// When `update` is set, the committed account is also recorded into it for execution state
-    /// hooks.
-    pub fn commit_account_changes(
-        &mut self,
-        changes: evm2::evm::AccountChanges<'_>,
-        update: Option<&mut StateUpdate>,
-    ) {
-        if !changes.is_changed() {
-            return;
-        }
-        if let Some((hash, code)) = changes.code {
-            self.contracts.entry(hash).or_insert_with(|| code.clone());
-        }
-        let address = changes.address;
-        let created = changes.created;
-        let wiped = changes.storage.wiped;
-        let original = changes.original.map(without_code);
-        let current = changes.current.map(without_code);
-        let slots = changes
-            .storage
-            .changed_slots()
-            .map(|(&key, value)| (key, StorageSlot::new_changed(value.original, value.current)));
-        let Some(update) = update else {
-            self.commit_account(address, original, current, created, wiped, slots);
-            return;
-        };
-        let storage: Vec<_> = slots.collect();
-        self.commit_account(
-            address,
-            original.clone(),
-            current.clone(),
-            created,
-            wiped,
-            storage.iter().copied(),
-        );
-        update.accounts.push(AccountUpdate { address, original, current, created, wiped, storage });
-    }
-
-    fn commit_account(
-        &mut self,
-        address: Address,
-        original: Option<AccountInfo>,
-        current: Option<AccountInfo>,
-        created: bool,
-        wiped: bool,
-        storage: impl Iterator<Item = (U256, StorageSlot)>,
-    ) {
-        let entry = self.transitions.entry(address);
-        let previous_status = match &entry {
-            Entry::Occupied(entry) => entry.get().status,
-            Entry::Vacant(_) => loaded_status(original.as_ref()),
-        };
-        let status = if current.is_none() {
-            previous_status.on_selfdestructed()
-        } else if wiped && !created {
-            AccountStatus::DestroyedChanged
-        } else if created {
-            previous_status.on_created()
-        } else {
-            previous_status.on_changed(
-                original.as_ref().is_none_or(|i| i.nonce == 0 && i.is_empty_code_hash()),
-            )
-        };
-        match entry {
-            Entry::Vacant(entry) => {
-                entry.insert(TransitionAccount {
-                    info: current,
-                    status,
-                    previous_info: original,
-                    previous_status,
-                    storage: storage.collect(),
-                    storage_was_destroyed: wiped,
-                });
-            }
-            Entry::Occupied(mut entry) => {
-                let account = entry.get_mut();
-                account.info = current;
-                account.status = status;
-                // Deletion starts a new storage lifetime.
-                if matches!(status, AccountStatus::Destroyed | AccountStatus::DestroyedAgain) {
-                    account.storage.clear();
-                    account.storage.extend(storage);
-                    account.storage_was_destroyed = true;
-                } else {
-                    for (key, slot) in storage {
-                        match account.storage.entry(key) {
-                            Entry::Vacant(entry) => {
-                                entry.insert(slot);
-                            }
-                            Entry::Occupied(mut entry) => {
-                                if entry.get().original_value() == slot.present_value() {
-                                    entry.remove();
-                                } else {
-                                    entry.get_mut().present_value = slot.present_value();
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /// Finalizes one block's transitions and reverts.
-    pub fn into_bundle(self) -> BundleState {
-        let mut bundle = BundleState::default();
-        bundle.apply_transitions_and_create_reverts(
-            TransitionState { transitions: self.transitions },
-            BundleRetention::Reverts,
-        );
-        bundle.contracts.extend(self.contracts);
-        bundle
-    }
-}
-
-/// Transaction changes collected from an evm2 change stream for [`BlockState::commit`].
-#[derive(Debug, Default)]
-pub struct TransactionChanges {
-    accounts: AddressMap<TransactionAccount>,
-    contracts: B256Map<Bytecode>,
-}
-
-/// One account's changes within a [`TransactionChanges`].
-#[derive(Debug)]
-struct TransactionAccount {
-    /// Account at the start of the transaction, without code. `None` means it did not exist.
-    original: Option<AccountInfo>,
-    /// Account after the transaction, without code.
-    info: AccountInfo,
-    created: bool,
-    selfdestructed: bool,
-    wiped: bool,
-    storage: U256Map<StorageSlot>,
-}
-
-impl Default for TransactionAccount {
-    fn default() -> Self {
-        Self {
-            original: Some(AccountInfo::empty()),
-            info: AccountInfo::empty(),
-            created: false,
-            selfdestructed: false,
-            wiped: false,
-            storage: U256Map::default(),
-        }
-    }
-}
-
-impl TransactionAccount {
-    fn update(&mut self, change: evm2::evm::AccountChangeRef<'_>) {
-        self.original = change.original.map(without_code);
-        self.info = change.current.map(without_code).unwrap_or_else(AccountInfo::empty);
-        self.created |= change.created;
-        self.selfdestructed |= change.current.is_none();
-    }
-}
-
-impl evm2::evm::StateChangeSink for TransactionChanges {
-    type Error = core::convert::Infallible;
-    fn bytecode(&mut self, hash: B256, code: &Bytecode) -> Result<(), Self::Error> {
-        self.contracts.entry(hash).or_insert_with(|| code.clone());
-        Ok(())
-    }
-    fn storage_wipe(&mut self, address: Address) -> Result<(), Self::Error> {
-        let account = self.accounts.entry(address).or_default();
-        account.wiped = true;
-        account.storage.clear();
-        Ok(())
-    }
-    fn storage(&mut self, change: evm2::evm::StorageChange) -> Result<(), Self::Error> {
-        self.accounts
-            .entry(change.address)
-            .or_default()
-            .storage
-            .insert(change.key, StorageSlot::new_changed(change.original, change.current));
-        Ok(())
-    }
-    fn account(&mut self, change: evm2::evm::AccountChangeRef<'_>) -> Result<(), Self::Error> {
-        self.accounts.entry(change.address).or_default().update(change);
-        Ok(())
-    }
-    fn account_read(
-        &mut self,
-        address: Address,
-        info: Option<&AccountInfo>,
-    ) -> Result<(), Self::Error> {
-        if let Some(account) = self.accounts.get_mut(&address) {
-            account.update(evm2::evm::AccountChangeRef {
-                address,
-                original: info,
-                current: info,
-                created: false,
-                selfdestructed: false,
-            });
-        }
-        Ok(())
-    }
-}
-
-/// Per-transaction state changes streamed to execution state hooks.
-///
-/// Holds only the accounts a transaction committed, with account info but without bytecode, so
-/// building it does not copy the transaction's state maps.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct StateUpdate {
-    /// Committed accounts in stream order.
-    pub accounts: Vec<AccountUpdate>,
-}
-
-impl StateUpdate {
-    /// Returns whether the update commits no accounts.
-    pub const fn is_empty(&self) -> bool {
-        self.accounts.is_empty()
-    }
-
-    /// Returns the update for `address`, if the transaction committed it.
-    pub fn account(&self, address: &Address) -> Option<&AccountUpdate> {
-        self.accounts.iter().find(|account| account.address == *address)
-    }
-}
-
-/// One committed account in a [`StateUpdate`].
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AccountUpdate {
-    /// Account address.
-    pub address: Address,
-    /// Account at the start of the transaction, without code. `None` means it did not exist.
-    pub original: Option<AccountInfo>,
-    /// Account after the transaction, without code. `None` is a deletion.
-    pub current: Option<AccountInfo>,
-    /// Whether the account was created during the transaction.
-    pub created: bool,
-    /// Whether the account's prior storage was wiped.
-    pub wiped: bool,
-    /// Storage slots whose value changed.
-    pub storage: Vec<(U256, StorageSlot)>,
-}
+pub use evm2::block::{AccountUpdate, BlockState, BundleSource, StateUpdate, TransactionChanges};
 
 /// Hashes a transaction's state update into the trie update consumed by state root tasks.
 pub fn state_update_to_hashed_post_state(update: &StateUpdate) -> HashedPostState {
@@ -325,59 +44,16 @@ pub fn state_update_to_hashed_post_state(update: &StateUpdate) -> HashedPostStat
     }
     hashed_state
 }
-
-fn without_code(info: &AccountInfo) -> AccountInfo {
-    AccountInfo { code: None, ..info.clone() }
-}
-
-/// Visits a persisted bundle as native changes when seeding an execution cache.
-#[derive(Debug)]
-pub struct BundleSource<'a>(pub &'a BundleState);
-
-impl evm2::evm::StateChangeSource for BundleSource<'_> {
-    fn visit<S: evm2::evm::StateChangeSink>(&self, sink: &mut S) -> Result<(), S::Error> {
-        for (hash, code) in &self.0.contracts {
-            sink.bytecode(*hash, code)?;
-        }
-        for (address, account) in &self.0.state {
-            let current = account.info.as_ref();
-            if account.status.was_destroyed() {
-                sink.storage_wipe(*address)?;
-            }
-            sink.account(evm2::evm::AccountChangeRef {
-                address: *address,
-                original: account.original_info.as_ref(),
-                current,
-                created: account.status.is_storage_known() && current.is_some(),
-                selfdestructed: current.is_none(),
-            })?;
-            for (key, value) in &account.storage {
-                sink.storage(evm2::evm::StorageChange {
-                    address: *address,
-                    key: *key,
-                    original: value.original_value(),
-                    current: value.present_value(),
-                })?;
-            }
-        }
-        Ok(())
-    }
-}
-
-fn loaded_status(info: Option<&AccountInfo>) -> AccountStatus {
-    match info {
-        None => AccountStatus::LoadedNotExisting,
-        Some(info) if info.is_empty() => AccountStatus::LoadedEmptyEIP161,
-        Some(_) => AccountStatus::Loaded,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use evm2::evm::{
-        AccountChangeRef, AccountChanges, StateChangeSink, StorageChange, StorageOverlay,
-        StorageSlot as NativeSlot, Tracked,
+    use alloy_primitives::{Address, U256};
+    use evm2::{
+        block::bundle_state::StorageSlot,
+        evm::{
+            AccountChangeRef, AccountChanges, StateChangeSink, StorageChange, StorageOverlay,
+            StorageSlot as NativeSlot, Tracked,
+        },
     };
 
     #[test]
@@ -504,68 +180,68 @@ mod tests {
         let address = Address::with_last_byte(1);
         let code = evm2::bytecode::Bytecode::new_raw(alloy_primitives::bytes!("60015b00"));
         let info = AccountInfo::default().with_nonce(1).with_code(code.clone());
-        let mut converted = BlockState::new();
-        let mut native = BlockState::new();
-        // Storage-only writes, restoration, deletion, recreation, a surviving storage wipe,
-        // and another deletion exercise both occupied and vacant transition entries.
-        for step in 0..7 {
-            let slots: &[_] = if step < 2 || step == 3 || step == 4 {
-                let (original, current) = if step == 1 { (8, 7) } else { (7, 8) };
-                &[(U256::from(3), U256::from(original), U256::from(current))]
-            } else {
-                &[]
-            };
-            let storage = overlay(step >= 2, slots);
-            let changes = if step < 2 {
-                AccountChanges {
-                    address,
+        for steps in 1..=7 {
+            let mut converted = BlockState::new();
+            let mut native = BlockState::new();
+            // Storage-only writes, restoration, deletion, recreation, a surviving storage wipe,
+            // and another deletion exercise both occupied and vacant transition entries.
+            for step in 0..steps {
+                let slots: &[_] = if step < 2 || step == 3 || step == 4 {
+                    let (original, current) = if step == 1 { (8, 7) } else { (7, 8) };
+                    &[(U256::from(3), U256::from(original), U256::from(current))]
+                } else {
+                    &[]
+                };
+                let storage = overlay(step >= 2, slots);
+                let changes = if step < 2 {
+                    AccountChanges {
+                        address,
+                        original: Some(&info),
+                        current: Some(&info),
+                        created: false,
+                        selfdestructed: false,
+                        touched: false,
+                        code: None,
+                        storage: &storage,
+                    }
+                } else {
+                    AccountChanges {
+                        address,
+                        original: (step != 3 && step != 6).then_some(&info),
+                        current: (step == 3 || step == 4).then_some(&info),
+                        created: step == 3,
+                        selfdestructed: step != 3,
+                        touched: false,
+                        code: (step == 3).then(|| (code.hash_slow(), &code)),
+                        storage: &storage,
+                    }
+                };
+                let empty = StorageOverlay::default();
+                // Reads alone must never introduce an account transition.
+                let read = AccountChanges {
+                    address: Address::with_last_byte(2),
                     original: Some(&info),
                     current: Some(&info),
                     created: false,
                     selfdestructed: false,
                     touched: false,
                     code: None,
-                    storage: &storage,
-                }
-            } else {
-                AccountChanges {
-                    address,
-                    original: (step != 3 && step != 6).then_some(&info),
-                    current: (step == 3 || step == 4).then_some(&info),
-                    created: step == 3,
-                    selfdestructed: step != 3,
-                    touched: false,
-                    code: (step == 3).then(|| (code.hash_slow(), &code)),
-                    storage: &storage,
-                }
-            };
-            let empty = StorageOverlay::default();
-            // Reads alone must never introduce an account transition.
-            let read = AccountChanges {
-                address: Address::with_last_byte(2),
-                original: Some(&info),
-                current: Some(&info),
-                created: false,
-                selfdestructed: false,
-                touched: false,
-                code: None,
-                storage: &empty,
-            };
-            let mut transaction = TransactionChanges::default();
-            let Ok(()) = changes.visit(&mut transaction);
-            let Ok(()) = read.visit(&mut transaction);
-            converted.commit(&transaction);
-            native.commit_account_changes(changes, None);
-            native.commit_account_changes(read, None);
-            assert_eq!(native.transitions, converted.transitions, "step {step}");
-            assert_eq!(native.contracts, converted.contracts);
+                    storage: &empty,
+                };
+                let mut transaction = TransactionChanges::default();
+                let Ok(()) = changes.visit(&mut transaction);
+                let Ok(()) = read.visit(&mut transaction);
+                converted.commit(&transaction);
+                native.commit_account_changes(changes, None);
+                native.commit_account_changes(read, None);
+            }
+            let mut native = native.into_bundle();
+            let mut converted = converted.into_bundle();
+            assert_eq!(native, converted, "after {steps} steps");
+            assert!(native.revert_latest());
+            assert!(converted.revert_latest());
+            assert_eq!(native, converted, "after {steps} steps");
         }
-        let mut native = native.into_bundle();
-        let mut converted = converted.into_bundle();
-        assert_eq!(native, converted);
-        assert!(native.revert_latest());
-        assert!(converted.revert_latest());
-        assert_eq!(native, converted);
     }
 
     #[test]

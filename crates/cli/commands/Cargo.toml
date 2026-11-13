@@ -141,6 +141,7 @@ asm-keccak = [
     "reth-evm/asm-keccak",
 ]
 arbitrary = [
+    "secp256k1/arbitrary",
     "dep:proptest",
     "dep:arbitrary",
     "dep:proptest-arbitrary-interop",
