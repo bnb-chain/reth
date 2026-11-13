@@ -44,6 +44,7 @@ use crate::{
     cache::LruCache,
     duration_metered_exec, metered_poll_nested_stream_with_budget,
     metrics::{AnnouncedTxTypesMetrics, TransactionsManagerMetrics},
+    peer_diagnostics::{HistoryDiagnostics, HistorySource},
     transactions::config::{StrictEthAnnouncementFilter, TransactionPropagationKind},
     NetworkHandle, TxTypesCounter,
 };
@@ -692,8 +693,10 @@ impl<Pool: TransactionPool, N: NetworkPrimitives> TransactionsManager<Pool, N> {
         let has_duplicates = announcement.len() != msg.len();
 
         // keep track of the transactions the peer knows
-        let count_txns_already_seen_by_peer =
-            msg.iter_hashes().filter(|hash| !peer.seen_transactions.insert(**hash)).count();
+        let count_txns_already_seen_by_peer = msg
+            .iter_hashes()
+            .filter(|hash| !peer.record_seen(**hash, HistorySource::Announcement))
+            .count();
         drop(msg);
         if count_txns_already_seen_by_peer > 0 {
             // this may occur if transactions are sent or announced to a peer, at the same time as
@@ -842,6 +845,9 @@ where
         propagation_mode: PropagationMode,
     ) -> Option<PropagatedTransactions> {
         let peer = self.peers.get_mut(&peer_id)?;
+        if !self.policies.propagation_policy().can_propagate_proactively(&peer_id, peer) {
+            return None
+        }
         trace!(target: "net::tx", ?peer_id, "Propagating transactions to peer");
         let mut propagated = PropagatedTransactions::default();
 
@@ -876,7 +882,14 @@ where
             for hash in new_pooled_hashes.iter_hashes().copied() {
                 propagated.record(hash, PropagateKind::Hash(peer_id));
                 // mark transaction as seen by peer
-                peer.seen_transactions.insert(hash);
+                peer.record_seen(
+                    hash,
+                    if propagation_mode.is_forced() {
+                        HistorySource::Forced
+                    } else {
+                        HistorySource::Propagate
+                    },
+                );
             }
 
             // send hashes of transactions
@@ -888,7 +901,14 @@ where
             for hash in new_full_transactions.iter_hashes() {
                 propagated.record(*hash, PropagateKind::Full(peer_id));
                 // mark transaction as seen by peer
-                peer.seen_transactions.insert(*hash);
+                peer.record_seen(
+                    *hash,
+                    if propagation_mode.is_forced() {
+                        HistorySource::Forced
+                    } else {
+                        HistorySource::Propagate
+                    },
+                );
             }
 
             // send full transactions
@@ -920,6 +940,10 @@ where
                 return
             };
 
+            if !self.policies.propagation_policy().can_propagate_proactively(&peer_id, peer) {
+                return
+            }
+
             let to_propagate =
                 self.pool.get_all(hashes).into_iter().map(PropagateTransaction::pool_tx);
 
@@ -948,7 +972,7 @@ where
 
             for hash in new_pooled_hashes.iter_hashes().copied() {
                 propagated.record(hash, PropagateKind::Hash(peer_id));
-                peer.seen_transactions.insert(hash);
+                peer.record_seen(hash, HistorySource::Forced);
             }
 
             trace!(target: "net::tx::propagation", ?peer_id, ?new_pooled_hashes, "Propagating transactions to peer");
@@ -988,7 +1012,9 @@ where
         // Note: Assuming ~random~ order due to random state of the peers map hasher
         let mut num_full_peers = 0;
         for (peer_id, peer) in &mut self.peers {
-            if !self.policies.propagation_policy().can_propagate(peer) {
+            if !self.policies.propagation_policy().can_propagate(peer) ||
+                !self.policies.propagation_policy().can_propagate_proactively(peer_id, peer)
+            {
                 // skip peers we should not propagate to
                 continue
             }
@@ -1005,7 +1031,7 @@ where
             // message, see `PeerMetadata::seen_transactions`.
             if propagation_mode.is_forced() {
                 for tx in &to_propagate {
-                    peer.seen_transactions.insert(*tx.tx_hash());
+                    peer.record_seen(*tx.tx_hash(), HistorySource::Forced);
                     builder.push(tx);
                 }
             } else {
@@ -1014,7 +1040,7 @@ where
                 // the peer.
                 for tx in &to_propagate {
                     // Only include the transaction if the peer hasn't seen it yet
-                    if peer.seen_transactions.insert(*tx.tx_hash()) {
+                    if peer.record_seen(*tx.tx_hash(), HistorySource::Propagate) {
                         builder.push(tx);
                     }
                 }
@@ -1126,7 +1152,9 @@ where
 
             // we sent a response at which point we assume that the peer is aware of the
             // transactions
-            peer.seen_transactions.extend(transactions.iter().map(|tx| *tx.tx_hash()));
+            for tx in &transactions {
+                peer.record_seen(*tx.tx_hash(), HistorySource::Reply);
+            }
 
             let resp = PooledTransactions(transactions);
             let _ = response.send(Ok(resp));
@@ -1214,7 +1242,9 @@ where
         }
 
         // skip peers we should not propagate to
-        if !self.policies.propagation_policy().can_propagate(peer) {
+        if !self.policies.propagation_policy().can_propagate(peer) ||
+            !self.policies.propagation_policy().can_propagate_proactively(&peer_id, peer)
+        {
             return
         }
 
@@ -1230,7 +1260,7 @@ where
         // Build and send transaction hashes message
         let mut msg_builder = PooledTransactionsHashesBuilder::new(version);
         for pooled_tx in pooled_txs {
-            peer.seen_transactions.insert(*pooled_tx.hash());
+            peer.record_seen(*pooled_tx.hash(), HistorySource::Bootstrap);
             msg_builder.push_pooled(pooled_tx);
         }
 
@@ -1379,7 +1409,7 @@ where
         let mut num_already_seen_by_peer = 0;
         if is_broadcast && let Some(peer) = self.peers.get_mut(&peer_id) {
             for tx in &transactions {
-                if !peer.seen_transactions.insert(*tx.tx_hash()) {
+                if !peer.record_seen(*tx.tx_hash(), HistorySource::Broadcast) {
                     num_already_seen_by_peer += 1;
                 }
             }
@@ -1742,8 +1772,7 @@ enum PropagationMode {
     Basic,
     /// Forced propagation mode.
     ///
-    /// Transactions are sent to all peers regardless of whether they have been sent or received
-    /// before.
+    /// Transactions bypass the seen cache but still respect the proactive propagation policy.
     Forced,
 }
 
@@ -2163,6 +2192,7 @@ pub struct PeerMetadata<N: NetworkPrimitives = EthNetworkPrimitives> {
     /// the sense that transactions are preemptively marked as seen by peer when they are sent to
     /// the peer.
     seen_transactions: LruCache<TxHash, FbBuildHasher<32>>,
+    history_diagnostics: Option<HistoryDiagnostics>,
     /// A communication channel directly to the peer's session task.
     request_tx: PeerRequestSender<PeerRequest<N>>,
     /// negotiated version of the session.
@@ -2182,7 +2212,9 @@ impl<N: NetworkPrimitives> PeerMetadata<N> {
         max_transactions_seen_by_peer: u32,
         peer_kind: PeerKind,
     ) -> Self {
+        let history_diagnostics = HistoryDiagnostics::for_peer(*request_tx.peer_id());
         Self {
+            history_diagnostics,
             seen_transactions: LruCache::with_hasher(
                 max_transactions_seen_by_peer,
                 Default::default(),
@@ -2194,12 +2226,29 @@ impl<N: NetworkPrimitives> PeerMetadata<N> {
         }
     }
 
+    /// Preserve the optimistic peer-knowledge decision; the optional sidecar only observes it.
+    fn record_seen(&mut self, hash: TxHash, source: HistorySource) -> bool {
+        if let Some(diagnostics) = &mut self.history_diagnostics {
+            diagnostics.insert(&mut self.seen_transactions, hash, source)
+        } else {
+            self.seen_transactions.insert(hash)
+        }
+    }
+
+    /// Exercise the production history path in diagnostics benchmarks without sending traffic.
+    #[cfg(feature = "test-utils")]
+    pub fn record_received_hash_for_benchmark(&mut self, hash: TxHash) -> bool {
+        self.record_seen(hash, HistorySource::Announcement)
+    }
+
     /// Returns a reference to the peer's request sender channel.
     pub const fn request_tx(&self) -> &PeerRequestSender<PeerRequest<N>> {
         &self.request_tx
     }
 
     /// Returns a mutable reference to the seen transactions LRU cache.
+    ///
+    /// Raw external writes bypass the optional diagnostic sidecar.
     pub const fn seen_transactions_mut(&mut self) -> &mut LruCache<TxHash, FbBuildHasher<32>> {
         &mut self.seen_transactions
     }
@@ -2447,6 +2496,15 @@ mod tests {
         TransactionsManager<EthTestPool, EthNetworkPrimitives>,
         NetworkManager<EthNetworkPrimitives>,
     ) {
+        new_eth_tx_manager_with_propagation(false).await
+    }
+
+    async fn new_eth_tx_manager_with_propagation(
+        propagate: bool,
+    ) -> (
+        TransactionsManager<EthTestPool, EthNetworkPrimitives>,
+        NetworkManager<EthNetworkPrimitives>,
+    ) {
         let secret_key = SecretKey::new(&mut rand_08::thread_rng());
         let client = NoopProvider::default();
 
@@ -2456,7 +2514,7 @@ mod tests {
             .build(client);
 
         let pool = Pool::new(
-            OkValidator::default(),
+            OkValidator::default().set_propagate_transactions(propagate),
             CoinbaseTipOrdering::default(),
             InMemoryBlobStore::default(),
             Default::default(),
@@ -3538,5 +3596,183 @@ mod tests {
         );
 
         network_service_handle.abort();
+    }
+
+    #[derive(Debug)]
+    struct ProactivePeerFilter {
+        excluded: PeerId,
+        enabled: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl TransactionPropagationPolicy<EthNetworkPrimitives> for ProactivePeerFilter {
+        fn can_propagate(&self, _peer: &mut PeerMetadata) -> bool {
+            true
+        }
+        fn can_propagate_proactively(&self, peer_id: &PeerId, peer: &mut PeerMetadata) -> bool {
+            self.can_propagate(peer) &&
+                (*peer_id != self.excluded || !self.enabled.load(Ordering::Relaxed))
+        }
+        fn on_session_established(&mut self, _peer: &mut PeerMetadata) {}
+        fn on_session_closed(&mut self, _peer: &mut PeerMetadata) {}
+    }
+
+    #[tokio::test]
+    async fn proactive_policy_covers_all_broadcast_paths_but_keeps_requests_and_ingress() {
+        let (mut manager, network) = new_eth_tx_manager_with_propagation(true).await;
+        network.handle().update_sync_state(SyncState::Idle);
+        let excluded = PeerId::repeat_byte(1);
+        let ordinary = PeerId::repeat_byte(2);
+        let enabled = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        manager.policies = NetworkPolicies::new(
+            ProactivePeerFilter { excluded, enabled: enabled.clone() },
+            StrictEthAnnouncementFilter::default(),
+        );
+        let mut tx_gen = TransactionGenerator::new(rand::rng());
+        let tx = gen_eip1559_pooled_with_nonce(&mut tx_gen, 0);
+        let hash = *tx.hash();
+        manager.pool.add_transaction(TransactionOrigin::External, tx).await.unwrap();
+        let session_info = |peer_id| SessionInfo {
+            peer_id,
+            remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+            client_version: Arc::from(""),
+            capabilities: Arc::new(vec![].into()),
+            status: Arc::default(),
+            version: EthVersion::Eth68,
+            peer_kind: PeerKind::Basic,
+        };
+        let (request_tx, _rx) = mpsc::channel(16);
+        manager.handle_peer_session(
+            session_info(excluded),
+            PeerRequestSender::new(excluded, request_tx.clone()),
+        );
+        manager.handle_peer_session(
+            session_info(ordinary),
+            PeerRequestSender::new(ordinary, request_tx.clone()),
+        );
+        assert!(
+            !manager.peers[&excluded].seen_transactions.contains(&hash),
+            "initial pool announcement is filtered"
+        );
+        assert!(manager.peers[&ordinary].seen_transactions.contains(&hash));
+        for mode in [PropagationMode::Basic, PropagationMode::Forced] {
+            assert!(manager
+                .propagate_full_transactions_to_peer(vec![hash], excluded, mode)
+                .is_none());
+            manager.propagate_hashes_to(vec![hash], excluded, mode);
+            manager.peers.get_mut(&ordinary).unwrap().seen_transactions.remove(&hash);
+            let propagated = manager.propagate_transactions(
+                manager
+                    .pool
+                    .get_all(vec![hash])
+                    .into_iter()
+                    .map(PropagateTransaction::pool_tx)
+                    .collect(),
+                mode,
+            );
+            assert_eq!(
+                propagated.get(&hash).unwrap().len(),
+                1,
+                "ordinary peer still receives gossip"
+            );
+            assert!(!manager.peers[&excluded].seen_transactions.contains(&hash));
+        }
+        let (response, rx) = oneshot::channel();
+        manager.on_get_pooled_transactions(excluded, GetPooledTransactions(vec![hash]), response);
+        let response = rx.await.unwrap().unwrap();
+        assert_eq!(response.0.len(), 1);
+        assert_eq!(*response.0[0].tx_hash(), hash, "explicit requests remain served");
+        let incoming = gen_eip1559_pooled_with_nonce(&mut tx_gen, 1).into_consensus().into_inner();
+        let incoming_hash = *incoming.tx_hash();
+        manager.on_network_tx_event(NetworkTransactionEvent::IncomingTransactions {
+            peer_id: excluded,
+            msg: Transactions(vec![incoming]),
+        });
+        assert!(
+            manager.transactions_by_peers.get(&incoming_hash).unwrap().contains(&excluded),
+            "inbound transactions are not filtered"
+        );
+        manager.peers.get_mut(&excluded).unwrap().seen_transactions.remove(&hash);
+        enabled.store(false, Ordering::Relaxed);
+        assert!(
+            manager
+                .propagate_full_transactions_to_peer(vec![hash], excluded, PropagationMode::Basic)
+                .is_some(),
+            "membership removal takes effect without reconnect"
+        );
+        enabled.store(true, Ordering::Relaxed);
+        manager.handle_peer_session(
+            session_info(excluded),
+            PeerRequestSender::new(excluded, request_tx),
+        );
+        assert!(
+            !manager.peers[&excluded].seen_transactions.contains(&hash),
+            "reconnect checks current policy before startup gossip"
+        );
+    }
+
+    #[tokio::test]
+    async fn default_proactive_hook_preserves_targeted_cli_policy_bypass() {
+        let (mut manager, network) = new_eth_tx_manager_with_propagation(true).await;
+        network.handle().update_sync_state(SyncState::Idle);
+        let ordinary = PeerId::repeat_byte(3);
+        let mut tx_gen = TransactionGenerator::new(rand::rng());
+        let tx = gen_eip1559_pooled_with_nonce(&mut tx_gen, 0);
+        let hash = *tx.hash();
+        manager.pool.add_transaction(TransactionOrigin::External, tx).await.unwrap();
+        for policy in [TransactionPropagationKind::None, TransactionPropagationKind::Trusted] {
+            manager.policies = NetworkPolicies::new(policy, StrictEthAnnouncementFilter::default());
+            let (tx, _rx) = mpsc::channel(1);
+            manager.handle_peer_session(
+                SessionInfo {
+                    peer_id: ordinary,
+                    remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+                    client_version: Arc::from(""),
+                    capabilities: Arc::new(vec![].into()),
+                    status: Arc::default(),
+                    version: EthVersion::Eth68,
+                    peer_kind: PeerKind::Basic,
+                },
+                PeerRequestSender::new(ordinary, tx),
+            );
+            assert!(
+                !manager.peers[&ordinary].seen_transactions.contains(&hash),
+                "initial announcements retain the base policy"
+            );
+            for mode in [PropagationMode::Basic, PropagationMode::Forced] {
+                manager.peers.get_mut(&ordinary).unwrap().seen_transactions.remove(&hash);
+                assert!(
+                    manager
+                        .propagate_full_transactions_to_peer(vec![hash], ordinary, mode)
+                        .is_some(),
+                    "targeted full retains its existing base-policy bypass"
+                );
+                manager.peers.get_mut(&ordinary).unwrap().seen_transactions.remove(&hash);
+                manager.propagate_hashes_to(vec![hash], ordinary, mode);
+                assert!(
+                    manager.peers[&ordinary].seen_transactions.contains(&hash),
+                    "targeted hashes retain their existing base-policy bypass"
+                );
+                let propagated = manager.propagate_transactions(
+                    manager
+                        .pool
+                        .get_all(vec![hash])
+                        .into_iter()
+                        .map(PropagateTransaction::pool_tx)
+                        .collect(),
+                    mode,
+                );
+                assert!(propagated.is_empty(), "regular/forced broadcast retains the base policy");
+            }
+            let (response, rx) = oneshot::channel();
+            manager.on_get_pooled_transactions(
+                ordinary,
+                GetPooledTransactions(vec![hash]),
+                response,
+            );
+            assert!(
+                rx.await.unwrap().unwrap().0.is_empty(),
+                "explicit requests retain base CLI restrictions"
+            );
+        }
     }
 }

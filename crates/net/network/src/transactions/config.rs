@@ -19,6 +19,7 @@ use alloy_eips::eip2718::IsTyped2718;
 use alloy_primitives::B256;
 use derive_more::Display;
 use reth_eth_wire::NetworkPrimitives;
+use reth_network_peers::PeerId;
 use reth_network_types::peers::kind::PeerKind;
 
 /// Configuration for managing transactions within the network.
@@ -201,6 +202,16 @@ pub trait TransactionPropagationPolicy<N: NetworkPrimitives>:
     /// filtered out also don't receive the pending pool announcement on session establishment and
     /// are served empty responses to `GetPooledTransactions` requests.
     fn can_propagate(&self, peer: &mut PeerMetadata<N>) -> bool;
+
+    /// Additional filter for unsolicited full transactions and transaction hashes.
+    ///
+    /// Applies to regular gossip, initial pool announcements and targeted/forced propagation.
+    /// Existing base-policy checks remain at their original call sites: targeted propagation
+    /// historically bypasses [`Self::can_propagate`], while regular/initial gossip also requires
+    /// it. Explicit `GetPooledTransactions` responses use only [`Self::can_propagate`].
+    fn can_propagate_proactively(&self, _peer_id: &PeerId, _peer: &mut PeerMetadata<N>) -> bool {
+        true
+    }
 
     /// A callback on the policy when a new peer session is established.
     fn on_session_established(&mut self, peer: &mut PeerMetadata<N>);

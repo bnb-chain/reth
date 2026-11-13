@@ -19,6 +19,7 @@ use std::{
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
+    time::Instant,
 };
 use tracing::trace;
 
@@ -253,12 +254,24 @@ impl<N: NetworkPrimitives> Swarm<N> {
                 self.sessions.disconnect(peer_id, reason);
             }
             StateAction::NewBlock { peer_id, block: msg } => {
-                let msg = PeerMessage::NewBlock(msg);
-                self.sessions.send_message(&peer_id, msg);
+                if !self.state.peer_knows_block(&peer_id, &msg.hash) {
+                    let hash = msg.hash;
+                    let number = msg.number();
+                    if self.sessions.send_message(&peer_id, PeerMessage::NewBlock(msg)) {
+                        self.state.on_block_admitted(&peer_id, hash, number);
+                    }
+                }
             }
-            StateAction::NewBlockHashes { peer_id, hashes } => {
-                let msg = PeerMessage::NewBlockHashes(hashes);
-                self.sessions.send_message(&peer_id, msg);
+            StateAction::NewBlockHashes { peer_id, mut hashes } => {
+                hashes.0.retain(|block| !self.state.peer_knows_block(&peer_id, &block.hash));
+                if !hashes.is_empty() &&
+                    self.sessions
+                        .send_message(&peer_id, PeerMessage::NewBlockHashes(hashes.clone()))
+                {
+                    for block in hashes.0 {
+                        self.state.on_block_admitted(&peer_id, block.hash, block.number);
+                    }
+                }
             }
             StateAction::PeerAdded(peer_id) => return Some(SwarmEvent::PeerAdded(peer_id)),
             StateAction::PeerRemoved(peer_id) => return Some(SwarmEvent::PeerRemoved(peer_id)),
@@ -308,6 +321,55 @@ impl<N: NetworkPrimitives> Swarm<N> {
     /// Set network connection state to `Hibernate` or `Active`
     pub(crate) const fn on_network_state_change(&mut self, network_state: NetworkConnectionState) {
         self.peers_mut().on_network_state_change(network_state);
+    }
+
+    /// Shares ordinary gossip's known-block cache, marking knowledge only after session admission.
+    /// Returns true when the peer already knows the announcement or the session accepted it.
+    /// This is not a transport acknowledgement and does not advance the peer's advertised head.
+    pub(crate) fn send_block_announcement_once_at(
+        &mut self,
+        peer_id: PeerId,
+        message: PeerMessage<N>,
+        admitted: Instant,
+    ) -> bool {
+        match message {
+            PeerMessage::NewBlock(block) => {
+                if self.state.peer_knows_block(&peer_id, &block.hash) {
+                    metrics::counter!("network.block_announcement_duplicates_total", "kind" => "new_block", "path" => "targeted").increment(1);
+                    return true
+                }
+                let hash = block.hash;
+                if !self.sessions.send_message_at(&peer_id, PeerMessage::NewBlock(block), admitted)
+                {
+                    return false
+                }
+                self.state.mark_peer_knows_block(peer_id, hash);
+                true
+            }
+            PeerMessage::NewBlockHashes(mut hashes) => {
+                let before = hashes.len();
+                hashes.0.retain(|block| !self.state.peer_knows_block(&peer_id, &block.hash));
+                let duplicates = before - hashes.len();
+                if duplicates > 0 {
+                    metrics::counter!("network.block_announcement_duplicates_total", "kind" => "new_block_hashes", "path" => "targeted").increment(duplicates as u64);
+                }
+                if hashes.is_empty() {
+                    return true
+                }
+                if !self.sessions.send_message_at(
+                    &peer_id,
+                    PeerMessage::NewBlockHashes(hashes.clone()),
+                    admitted,
+                ) {
+                    return false
+                }
+                for block in hashes.0 {
+                    self.state.mark_peer_knows_block(peer_id, block.hash);
+                }
+                true
+            }
+            _ => unreachable!("manager admission only accepts full blocks or block hashes"),
+        }
     }
 }
 

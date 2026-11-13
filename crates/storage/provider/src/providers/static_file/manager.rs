@@ -10,7 +10,7 @@ use crate::{
 };
 use alloy_consensus::{
     transaction::{TransactionMeta, TxHashRef},
-    Header,
+    Header, Sealable,
 };
 use alloy_eips::BlockHashOrNumber;
 use alloy_primitives::{b256, Address, BlockHash, BlockNumber, TxHash, TxNumber, B256, U256};
@@ -22,7 +22,8 @@ use reth_db::{
     lockfile::StorageLock,
     static_file::{
         iter_static_files, BlockHashMask, HeaderMask, HeaderWithHashMask, ReceiptMask,
-        StaticFileCursor, StorageChangesetMask, TransactionMask, TransactionSenderMask,
+        StaticFileCursor, StorageChangesetMask, TDWithHashMask, TransactionMask,
+        TransactionSenderMask,
     },
 };
 use reth_db_api::{
@@ -2700,6 +2701,40 @@ impl<N: NodePrimitives> StaticFileProvider<N> {
     }
 }
 
+impl<N: NodePrimitives<BlockHeader: Value>> StaticFileProvider<N> {
+    /// Reads header/TD from one pinned jar while excluding in-place header rewrites.
+    ///
+    /// The cursor pins the data and offset file handles, so unlinking cannot switch its inode.
+    /// The gate excludes in-place rewrites and pathname recreation by header writers. A concurrent
+    /// deletion during cursor construction may fail the read. No guard survives this row read.
+    pub(crate) fn header_with_td(
+        &self,
+        number: BlockNumber,
+    ) -> ProviderResult<Option<(N::BlockHeader, U256)>> {
+        self.writers
+            .try_read_headers(|| {
+                let Some(provider) =
+                    self.get_maybe_segment_provider(StaticFileSegment::Headers, number)?
+                else {
+                    return Ok(None)
+                };
+                let mut cursor = provider.cursor()?;
+                let Some((td, hash)) = cursor.get_two::<TDWithHashMask>(number.into())? else {
+                    return Ok(None)
+                };
+                let Some(header) = cursor.get_one::<HeaderMask<N::BlockHeader>>(number.into())?
+                else {
+                    return Ok(None)
+                };
+                if header.number() != number || header.hash_slow() != hash {
+                    return Ok(None)
+                }
+                Ok(Some((header, td.into())))
+            })
+            .unwrap_or(Ok(None))
+    }
+}
+
 impl<N: NodePrimitives<BlockHeader: Value>> HeaderProvider for StaticFileProvider<N> {
     type Header = N::BlockHeader;
 
@@ -3191,19 +3226,55 @@ where
 mod tests {
     use std::{
         collections::BTreeMap,
-        sync::{atomic::Ordering, mpsc},
+        sync::{atomic::Ordering, mpsc, Arc},
         thread,
         time::{Duration, Instant},
     };
 
     use alloy_consensus::Header;
-    use alloy_primitives::B256;
+    use alloy_primitives::{B256, U256};
     use reth_chain_state::EthPrimitives;
-    use reth_db::test_utils::create_test_static_files_dir;
-    use reth_static_file_types::{SegmentRangeInclusive, StaticFileSegment};
+    use reth_db::{
+        static_file::{HeaderMask, StaticFileCursor, TDWithHashMask},
+        test_utils::create_test_static_files_dir,
+    };
+    use reth_nippy_jar::{NippyJar, NippyJarError};
+    use reth_static_file_types::{SegmentHeader, SegmentRangeInclusive, StaticFileSegment};
 
     use super::StaticFileWriter;
     use crate::{providers::StaticFileProvider, BlockHashReader, StaticFileProviderBuilder};
+
+    #[test]
+    fn exact_td_cursor_pins_unlinked_files_and_new_reader_fails_closed() -> eyre::Result<()> {
+        let (static_dir, _) = create_test_static_files_dir();
+        let static_files: StaticFileProvider<EthPrimitives> =
+            StaticFileProviderBuilder::read_write(&static_dir).build()?;
+        let header = Header { difficulty: U256::from(7), ..Default::default() };
+        let hash = header.hash_slow();
+        {
+            let mut writer = static_files.latest_writer(StaticFileSegment::Headers)?;
+            writer.append_header_with_td(&header, U256::from(7), &hash)?;
+            writer.commit()?;
+        }
+        let path = static_files
+            .get_segment_provider_for_block(StaticFileSegment::Headers, 0, None)?
+            .data_path()
+            .to_owned();
+        // Use the same cursor/data-reader types without retaining a cache shard guard: this
+        // models a reader loaded between delete_jar's map removal and its filesystem unlink.
+        let jar = NippyJar::<SegmentHeader>::load(&path)?;
+        let reader = Arc::new(jar.open_data_reader()?);
+        let mut cursor = StaticFileCursor::new(&jar, reader)?;
+        static_files.writers.try_read_headers(|| -> eyre::Result<()> {
+            static_files.delete_jar(StaticFileSegment::Headers, 0)?;
+            assert_eq!(cursor.get_two::<TDWithHashMask>(0.into())?.map(|(td, hash)| (td.0, hash)), Some((U256::from(7), hash)));
+            assert_eq!(cursor.get_one::<HeaderMask<Header>>(0.into())?, Some(header));
+            assert!(matches!(jar.open_data_reader(), Err(NippyJarError::Disconnect(error)) if error.kind() == std::io::ErrorKind::NotFound), "constructing a new reader after unlink must report the missing file");
+            Ok(())
+        }).unwrap()?;
+        assert!(static_files.header_with_td(0)?.is_none());
+        Ok(())
+    }
 
     #[test]
     fn recovery_prunes_transaction_zero_at_empty_genesis() -> eyre::Result<()> {

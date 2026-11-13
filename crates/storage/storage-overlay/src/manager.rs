@@ -8,6 +8,7 @@ use crate::{
     changeset_cache::compute_block_trie_updates,
     database_state_frontiers,
     manager_metrics::{ExecutionOverlayMetrics, OverlayCacheMetrics, StateTrieOverlayMetrics},
+    read_context::{OverlayBlockSource, OverlayReadContext},
     ChangesetCache, ExecutionOverlay, OverlayBuilder,
 };
 use alloy_eips::BlockNumHash;
@@ -42,7 +43,11 @@ use tracing::{debug, trace};
 #[derive(Clone)]
 pub struct OverlayManager<N: NodePrimitives = EthPrimitives> {
     diagnostic_origin: &'static str,
-    blocks: Arc<DashMap<B256, ExecutedBlock<N>>>,
+    pub(crate) blocks: Arc<OverlayBlockSource<N>>,
+    /// Read-only source for executed branches not managed by this instance.
+    pub(crate) block_source: Option<Arc<OverlayBlockSource<N>>>,
+    /// Immutable block dependencies captured for one database snapshot.
+    pub(crate) read_context: Option<Arc<OverlayReadContext<N>>>,
     state_trie_overlays: OverlayCache<TrieInputSorted>,
     execution_overlays: OverlayCache<ExecutionOverlay>,
     changeset_cache: ChangesetCache,
@@ -58,6 +63,8 @@ impl<N: NodePrimitives> Default for OverlayManager<N> {
         Self {
             diagnostic_origin: "engine",
             blocks: Default::default(),
+            block_source: None,
+            read_context: None,
             state_trie_overlays: Default::default(),
             execution_overlays: Default::default(),
             changeset_cache: Default::default(),
@@ -94,6 +101,8 @@ impl<N: NodePrimitives> OverlayManager<N> {
         Self {
             diagnostic_origin: origin,
             blocks: Default::default(),
+            block_source: None,
+            read_context: None,
             state_trie_overlays: Default::default(),
             execution_overlays: Default::default(),
             changeset_cache: ChangesetCache::new_with_diagnostic_origin(origin),
@@ -349,10 +358,21 @@ impl<N: NodePrimitives> OverlayManager<N> {
         let mut block_count = 0usize;
         let mut removed_blocks = 0usize;
         let mut pruned_overlays = 0usize;
-        for hash in hashes {
-            block_count += 1;
-            removed_blocks += self.blocks.remove(&hash).is_some() as usize;
-        }
+        // Readers hold this gate only while opening a snapshot and capturing block references.
+        // Persistence must commit and release its database writer before removing live blocks.
+        let removed = {
+            let _guard = self.blocks.capture.write();
+            hashes
+                .into_iter()
+                .filter_map(|hash| {
+                    block_count += 1;
+                    self.blocks.remove(&hash)
+                })
+                .collect::<Vec<_>>()
+        };
+        removed_blocks += removed.len();
+        // Potentially large block destruction and cache pruning happen outside the capture gate.
+        drop(removed);
         span.record("block_count", block_count);
         span.record("removed_blocks", removed_blocks);
 
@@ -633,9 +653,15 @@ impl<N: NodePrimitives> OverlayManager<N> {
     ) -> impl Iterator<Item = ExecutedBlock<N>> + '_ {
         let mut hash = parent_hash;
         std::iter::from_fn(move || {
-            let block = self.blocks.get(&hash)?;
+            let block = if let Some(context) = &self.read_context {
+                context.blocks.get(&hash).cloned()
+            } else {
+                self.blocks.get(&hash).map(|block| block.value().clone()).or_else(|| {
+                    self.block_source.as_ref()?.get(&hash).map(|block| block.value().clone())
+                })
+            }?;
             hash = block.recovered_block().parent_hash();
-            Some(block.clone())
+            Some(block)
         })
     }
 
@@ -657,6 +683,17 @@ impl<N: NodePrimitives> OverlayManager<N> {
             let Some(block) = self.blocks.get(&current_hash) else { return false };
             current_hash = block.recovered_block().parent_hash();
         }
+    }
+
+    /// Resolves missing parent-chain blocks from `source` without sharing its computation caches.
+    ///
+    /// This only shares the executed-block index. Local inserts and removals still affect this
+    /// manager's own index, and managed-chain coverage remains local. Materialized builders retain
+    /// their executed blocks independently of later source pruning. Blocks removed before a chain
+    /// is captured remain unavailable; callers must preserve the normal overlay validation checks.
+    pub fn with_block_source(mut self, source: &Self) -> Self {
+        self.block_source = Some(Arc::clone(&source.blocks));
+        self
     }
 
     fn compute_state_trie_overlay(
@@ -1116,6 +1153,51 @@ mod tests {
             .enumerate()
             .map(|(index, block)| with_unique_state(&block, index as u8 + 1))
             .collect()
+    }
+
+    #[test]
+    fn block_source_retains_captured_states_without_sharing_caches() {
+        let source = OverlayManager::default();
+        let blocks = test_blocks();
+        for block in &blocks {
+            source.insert_block(block.clone());
+        }
+        let manager = OverlayManager::default().with_block_source(&source);
+        let tip = blocks.last().unwrap().recovered_block().hash();
+        let anchor = blocks[0].recovered_block().parent_hash();
+        let state = manager.block_state(tip).unwrap();
+        assert!(Arc::ptr_eq(&state.block_ref().execution_output, &blocks[2].execution_output));
+        assert!(manager.blocks.is_empty());
+        source.remove_blocks(blocks.iter().map(|block| block.recovered_block().hash()));
+        assert!(manager.block_state(tip).is_none());
+
+        let (_, hashed) =
+            manager.overlay_for_parent(&state, anchor, OverlayCacheConfig::default()).unwrap();
+        assert_eq!(hashed.accounts.len(), 3);
+        assert_eq!(manager.state_trie_overlays.len(), 1);
+        assert_eq!(source.state_trie_overlays.len(), 0);
+        assert_eq!(source.execution_overlays.len(), 0);
+        assert!(manager.blocks.is_empty());
+    }
+
+    #[test]
+    fn block_source_observes_later_imports_but_local_blocks_take_precedence() {
+        let source = OverlayManager::default();
+        let manager = OverlayManager::default().with_block_source(&source);
+        let blocks = test_blocks();
+        let tip = blocks[2].recovered_block().hash();
+        assert!(manager.block_state(tip).is_none());
+        for block in &blocks {
+            source.insert_block(block.clone());
+        }
+        assert_eq!(manager.block_state(tip).unwrap().chain().count(), 3);
+
+        let local = with_unique_state(&blocks[2], 99);
+        manager.insert_block(local.clone());
+        let captured = manager.block_state(tip).unwrap();
+        assert!(Arc::ptr_eq(&captured.block_ref().execution_output, &local.execution_output));
+        assert!(!Arc::ptr_eq(&captured.block_ref().execution_output, &blocks[2].execution_output));
+        assert_eq!(source.blocks.len(), 3);
     }
 
     impl OverlayManager {

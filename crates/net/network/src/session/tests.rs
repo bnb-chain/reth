@@ -640,3 +640,11 @@ async fn inbound_capacity_rejection_preserves_outbound_attempt() {
         }
     }
 }
+
+#[tokio::test]
+async fn missing_session_rejects_local_admission() {
+    let sessions = session_manager();
+    assert!(
+        !sessions.send_message(&PeerId::random(), PeerMessage::NewBlockHashes(Default::default()))
+    );
+}

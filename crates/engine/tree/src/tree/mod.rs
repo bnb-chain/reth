@@ -1,7 +1,10 @@
 use crate::{
     backfill::{BackfillAction, BackfillSyncState},
     chain::FromOrchestrator,
-    engine::{DownloadRequest, EngineApiEvent, EngineApiKind, EngineApiRequest, FromEngine},
+    engine::{
+        DownloadRequest, EngineApiEvent, EngineApiKind, EngineApiRequest, FromEngine,
+        LocalBlockOutcome,
+    },
     persistence::PersistenceHandle,
     tree::{error::InsertPayloadError, payload_validator::TreeCtx},
 };
@@ -1158,8 +1161,17 @@ where
     #[instrument(level = "debug", target = "engine::tree", skip_all, fields(head = % state.head_block_hash, safe = % state.safe_block_hash,finalized = % state.finalized_block_hash))]
     fn on_forkchoice_updated(
         &mut self,
-        state: ForkchoiceState,
+        mut state: ForkchoiceState,
         attrs: Option<T::PayloadAttributes>,
+    ) -> ProviderResult<TreeOutcome<OnForkChoiceUpdated>> {
+        self.on_forkchoice_updated_guarded(&mut state, attrs, None)
+    }
+
+    fn on_forkchoice_updated_guarded(
+        &mut self,
+        state: &mut ForkchoiceState,
+        attrs: Option<T::PayloadAttributes>,
+        finalized_guard: Option<BlockNumHash>,
     ) -> ProviderResult<TreeOutcome<OnForkChoiceUpdated>> {
         trace!(target: "engine::tree", ?attrs, "invoked forkchoice update");
 
@@ -1167,23 +1179,33 @@ where
         self.record_forkchoice_metrics();
 
         // Pre-validation of forkchoice state
-        if let Some(early_result) = self.validate_forkchoice_state(state)? {
+        // Deferred recovery must retain the same finalized constraint after this message ends.
+        let mut recovery_state = *state;
+        if let Some(floor) = finalized_guard {
+            recovery_state.finalized_block_hash = floor.hash;
+        }
+        if let Some(early_result) = self.validate_forkchoice_state(recovery_state)? {
+            if early_result.forkchoice_status() == reth_engine_primitives::ForkchoiceStatus::Syncing
+            {
+                *state = recovery_state;
+            }
             return Ok(TreeOutcome::new(early_result));
         }
 
         // Return early if we are on the correct fork
-        if let Some(result) = self.handle_canonical_head(state, &attrs)? {
+        if let Some(result) = self.handle_canonical_head(*state, &attrs)? {
             return Ok(result);
         }
 
         // Attempt to apply a chain update when the head differs from our canonical chain.
         // This handles reorgs and chain extensions by making the specified head canonical.
-        if let Some(result) = self.apply_chain_update(state, &attrs)? {
+        if let Some(result) = self.apply_chain_update(*state, &attrs, finalized_guard)? {
             return Ok(result);
         }
 
         // Fallback that ensures to catch up to the network's state.
-        self.handle_missing_block(state)
+        *state = recovery_state;
+        self.handle_missing_block(*state)
     }
 
     /// Records metrics for forkchoice updated calls
@@ -1304,6 +1326,7 @@ where
         &mut self,
         state: ForkchoiceState,
         attrs: &Option<T::PayloadAttributes>,
+        finalized_guard: Option<BlockNumHash>,
     ) -> ProviderResult<Option<TreeOutcome<OnForkChoiceUpdated>>> {
         // Check if the head is already part of the canonical chain
         if let Ok(Some(canonical_header)) = self.find_canonical_header(state.head_block_hash) {
@@ -1363,6 +1386,18 @@ where
 
         // Ensure we can apply a new chain update for the head block
         if let Some(chain_update) = self.on_new_head(state.head_block_hash)? {
+            if let Some(floor) = finalized_guard &&
+                !self.is_consistent_forkchoice_state(
+                    ForkchoiceState {
+                        head_block_hash: state.head_block_hash,
+                        safe_block_hash: B256::ZERO,
+                        finalized_block_hash: floor.hash,
+                    },
+                    Some(&chain_update),
+                )?
+            {
+                return Ok(Some(TreeOutcome::new(OnForkChoiceUpdated::invalid_state())));
+            }
             if !self.is_consistent_forkchoice_state(state, Some(&chain_update))? {
                 return Ok(Some(TreeOutcome::new(OnForkChoiceUpdated::invalid_state())));
             }
@@ -1589,6 +1624,7 @@ where
         if let FromEngine::TimedRequest { request, queued_at } = &msg {
             let kind = match request {
                 EngineApiRequest::InsertExecutedBlock(_) => "local_insert",
+                EngineApiRequest::InsertExecutedBlockAndForkchoice { .. } => "local_insert_fcu",
                 EngineApiRequest::Beacon(BeaconEngineMessage::ForkchoiceUpdated { .. }) => "fcu",
                 _ => "other",
             };
@@ -1616,47 +1652,22 @@ where
             FromEngine::Request(request) | FromEngine::TimedRequest { request, .. } => {
                 match request {
                     EngineApiRequest::InsertExecutedBlock(payload) => {
-                        let _stage = handoff_metrics::HandoffStage::new("insert_executed_total");
-                        let block_num_hash = payload.recovered_block.num_hash();
-                        if block_num_hash.number <= self.state.tree_state.canonical_block_number() {
-                            // outdated block that can be skipped
-                            return Ok(ops::ControlFlow::Continue(()))
+                        if let Err(err) = self.insert_executed_block(payload) {
+                            warn!(target: "engine::tree", %err, "Failed to insert already executed block");
                         }
-
-                        if self.state.tree_state.contains_hash(&block_num_hash.hash) {
-                            // block already known to the tree (e.g. delivered via newPayload first)
-                            return Ok(ops::ControlFlow::Continue(()))
+                    }
+                    EngineApiRequest::InsertExecutedBlockAndForkchoice {
+                        payload,
+                        state,
+                        expected_head,
+                        cause,
+                        tx,
+                    } => {
+                        let _cause = cause.enter();
+                        let result = self.on_local_block(payload, state, expected_head)?;
+                        if tx.send(result).is_err() {
+                            debug!(target: "engine::tree", "Local block result receiver dropped; queued mutation was not cancelled");
                         }
-
-                        debug!(target: "engine::tree", block=?block_num_hash, "inserting already executed block");
-                        let now = Instant::now();
-
-                        let block = match self.payload_validator.on_inserted_executed_block(payload)
-                        {
-                            Ok(block) => block,
-                            Err(err) => {
-                                warn!(target: "engine::tree", %err, block=?block_num_hash, "Failed to insert already executed block");
-                                return Ok(ops::ControlFlow::Continue(()))
-                            }
-                        };
-
-                        let is_pending = self.state.tree_state.canonical_block_hash() ==
-                            block.recovered_block().parent_hash();
-                        self.state.tree_state.insert_executed(block.clone());
-                        self.metrics
-                            .engine
-                            .executed_blocks
-                            .set(self.state.tree_state.block_count() as f64);
-
-                        if is_pending {
-                            debug!(target: "engine::tree", pending=?block_num_hash, "updating pending block");
-                            self.canonical_in_memory_state.set_pending_block(block.clone());
-                        }
-
-                        self.metrics.engine.inserted_already_executed_blocks.increment(1);
-                        self.emit_event(EngineApiEvent::BeaconConsensus(
-                            ConsensusEngineEvent::CanonicalBlockAdded(block, now.elapsed()),
-                        ));
                     }
                     EngineApiRequest::IsBlockKnown { hash, tx } => {
                         let known = self.state.tree_state.contains_hash(&hash) ||
@@ -1678,43 +1689,12 @@ where
                                 tx,
                             } => {
                                 let _cause = cause.enter();
-                                let has_attrs = payload_attrs.is_some();
-
                                 let start = Instant::now();
-                                let stage = handoff_metrics::HandoffStage::new("fcu_process");
-                                let mut output = self.on_forkchoice_updated(state, payload_attrs);
-                                drop(stage);
+                                let mut state = state;
+                                let output =
+                                    self.process_forkchoice(&mut state, payload_attrs, None)?;
 
-                                if let Ok(res) = &mut output {
-                                    // track last received forkchoice state
-                                    self.state
-                                        .forkchoice_state_tracker
-                                        .set_latest(state, res.outcome.forkchoice_status());
-
-                                    // emit an event about the handled FCU
-                                    self.emit_event(ConsensusEngineEvent::ForkchoiceUpdated(
-                                        state,
-                                        res.outcome.forkchoice_status(),
-                                    ));
-
-                                    // handle the event if any
-                                    self.on_maybe_tree_event(res.event.take())?;
-                                }
-
-                                if let Err(ref err) = output {
-                                    error!(target: "engine::tree", %err, ?state, "Error processing forkchoice update");
-                                }
-
-                                self.metrics.engine.forkchoice_updated.update_response_metrics(
-                                    start,
-                                    &mut self.metrics.engine.new_payload.latest_finish_at,
-                                    has_attrs,
-                                    &output,
-                                );
-
-                                if let Err(err) =
-                                    tx.send(output.map(|o| o.outcome).map_err(Into::into))
-                                {
+                                if let Err(err) = tx.send(output.map_err(Into::into)) {
                                     self.metrics
                                         .engine
                                         .failed_forkchoice_updated_response_deliveries
@@ -1854,6 +1834,137 @@ where
             }
         }
         Ok(ops::ControlFlow::Continue(()))
+    }
+
+    /// Index without selecting a head. Legacy callers keep fire-and-forget behavior.
+    fn insert_executed_block(
+        &mut self,
+        payload: reth_payload_primitives::BuiltPayloadExecutedBlock<N>,
+    ) -> ProviderResult<bool> {
+        let _stage = handoff_metrics::HandoffStage::new("insert_executed_total");
+        let block_num_hash = payload.recovered_block.num_hash();
+        if block_num_hash.number <= self.state.tree_state.canonical_block_number() {
+            return Ok(self.state.tree_state.contains_hash(&block_num_hash.hash));
+        }
+        if self.state.tree_state.contains_hash(&block_num_hash.hash) {
+            return Ok(true);
+        }
+        debug!(target: "engine::tree", block=?block_num_hash, "inserting already executed block");
+        let now = Instant::now();
+        let block = self.payload_validator.on_inserted_executed_block(payload)?;
+        let is_pending =
+            self.state.tree_state.canonical_block_hash() == block.recovered_block().parent_hash();
+        self.state.tree_state.insert_executed(block.clone());
+        self.metrics.engine.executed_blocks.set(self.state.tree_state.block_count() as f64);
+        if is_pending {
+            self.canonical_in_memory_state.set_pending_block(block.clone());
+        }
+        self.metrics.engine.inserted_already_executed_blocks.increment(1);
+        self.emit_event(ConsensusEngineEvent::CanonicalBlockAdded(block, now.elapsed()));
+        Ok(true)
+    }
+
+    /// Share tracker updates, events, sync actions and metrics with ordinary FCU requests.
+    fn process_forkchoice(
+        &mut self,
+        state: &mut ForkchoiceState,
+        attrs: Option<T::PayloadAttributes>,
+        finalized_guard: Option<BlockNumHash>,
+    ) -> Result<ProviderResult<OnForkChoiceUpdated>, InsertBlockFatalError> {
+        let has_attrs = attrs.is_some();
+        let start = Instant::now();
+        let stage = handoff_metrics::HandoffStage::new("fcu_process");
+        let mut output = if finalized_guard.is_some() {
+            self.on_forkchoice_updated_guarded(state, attrs, finalized_guard)
+        } else {
+            self.on_forkchoice_updated(*state, attrs)
+        };
+        drop(stage);
+        if let Ok(res) = &mut output {
+            self.state.forkchoice_state_tracker.set_latest(*state, res.outcome.forkchoice_status());
+            self.emit_event(ConsensusEngineEvent::ForkchoiceUpdated(
+                *state,
+                res.outcome.forkchoice_status(),
+            ));
+            self.on_maybe_tree_event(res.event.take())?;
+        }
+        if let Err(err) = &output {
+            error!(target: "engine::tree", %err, ?state, "Error processing forkchoice update");
+        }
+        self.metrics.engine.forkchoice_updated.update_response_metrics(
+            start,
+            &mut self.metrics.engine.new_payload.latest_finish_at,
+            has_attrs,
+            &output,
+        );
+        Ok(output.map(|output| output.outcome))
+    }
+
+    /// One tree turn: index, reject a stale selection, then run full FCU processing.
+    fn on_local_block(
+        &mut self,
+        payload: reth_payload_primitives::BuiltPayloadExecutedBlock<N>,
+        mut state: ForkchoiceState,
+        expected_head: B256,
+    ) -> Result<ProviderResult<LocalBlockOutcome>, InsertBlockFatalError> {
+        let hash = payload.recovered_block.hash();
+        let retained = match self.insert_executed_block(payload) {
+            Ok(true) => true,
+            Ok(false) => match self.provider.block_number(hash) {
+                Ok(number) => number.is_some(),
+                Err(error) => return Ok(Err(error)),
+            },
+            Err(error) => return Ok(Err(error)),
+        };
+        if !retained {
+            return Ok(Ok(LocalBlockOutcome::NotRetained));
+        }
+        let actual_head = self.state.tree_state.current_canonical_head;
+        if expected_head != actual_head.hash {
+            return Ok(Ok(LocalBlockOutcome::StaleHead { actual_head }));
+        }
+        let finalized_guard = self.canonical_in_memory_state.get_finalized_num_hash();
+        match self.preserve_local_finality(&mut state, finalized_guard) {
+            Ok(true) => {}
+            Ok(false) => return Ok(Ok(LocalBlockOutcome::FinalityConflict)),
+            Err(error) => return Ok(Err(error)),
+        }
+        let outcome = match self.process_forkchoice(&mut state, None, finalized_guard)? {
+            Ok(outcome) => outcome,
+            Err(error) => return Ok(Err(error)),
+        };
+        Ok(Ok(LocalBlockOutcome::Forkchoice {
+            outcome,
+            state,
+            canonical_head: self.state.tree_state.current_canonical_head,
+            finalized: self.canonical_in_memory_state.get_finalized_num_hash(),
+            safe: self.canonical_in_memory_state.get_safe_num_hash(),
+        }))
+    }
+
+    /// A local stale snapshot must not lower already-confirmed finality. Safe may otherwise
+    /// change under Parlia reorgs; it is raised only when it is older than the finalized floor.
+    fn preserve_local_finality(
+        &self,
+        state: &mut ForkchoiceState,
+        floor: Option<BlockNumHash>,
+    ) -> ProviderResult<bool> {
+        let Some(floor) = floor else { return Ok(true) };
+        if state.finalized_block_hash.is_zero() {
+            state.finalized_block_hash = floor.hash;
+        } else if let Some(requested) = self.sealed_header_by_hash(state.finalized_block_hash)? {
+            if requested.number() < floor.number {
+                state.finalized_block_hash = floor.hash;
+            } else if requested.number() == floor.number && requested.hash() != floor.hash {
+                return Ok(false);
+            }
+        }
+        if let Some(safe) = self.sealed_header_by_hash(state.safe_block_hash)? &&
+            safe.number() < floor.number
+        {
+            state.safe_block_hash = floor.hash;
+        }
+        Ok(true)
     }
 
     /// Invoked if the backfill sync has finished to target.
@@ -2030,6 +2141,32 @@ where
     /// This will update the tracked canonical in memory state and do the necessary housekeeping.
     fn make_canonical(&mut self, target: B256) -> ProviderResult<()> {
         if let Some(chain_update) = self.on_new_head(target)? {
+            // Recovery can canonicalize an intermediate safe/finalized target before the head.
+            // Check confirmed finality before every such mutation, not after notifying miners.
+            let floor_state = ForkchoiceState {
+                head_block_hash: target,
+                safe_block_hash: B256::ZERO,
+                finalized_block_hash: self
+                    .canonical_in_memory_state
+                    .get_finalized_num_hash()
+                    .map_or(B256::ZERO, |block| block.hash),
+            };
+            let sync_state = self
+                .state
+                .forkchoice_state_tracker
+                .sync_target_state()
+                .filter(|state| state.head_block_hash == target);
+            if !self.is_consistent_forkchoice_state(floor_state, Some(&chain_update))? ||
+                if let Some(state) = sync_state {
+                    !self.is_consistent_forkchoice_state(state, Some(&chain_update))?
+                } else {
+                    false
+                }
+            {
+                ::metrics::counter!("engine.recovery.forkchoice_rejected_total").increment(1);
+                debug!(target: "engine::tree", %target, "Deferred canonicalization conflicts with forkchoice constraints");
+                return Ok(());
+            }
             self.on_canonical_chain_update(chain_update);
         }
 
@@ -3115,6 +3252,18 @@ where
         block: SealedBlockWithAccessList<N::Block>,
     ) -> Result<Option<TreeEvent>, InsertBlockFatalError> {
         let block_num_hash = block.num_hash();
+        // Downloads can finish after forkchoice has finalized a different branch. Such blocks
+        // cannot change the local chain and must not be re-executed after leaving the tree cache.
+        // Use locally established finality, not a sync target we may not have downloaded yet.
+        if let Some(finalized) = self.canonical_in_memory_state.get_finalized_num_hash() &&
+            finalized.number <= self.state.tree_state.canonical_block_number() &&
+            block_num_hash.number <= finalized.number
+        {
+            self.metrics.engine.downloaded_blocks_ignored_finalized_total.increment(1);
+            debug!(target: "engine::tree", block = ?block_num_hash, ?finalized, "Ignoring downloaded block at or below local finalized height");
+            return Ok(None)
+        }
+
         let lowest_buffered_ancestor = self.lowest_buffered_ancestor_or(block_num_hash.hash);
         if self.check_invalid_ancestor_with_head(lowest_buffered_ancestor, &block)?.is_some() {
             return Ok(None)

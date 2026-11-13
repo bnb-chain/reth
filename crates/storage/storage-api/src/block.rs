@@ -4,7 +4,7 @@ use crate::{
 };
 use alloc::{sync::Arc, vec::Vec};
 use alloy_eips::{BlockHashOrNumber, BlockId, BlockNumberOrTag};
-use alloy_primitives::{BlockNumber, TxNumber, B256};
+use alloy_primitives::{BlockNumber, TxNumber, B256, U256};
 use core::ops::RangeInclusive;
 use reth_execution_types::RecoveredBlockAndExecutionOutput;
 use reth_primitives_traits::{Block as _, RecoveredBlock, SealedHeader, SealedOrRecoveredBlock};
@@ -109,6 +109,17 @@ pub trait BlockReader:
         self.block(hash.into())
     }
 
+    /// Returns an exact-hash block and TD proven against its ancestor hashes.
+    ///
+    /// Implementations must bind TD to the returned header, rather than combine independent
+    /// height-based reads. This does not promise a globally atomic canonical view or validate the
+    /// body. Missing dependencies, contention or an exhausted work budget return `None`;
+    /// callers must not substitute a height-based TD. Providers without
+    /// this capability fail closed by default.
+    fn block_with_td_by_hash(&self, _hash: B256) -> ProviderResult<Option<(Self::Block, U256)>> {
+        Ok(None)
+    }
+
     /// Returns the block with matching number from database.
     ///
     /// Returns `None` if block is not found.
@@ -192,6 +203,9 @@ impl<T: BlockReader + Sync> BlockReader for Arc<T> {
     fn block_by_hash(&self, hash: B256) -> ProviderResult<Option<Self::Block>> {
         T::block_by_hash(self, hash)
     }
+    fn block_with_td_by_hash(&self, hash: B256) -> ProviderResult<Option<(Self::Block, U256)>> {
+        T::block_with_td_by_hash(self, hash)
+    }
     fn block_by_number(&self, num: u64) -> ProviderResult<Option<Self::Block>> {
         T::block_by_number(self, num)
     }
@@ -259,6 +273,9 @@ impl<T: BlockReader + Sync> BlockReader for &T {
     }
     fn block_by_hash(&self, hash: B256) -> ProviderResult<Option<Self::Block>> {
         T::block_by_hash(self, hash)
+    }
+    fn block_with_td_by_hash(&self, hash: B256) -> ProviderResult<Option<(Self::Block, U256)>> {
+        T::block_with_td_by_hash(self, hash)
     }
     fn block_by_number(&self, num: u64) -> ProviderResult<Option<Self::Block>> {
         T::block_by_number(self, num)

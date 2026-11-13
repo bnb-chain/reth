@@ -6,7 +6,7 @@ use crate::{
 };
 use alloy_consensus::{constants::KECCAK_EMPTY, BlockHeader, ReceiptWithBloom};
 use alloy_eips::BlockHashOrNumber;
-use alloy_primitives::{Bytes, B256};
+use alloy_primitives::{Bytes, Sealable, B256};
 use alloy_rlp::{length_of_length, Encodable};
 use futures::StreamExt;
 use reth_eth_wire::{
@@ -28,7 +28,7 @@ use reth_network_p2p::{
 use reth_network_peers::PeerId;
 use reth_primitives_traits::Block;
 use reth_storage_api::{
-    errors::provider::ProviderResult, BalProvider, BlockReader, BytecodeReader,
+    errors::provider::ProviderResult, BalProvider, BlockHashReader, BlockReader, BytecodeReader,
     GetBlockAccessListLimit, HeaderProvider, RangeEnd, RangeResponse, StateProviderFactory,
     StateRangeProviderFactory,
 };
@@ -36,6 +36,7 @@ use reth_transaction_pool::{blobstore::NoopBlobStore, BlobStore};
 use std::{
     future::Future,
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll},
     time::Duration,
 };
@@ -95,6 +96,9 @@ const MAX_HEADERS_RESERVE: usize = 64;
 /// many fit and this only caps the estimate for tiny blocks.
 const MAX_BLOCKS_RESERVE: usize = 16;
 
+/// Geth's shared budget for walking noncanonical ancestors in one header request.
+const MAX_NON_CANONICAL_ANCESTORS: usize = 100;
+
 /// Manages eth related requests on top of the p2p network.
 ///
 /// This can be spawned to another task and is supposed to be run as background service.
@@ -113,6 +117,17 @@ pub struct EthRequestHandler<C, N: NetworkPrimitives = EthNetworkPrimitives> {
     incoming_requests: ReceiverStream<IncomingEthRequest<N>>,
     /// Metrics for the eth request handler.
     metrics: EthRequestHandlerMetrics,
+    /// Optional immutable blocks retained solely for exact-hash network requests.
+    block_source: Option<Arc<dyn EthBlockSource<N>>>,
+}
+
+/// Additional exact-hash block data for ETH header/body serving only.
+///
+/// Implementations admit only validated, publicly serviceable blocks. Returning `None` leaves
+/// lookup to the regular provider. This source never supplies canonical heights, state or receipts.
+pub trait EthBlockSource<N: NetworkPrimitives>: std::fmt::Debug + Send + Sync {
+    /// Returns an immutable retained block, or `None` if unavailable or expired.
+    fn block_by_hash(&self, hash: B256) -> Option<Arc<N::Block>>;
 }
 
 // === impl EthRequestHandler ===
@@ -125,6 +140,7 @@ impl<C, N: NetworkPrimitives> EthRequestHandler<C, N> {
             peers,
             incoming_requests: ReceiverStream::new(incoming),
             metrics: Default::default(),
+            block_source: None,
         }
     }
 
@@ -133,83 +149,145 @@ impl<C, N: NetworkPrimitives> EthRequestHandler<C, N> {
         self.blob_store = blob_store;
         self
     }
+
+    /// Installs a source checked before provider reads for exact-hash header/body requests.
+    pub fn with_block_source(mut self, source: Arc<dyn EthBlockSource<N>>) -> Self {
+        self.block_source = Some(source);
+        self
+    }
 }
 
 impl<C, N> EthRequestHandler<C, N>
 where
     N: NetworkPrimitives,
-    C: BlockReader,
+    C: HeaderProvider<Header = N::BlockHeader> + BlockHashReader,
 {
-    /// Returns the list of requested headers
+    /// Hash queries and contiguous number queries stop when ancestry checks detect a reorg.
+    /// Number queries with skips select the requested canonical heights, as in Geth.
     fn get_headers_response(&self, request: GetBlockHeaders) -> Vec<C::Header> {
         let GetBlockHeaders { start_block, limit, skip, direction } = request;
-
         let mut headers = Vec::new();
-
-        let mut block: BlockHashOrNumber = match start_block {
-            BlockHashOrNumber::Hash(start) => start.into(),
-            BlockHashOrNumber::Number(num) => {
-                let Some(hash) = self.client.block_hash(num).unwrap_or_default() else {
+        let limit = limit.min(MAX_HEADERS_SERVE as u64) as usize;
+        if limit == 0 {
+            return headers
+        }
+        let (mut hash, mut expected_number) = match start_block {
+            BlockHashOrNumber::Hash(hash) => (hash, None),
+            BlockHashOrNumber::Number(number) => {
+                let Some(hash) = self.client.block_hash(number).unwrap_or_default() else {
                     return headers
                 };
-                hash.into()
+                (hash, Some(number))
             }
         };
-
-        let skip = skip as u64;
+        let hash_mode = matches!(start_block, BlockHashOrNumber::Hash(_));
+        let distance = u64::from(skip) + 1;
+        let mut noncanonical_budget = MAX_NON_CANONICAL_ANCESTORS;
         let mut total_bytes = 0;
-
         for _ in 0..limit {
-            if let Some(header) = self.client.header_by_hash_or_number(block).unwrap_or_default() {
-                let number = header.number();
-                let parent_hash = header.parent_hash();
-                let len = header.length();
-
-                if headers.is_empty() {
-                    let count = limit.min(MAX_HEADERS_SERVE as u64) as usize;
-                    headers.reserve(response_reserve_hint(count, len, MAX_HEADERS_RESERVE));
-                }
-
-                total_bytes += len;
-                headers.push(header);
-
-                if headers.len() >= MAX_HEADERS_SERVE || total_bytes > SOFT_RESPONSE_LIMIT {
-                    break
-                }
-
-                match direction {
-                    HeadersDirection::Rising => {
-                        if let Some(next) = number.checked_add(1).and_then(|n| n.checked_add(skip))
-                        {
-                            block = next.into()
-                        } else {
-                            break
-                        }
-                    }
-                    HeadersDirection::Falling => {
-                        if skip > 0 {
-                            // prevent under flows for block.number == 0 and `block.number - skip <
-                            // 0`
-                            if let Some(next) =
-                                number.checked_sub(1).and_then(|num| num.checked_sub(skip))
-                            {
-                                block = next.into()
-                            } else {
-                                break
-                            }
-                        } else {
-                            block = parent_hash.into()
-                        }
-                    }
-                }
-            } else {
+            let Some(header) = self.exact_header(hash, expected_number) else { break };
+            let number = header.number();
+            let len = header.length();
+            let parent_hash = header.parent_hash();
+            if headers.is_empty() {
+                headers.reserve(response_reserve_hint(limit, len, MAX_HEADERS_RESERVE));
+            }
+            total_bytes += len;
+            headers.push(header);
+            if headers.len() == limit || total_bytes > SOFT_RESPONSE_LIMIT {
                 break
             }
-        }
 
+            let next = match direction {
+                HeadersDirection::Rising => {
+                    let Some(next) = number.checked_add(distance) else { break };
+                    let Some(next_hash) = self.client.block_hash(next).unwrap_or_default() else {
+                        break
+                    };
+                    if (hash_mode || skip == 0) &&
+                        self.header_ancestor(next_hash, next, distance, &mut noncanonical_budget) !=
+                            Some(hash)
+                    {
+                        break
+                    }
+                    (next_hash, next)
+                }
+                HeadersDirection::Falling => {
+                    let Some(next) = number.checked_sub(distance) else { break };
+                    let next_hash = if !hash_mode && skip > 0 {
+                        self.client.block_hash(next).unwrap_or_default()
+                    } else if distance == 1 {
+                        Some(parent_hash)
+                    } else {
+                        self.header_ancestor(hash, number, distance, &mut noncanonical_budget)
+                    };
+                    let Some(next_hash) = next_hash else { break };
+                    // Number requests select only canonical headers, even when the previous
+                    // header moved to a side branch during this response.
+                    if !hash_mode &&
+                        skip == 0 &&
+                        self.client.block_hash(next).unwrap_or_default() != Some(next_hash)
+                    {
+                        break
+                    }
+                    (next_hash, next)
+                }
+            };
+            hash = next.0;
+            expected_number = Some(next.1);
+        }
         headers
     }
 
+    /// Height-indexed providers must not substitute another branch for an exact hash request.
+    fn exact_header(&self, hash: B256, expected_number: Option<u64>) -> Option<C::Header> {
+        self.block_source
+            .as_ref()
+            .and_then(|source| source.block_by_hash(hash))
+            .filter(|block| block.header().hash_slow() == hash)
+            .map(|block| block.header().clone())
+            .or_else(|| self.client.header(hash).unwrap_or_default())
+            .filter(|header| {
+                header.hash_slow() == hash &&
+                    expected_number.is_none_or(|number| header.number() == number)
+            })
+    }
+
+    /// Follows exact parents, using Geth's checked canonical shortcut for long skips.
+    fn header_ancestor(
+        &self,
+        mut hash: B256,
+        mut number: u64,
+        mut distance: u64,
+        noncanonical_budget: &mut usize,
+    ) -> Option<B256> {
+        number.checked_sub(distance)?;
+        if distance == 1 {
+            return self.exact_header(hash, Some(number)).map(|header| header.parent_hash())
+        }
+        while distance > 0 {
+            if self.client.block_hash(number).ok()? == Some(hash) {
+                let ancestor = self.client.block_hash(number - distance).ok()?;
+                // A reorg between the two canonical reads invalidates the shortcut.
+                if self.client.block_hash(number).ok()? == Some(hash) {
+                    return ancestor
+                }
+            }
+            *noncanonical_budget = noncanonical_budget.checked_sub(1)?;
+            let header = self.exact_header(hash, Some(number))?;
+            hash = header.parent_hash();
+            number -= 1;
+            distance -= 1;
+        }
+        Some(hash)
+    }
+}
+
+impl<C, N> EthRequestHandler<C, N>
+where
+    N: NetworkPrimitives,
+    C: BlockReader<Block = N::Block> + HeaderProvider<Header = N::BlockHeader>,
+{
     fn on_headers_request(
         &self,
         _peer_id: PeerId,
@@ -234,8 +312,20 @@ where
         let mut total_bytes = 0;
 
         for hash in request {
-            if let Some(block) = self.client.block_by_hash(hash).unwrap_or_default() {
-                let body = block.into_body();
+            let body = self
+                .block_source
+                .as_ref()
+                .and_then(|source| source.block_by_hash(hash))
+                .filter(|block| block.header().hash_slow() == hash)
+                .map(|block| block.body().clone())
+                .or_else(|| {
+                    self.client
+                        .block_by_hash(hash)
+                        .unwrap_or_default()
+                        .filter(|block| block.header().hash_slow() == hash)
+                        .map(Block::into_body)
+                });
+            if let Some(body) = body {
                 let len = body.length();
                 if bodies.is_empty() {
                     bodies.reserve(response_reserve_hint(count, len, MAX_BLOCKS_RESERVE));
@@ -244,7 +334,7 @@ where
                 bodies.push(body);
 
                 if bodies.len() >= MAX_BODIES_SERVE || total_bytes > SOFT_RESPONSE_LIMIT {
-                    break
+                    break;
                 }
             } else {
                 break
@@ -411,7 +501,7 @@ where
                 receipts.push(transformed_receipts);
 
                 if receipts.len() >= MAX_RECEIPTS_SERVE || total_bytes > SOFT_RESPONSE_LIMIT {
-                    break
+                    break;
                 }
             } else {
                 break
@@ -877,24 +967,33 @@ pub enum IncomingEthRequest<N: NetworkPrimitives = EthNetworkPrimitives> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_consensus::{constants::EMPTY_ROOT_HASH, Header, TxType};
+    use alloy_consensus::{constants::EMPTY_ROOT_HASH, Header, TxLegacy, TxType};
     use alloy_eips::{
         eip4844::{BlobAndProofV1, BlobAndProofV2, BlobCellsAndProofsV1},
         eip7594::{BlobCellMask, BlobTransactionSidecarVariant, Cell},
     };
-    use alloy_primitives::{keccak256, Address, Log, LogData, TxHash, B128, U256};
+    use alloy_primitives::{
+        keccak256, map::B256Map, Address, Log, LogData, Signature, TxHash, B128, U256,
+    };
     use reth_eth_wire::{message::RequestPair, EthMessage, EthStreamInner, EthVersion};
-    use reth_ethereum_primitives::Receipt;
+    use reth_ethereum_primitives::{
+        Block as EthBlock, BlockBody, Receipt, Transaction, TransactionSigned,
+    };
     use reth_network_api::test_utils::PeersHandle;
-    use reth_primitives_traits::Account;
+    use reth_primitives_traits::{proofs::calculate_transaction_root, Account, SealedHeader};
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_storage_api::noop::NoopProvider;
     use reth_transaction_pool::blobstore::{
         BlobStoreCleanupStat, BlobStoreError, PooledBlobSidecar,
     };
-    use std::sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
+    use std::{
+        cell::{self, RefCell},
+        collections::BTreeMap,
+        ops::RangeBounds,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
     };
     use test_case::test_case;
     use tokio::sync::mpsc;
@@ -1104,6 +1203,94 @@ mod tests {
         let (peers_tx, _) = mpsc::unbounded_channel();
         let (_incoming_tx, incoming_rx) = mpsc::channel(1);
         EthRequestHandler::new(provider, PeersHandle::new(peers_tx), incoming_rx)
+    }
+
+    #[derive(Debug, Default)]
+    struct RetainedSource(parking_lot::Mutex<B256Map<Arc<EthBlock>>>);
+
+    impl EthBlockSource<EthNetworkPrimitives> for RetainedSource {
+        fn block_by_hash(&self, hash: B256) -> Option<Arc<EthBlock>> {
+            self.0.lock().get(&hash).cloned()
+        }
+    }
+
+    fn fork_block(parent_hash: B256, nonce: u64) -> EthBlock {
+        let body = BlockBody {
+            transactions: vec![TransactionSigned::new_unhashed(
+                Transaction::Legacy(TxLegacy { nonce, ..Default::default() }),
+                Signature::new(U256::from(1), U256::from(2), false),
+            )],
+            ..Default::default()
+        };
+        EthBlock {
+            header: Header {
+                number: 1,
+                parent_hash,
+                transactions_root: calculate_transaction_root(&body.transactions),
+                ..Default::default()
+            },
+            body,
+        }
+    }
+
+    #[tokio::test]
+    async fn retained_hash_serves_exact_fork_body_after_provider_reorg() {
+        let parent = Header::default().hash_slow();
+        let old = fork_block(parent, 1);
+        let new = fork_block(parent, 2);
+        let old_hash = old.header.hash_slow();
+        let new_hash = new.header.hash_slow();
+        assert_ne!(old.body, new.body);
+        let source = Arc::new(RetainedSource::default());
+        source.0.lock().insert(old_hash, Arc::new(old.clone()));
+        // The provider no longer has the announced branch. Its number index serves the new one.
+        let provider = MockEthProvider::default();
+        provider.headers.lock().insert(new_hash, new.header.clone());
+        provider.blocks.lock().insert(new_hash, new.clone());
+        let handler = snap_handler(provider.clone()).with_block_source(source.clone());
+        for (origin, expected) in [
+            (BlockHashOrNumber::Hash(old_hash), old.header.clone()),
+            (BlockHashOrNumber::Number(1), new.header.clone()),
+        ] {
+            assert_eq!(
+                handler.get_headers_response(GetBlockHeaders {
+                    start_block: origin,
+                    limit: 1,
+                    skip: 0,
+                    direction: HeadersDirection::Rising,
+                }),
+                vec![expected]
+            );
+        }
+        for (hash, expected) in [(old_hash, old.body.clone()), (new_hash, new.body.clone())] {
+            let (tx, rx) = oneshot::channel();
+            handler.on_bodies_request(PeerId::default(), GetBlockBodies(vec![hash]), tx);
+            assert_eq!(rx.await.unwrap().unwrap().0, vec![expected]);
+        }
+
+        // A source's bad key must neither leak another branch nor hide a correct provider value.
+        source.0.lock().insert(new_hash, Arc::new(old.clone()));
+        source.0.lock().insert(old_hash, Arc::new(new.clone()));
+        assert_eq!(
+            handler.get_headers_response(GetBlockHeaders {
+                start_block: new_hash.into(),
+                limit: 1,
+                skip: 0,
+                direction: HeadersDirection::Rising,
+            }),
+            vec![new.header.clone()]
+        );
+        assert!(handler
+            .get_headers_response(GetBlockHeaders {
+                start_block: old_hash.into(),
+                limit: 1,
+                skip: 0,
+                direction: HeadersDirection::Rising,
+            })
+            .is_empty());
+        let (tx, rx) = oneshot::channel();
+        handler.on_bodies_request(PeerId::default(), GetBlockBodies(vec![new_hash, old_hash]), tx);
+        assert_eq!(rx.await.unwrap().unwrap().0, vec![new.body]);
     }
 
     #[test_case(
@@ -1717,5 +1904,250 @@ mod tests {
             }))
             .unwrap()
             .into()
+    }
+
+    #[derive(Debug, Default)]
+    struct HeaderChain {
+        headers: B256Map<Header>,
+        canonical: RefCell<BTreeMap<u64, B256>>,
+        replacement: BTreeMap<u64, B256>,
+        switch_after_hash_read: Option<usize>,
+        hash_reads: cell::Cell<usize>,
+        header_reads: cell::Cell<usize>,
+    }
+
+    impl HeaderChain {
+        fn insert(&mut self, header: Header, canonical: bool) -> B256 {
+            let hash = header.hash_slow();
+            if canonical {
+                self.canonical.get_mut().insert(header.number, hash);
+            }
+            self.headers.insert(hash, header);
+            hash
+        }
+
+        fn branch(&mut self, parent: B256, start: u64, count: u64, canonical: bool) -> Vec<B256> {
+            let mut parent_hash = parent;
+            (start..start + count)
+                .map(|number| {
+                    parent_hash = self.insert(
+                        Header {
+                            number,
+                            parent_hash,
+                            extra_data: vec![u8::from(canonical)].into(),
+                            ..Default::default()
+                        },
+                        canonical,
+                    );
+                    parent_hash
+                })
+                .collect()
+        }
+
+        fn handler(self) -> EthRequestHandler<Self, EthNetworkPrimitives> {
+            let (peers, _) = mpsc::unbounded_channel();
+            let (_, incoming) = mpsc::channel(1);
+            EthRequestHandler::new(self, PeersHandle::new(peers), incoming)
+        }
+    }
+
+    impl BlockHashReader for HeaderChain {
+        fn block_hash(&self, number: u64) -> ProviderResult<Option<B256>> {
+            let hash = self.canonical.borrow().get(&number).copied();
+            self.hash_reads.set(self.hash_reads.get() + 1);
+            if self.switch_after_hash_read == Some(self.hash_reads.get()) {
+                *self.canonical.borrow_mut() = self.replacement.clone();
+            }
+            Ok(hash)
+        }
+
+        fn canonical_hashes_range(&self, start: u64, end: u64) -> ProviderResult<Vec<B256>> {
+            Ok(self.canonical.borrow().range(start..end).map(|(_, hash)| *hash).collect())
+        }
+    }
+
+    impl HeaderProvider for HeaderChain {
+        type Header = Header;
+
+        fn header(&self, hash: B256) -> ProviderResult<Option<Header>> {
+            self.header_reads.set(self.header_reads.get() + 1);
+            Ok(self.headers.get(&hash).cloned())
+        }
+
+        fn header_by_number(&self, number: u64) -> ProviderResult<Option<Header>> {
+            Ok(self.block_hash(number)?.and_then(|hash| self.headers.get(&hash).cloned()))
+        }
+
+        fn headers_range(&self, range: impl RangeBounds<u64>) -> ProviderResult<Vec<Header>> {
+            Ok(self
+                .canonical
+                .borrow()
+                .iter()
+                .filter(|(number, _)| range.contains(number))
+                .filter_map(|(_, hash)| self.headers.get(hash).cloned())
+                .collect())
+        }
+
+        fn sealed_header(&self, number: u64) -> ProviderResult<Option<SealedHeader<Header>>> {
+            Ok(self.header_by_number(number)?.map(SealedHeader::seal_slow))
+        }
+
+        fn sealed_headers_while(
+            &self,
+            range: impl RangeBounds<u64>,
+            mut predicate: impl FnMut(&SealedHeader<Header>) -> bool,
+        ) -> ProviderResult<Vec<SealedHeader<Header>>> {
+            Ok(self
+                .headers_range(range)?
+                .into_iter()
+                .map(SealedHeader::seal_slow)
+                .take_while(|header| predicate(header))
+                .collect())
+        }
+    }
+
+    #[test]
+    fn headers_follow_side_branch_parents_and_reject_unrelated_descendants() {
+        let mut chain = HeaderChain::default();
+        let genesis = chain.insert(Header::default(), true);
+        let canonical = chain.branch(genesis, 1, 5, true);
+        let side = chain.branch(genesis, 1, 5, false);
+        let handler = chain.handler();
+        for (start, skip, direction, expected) in [
+            (side[4], 1, HeadersDirection::Falling, vec![side[4], side[2], side[0]]),
+            (side[1], 1, HeadersDirection::Falling, vec![side[1], genesis]),
+            (side[1], 0, HeadersDirection::Rising, vec![side[1]]),
+            (side[1], 1, HeadersDirection::Rising, vec![side[1]]),
+            (
+                canonical[0],
+                1,
+                HeadersDirection::Rising,
+                vec![canonical[0], canonical[2], canonical[4]],
+            ),
+        ] {
+            let response = handler.get_headers_response(GetBlockHeaders {
+                start_block: start.into(),
+                limit: 3,
+                skip,
+                direction,
+            });
+            assert_eq!(response.iter().map(Header::hash_slow).collect::<Vec<_>>(), expected);
+        }
+    }
+
+    #[test]
+    fn headers_number_query_stops_at_reorg_and_shortcut_rechecks_canonical_hash() {
+        let mut chain = HeaderChain::default();
+        let genesis = chain.insert(Header::default(), true);
+        let old = chain.branch(genesis, 1, 4, true);
+        let new = chain.branch(genesis, 1, 4, false);
+        chain.replacement = new.iter().enumerate().map(|(i, hash)| (i as u64 + 1, *hash)).collect();
+        chain.switch_after_hash_read = Some(1);
+        let handler = chain.handler();
+        for (start, skip, direction, expected) in [
+            (1, 0, HeadersDirection::Rising, vec![old[0]]),
+            (4, 0, HeadersDirection::Falling, vec![old[3]]),
+            (1, 1, HeadersDirection::Rising, vec![old[0], new[2]]),
+            (4, 1, HeadersDirection::Falling, vec![old[3], new[1]]),
+        ] {
+            *handler.client.canonical.borrow_mut() =
+                old.iter().enumerate().map(|(i, hash)| (i as u64 + 1, *hash)).collect();
+            handler.client.hash_reads.set(0);
+            let response = handler.get_headers_response(GetBlockHeaders {
+                start_block: start.into(),
+                limit: 4,
+                skip,
+                direction,
+            });
+            assert_eq!(response.iter().map(Header::hash_slow).collect::<Vec<_>>(), expected);
+        }
+
+        *handler.client.canonical.borrow_mut() =
+            old.iter().enumerate().map(|(i, hash)| (i as u64 + 1, *hash)).collect();
+        handler.client.hash_reads.set(0);
+        let mut budget = MAX_NON_CANONICAL_ANCESTORS;
+        assert_eq!(handler.header_ancestor(old[3], 4, 3, &mut budget), Some(old[0]));
+    }
+
+    #[test]
+    fn headers_stop_on_missing_or_wrong_height_and_bound_noncanonical_walks() {
+        let mut chain = HeaderChain::default();
+        let genesis = chain.insert(Header::default(), true);
+        let side = chain.branch(genesis, 1, 102, false);
+        let mut handler = chain.handler();
+        let request = GetBlockHeaders {
+            start_block: side[101].into(),
+            limit: u64::MAX,
+            skip: 100,
+            direction: HeadersDirection::Falling,
+        };
+        let response = handler.get_headers_response(request);
+        assert_eq!(response.len(), 1);
+        assert_eq!(handler.client.header_reads.get(), MAX_NON_CANONICAL_ANCESTORS + 1);
+
+        handler.client.headers.remove(&side[100]);
+        let request = GetBlockHeaders {
+            start_block: side[101].into(),
+            limit: 3,
+            skip: 0,
+            direction: HeadersDirection::Falling,
+        };
+        assert_eq!(handler.get_headers_response(request.clone()).len(), 1);
+        handler.client.headers.insert(side[100], Header { number: 99, ..Default::default() });
+        assert_eq!(handler.get_headers_response(request).len(), 1);
+        assert!(handler.exact_header(side[101], Some(101)).is_none());
+    }
+
+    #[test]
+    fn headers_handle_limits_overflow_and_large_canonical_skips() {
+        let mut chain = HeaderChain::default();
+        let genesis = chain.insert(Header::default(), true);
+        let max = chain.insert(Header { number: u64::MAX, ..Default::default() }, true);
+        let handler = chain.handler();
+        for (hash, limit, skip, direction, expected) in [
+            (max, 0, 0, HeadersDirection::Rising, vec![]),
+            (max, 2, 1, HeadersDirection::Rising, vec![max]),
+            (genesis, 2, u32::MAX, HeadersDirection::Falling, vec![genesis]),
+        ] {
+            let response = handler.get_headers_response(GetBlockHeaders {
+                start_block: hash.into(),
+                limit,
+                skip,
+                direction,
+            });
+            assert_eq!(response.iter().map(Header::hash_slow).collect::<Vec<_>>(), expected);
+        }
+        let mut budget = MAX_NON_CANONICAL_ANCESTORS;
+        assert_eq!(handler.header_ancestor(max, u64::MAX, u64::MAX, &mut budget), Some(genesis));
+        assert_eq!(budget, MAX_NON_CANONICAL_ANCESTORS);
+    }
+
+    #[test]
+    fn headers_reject_another_branch_returned_for_an_exact_hash() {
+        let mut chain = HeaderChain::default();
+        let genesis = chain.insert(Header::default(), true);
+        let canonical = chain.branch(genesis, 1, 4, true);
+        let side = chain.branch(genesis, 1, 4, false);
+        // Model a hash-to-height provider resolving the other branch's header at that height.
+        chain.headers.insert(canonical[1], chain.headers[&side[1]].clone());
+        chain.headers.insert(side[3], chain.headers[&canonical[3]].clone());
+        let handler = chain.handler();
+        let response = handler.get_headers_response(GetBlockHeaders {
+            start_block: canonical[1].into(),
+            limit: 1,
+            skip: 0,
+            direction: HeadersDirection::Rising,
+        });
+        assert!(response.is_empty());
+        let response = handler.get_headers_response(GetBlockHeaders {
+            start_block: canonical[0].into(),
+            limit: 2,
+            skip: 0,
+            direction: HeadersDirection::Rising,
+        });
+        assert_eq!(response.iter().map(Header::hash_slow).collect::<Vec<_>>(), vec![canonical[0]]);
+        let mut budget = MAX_NON_CANONICAL_ANCESTORS;
+        assert_eq!(handler.header_ancestor(canonical[1], 2, 1, &mut budget), None);
+        assert_eq!(handler.header_ancestor(side[3], 4, 2, &mut budget), None);
     }
 }

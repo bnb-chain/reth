@@ -532,6 +532,13 @@ impl<N: ProviderNodeTypes> BlockReader for BlockchainProvider<N> {
         self.consistent_provider()?.block(id)
     }
 
+    fn block_with_td_by_hash(
+        &self,
+        hash: B256,
+    ) -> ProviderResult<Option<(Self::Block, alloy_primitives::U256)>> {
+        self.consistent_provider()?.block_with_td_by_hash(hash)
+    }
+
     fn pending_block(&self) -> ProviderResult<Option<Arc<RecoveredBlock<Self::Block>>>> {
         Ok(self.canonical_in_memory_state.pending_recovered_block())
     }

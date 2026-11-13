@@ -58,8 +58,9 @@ use tokio_util::sync::PollSender;
 use tracing::{instrument, trace};
 
 use crate::session::active::{
-    request_timeout_interval, BroadcastItemCounter, RANGE_UPDATE_INTERVAL,
+    request_timeout_interval, BroadcastItemCounter, MAX_QUEUED_BLOCKS, RANGE_UPDATE_INTERVAL,
 };
+pub(crate) use active::{MessageKind, MAX_QUEUED_BLOCK_HASHES};
 pub use conn::EthRlpxConnection;
 use handle::SessionCommandSender;
 pub use handle::{
@@ -427,16 +428,30 @@ impl<N: NetworkPrimitives> SessionManager<N> {
 
     /// Sends a message to the peer's session.
     ///
-    /// Broadcast messages use size-based backpressure: the total number of in-flight broadcast
-    /// items (across the command channel, overflow channel, and session outgoing queue) is tracked
-    /// by a shared atomic counter. If the bounded command channel is full but the broadcast limit
-    /// hasn't been reached, the message overflows to a dedicated unbounded channel.
-    pub fn send_message(&self, peer_id: &PeerId, msg: PeerMessage<N>) {
-        if let Some(session) = self.active_sessions.get(peer_id) &&
-            !session.commands.send_message(msg)
-        {
+    /// Returns whether the session locally accepted the message, not whether the peer received it.
+    /// Full blocks, block hashes and transaction gossip reserve independent item budgets across
+    /// command channels and the outgoing queue. Blocks have a dedicated command lane; transaction
+    /// gossip can overflow the ordinary lane only while its quota remains available.
+    pub fn send_message(&self, peer_id: &PeerId, msg: PeerMessage<N>) -> bool {
+        self.send_message_at(peer_id, msg, Instant::now())
+    }
+
+    pub(crate) fn send_message_at(
+        &self,
+        peer_id: &PeerId,
+        msg: PeerMessage<N>,
+        admitted: Instant,
+    ) -> bool {
+        let accepted = if let Some(session) = self.active_sessions.get(peer_id) {
+            session.commands.send_message_at(msg, admitted)
+        } else {
+            MessageKind::of_peer(&msg).dropped("no_session");
+            false
+        };
+        if !accepted {
             self.metrics.total_outgoing_peer_messages_dropped.increment(1);
         }
+        accepted
     }
 
     /// Removes the [`PendingSessionHandle`] if it exists.
@@ -619,6 +634,8 @@ impl<N: NetworkPrimitives> SessionManager<N> {
                 }
 
                 let (commands_tx, commands_rx) = mpsc::channel(self.session_command_buffer);
+                let (block_commands_tx, block_commands_rx) =
+                    mpsc::channel(MAX_QUEUED_BLOCKS + MAX_QUEUED_BLOCK_HASHES);
                 let (unbounded_tx, unbounded_rx) = mpsc::unbounded_channel();
 
                 let (to_session_tx, messages_rx) = mpsc::channel(self.session_command_buffer);
@@ -657,13 +674,18 @@ impl<N: NetworkPrimitives> SessionManager<N> {
                     conn.set_reject_block_announcements(true);
                 }
 
+                let diagnostics = crate::peer_diagnostics::PeerSendDiagnostics::for_peer(peer_id);
                 let session = ActiveSession {
+                    diagnostics: diagnostics
+                        .clone()
+                        .map(crate::peer_diagnostics::SessionDiagnostics::new),
                     next_id: 0,
                     remote_peer_id: peer_id,
                     remote_addr,
                     remote_capabilities: Arc::clone(&capabilities),
                     session_id,
                     commands_rx: ReceiverStream::new(commands_rx),
+                    block_commands_rx: ReceiverStream::new(block_commands_rx),
                     unbounded_rx,
                     unbounded_broadcast_msgs: self.metrics.total_unbounded_broadcast_msgs.clone(),
                     to_session_manager: self.active_session_tx.clone(),
@@ -673,7 +695,6 @@ impl<N: NetworkPrimitives> SessionManager<N> {
                     conn,
                     queued_outgoing: QueuedOutgoingMessages::new(
                         self.metrics.queued_outgoing_messages.clone(),
-                        broadcast_items.clone(),
                     ),
                     received_requests_from_remote: Default::default(),
                     internal_request_timeout_interval: request_timeout_interval(
@@ -701,7 +722,13 @@ impl<N: NetworkPrimitives> SessionManager<N> {
                     version,
                     established: Instant::now(),
                     capabilities: Arc::clone(&capabilities),
-                    commands: SessionCommandSender::new(commands_tx, unbounded_tx, broadcast_items),
+                    commands: SessionCommandSender::new(
+                        commands_tx,
+                        block_commands_tx,
+                        unbounded_tx,
+                        broadcast_items,
+                    )
+                    .with_diagnostics(diagnostics),
                     client_version: Arc::clone(&client_version),
                     remote_addr,
                     local_addr,

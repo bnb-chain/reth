@@ -208,7 +208,6 @@ impl<N: NetworkPrimitives> NetworkState<N> {
         // number of peers)
         let num_propagate = (self.active_peers.len() as f64).sqrt() as u64 + 1;
 
-        let number = msg.block.block().header().number();
         let mut count = 0;
 
         // Shuffle to propagate to a random sample of peers on every block announcement
@@ -225,14 +224,6 @@ impl<N: NetworkPrimitives> NetworkState<N> {
             if count < num_propagate {
                 self.queued_messages
                     .push_back(StateAction::NewBlock { peer_id: *peer_id, block: msg.clone() });
-
-                // update peer block info
-                if self.state_fetcher.update_peer_block(peer_id, msg.hash, number) {
-                    peer.best_hash = msg.hash;
-                }
-
-                // mark the block as seen by the peer
-                peer.blocks.insert(msg.hash);
 
                 count += 1;
             }
@@ -254,15 +245,27 @@ impl<N: NetworkPrimitives> NetworkState<N> {
                 continue
             }
 
-            if self.state_fetcher.update_peer_block(peer_id, msg.hash, number) {
-                peer.best_hash = msg.hash;
-            }
-
             self.queued_messages.push_back(StateAction::NewBlockHashes {
                 peer_id: *peer_id,
                 hashes: hashes.clone(),
             });
         }
+    }
+
+    /// Local session admission is the known-block boundary, as in Geth's async broadcasts.
+    /// Failed admission leaves a block eligible for a later announcement; it does not schedule
+    /// an automatic retry or undo hashes learned from the remote peer.
+    pub(crate) fn on_block_admitted(&mut self, peer_id: &PeerId, hash: B256, number: u64) {
+        if let Some(peer) = self.active_peers.get_mut(peer_id) {
+            peer.blocks.insert(hash);
+            if self.state_fetcher.update_peer_block(peer_id, hash, number) {
+                peer.best_hash = hash;
+            }
+        }
+    }
+
+    pub(crate) fn peer_knows_block(&self, peer_id: &PeerId, hash: &B256) -> bool {
+        self.active_peers.get(peer_id).is_some_and(|peer| peer.blocks.contains(hash))
     }
 
     /// Updates the block information for the peer.
@@ -278,10 +281,8 @@ impl<N: NetworkPrimitives> NetworkState<N> {
         self.discovery.update_fork_id(fork_id)
     }
 
-    /// Invoked after a `NewBlock` message was received by the peer.
-    ///
-    /// This will keep track of blocks we know a peer has
-    pub(crate) fn on_new_block(&mut self, peer_id: PeerId, hash: B256) {
+    /// Records received or successfully admitted block knowledge without advancing the peer head.
+    pub(crate) fn mark_peer_knows_block(&mut self, peer_id: PeerId, hash: B256) {
         // Mark the blocks as seen
         if let Some(peer) = self.active_peers.get_mut(&peer_id) {
             peer.blocks.insert(hash);
@@ -773,5 +774,72 @@ mod tests {
         let resp = client.get_block_bodies(vec![B256::random()]).await;
         assert!(resp.is_err());
         assert_eq!(resp.unwrap_err(), RequestError::ConnectionDropped);
+    }
+
+    #[tokio::test]
+    async fn block_knowledge_follows_admission_and_reconnect_resets_it() {
+        let mut state = state();
+        let peer_id = PeerId::random();
+        let activation = || {
+            let (tx, _rx) = mpsc::channel(1);
+            SessionActivation {
+                peer: peer_id,
+                capabilities: capabilities(),
+                status: Arc::default(),
+                request_tx: PeerRequestSender::new(peer_id, tx),
+                timeout: Arc::new(AtomicU64::new(1)),
+                range_info: None,
+                supports_snap: false,
+            }
+        };
+        state.on_session_activated(activation());
+        let msg = crate::message::NewBlockMessage {
+            hash: B256::repeat_byte(7),
+            block: Arc::new(reth_eth_wire::NewBlock {
+                block: reth_ethereum_primitives::Block {
+                    header: Header { number: 42, ..Default::default() },
+                    body: Default::default(),
+                },
+                td: Default::default(),
+            }),
+        };
+        let initial_best = state.active_peers[&peer_id].best_hash;
+        state.announce_new_block(msg.clone());
+        assert!(matches!(
+            state.queued_messages.pop_front(),
+            Some(super::StateAction::NewBlock { .. })
+        ));
+        assert!(!state.peer_knows_block(&peer_id, &msg.hash));
+        assert_eq!(state.active_peers[&peer_id].best_hash, initial_best);
+        // Rejecting the action changes no knowledge; a later attempt is still eligible.
+        state.announce_new_block(msg.clone());
+        assert!(matches!(
+            state.queued_messages.pop_front(),
+            Some(super::StateAction::NewBlock { .. })
+        ));
+        state.on_block_admitted(&peer_id, msg.hash, 42);
+        assert!(state.peer_knows_block(&peer_id, &msg.hash));
+        assert_eq!(state.active_peers[&peer_id].best_hash, msg.hash);
+        state.announce_new_block(msg.clone());
+        state.announce_new_block_hash(msg.clone());
+        assert!(state.queued_messages.is_empty());
+        let inbound = B256::repeat_byte(8);
+        state.mark_peer_knows_block(peer_id, inbound);
+        let another = crate::message::NewBlockMessage { hash: B256::repeat_byte(9), ..msg.clone() };
+        state.announce_new_block_hash(another.clone());
+        state.queued_messages.clear();
+        assert!(
+            state.peer_knows_block(&peer_id, &inbound),
+            "failed unrelated send cannot undo inbound knowledge"
+        );
+        assert!(!state.peer_knows_block(&peer_id, &another.hash));
+        state.on_session_closed(peer_id);
+        state.on_session_activated(activation());
+        assert!(!state.peer_knows_block(&peer_id, &msg.hash));
+        state.announce_new_block_hash(msg);
+        assert!(matches!(
+            state.queued_messages.pop_front(),
+            Some(super::StateAction::NewBlockHashes { .. })
+        ));
     }
 }

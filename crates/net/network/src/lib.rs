@@ -142,6 +142,7 @@ mod listener;
 mod manager;
 mod metrics;
 mod network;
+mod peer_diagnostics;
 mod required_block_filter;
 mod session;
 mod state;
@@ -169,7 +170,9 @@ pub use fetch::FetchClient;
 pub use flattened_response::FlattenedResponse;
 pub use manager::NetworkManager;
 pub use metrics::TxTypesCounter;
-pub use network::{NetworkHandle, NetworkProtocols};
+pub use network::{
+    BlockAnnouncementAdmissionError, BlockAnnouncementGuard, NetworkHandle, NetworkProtocols,
+};
 pub use swarm::NetworkConnectionState;
 
 /// re-export p2p interfaces
