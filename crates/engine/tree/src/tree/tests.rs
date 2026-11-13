@@ -2818,7 +2818,7 @@ mod forkchoice_updated_tests {
             finalized_block_hash: B256::ZERO,
         };
 
-        let result = test_harness.tree.apply_chain_update(state, &None).unwrap();
+        let result = test_harness.tree.apply_chain_update(state, &None, None).unwrap();
         assert!(result.is_some(), "Should apply chain update for new head");
         let outcome = result.unwrap();
         let fcu_result = outcome.outcome.await.unwrap();
@@ -2831,7 +2831,7 @@ mod forkchoice_updated_tests {
             finalized_block_hash: B256::ZERO,
         };
 
-        let result = test_harness.tree.apply_chain_update(missing_state, &None).unwrap();
+        let result = test_harness.tree.apply_chain_update(missing_state, &None, None).unwrap();
         assert!(result.is_none(), "Missing block should return None");
     }
 
@@ -3838,4 +3838,400 @@ fn is_block_known_reports_whether_an_inserted_block_was_kept() {
         }))
         .unwrap();
     assert!(!rx.try_recv().unwrap());
+}
+
+fn local_payload(
+    block: &ExecutedBlock,
+) -> reth_payload_primitives::BuiltPayloadExecutedBlock<EthPrimitives> {
+    reth_payload_primitives::BuiltPayloadExecutedBlock {
+        recovered_block: block.recovered_block.clone(),
+        execution_output: block.execution_output.clone(),
+        hashed_state: Arc::default(),
+        trie_updates: Arc::default(),
+    }
+}
+
+fn local_combined(
+    harness: &mut TestHarness,
+    block: &ExecutedBlock,
+    state: ForkchoiceState,
+    expected_head: B256,
+) -> LocalBlockOutcome {
+    let (tx, mut rx) = oneshot::channel();
+    let _ = harness
+        .tree
+        .on_engine_message(FromEngine::Request(
+            EngineApiRequest::InsertExecutedBlockAndForkchoice {
+                payload: local_payload(block),
+                state,
+                expected_head,
+                cause: tracing::Span::none(),
+                tx,
+            },
+        ))
+        .unwrap();
+    rx.try_recv().unwrap().unwrap()
+}
+
+#[test]
+fn local_combined_commits_once_and_replays_idempotently() {
+    let mut builder = TestBlockBuilder::eth();
+    let blocks: Vec<_> = builder.get_executed_blocks(1..4).collect();
+    let mut h = TestHarness::new(MAINNET.clone()).with_blocks(blocks[..2].to_vec());
+    let mut notifications = h.tree.canonical_in_memory_state.subscribe_canon_state();
+    let hash = blocks[2].recovered_block().hash();
+    let parent = blocks[1].recovered_block().hash();
+    let state = ForkchoiceState {
+        head_block_hash: hash,
+        safe_block_hash: parent,
+        finalized_block_hash: blocks[0].recovered_block().hash(),
+    };
+    let LocalBlockOutcome::Forkchoice { outcome, canonical_head, .. } =
+        local_combined(&mut h, &blocks[2], state, parent)
+    else {
+        panic!("FCU expected")
+    };
+    assert_eq!(outcome.forkchoice_status(), ForkchoiceStatus::Valid);
+    assert_eq!(canonical_head.hash, hash);
+    assert_eq!(notifications.try_recv().unwrap().committed().tip().hash(), hash);
+    assert!(notifications.try_recv().is_err());
+    assert_eq!(h.tree.state.forkchoice_state_tracker.latest_state(), Some(state));
+    assert_matches!(local_combined(&mut h, &blocks[2], state, parent), LocalBlockOutcome::StaleHead { actual_head } if actual_head.hash == hash);
+    let LocalBlockOutcome::Forkchoice { outcome, .. } =
+        local_combined(&mut h, &blocks[2], state, hash)
+    else {
+        panic!("FCU reaffirmation expected")
+    };
+    assert_eq!(outcome.forkchoice_status(), ForkchoiceStatus::Valid);
+    assert!(notifications.try_recv().is_err());
+    let mut added = 0;
+    let mut committed = 0;
+    let mut fcu = 0;
+    while let Ok(event) = h.from_tree_rx.try_recv() {
+        match event {
+            EngineApiEvent::BeaconConsensus(ConsensusEngineEvent::CanonicalBlockAdded(..)) => {
+                added += 1
+            }
+            EngineApiEvent::BeaconConsensus(ConsensusEngineEvent::CanonicalChainCommitted(..)) => {
+                committed += 1
+            }
+            EngineApiEvent::BeaconConsensus(ConsensusEngineEvent::ForkchoiceUpdated(..)) => {
+                fcu += 1
+            }
+            _ => {}
+        }
+    }
+    assert_eq!((added, committed, fcu), (1, 1, 2));
+}
+
+#[test]
+fn local_combined_stale_head_retains_block_without_fcu() {
+    let mut builder = TestBlockBuilder::eth();
+    let blocks: Vec<_> = builder.get_executed_blocks(1..4).collect();
+    let sibling = builder.get_executed_block_with_number(2, blocks[0].recovered_block().hash());
+    let mut h = TestHarness::new(MAINNET.clone()).with_blocks(blocks[..2].to_vec());
+    let parent = blocks[1].recovered_block().hash();
+    let state = h.fcu_state(blocks[2].recovered_block().hash());
+    for stale in [blocks[0].recovered_block().hash(), sibling.recovered_block().hash()] {
+        assert_matches!(local_combined(&mut h, &blocks[2], state, stale), LocalBlockOutcome::StaleHead { actual_head } if actual_head.hash == parent);
+        assert!(h.tree.state.tree_state.contains_hash(&blocks[2].recovered_block().hash()));
+        assert!(h.tree.state.forkchoice_state_tracker.latest_state().is_none());
+    }
+}
+
+#[test]
+fn local_combined_can_select_current_head_and_reject_unknown_old_sibling() {
+    let mut builder = TestBlockBuilder::eth();
+    let blocks: Vec<_> = builder.get_executed_blocks(1..4).collect();
+    let mut h = TestHarness::new(MAINNET.clone()).with_blocks(blocks[..2].to_vec());
+    let parent = blocks[1].recovered_block().hash();
+    let state = h.fcu_state(parent);
+    let LocalBlockOutcome::Forkchoice { outcome, canonical_head, .. } =
+        local_combined(&mut h, &blocks[2], state, parent)
+    else {
+        panic!("FCU expected")
+    };
+    assert_eq!(outcome.forkchoice_status(), ForkchoiceStatus::Valid);
+    assert_eq!(canonical_head.hash, parent);
+    let sibling = builder.get_executed_block_with_number(2, blocks[0].recovered_block().hash());
+    assert_matches!(
+        local_combined(&mut h, &sibling, state, parent),
+        LocalBlockOutcome::NotRetained
+    );
+    // A persisted exact hash is known even after its executed entry leaves memory.
+    h.tree.state.tree_state.blocks_by_hash.remove(&blocks[0].recovered_block().hash());
+    assert_matches!(
+        local_combined(&mut h, &blocks[0], state, parent),
+        LocalBlockOutcome::Forkchoice { .. }
+    );
+}
+
+#[test]
+fn local_combined_backfill_preserves_fcu_events_and_finalized_floor() {
+    for backfill in [
+        BackfillSyncState::Active,
+        BackfillSyncState::Pending,
+        BackfillSyncState::PendingRevalidation,
+    ] {
+        let mut builder = TestBlockBuilder::eth();
+        let blocks: Vec<_> = builder.get_executed_blocks(1..4).collect();
+        let mut h = TestHarness::new(MAINNET.clone())
+            .with_blocks(blocks[..2].to_vec())
+            .with_backfill_state(backfill);
+        h.tree
+            .canonical_in_memory_state
+            .set_finalized(blocks[0].recovered_block().clone_sealed_header());
+        let parent = blocks[1].recovered_block().hash();
+        let state = h.fcu_state(blocks[2].recovered_block().hash());
+        let LocalBlockOutcome::Forkchoice { outcome, state: effective, canonical_head, .. } =
+            local_combined(&mut h, &blocks[2], state, parent)
+        else {
+            panic!("deferred FCU expected")
+        };
+        assert_eq!(outcome.forkchoice_status(), ForkchoiceStatus::Syncing);
+        assert_eq!(canonical_head.hash, parent);
+        assert_eq!(effective.finalized_block_hash, blocks[0].recovered_block().hash());
+        assert_eq!(h.tree.state.forkchoice_state_tracker.sync_target_state(), Some(effective));
+        assert!(std::iter::from_fn(|| h.from_tree_rx.try_recv().ok()).any(|event| matches!(
+            event,
+            EngineApiEvent::BeaconConsensus(ConsensusEngineEvent::ForkchoiceUpdated(
+                _,
+                ForkchoiceStatus::Syncing
+            ))
+        )));
+    }
+}
+
+#[test]
+fn local_combined_keeps_newer_finality_when_head_did_not_change() {
+    let mut builder = TestBlockBuilder::eth();
+    let blocks: Vec<_> = builder.get_executed_blocks(1..5).collect();
+    let mut h = TestHarness::new(MAINNET.clone()).with_blocks(blocks[..3].to_vec());
+    let state = ForkchoiceState {
+        head_block_hash: blocks[3].recovered_block().hash(),
+        safe_block_hash: blocks[1].recovered_block().hash(),
+        finalized_block_hash: blocks[0].recovered_block().hash(),
+    };
+    // Finality advanced after BSC prepared the request, with the same canonical head.
+    h.tree
+        .canonical_in_memory_state
+        .set_finalized(blocks[2].recovered_block().clone_sealed_header());
+    let LocalBlockOutcome::Forkchoice { outcome, finalized, safe, .. } =
+        local_combined(&mut h, &blocks[3], state, blocks[2].recovered_block().hash())
+    else {
+        panic!("FCU expected")
+    };
+    assert_eq!(outcome.forkchoice_status(), ForkchoiceStatus::Valid);
+    assert_eq!(finalized.unwrap().hash, blocks[2].recovered_block().hash());
+    assert_eq!(safe.unwrap().hash, blocks[2].recovered_block().hash());
+}
+
+#[test]
+fn local_combined_rejects_finalized_conflict_but_allows_safe_branch_change() {
+    let mut builder = TestBlockBuilder::eth();
+    let blocks: Vec<_> = builder.get_executed_blocks(1..4).collect();
+    let fork2 = builder.get_executed_block_with_number(2, blocks[0].recovered_block().hash());
+    let fork3 = builder.get_executed_block_with_number(3, fork2.recovered_block().hash());
+    let fork4 = builder.get_executed_block_with_number(4, fork3.recovered_block().hash());
+    for conflicts in [true, false] {
+        let mut h = TestHarness::new(MAINNET.clone()).with_blocks(blocks.clone());
+        h.tree.state.tree_state.insert_executed(fork2.clone());
+        h.tree.state.tree_state.insert_executed(fork3.clone());
+        h.tree
+            .canonical_in_memory_state
+            .set_finalized(blocks[usize::from(conflicts)].recovered_block().clone_sealed_header());
+        h.tree
+            .canonical_in_memory_state
+            .set_safe(blocks[2].recovered_block().clone_sealed_header());
+        let state = ForkchoiceState {
+            head_block_hash: fork4.recovered_block().hash(),
+            safe_block_hash: fork2.recovered_block().hash(),
+            finalized_block_hash: fork3.recovered_block().hash(),
+        };
+        let LocalBlockOutcome::Forkchoice { outcome, safe, .. } =
+            local_combined(&mut h, &fork4, state, blocks[2].recovered_block().hash())
+        else {
+            panic!("FCU result expected")
+        };
+        assert_eq!(
+            outcome.forkchoice_status(),
+            if conflicts { ForkchoiceStatus::Invalid } else { ForkchoiceStatus::Valid }
+        );
+        assert_eq!(
+            h.tree.state.tree_state.canonical_block_hash(),
+            if conflicts {
+                blocks[2].recovered_block().hash()
+            } else {
+                fork4.recovered_block().hash()
+            }
+        );
+        if !conflicts {
+            assert_eq!(safe.unwrap().hash, fork2.recovered_block().hash());
+        }
+    }
+}
+
+#[test]
+fn local_combined_unknown_ancestry_defers_and_invalid_state_does_not_commit() {
+    let mut builder = TestBlockBuilder::eth();
+    let blocks: Vec<_> = builder.get_executed_blocks(1..4).collect();
+    let disconnected = builder.get_executed_block_with_number(4, B256::random());
+    let mut h = TestHarness::new(MAINNET.clone()).with_blocks(blocks[..2].to_vec());
+    h.tree
+        .canonical_in_memory_state
+        .set_finalized(blocks[0].recovered_block().clone_sealed_header());
+    let parent = blocks[1].recovered_block().hash();
+    let state = ForkchoiceState {
+        head_block_hash: disconnected.recovered_block().hash(),
+        safe_block_hash: parent,
+        finalized_block_hash: parent,
+    };
+    let LocalBlockOutcome::Forkchoice { outcome, state: effective, .. } =
+        local_combined(&mut h, &disconnected, state, parent)
+    else {
+        panic!("deferred result expected")
+    };
+    assert_eq!(outcome.forkchoice_status(), ForkchoiceStatus::Syncing);
+    assert_eq!(effective.finalized_block_hash, blocks[0].recovered_block().hash());
+    assert!(std::iter::from_fn(|| h.from_tree_rx.try_recv().ok())
+        .any(|event| matches!(event, EngineApiEvent::Download(_))));
+    let state = ForkchoiceState {
+        head_block_hash: blocks[2].recovered_block().hash(),
+        safe_block_hash: B256::random(),
+        finalized_block_hash: blocks[0].recovered_block().hash(),
+    };
+    let LocalBlockOutcome::Forkchoice { outcome, .. } =
+        local_combined(&mut h, &blocks[2], state, parent)
+    else {
+        panic!("FCU result expected")
+    };
+    assert_eq!(outcome.forkchoice_status(), ForkchoiceStatus::Invalid);
+    assert_eq!(h.tree.state.tree_state.canonical_block_hash(), parent);
+    assert!(h.tree.state.tree_state.contains_hash(&blocks[2].recovered_block().hash()));
+}
+
+#[test]
+fn local_combined_dropped_receiver_does_not_cancel_mutation() {
+    let mut builder = TestBlockBuilder::eth();
+    let blocks: Vec<_> = builder.get_executed_blocks(1..4).collect();
+    let mut h = TestHarness::new(MAINNET.clone()).with_blocks(blocks[..2].to_vec());
+    let (tx, rx) = oneshot::channel();
+    drop(rx);
+    let _ = h
+        .tree
+        .on_engine_message(FromEngine::Request(
+            EngineApiRequest::InsertExecutedBlockAndForkchoice {
+                payload: local_payload(&blocks[2]),
+                state: h.fcu_state(blocks[2].recovered_block().hash()),
+                expected_head: blocks[1].recovered_block().hash(),
+                cause: tracing::Span::none(),
+                tx,
+            },
+        ))
+        .unwrap();
+    assert_eq!(h.tree.state.tree_state.canonical_block_hash(), blocks[2].recovered_block().hash());
+}
+
+#[test]
+fn local_combined_recovery_checks_finality_before_head_or_intermediate_commit() {
+    let mut builder = TestBlockBuilder::eth();
+    let blocks: Vec<_> = builder.get_executed_blocks(1..4).collect();
+    let fork2 = builder.get_executed_block_with_number(2, blocks[0].recovered_block().hash());
+    let fork3 = builder.get_executed_block_with_number(3, fork2.recovered_block().hash());
+    let fork4 = builder.get_executed_block_with_number(4, fork3.recovered_block().hash());
+    let mut h = TestHarness::new(MAINNET.clone()).with_blocks(blocks.clone());
+    h.tree
+        .canonical_in_memory_state
+        .set_finalized(blocks[1].recovered_block().clone_sealed_header());
+    let mut notifications = h.tree.canonical_in_memory_state.subscribe_canon_state();
+    let parent = blocks[2].recovered_block().hash();
+    let state = ForkchoiceState {
+        head_block_hash: fork4.recovered_block().hash(),
+        safe_block_hash: fork3.recovered_block().hash(),
+        finalized_block_hash: blocks[1].recovered_block().hash(),
+    };
+    let LocalBlockOutcome::Forkchoice { outcome, .. } =
+        local_combined(&mut h, &fork4, state, parent)
+    else {
+        panic!("missing-ancestor FCU expected")
+    };
+    assert_eq!(outcome.forkchoice_status(), ForkchoiceStatus::Syncing);
+    // Ancestors arrive after the deferred reply. Neither a safe target nor the final head
+    // may reorg across the previously confirmed canonical #2.
+    h.tree.state.tree_state.insert_executed(fork2);
+    h.tree.state.tree_state.insert_executed(fork3.clone());
+    h.tree.make_canonical(fork3.recovered_block().hash()).unwrap();
+    h.tree.make_canonical(fork4.recovered_block().hash()).unwrap();
+    assert_eq!(h.tree.state.tree_state.canonical_block_hash(), parent);
+    assert_eq!(
+        h.tree.canonical_in_memory_state.get_finalized_num_hash().unwrap().hash,
+        blocks[1].recovered_block().hash()
+    );
+    assert!(notifications.try_recv().is_err());
+    assert!(h.tree.state.forkchoice_state_tracker.sync_target_state().is_some());
+}
+
+#[test]
+fn local_combined_recovery_commits_once_missing_parent_becomes_available() {
+    let mut builder = TestBlockBuilder::eth();
+    let blocks: Vec<_> = builder.get_executed_blocks(1..5).collect();
+    let mut h = TestHarness::new(MAINNET.clone()).with_blocks(blocks[..2].to_vec());
+    h.tree
+        .canonical_in_memory_state
+        .set_finalized(blocks[0].recovered_block().clone_sealed_header());
+    let mut notifications = h.tree.canonical_in_memory_state.subscribe_canon_state();
+    let state = ForkchoiceState {
+        head_block_hash: blocks[3].recovered_block().hash(),
+        safe_block_hash: blocks[1].recovered_block().hash(),
+        finalized_block_hash: blocks[0].recovered_block().hash(),
+    };
+    let LocalBlockOutcome::Forkchoice { outcome, .. } =
+        local_combined(&mut h, &blocks[3], state, blocks[1].recovered_block().hash())
+    else {
+        panic!("deferred FCU expected")
+    };
+    assert_eq!(outcome.forkchoice_status(), ForkchoiceStatus::Syncing);
+    h.tree.state.tree_state.insert_executed(blocks[2].clone());
+    h.tree.make_canonical(blocks[3].recovered_block().hash()).unwrap();
+    assert_eq!(h.tree.state.tree_state.canonical_block_hash(), blocks[3].recovered_block().hash());
+    assert_eq!(
+        notifications.try_recv().unwrap().committed().tip().hash(),
+        blocks[3].recovered_block().hash()
+    );
+    assert!(notifications.try_recv().is_err());
+    assert!(h.tree.state.forkchoice_state_tracker.sync_target_state().is_none());
+}
+
+#[test]
+fn local_combined_zero_finalized_keeps_floor_and_same_height_conflict_is_rejected() {
+    let mut builder = TestBlockBuilder::eth();
+    let blocks: Vec<_> = builder.get_executed_blocks(1..5).collect();
+    let fork2 = builder.get_executed_block_with_number(2, blocks[0].recovered_block().hash());
+    for conflict in [false, true] {
+        let mut h = TestHarness::new(MAINNET.clone()).with_blocks(blocks[..3].to_vec());
+        h.tree.state.tree_state.insert_executed(fork2.clone());
+        h.tree
+            .canonical_in_memory_state
+            .set_finalized(blocks[1].recovered_block().clone_sealed_header());
+        let state = ForkchoiceState {
+            head_block_hash: blocks[3].recovered_block().hash(),
+            safe_block_hash: blocks[2].recovered_block().hash(),
+            finalized_block_hash: if conflict {
+                fork2.recovered_block().hash()
+            } else {
+                B256::ZERO
+            },
+        };
+        let result = local_combined(&mut h, &blocks[3], state, blocks[2].recovered_block().hash());
+        if conflict {
+            assert_matches!(result, LocalBlockOutcome::FinalityConflict);
+            assert_eq!(h.tree.state.tree_state.canonical_block_number(), 3);
+        } else {
+            let LocalBlockOutcome::Forkchoice { outcome, finalized, .. } = result else {
+                panic!("FCU expected")
+            };
+            assert_eq!(outcome.forkchoice_status(), ForkchoiceStatus::Valid);
+            assert_eq!(finalized.unwrap().hash, blocks[1].recovered_block().hash());
+        }
+    }
 }

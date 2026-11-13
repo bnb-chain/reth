@@ -5,10 +5,13 @@ use crate::{
     chain::{ChainHandler, FromOrchestrator, HandlerEvent},
     download::{BlockDownloader, DownloadAction, DownloadOutcome},
 };
+use alloy_eips::BlockNumHash;
 use alloy_primitives::{map::B256Set, B256};
+use alloy_rpc_types_engine::ForkchoiceState;
 use crossbeam_channel::Sender;
 use futures::{Stream, StreamExt};
-use reth_engine_primitives::{BeaconEngineMessage, ConsensusEngineEvent};
+use reth_engine_primitives::{BeaconEngineMessage, ConsensusEngineEvent, OnForkChoiceUpdated};
+use reth_errors::ProviderResult;
 use reth_ethereum_primitives::EthPrimitives;
 use reth_network_p2p::full_block::SealedBlockWithAccessList;
 use reth_payload_primitives::{BuiltPayloadExecutedBlock, PayloadTypes};
@@ -256,6 +259,20 @@ pub enum EngineApiRequest<T: PayloadTypes, N: NodePrimitives> {
     Beacon(BeaconEngineMessage<T>),
     /// Request to insert an already executed block, e.g. via payload building.
     InsertExecutedBlock(BuiltPayloadExecutedBlock<N>),
+    /// Index a locally executed block and apply a prepared forkchoice without an intervening
+    /// Engine message. Parlia/CL fork selection remains the caller's responsibility.
+    InsertExecutedBlockAndForkchoice {
+        /// Block and execution results to retain, even when the prepared choice is stale.
+        payload: BuiltPayloadExecutedBlock<N>,
+        /// Prepared head/safe/finalized selection; head need not equal the inserted block.
+        state: ForkchoiceState,
+        /// Canonical head against which the caller made its fork selection.
+        expected_head: B256,
+        /// In-process trace context for both insertion and forkchoice.
+        cause: tracing::Span,
+        /// One final result; dropping this receiver does not cancel queued mutations.
+        tx: oneshot::Sender<ProviderResult<LocalBlockOutcome>>,
+    },
     /// Asks whether the engine knows the block with this hash, answered after every request
     /// sent before it on the same channel has been handled.
     ///
@@ -277,9 +294,45 @@ impl<T: PayloadTypes, N: NodePrimitives> Display for EngineApiRequest<T, N> {
             Self::InsertExecutedBlock(payload) => {
                 write!(f, "InsertExecutedBlock({:?})", payload.recovered_block.num_hash())
             }
+            Self::InsertExecutedBlockAndForkchoice { payload, .. } => {
+                write!(
+                    f,
+                    "InsertExecutedBlockAndForkchoice({:?})",
+                    payload.recovered_block.num_hash()
+                )
+            }
             Self::IsBlockKnown { hash, .. } => write!(f, "IsBlockKnown({hash})"),
         }
     }
+}
+
+/// Result of a local combined import. Indexing is not a database transaction or a durability
+/// guarantee; a valid indexed block is retained if forkchoice is stale or rejected.
+#[derive(Debug)]
+pub enum LocalBlockOutcome {
+    /// The executed insertion was skipped and the exact hash is not known.
+    NotRetained,
+    /// The prepared selection must be recomputed against this exact current head.
+    StaleHead {
+        /// Canonical head observed by the Engine after indexing.
+        actual_head: BlockNumHash,
+    },
+    /// The request conflicts with already-established finality at the same height.
+    FinalityConflict,
+    /// Full FCU processing completed. Only VALID plus the expected actual head establishes
+    /// canonical success; SYNCING is deferred and may still drive downloads/backfill.
+    Forkchoice {
+        /// Existing Engine FCU status/error, with no payload attributes.
+        outcome: OnForkChoiceUpdated,
+        /// Effective state, possibly retaining newer compatible Engine finality.
+        state: ForkchoiceState,
+        /// Actual canonical head when the request finished.
+        canonical_head: BlockNumHash,
+        /// Actual finalized marker, rather than the caller's speculative metric value.
+        finalized: Option<BlockNumHash>,
+        /// Actual safe marker; legitimate unfinalized reorgs may change this marker.
+        safe: Option<BlockNumHash>,
+    },
 }
 
 impl<T: PayloadTypes, N: NodePrimitives> From<BeaconEngineMessage<T>> for EngineApiRequest<T, N> {
