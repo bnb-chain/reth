@@ -33,6 +33,9 @@ pub struct ExecutionEnv<Evm: ConfigureEvm> {
     /// Optional decoded BAL for the block.
     /// Used to validate and optimize execution.
     pub decoded_bal: Option<Arc<DecodedBal>>,
+    /// Untrusted, optional BAL used only to prefetch parent-state data from the local provider.
+    /// Never used for transaction execution, state updates, or consensus validation.
+    pub bal_read_hint: Option<Arc<DecodedBal>>,
     /// Latest completed txpool-prewarm snapshot for this block's parent state.
     ///
     /// Can be None if txpool prewarming is disabled or the snapshot is not ready for some reason.
@@ -61,6 +64,7 @@ where
             gas_used: 0,
             withdrawals: None,
             decoded_bal: None,
+            bal_read_hint: None,
             txpool_snapshot: None,
             pool_seeds: None,
         }

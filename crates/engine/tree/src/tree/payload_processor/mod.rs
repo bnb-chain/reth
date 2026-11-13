@@ -152,7 +152,7 @@ where
     }
 
     /// Returns the dedicated BAL read-set prewarm pool, spawning its blocking worker threads on
-    /// first use (only the BAL parallel execution path calls this).
+    /// first use by BAL execution or advisory read-hint prefetching.
     fn bal_prewarm_pool(&self) -> Arc<bal_prewarm_pool::BalPrewarmPool> {
         self.bal_prewarm_pool
             .get_or_init(|| {
@@ -176,7 +176,7 @@ where
     #[instrument(level = "debug", target = "engine::tree::payload_processor", skip_all)]
     pub fn spawn_with_state_root_streams<P, I: ExecutableTxIterator<Evm>>(
         &self,
-        env: ExecutionEnv<Evm>,
+        mut env: ExecutionEnv<Evm>,
         transactions: I,
         state_provider_factory: OverlayStateProviderFactory<P, Evm::Primitives>,
         hint_stream: Option<StateRootHintStream>,
@@ -194,7 +194,13 @@ where
             + HistoryReader
             + 'static,
     {
-        let prewarm_transactions =
+        if self.disable_transaction_prewarming ||
+            self.disable_state_cache ||
+            self.disable_bal_batch_io
+        {
+            env.bal_read_hint = None;
+        }
+        let prewarm_transactions = env.bal_read_hint.is_none() &&
             self.prewarms_transactions(env.transaction_count, parallel_bal_execution);
         let (prewarm_rx, execution_rx) = self.spawn_tx_iterator(
             transactions,
@@ -213,12 +219,9 @@ where
         PayloadHandle { prewarm_handle, transactions: execution_rx, _span: Span::current() }
     }
 
-    /// Whether the prewarm task will consume converted transactions, i.e. whether
-    /// [`Self::spawn_caching_with`] ends up in [`PrewarmMode::Transactions`].
-    ///
-    /// This is the only place the decision is made: the tx iterator uses it to skip creating the
-    /// prewarm channel and cloning every transaction into it, and the resulting `Option` receiver
-    /// then selects the mode, so the two cannot disagree.
+    /// Whether ordinary transaction prewarming is eligible when no advisory read hint is used.
+    /// The caller uses this to avoid creating a prewarm channel and cloning transactions when
+    /// prewarming is skipped or driven by a BAL instead.
     const fn prewarms_transactions(
         &self,
         transaction_count: usize,
@@ -409,6 +412,7 @@ where
     /// `parallel_bal_execution` is true when the BAL execute path will execute this block. In
     /// that case prewarm runs in BAL mode: it streams BAL-derived sparse-trie updates and,
     /// unless `disable_bal_batch_io` is set, prefetches BAL-declared state into the shared cache.
+    /// Advisory read hints only prefetch local parent state and never receive a state-root stream.
     #[instrument(level = "debug", target = "engine::tree::payload_processor", skip_all)]
     fn spawn_caching_with<P>(
         &self,
@@ -439,6 +443,8 @@ where
                 bal: env.decoded_bal.clone().expect("BAL dispatch implies decoded BAL"),
                 updates: hashed_update_stream,
             }
+        } else if let Some(bal) = env.bal_read_hint.clone() {
+            PrewarmMode::ReadHint { bal }
         } else if let Some(pending) = transactions {
             PrewarmMode::Transactions { pending, hints: hint_stream }
         } else {
@@ -463,7 +469,9 @@ where
             evm_config: self.evm_config.clone(),
             saved_cache: saved_cache.clone(),
             provider: state_provider_factory,
-            bal_prewarm_pool: parallel_bal_execution.then(|| self.bal_prewarm_pool()),
+            bal_prewarm_pool: (parallel_bal_execution ||
+                matches!(mode, PrewarmMode::ReadHint { .. }))
+            .then(|| self.bal_prewarm_pool()),
             metrics: PrewarmMetrics::default(),
             cache_metrics: self.cache_metrics.clone(),
             cache_state_metrics: self.cache_state_metrics.clone(),
@@ -787,6 +795,63 @@ mod tests {
             &TreeConfig::default(),
             PrecompileCacheMap::default(),
         )
+    }
+
+    #[test]
+    fn read_hints_respect_disable_flags_and_keep_serial_transaction_order() {
+        for (disable_prewarm, disable_cache, disable_io) in [
+            (false, false, false),
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
+        ] {
+            let mut processor = test_processor();
+            processor.disable_transaction_prewarming = disable_prewarm;
+            processor.disable_state_cache = disable_cache;
+            processor.disable_bal_batch_io = disable_io;
+            let hint = alloy_eip7928::bal::DecodedBal::from_rlp_bytes(
+                alloy_rlp::encode(vec![alloy_eip7928::AccountChanges::default()]).into(),
+            )
+            .unwrap();
+            let env = ExecutionEnv {
+                transaction_count: 40,
+                bal_read_hint: Some(Arc::new(hint)),
+                ..ExecutionEnv::test_default()
+            };
+            let provider = reth_provider::test_utils::MockEthProvider::default();
+            provider.enable_database_provider();
+            provider.add_header(B256::ZERO, Default::default());
+            provider.add_stage_checkpoint(
+                reth_stages_api::StageId::Finish,
+                reth_stages_api::StageCheckpoint::new(0),
+            );
+            let handle = processor.spawn_with_state_root_streams(
+                env,
+                ((0..40).collect::<Vec<_>>(), |_| Ok::<_, std::io::Error>(converted_tx())),
+                OverlayStateProviderFactory::new(
+                    provider,
+                    reth_storage_overlay::OverlayManager::default().overlay_builder(B256::ZERO),
+                ),
+                None,
+                None,
+                false,
+            );
+            assert_eq!(
+                processor.bal_prewarm_pool.get().is_some(),
+                !(disable_prewarm || disable_cache || disable_io)
+            );
+            let indices = (0..40)
+                .map(|_| {
+                    let (index, tx) = handle
+                        .transactions
+                        .recv_timeout(std::time::Duration::from_secs(10))
+                        .unwrap();
+                    assert!(tx.is_ok());
+                    index
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(indices, (0..40).collect::<Vec<_>>());
+        }
     }
 
     #[test]
