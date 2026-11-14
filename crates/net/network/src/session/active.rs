@@ -545,7 +545,12 @@ impl<N: NetworkPrimitives> ActiveSession<N> {
                 self.queued_outgoing.push_back(EthMessage::NewBlockHashes(msg).into());
             }
             PeerMessage::NewBlock(msg) => {
-                self.queued_outgoing.push_back(EthBroadcastMessage::NewBlock(msg.block).into());
+                self.queued_outgoing.push_back(
+                    EthBroadcastMessage::NewBlock(
+                        msg.block.for_peer(&self.remote_peer_id).map(Arc::new).unwrap_or(msg.block),
+                    )
+                    .into(),
+                );
             }
             PeerMessage::PooledTransactions(msg) => {
                 if msg.is_valid_for_version(self.conn.version()) {

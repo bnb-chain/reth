@@ -88,6 +88,13 @@ pub trait NewBlockPayload:
     /// Returns a reference to the block.
     fn block(&self) -> &Self::Block;
 
+    /// Prepare optional, chain-specific attachments for a destination peer.
+    /// `None` retains the original shared payload without cloning it.
+    /// Overrides must preserve the block and total difficulty.
+    fn for_peer(&self, _peer: &alloy_primitives::B512) -> Option<Self> {
+        None
+    }
+
     /// Returns the total difficulty if available (BSC parlia; `None` by default / in `PoS`).
     fn td(&self) -> Option<alloy_primitives::U256> {
         None
