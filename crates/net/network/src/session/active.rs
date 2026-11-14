@@ -681,7 +681,10 @@ impl<N: NetworkPrimitives> ActiveSession<N> {
             }
             PeerMessage::NewBlock(msg) => {
                 self.queued_outgoing.push_back_with_metadata(
-                    EthBroadcastMessage::NewBlock(msg.block).into(),
+                    EthBroadcastMessage::NewBlock(
+                        msg.block.for_peer(&self.remote_peer_id).map(Arc::new).unwrap_or(msg.block),
+                    )
+                    .into(),
                     metadata,
                 );
             }
