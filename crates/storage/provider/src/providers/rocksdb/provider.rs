@@ -231,8 +231,10 @@ impl RocksDBBuilder {
         options.create_missing_column_families(true);
         options.set_max_background_jobs(DEFAULT_MAX_BACKGROUND_JOBS);
         options.set_bytes_per_sync(DEFAULT_BYTES_PER_SYNC);
+        // OptimisticTransactionDB can retain flushed memtables until later writes release them.
+        // Stalling those writes at the WBM limit can prevent that memory from being released.
         let write_buffer_manager =
-            WriteBufferManager::new_write_buffer_manager(DEFAULT_WRITE_BUFFER_MANAGER_SIZE, true);
+            WriteBufferManager::new_write_buffer_manager(DEFAULT_WRITE_BUFFER_MANAGER_SIZE, false);
         options.set_write_buffer_manager(&write_buffer_manager);
 
         options.set_bottommost_compression_type(DBCompressionType::Zstd);
