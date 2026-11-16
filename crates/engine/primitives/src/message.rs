@@ -1,8 +1,9 @@
 use crate::{
-    error::BeaconForkChoiceUpdateError, BeaconOnNewPayloadError, ExecutionPayload, ForkchoiceStatus,
+    error::BeaconForkChoiceUpdateError, BeaconOnNewPayloadError, ExecutionPayload,
+    ForkchoiceStatus, TotalDifficultyError,
 };
 use alloy_eips::eip4895::Withdrawal;
-use alloy_primitives::{Bytes, B256};
+use alloy_primitives::{Bytes, B256, U256};
 use alloy_rpc_types_engine::{
     ExecutionData, ForkchoiceState, ForkchoiceUpdateError, ForkchoiceUpdated, PayloadId,
     PayloadStatus, PayloadStatusEnum,
@@ -296,11 +297,21 @@ pub enum BeaconEngineMessage<Payload: PayloadTypes> {
         /// The sender for returning forkchoice updated result.
         tx: oneshot::Sender<RethResult<OnForkChoiceUpdated>>,
     },
+    /// Internal read-only query for the exact branch identified by `hash`.
+    QueryTd {
+        /// The caller's tracing context.
+        cause: Span,
+        /// Block hash; heights are never used to substitute a canonical sibling.
+        hash: B256,
+        /// `None` means the block or an ancestor is unavailable.
+        tx: oneshot::Sender<Result<Option<U256>, TotalDifficultyError>>,
+    },
 }
 
 impl<Payload: PayloadTypes> Display for BeaconEngineMessage<Payload> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::QueryTd { hash, .. } => write!(f, "QueryTd({hash})"),
             Self::NewPayload { payload, .. } => {
                 write!(
                     f,
@@ -406,6 +417,24 @@ where
             .await?
             .map_err(BeaconForkChoiceUpdateError::internal)?
             .await
+    }
+
+    /// Queries total difficulty for an exact block hash after payload validation.
+    ///
+    /// This is an internal request, not a JSON-RPC method. The engine walks the available
+    /// branch back to a persisted TD anchor. `None` means missing ancestry, never zero TD.
+    /// The caller must retry after obtaining missing blocks rather than infer chain weight.
+    pub async fn query_td(&self, hash: B256) -> Result<Option<U256>, TotalDifficultyError> {
+        let (tx, rx) = oneshot::channel();
+        self.to_engine
+            .send(BeaconEngineMessage::QueryTd { cause: Span::current(), hash, tx })
+            .map_err(|_| TotalDifficultyError::EngineUnavailable)?;
+        // A slow or stopped engine must not retain a forkchoice waiter indefinitely.
+        const QUERY_TIMEOUT: Duration = Duration::from_secs(5);
+        tokio::time::timeout(QUERY_TIMEOUT, rx)
+            .await
+            .map_err(|_| TotalDifficultyError::Timeout)?
+            .map_err(|_| TotalDifficultyError::EngineUnavailable)?
     }
 
     /// Sends a forkchoice update message to the beacon consensus engine and returns the receiver to

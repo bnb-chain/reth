@@ -8,9 +8,9 @@ use crate::{
     persistence::PersistenceHandle,
     tree::{error::InsertPayloadError, payload_validator::TreeCtx},
 };
-use alloy_consensus::BlockHeader;
+use alloy_consensus::{BlockHeader, Sealable};
 use alloy_eips::{eip1898::BlockWithParent, BlockNumHash, NumHash};
-use alloy_primitives::{map::B256Map, B256};
+use alloy_primitives::{map::B256Map, B256, U256};
 use alloy_rpc_types_engine::{
     ForkchoiceState, PayloadStatus, PayloadStatusEnum, PayloadValidationError,
 };
@@ -23,7 +23,7 @@ use reth_chain_state::{
 use reth_consensus::{Consensus, FullConsensus};
 use reth_engine_primitives::{
     BeaconEngineMessage, ConsensusEngineEvent, ExecutionPayload, ForkchoiceStateTracker,
-    NewPayloadTimings, OnForkChoiceUpdated, SlowBlockInfo,
+    NewPayloadTimings, OnForkChoiceUpdated, SlowBlockInfo, TotalDifficultyError,
 };
 use reth_errors::{ConsensusError, ProviderResult};
 use reth_evm::ConfigureEvm;
@@ -31,7 +31,7 @@ use reth_network_p2p::full_block::SealedBlockWithAccessList;
 use reth_payload_builder::{BuildNewPayload, PayloadBuilderHandle, PayloadBuilderLease};
 use reth_payload_primitives::{BuiltPayload, NewPayloadError, PayloadAttributes, PayloadTypes};
 use reth_primitives_traits::{
-    FastInstant as Instant, NodePrimitives, RecoveredBlock, SealedBlock, SealedHeader,
+    Block as _, FastInstant as Instant, NodePrimitives, RecoveredBlock, SealedBlock, SealedHeader,
 };
 use reth_provider::{
     BalProvider, BlockExecutionOutput, BlockExecutionResult, BlockReader, ChangeSetReader,
@@ -1682,6 +1682,12 @@ where
                     }
                     EngineApiRequest::Beacon(request) => {
                         match request {
+                            BeaconEngineMessage::QueryTd { cause, hash, tx } => {
+                                let _cause = cause.enter();
+                                if !tx.is_closed() && tx.send(self.query_td(hash)).is_err() {
+                                    debug!(target: "engine::tree", %hash, "TD query receiver dropped");
+                                }
+                            }
                             BeaconEngineMessage::ForkchoiceUpdated {
                                 cause,
                                 state,
@@ -3573,6 +3579,64 @@ where
 
         let status = PayloadStatusEnum::from(error);
         Ok(PayloadStatus::new(status, latest_valid_hash))
+    }
+
+    /// Computes exact branch TD from executed headers and an exact-hash provider anchor.
+    /// Missing ancestry is retriable; a persisted tip never limits the fork walk.
+    fn query_td(&self, hash: B256) -> Result<Option<U256>, TotalDifficultyError> {
+        let mut cursor = hash;
+        let mut expected_number = None;
+        let mut suffix = U256::ZERO;
+        // Bound synchronous work on the engine thread. The provider separately bounds its
+        // anchor lookup and binds header/TD reads against concurrent static-file rewrites.
+        const MAX_TD_QUERY_HEADERS: usize = 8192;
+        for _ in 0..MAX_TD_QUERY_HEADERS {
+            let memory_header = self
+                .state
+                .tree_state
+                .sealed_header_by_hash(&cursor)
+                .or_else(|| self.canonical_in_memory_state.header_by_hash(cursor));
+            let (header, anchor_td) = match memory_header {
+                Some(header) => (header, None),
+                None => {
+                    // Independent block_hash(number) / header_td_by_number(number) reads
+                    // cannot establish a branch binding while persistence rewrites static files.
+                    let Some((block, td)) = self.provider.block_with_td_by_hash(cursor)? else {
+                        return Ok(None);
+                    };
+                    let header = SealedHeader::seal_slow(block.header().clone());
+                    if header.hash() != cursor {
+                        return Ok(None);
+                    }
+                    (header, Some(td))
+                }
+            };
+            if let Some(expected) = expected_number &&
+                header.number() != expected
+            {
+                return Err(TotalDifficultyError::InvalidAncestry {
+                    hash: cursor,
+                    expected,
+                    actual: header.number(),
+                });
+            }
+            if let Some(base) = anchor_td {
+                return base
+                    .checked_add(suffix)
+                    .map(Some)
+                    .ok_or(TotalDifficultyError::Overflow { hash: cursor });
+            }
+            suffix = suffix
+                .checked_add(header.difficulty())
+                .ok_or(TotalDifficultyError::Overflow { hash: cursor })?;
+            if header.number() == 0 {
+                // Even a configured genesis alias must prove this actual header's hash.
+                return Ok((header.header().hash_slow() == cursor).then_some(suffix));
+            }
+            expected_number = Some(header.number() - 1);
+            cursor = header.parent_hash();
+        }
+        Err(TotalDifficultyError::WalkLimit { hash, limit: MAX_TD_QUERY_HEADERS })
     }
 
     /// Attempts to find the header for the given block hash if it is canonical.
