@@ -857,6 +857,13 @@ where
                 .ok()
         };
 
+        // Attachment-free imports still produce a BAL that must survive validation for storage.
+        let raw_bal = decoded_bal.as_ref().map(|bal| bal.as_raw_bal().clone()).or_else(|| {
+            built_bal
+                .as_ref()
+                .map(|bal| alloy_eip7928::bal::RawBal::new(alloy_rlp::encode(bal).into()))
+        });
+
         ensure_ok_post_block!(
             self.validate_post_execution(
                 &block,
@@ -977,11 +984,11 @@ where
 
         // The payload's raw bytes are already bound to this header: payload-to-block conversion
         // and downloaded-sidecar verification both check their hash against it, so pairing them
-        // with the BAL this execution produced is sound. The zip leaves the BAL unset for a
-        // downloaded block that carried only a BAL hash and no sidecar.
-        let bal = revm_bal.zip(decoded_bal).map(|(revm_bal, decoded_bal)| {
-            Arc::new(DecodedRevmBal::with_raw_bal(revm_bal, decoded_bal.as_raw_bal().clone()))
-        });
+        // with the BAL this execution produced is sound. Without a sidecar, use the rebuilt
+        // bytes retained above; failed validation never reaches this storage handoff.
+        let bal = revm_bal
+            .zip(raw_bal)
+            .map(|(revm_bal, raw_bal)| Arc::new(DecodedRevmBal::with_raw_bal(revm_bal, raw_bal)));
         let executed_block = self
             .spawn_deferred_trie_task(Arc::new(block), output, hashed_state, trie_output)
             .with_bal(bal);
@@ -1176,8 +1183,8 @@ where
             .in_scope(|| db.merge_transitions(BundleRetention::Reverts));
 
         // The builder only exists when the block declares a BAL. The revm form is the one shared
-        // with the executed block, so it must survive here; the clone only feeds the
-        // post-execution consensus checks, the sole consumer of the alloy form.
+        // with the executed block, so it must survive here. The alloy form feeds consensus
+        // checks and serialization when no received sidecar bytes are available.
         let built_bal = db.take_built_bal().map(|revm_bal| ExecutedBal {
             alloy: revm_bal.clone().into_alloy_bal(),
             revm: Arc::new(revm_bal),
