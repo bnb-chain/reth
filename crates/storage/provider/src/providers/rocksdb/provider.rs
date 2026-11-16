@@ -3917,10 +3917,10 @@ mod tests {
             .db_rw()
             .put_cf(&cf, ShardedKey::new(Address::ZERO, u64::MAX).encode(), b"invalid")
             .unwrap();
-        assert_eq!(
-            provider.account_history_shards_to_put(vec![(Address::ZERO, vec![limit])]).unwrap_err(),
-            ProviderError::Database(DatabaseError::Decode)
-        );
+        assert!(matches!(
+            provider.account_history_shards_to_put(vec![(Address::ZERO, vec![limit])]),
+            Err(ProviderError::Database(DatabaseError::Decode))
+        ));
     }
 
     #[test]
