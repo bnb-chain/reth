@@ -266,7 +266,7 @@ fn bench_fetch(c: &mut Criterion) {
 }
 
 /// Compare the actual cache hook with and without the optional sidecar. Run with
-/// RETH_NETWORK_DIAGNOSTIC_PEERS set to the 128 hex digits `01` repeated 64 times.
+/// `RETH_NETWORK_DIAGNOSTIC_PEERS` set to the 128 hex digits `01` repeated 64 times.
 /// No recorder is installed: this isolates cache, sampling and batching cost, not exporter cost.
 fn bench_peer_history(c: &mut Criterion) {
     let mut group = c.benchmark_group("peer_history");

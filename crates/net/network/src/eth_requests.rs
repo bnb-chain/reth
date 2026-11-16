@@ -2092,7 +2092,7 @@ mod tests {
             skip: 0,
             direction: HeadersDirection::Falling,
         };
-        assert_eq!(handler.get_headers_response(request.clone()).len(), 1);
+        assert_eq!(handler.get_headers_response(request).len(), 1);
         handler.client.headers.insert(side[100], Header { number: 99, ..Default::default() });
         assert_eq!(handler.get_headers_response(request).len(), 1);
         assert!(handler.exact_header(side[101], Some(101)).is_none());

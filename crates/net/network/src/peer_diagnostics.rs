@@ -86,7 +86,7 @@ fn log_allowed() -> bool {
         claim_log(&LAST_LOG, LOG_EPOCH.elapsed().as_millis() as u64 + 1)
 }
 
-fn kind_index(kind: MessageKind) -> usize {
+const fn kind_index(kind: MessageKind) -> usize {
     match kind {
         MessageKind::Block => 0,
         MessageKind::BlockHashes => 1,
@@ -161,7 +161,7 @@ pub(crate) struct SessionDiagnostics {
 }
 
 impl SessionDiagnostics {
-    pub(crate) fn new(peer: Arc<PeerSendDiagnostics>) -> Self {
+    pub(crate) const fn new(peer: Arc<PeerSendDiagnostics>) -> Self {
         Self { peer, blocked_since: None }
     }
 
@@ -233,7 +233,7 @@ struct HistorySample {
     evicted: Option<Instant>,
 }
 
-/// Diagnostic sidecar, owned by TransactionsManager; it never changes the real peer LRU.
+/// Diagnostic sidecar, owned by `TransactionsManager`; it never changes the real peer LRU.
 /// Hash sampling is deterministic (1/256), bounded to 256 entries per allowed peer. Only
 /// receive-to-candidate intervals within 120s qualify; stale entries are removed lazily.
 /// Echo counters are sampled *candidates before queue admission*, not successful wire sends.

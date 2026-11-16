@@ -394,7 +394,7 @@ pub enum PendingSessionEvent<N: NetworkPrimitives> {
     },
 }
 
-/// Internal envelope; the public SessionCommand stays independent of queue accounting.
+/// Internal envelope; the public `SessionCommand` stays independent of queue accounting.
 #[derive(Debug)]
 pub(crate) struct QueuedSessionCommand<N: NetworkPrimitives> {
     pub(crate) command: SessionCommand<N>,

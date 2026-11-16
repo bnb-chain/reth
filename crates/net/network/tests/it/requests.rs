@@ -18,6 +18,7 @@ use reth_network_p2p::{
     headers::client::{HeadersClient, HeadersRequest},
     BlockAccessListsClient,
 };
+use reth_primitives_traits::proofs::calculate_transaction_root;
 use reth_provider::{
     test_utils::MockEthProvider, BalStore, BalStoreHandle, InMemoryBalStore, ProviderError,
     ProviderResult, RawBal,
@@ -39,9 +40,10 @@ async fn test_get_body(version: Option<EthVersion>) {
     // request some blocks
     for _ in 0..100 {
         // Set a new random block to the mock storage and request it via the network
-        let block_hash = B256::random();
         let mut block = Block::default();
         block.body.transactions.push(tx_gen.gen_eip4844());
+        block.header.transactions_root = calculate_transaction_root(&block.body.transactions);
+        let block_hash = block.header.hash_slow();
 
         provider.add_block(block_hash, block.clone());
 
@@ -64,9 +66,10 @@ async fn test_get_body_range() {
     let mut block_hashes = Vec::new();
     // add some blocks
     for _ in 0..100 {
-        let block_hash = B256::random();
         let mut block = Block::default();
         block.body.transactions.push(tx_gen.gen_eip4844());
+        block.header.transactions_root = calculate_transaction_root(&block.body.transactions);
+        let block_hash = block.header.hash_slow();
 
         provider.add_block(block_hash, block.clone());
         all_blocks.push(block);
@@ -97,13 +100,13 @@ async fn test_get_header(version: Option<EthVersion>) {
     let fetch0 = net.peers()[0].network().fetch_client().await.unwrap();
     let mut rng = rand::rng();
 
-    let start: u64 = rng.random();
+    let start = rng.random_range(0..=u64::MAX - 99);
     let mut hash = rng.random();
     // request some headers
     for idx in 0..100 {
         // Set a new random header to the mock storage and request it via the network
         let header = Header { number: start + idx, parent_hash: hash, ..Default::default() };
-        hash = rng.random();
+        hash = header.hash_slow();
 
         provider.add_header(hash, header.clone());
 
@@ -369,16 +372,16 @@ fn bal_provider(bal_store: impl BalStore) -> MockEthProvider {
     provider
 }
 
-/// Adds a chain of 100 headers with random hashes to the provider, returning the number of the
+/// Adds a chain of 100 headers with content-derived hashes, returning the number of the
 /// first header and the sealed headers.
 fn add_header_chain(provider: &MockEthProvider) -> (u64, Vec<Sealed<Header>>) {
     let mut rng = rand::rng();
-    let start: u64 = rng.random();
+    let start = rng.random_range(0..=u64::MAX - 99);
     let mut hash = rng.random();
     let headers = (0..100)
         .map(|idx| {
             let header = Header { number: start + idx, parent_hash: hash, ..Default::default() };
-            hash = rng.random();
+            hash = header.hash_slow();
             provider.add_header(hash, header.clone());
             header.seal(hash)
         })

@@ -188,7 +188,7 @@ impl BroadcastItemCounter {
         let items = items.max(1);
         let (counter, limit) = self.counter(kind);
         counter
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 current.checked_add(items).filter(|next| *next <= limit)
             })
             .ok()?;
@@ -1289,7 +1289,7 @@ pub(crate) enum OutgoingMessage<N: NetworkPrimitives> {
 }
 
 impl<N: NetworkPrimitives> OutgoingMessage<N> {
-    fn kind(&self) -> MessageKind {
+    const fn kind(&self) -> MessageKind {
         match self {
             Self::Broadcast(EthBroadcastMessage::NewBlock(_)) => MessageKind::Block,
             Self::Broadcast(_) => MessageKind::Transactions,
@@ -1408,7 +1408,7 @@ pub(crate) struct QueuedOutgoingMessage<N: NetworkPrimitives> {
 }
 
 /// Block announcements have a separate priority lane. After a bounded block burst, the normal
-/// FIFO advances, including request/response and transaction traffic. Already serialized RLPx
+/// FIFO advances, including request/response and transaction traffic. Already serialized `RLPx`
 /// data cannot be preempted by this queue.
 pub(crate) struct QueuedOutgoingMessages<N: NetworkPrimitives> {
     messages: VecDeque<QueuedOutgoingMessage<N>>,
@@ -2504,8 +2504,7 @@ mod tests {
         let (block_tx, block_rx) = mpsc::channel(32);
         let (overflow_tx, overflow_rx) = mpsc::unbounded_channel();
         let counter = BroadcastItemCounter::new();
-        let sender =
-            SessionCommandSender::new(tx.clone(), block_tx, overflow_tx.clone(), counter.clone());
+        let sender = SessionCommandSender::new(tx.clone(), block_tx, overflow_tx, counter.clone());
         session.commands_rx = ReceiverStream::new(rx);
         session.block_commands_rx = ReceiverStream::new(block_rx);
         session.unbounded_rx = overflow_rx;

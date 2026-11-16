@@ -763,7 +763,7 @@ pub(crate) enum NetworkHandleMessage<N: NetworkPrimitives = EthNetworkPrimitives
 
 /// Cache-only readiness predicate, shared across a targeted announcement fanout.
 ///
-/// Called synchronously by NetworkManager after its queue wait. Implementations must not perform
+/// Called synchronously by `NetworkManager` after its queue wait. Implementations must not perform
 /// provider/database I/O, wait for execution, or retain execution/trie state.
 pub type BlockAnnouncementGuard<N> = Arc<dyn Fn(&PeerMessage<N>) -> bool + Send + Sync>;
 
