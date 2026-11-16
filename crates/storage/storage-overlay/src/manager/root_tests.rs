@@ -321,7 +321,7 @@ fn masked_finish_fixture() -> (ProviderFactory<MockNodeTypesWithDB>, RootFixture
                         block.block_number(),
                         AccountBeforeTx {
                             address,
-                            info: complete.accounts.get(address_hash).cloned().flatten(),
+                            info: complete.accounts.get(address_hash).copied().flatten(),
                         },
                     )
                     .unwrap();
