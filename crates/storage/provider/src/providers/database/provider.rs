@@ -6138,7 +6138,8 @@ mod tests {
                 RuntimeConfig::default()
                     .with_tokio(TokioConfig::with_worker_threads(1))
                     .with_rayon(
-                        RayonConfig { cpu_threads: Some(2), ..RayonConfig::default() }
+                        RayonConfig::default()
+                            .with_cpu_threads(2)
                             .with_rpc_threads(2)
                             .with_storage_threads(2),
                     ),

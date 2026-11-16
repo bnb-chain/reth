@@ -109,9 +109,6 @@ impl fmt::Debug for RocksDBWriteCtx {
 /// Default cache size for `RocksDB` block cache (128 MB).
 const DEFAULT_CACHE_SIZE: usize = 128 << 20;
 
-/// Maximum number of sorted account-history tail keys in one `MultiGet`.
-const HISTORY_READ_BATCH_SIZE: usize = 128;
-
 /// Default block size for `RocksDB` tables (16 KB).
 const DEFAULT_BLOCK_SIZE: usize = 16 * 1024;
 
@@ -1555,11 +1552,8 @@ impl RocksDBProvider {
         }
 
         let shard_puts = account_history
-            .into_iter()
-            .collect::<Vec<_>>()
             .into_par_iter()
-            .chunks(HISTORY_READ_BATCH_SIZE)
-            .map(|entries| self.account_history_shards_to_put(entries))
+            .map(|(address, indices)| self.account_history_shards_to_put(address, indices))
             .collect::<ProviderResult<Vec<_>>>()?;
 
         let mut batch = self.batch();
@@ -1572,62 +1566,43 @@ impl RocksDBProvider {
         Ok(())
     }
 
-    /// Reads sorted account-history tails in a bounded batch and prepares shard writes.
+    /// Prepares account history shard writes by reading the current last shard and appending
+    /// indices.
     fn account_history_shards_to_put(
         &self,
-        entries: Vec<(Address, Vec<u64>)>,
+        address: Address,
+        indices: Vec<u64>,
     ) -> ProviderResult<Vec<(ShardedKey<Address>, BlockNumberList)>> {
-        let keys = entries
-            .iter()
-            .map(|(address, _)| ShardedKey::new(*address, u64::MAX).encode())
-            .collect::<Vec<_>>();
-        let cf = self.get_cf_handle::<tables::AccountsHistory>()?;
-        self.execute_with_operation_metric(
-            RocksDBOperation::MultiGet,
-            tables::AccountsHistory::NAME,
-            |_| {
-                let values = match self.0.as_ref() {
-                    RocksDBProviderInner::ReadWrite { db, .. } => {
-                        db.batched_multi_get_cf(&cf, &keys, true)
-                    }
-                    RocksDBProviderInner::Secondary { db, .. } => {
-                        db.batched_multi_get_cf(&cf, &keys, true)
-                    }
-                };
-                let mut shards = Vec::new();
-                for ((address, indices), value) in entries.into_iter().zip(values) {
-                    let value = value.map_err(|e| {
-                        DatabaseError::Read(DatabaseErrorInfo {
-                            message: e.to_string().into(),
-                            code: -1,
-                        })
-                    })?;
-                    let mut last_shard = value
-                        .map(|value| {
-                            BlockNumberList::decompress(&value).map_err(|_| DatabaseError::Decode)
-                        })
-                        .transpose()?
-                        .unwrap_or_else(BlockNumberList::empty);
-                    last_shard.append(indices).map_err(ProviderError::other)?;
-                    if last_shard.len() <= NUM_OF_INDICES_IN_SHARD as u64 {
-                        shards.push((ShardedKey::new(address, u64::MAX), last_shard));
-                        continue;
-                    }
-                    let chunks = last_shard.iter().chunks(NUM_OF_INDICES_IN_SHARD);
-                    let mut chunks_peekable = chunks.into_iter().peekable();
-                    while let Some(chunk) = chunks_peekable.next() {
-                        let shard = BlockNumberList::new_pre_sorted(chunk);
-                        let highest_block_number = if chunks_peekable.peek().is_some() {
-                            shard.iter().next_back().expect("`chunks` does not return empty list")
-                        } else {
-                            u64::MAX
-                        };
-                        shards.push((ShardedKey::new(address, highest_block_number), shard));
-                    }
-                }
-                Ok(shards)
-            },
-        )
+        if indices.is_empty() {
+            return Ok(Vec::new());
+        }
+        debug_assert!(
+            indices.windows(2).all(|w| w[0] < w[1]),
+            "indices must be strictly increasing: {:?}",
+            indices
+        );
+
+        let last_key = ShardedKey::new(address, u64::MAX);
+        let last_shard_opt = self.get::<tables::AccountsHistory>(last_key.clone())?;
+        let mut last_shard = last_shard_opt.unwrap_or_else(BlockNumberList::empty);
+        last_shard.append(indices).map_err(ProviderError::other)?;
+
+        if last_shard.len() <= NUM_OF_INDICES_IN_SHARD as u64 {
+            return Ok(vec![(last_key, last_shard)]);
+        }
+        let chunks = last_shard.iter().chunks(NUM_OF_INDICES_IN_SHARD);
+        let mut chunks_peekable = chunks.into_iter().peekable();
+        let mut shards = Vec::new();
+        while let Some(chunk) = chunks_peekable.next() {
+            let shard = BlockNumberList::new_pre_sorted(chunk);
+            let highest_block_number = if chunks_peekable.peek().is_some() {
+                shard.iter().next_back().expect("`chunks` does not return empty list")
+            } else {
+                u64::MAX
+            };
+            shards.push((ShardedKey::new(address, highest_block_number), shard));
+        }
+        Ok(shards)
     }
 
     /// Writes storage history indices for the given blocks.
@@ -2194,10 +2169,7 @@ impl<'a> RocksDBBatch<'a> {
         indices: impl IntoIterator<Item = u64>,
     ) -> ProviderResult<()> {
         let indices: Vec<u64> = indices.into_iter().collect();
-        if indices.is_empty() {
-            return Ok(());
-        }
-        for (key, shard) in self.provider.account_history_shards_to_put(vec![(address, indices)])? {
+        for (key, shard) in self.provider.account_history_shards_to_put(address, indices)? {
             self.put::<tables::AccountsHistory>(key, &shard)?;
         }
 
@@ -3866,61 +3838,6 @@ mod tests {
         let result =
             provider.snapshot().account_history_info(address, 150, Some(100), 150).unwrap();
         assert_eq!(result, HistoryInfo::MaybeInPlainState);
-    }
-
-    #[test]
-    fn account_history_multiget_preserves_missing_tails_and_shard_splits() {
-        let dir = TempDir::new().unwrap();
-        let provider = RocksDBBuilder::new(dir.path()).with_default_tables().build().unwrap();
-        let limit = NUM_OF_INDICES_IN_SHARD as u64;
-        let mut entries = Vec::new();
-        let mut expected = Vec::new();
-        for i in 0..=128u8 {
-            let address = Address::with_last_byte(i);
-            if i % 2 == 0 {
-                let tail = IntegerList::new(0..limit).unwrap();
-                provider
-                    .put::<tables::AccountsHistory>(ShardedKey::new(address, u64::MAX), &tail)
-                    .unwrap();
-                expected.push((ShardedKey::new(address, limit - 1), tail));
-            }
-            entries.push((address, vec![limit, limit + 1]));
-            expected.push((
-                ShardedKey::new(address, u64::MAX),
-                IntegerList::new([limit, limit + 1]).unwrap(),
-            ));
-        }
-        let secondary = RocksDBBuilder::new(dir.path())
-            .with_default_tables()
-            .with_read_only(true)
-            .build()
-            .unwrap();
-        for db in [&provider, &secondary] {
-            let actual = entries
-                .chunks(HISTORY_READ_BATCH_SIZE)
-                .flat_map(|chunk| db.account_history_shards_to_put(chunk.to_vec()).unwrap())
-                .collect::<Vec<_>>();
-            assert_eq!(actual, expected);
-        }
-        assert_eq!(
-            provider
-                .get::<tables::AccountsHistory>(ShardedKey::new(
-                    Address::with_last_byte(1),
-                    u64::MAX
-                ))
-                .unwrap(),
-            None
-        );
-        let cf = provider.get_cf_handle::<tables::AccountsHistory>().unwrap();
-        provider
-            .0
-            .db_rw()
-            .put_cf(&cf, ShardedKey::new(Address::ZERO, u64::MAX).encode(), b"invalid")
-            .unwrap();
-        assert!(matches!(
-            provider.account_history_shards_to_put(vec![(Address::ZERO, vec![limit])]),
-            Err(ProviderError::Database(DatabaseError::Decode))
-        ));
     }
 
     #[test]
