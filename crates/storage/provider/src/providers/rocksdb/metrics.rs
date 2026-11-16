@@ -70,6 +70,7 @@ impl RocksDBMetrics {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EnumIter)]
 pub(crate) enum RocksDBOperation {
     Get,
+    MultiGet,
     Put,
     Delete,
     BatchWrite,
@@ -79,6 +80,7 @@ impl RocksDBOperation {
     const fn as_str(&self) -> &'static str {
         match self {
             Self::Get => "get",
+            Self::MultiGet => "multi-get",
             Self::Put => "put",
             Self::Delete => "delete",
             Self::BatchWrite => "batch-write",
