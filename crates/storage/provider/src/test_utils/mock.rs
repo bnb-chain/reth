@@ -16,7 +16,8 @@ use alloy_eips::{BlockHashOrNumber, BlockId, BlockNumHash, BlockNumberOrTag};
 use alloy_primitives::{
     keccak256,
     map::{AddressMap, B256Map, HashMap},
-    Address, BlockHash, BlockNumber, Bytes, StorageKey, StorageValue, TxHash, TxNumber, B256, U256,
+    Address, BlockHash, BlockNumber, Bytes, Sealable, StorageKey, StorageValue, TxHash, TxNumber,
+    B256, U256,
 };
 use parking_lot::Mutex;
 use reth_chain_state::{CanonStateNotifications, CanonStateSubscriptions, ExecutedBlock};
@@ -64,6 +65,8 @@ pub struct MockEthProvider<T: NodePrimitives = EthPrimitives, ChainSpec = reth_c
     pub blocks: Arc<Mutex<B256Map<T::Block>>>,
     /// Local header store
     pub headers: Arc<Mutex<B256Map<<T::Block as Block>::Header>>>,
+    /// Exact-hash total difficulties supplied by tests.
+    pub header_tds: Arc<Mutex<B256Map<U256>>>,
     /// Local receipt store indexed by block number
     pub receipts: Arc<Mutex<HashMap<BlockNumber, Vec<T::Receipt>>>>,
     /// Local account store
@@ -127,6 +130,7 @@ where
         Self {
             blocks: self.blocks.clone(),
             headers: self.headers.clone(),
+            header_tds: self.header_tds.clone(),
             receipts: self.receipts.clone(),
             accounts: self.accounts.clone(),
             chain_spec: self.chain_spec.clone(),
@@ -157,6 +161,7 @@ impl<T: NodePrimitives> MockEthProvider<T, reth_chainspec::ChainSpec> {
         Self {
             blocks: Default::default(),
             headers: Default::default(),
+            header_tds: Default::default(),
             receipts: Default::default(),
             accounts: Default::default(),
             chain_spec: Arc::new(reth_chainspec::ChainSpecBuilder::mainnet().build()),
@@ -334,6 +339,7 @@ impl<T: NodePrimitives, ChainSpec> MockEthProvider<T, ChainSpec> {
         MockEthProvider {
             blocks: self.blocks,
             headers: self.headers,
+            header_tds: self.header_tds,
             receipts: self.receipts,
             accounts: self.accounts,
             chain_spec: Arc::new(chain_spec),
@@ -926,6 +932,17 @@ impl<T: NodePrimitives, ChainSpec: EthChainSpec + 'static> BlockReader
     for MockEthProvider<T, ChainSpec>
 {
     type Block = T::Block;
+
+    fn block_with_td_by_hash(&self, hash: B256) -> ProviderResult<Option<(Self::Block, U256)>> {
+        if !self.database_provider_available.load(Ordering::Relaxed) {
+            return Err(ConsistentViewError::Syncing { best_block: GotExpected::new(0, 0) }.into());
+        }
+        let Some(block) = self.blocks.lock().get(&hash).cloned() else { return Ok(None) };
+        if block.header().hash_slow() != hash {
+            return Ok(None)
+        }
+        Ok(self.header_tds.lock().get(&hash).copied().map(|td| (block, td)))
+    }
 
     fn find_block_by_hash(
         &self,

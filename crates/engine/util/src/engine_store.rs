@@ -62,6 +62,8 @@ impl EngineMessageStore {
         fs::create_dir_all(&self.path)?; // ensure that store path had been created
         let timestamp = received_at.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis();
         match msg {
+            // Internal read-only queries do not change engine state and need no replay.
+            BeaconEngineMessage::QueryTd { .. } => {}
             BeaconEngineMessage::ForkchoiceUpdated { state, payload_attrs, tx: _tx, .. } => {
                 let filename = format!("{}-fcu-{}.json", timestamp, state.head_block_hash);
                 fs::write(

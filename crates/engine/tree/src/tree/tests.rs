@@ -34,7 +34,6 @@ use reth_ethereum_engine_primitives::{EthEngineTypes, EthPayloadAttributes};
 use reth_ethereum_primitives::{Block, EthPrimitives};
 use reth_evm_ethereum::MockEvmConfig;
 use reth_payload_builder::PayloadServiceCommand;
-use reth_primitives_traits::Block as _;
 use reth_provider::{
     test_utils::MockEthProvider, BalStoreHandle, HeaderProvider, InMemoryBalStore, RawBal,
 };
@@ -4234,4 +4233,218 @@ fn local_combined_zero_finalized_keeps_floor_and_same_height_conflict_is_rejecte
             assert_eq!(finalized.unwrap().hash, blocks[1].recovered_block().hash());
         }
     }
+}
+
+/// Executed fixture with nonzero difficulty and a real hash-linked parent.
+fn td_query_block(number: u64, parent_hash: B256, difficulty: U256) -> ExecutedBlock {
+    let block = Block {
+        header: alloy_consensus::Header { number, parent_hash, difficulty, ..Default::default() },
+        ..Default::default()
+    };
+    ExecutedBlock::new(
+        Arc::new(RecoveredBlock::new_unhashed(block, vec![])),
+        Arc::new(BlockExecutionOutput::default()),
+        SortedTrieData::default(),
+    )
+}
+
+#[test]
+fn query_td_follows_fork_below_persisted_tip_and_survives_repeated_queries() {
+    let mut harness = TestHarness::new(MAINNET.clone());
+    harness.provider.enable_database_provider();
+    let anchor = td_query_block(100, B256::ZERO, U256::from(2));
+    harness
+        .provider
+        .add_block(anchor.recovered_block().hash(), anchor.recovered_block().clone_block());
+    harness.provider.header_tds.lock().insert(anchor.recovered_block().hash(), U256::from(200));
+    let tip = td_query_block(200, B256::random(), U256::from(2));
+    harness.provider.add_block(tip.recovered_block().hash(), tip.recovered_block().clone_block());
+    harness.provider.header_tds.lock().insert(tip.recovered_block().hash(), U256::from(400));
+    let mut parent = anchor.recovered_block().hash();
+    let mut fork = Vec::new();
+    for number in 101..=356 {
+        let block = td_query_block(number, parent, U256::from(1));
+        parent = block.recovered_block().hash();
+        fork.push((parent, U256::from(200 + number - 100)));
+        harness.tree.state.tree_state.insert_executed(block);
+    }
+    for _ in 0..2 {
+        for (hash, expected) in &fork {
+            assert_eq!(harness.tree.query_td(*hash).unwrap(), Some(*expected));
+        }
+    }
+    assert_eq!(harness.tree.query_td(tip.recovered_block().hash()).unwrap(), Some(U256::from(400)));
+    // At height 201 the taller fork still has less TD than the persisted head.
+    assert_eq!(harness.tree.query_td(fork[100].0).unwrap(), Some(U256::from(301)));
+}
+
+#[test]
+fn query_td_reads_canonical_memory_and_genesis_without_a_td_row() {
+    let mut harness = TestHarness::new(MAINNET.clone());
+    harness.provider.enable_database_provider();
+    let genesis = td_query_block(0, B256::ZERO, U256::from(7));
+    harness.tree.state.tree_state.insert_executed(genesis.clone());
+    let child = td_query_block(1, genesis.recovered_block().hash(), U256::from(2));
+    harness
+        .tree
+        .canonical_in_memory_state
+        .update_chain(NewCanonicalChain::Commit { new: vec![child.clone()] });
+    assert_eq!(harness.tree.query_td(child.recovered_block().hash()).unwrap(), Some(U256::from(9)));
+}
+
+#[test]
+fn query_td_missing_ancestry_is_retriable_and_never_uses_sibling_td() {
+    let mut harness = TestHarness::new(MAINNET.clone());
+    harness.provider.enable_database_provider();
+    let canonical = td_query_block(10, B256::random(), U256::from(2));
+    harness
+        .provider
+        .add_block(canonical.recovered_block().hash(), canonical.recovered_block().clone_block());
+    harness.provider.header_tds.lock().insert(canonical.recovered_block().hash(), U256::from(100));
+    let parent = td_query_block(9, B256::random(), U256::from(1));
+    let fork = td_query_block(10, parent.recovered_block().hash(), U256::from(1));
+    harness.tree.state.tree_state.insert_executed(fork.clone());
+    assert_eq!(harness.tree.query_td(fork.recovered_block().hash()).unwrap(), None);
+    assert_eq!(harness.tree.query_td(B256::random()).unwrap(), None);
+    harness
+        .provider
+        .add_block(parent.recovered_block().hash(), parent.recovered_block().clone_block());
+    harness.provider.header_tds.lock().insert(parent.recovered_block().hash(), U256::from(20));
+    assert_eq!(harness.tree.query_td(fork.recovered_block().hash()).unwrap(), Some(U256::from(21)));
+}
+
+#[test]
+fn query_td_rejects_invalid_ancestry_and_overflow() {
+    let mut harness = TestHarness::new(MAINNET.clone());
+    harness.provider.enable_database_provider();
+    let parent = td_query_block(9, B256::ZERO, U256::from(1));
+    harness
+        .provider
+        .add_block(parent.recovered_block().hash(), parent.recovered_block().clone_block());
+    harness.provider.header_tds.lock().insert(parent.recovered_block().hash(), U256::MAX);
+    let invalid = td_query_block(11, parent.recovered_block().hash(), U256::from(1));
+    harness.tree.state.tree_state.insert_executed(invalid.clone());
+    assert_matches!(
+        harness.tree.query_td(invalid.recovered_block().hash()),
+        Err(TotalDifficultyError::InvalidAncestry { expected: 10, actual: 9, .. })
+    );
+    let child = td_query_block(10, parent.recovered_block().hash(), U256::from(1));
+    harness.tree.state.tree_state.insert_executed(child.clone());
+    assert_matches!(
+        harness.tree.query_td(child.recovered_block().hash()),
+        Err(TotalDifficultyError::Overflow { .. })
+    );
+    let genesis = td_query_block(0, B256::ZERO, U256::MAX);
+    harness.tree.state.tree_state.insert_executed(genesis.clone());
+    let child = td_query_block(1, genesis.recovered_block().hash(), U256::from(1));
+    harness.tree.state.tree_state.insert_executed(child.clone());
+    assert_matches!(
+        harness.tree.query_td(child.recovered_block().hash()),
+        Err(TotalDifficultyError::Overflow { .. })
+    );
+}
+
+#[test]
+fn query_td_bounds_work_and_reports_provider_errors() {
+    let mut harness = TestHarness::new(MAINNET.clone());
+    assert_matches!(harness.tree.query_td(B256::random()), Err(TotalDifficultyError::Provider(_)));
+    harness.provider.enable_database_provider();
+    let mut parent = B256::random();
+    for number in 1..=8193 {
+        let block = td_query_block(number, parent, U256::from(1));
+        parent = block.recovered_block().hash();
+        harness.tree.state.tree_state.insert_executed(block);
+    }
+    assert_matches!(
+        harness.tree.query_td(parent),
+        Err(TotalDifficultyError::WalkLimit { limit: 8192, .. })
+    );
+}
+
+#[tokio::test]
+async fn query_td_handle_roundtrip_unavailable_and_cancellation() {
+    let mut harness = TestHarness::new(MAINNET.clone());
+    harness.provider.enable_database_provider();
+    let genesis = td_query_block(0, B256::ZERO, U256::from(7));
+    harness.tree.state.tree_state.insert_executed(genesis.clone());
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = ConsensusEngineHandle::<EthEngineTypes>::new(tx);
+    let request = handle.query_td(genesis.recovered_block().hash());
+    let dispatch = async {
+        let message = rx.recv().await.unwrap();
+        assert!(matches!(message, BeaconEngineMessage::QueryTd { .. }));
+        let _ = harness
+            .tree
+            .on_engine_message(FromEngine::Request(EngineApiRequest::Beacon(message)))
+            .unwrap();
+    };
+    let (result, ()) = tokio::join!(request, dispatch);
+    assert_eq!(result.unwrap(), Some(U256::from(7)));
+
+    let (tx, reply) = oneshot::channel();
+    drop(reply);
+    let _ = harness
+        .tree
+        .on_engine_message(FromEngine::Request(EngineApiRequest::Beacon(
+            BeaconEngineMessage::QueryTd { cause: Span::current(), hash: B256::random(), tx },
+        )))
+        .unwrap();
+
+    let request = handle.query_td(genesis.recovered_block().hash());
+    let dispatch = async {
+        drop(rx.recv().await.unwrap());
+    };
+    let (result, ()) = tokio::join!(request, dispatch);
+    assert_matches!(result, Err(TotalDifficultyError::EngineUnavailable));
+    drop(rx);
+    assert_matches!(
+        handle.query_td(genesis.recovered_block().hash()).await,
+        Err(TotalDifficultyError::EngineUnavailable)
+    );
+}
+
+#[tokio::test]
+async fn query_td_handle_times_out_a_stalled_engine() {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = ConsensusEngineHandle::<EthEngineTypes>::new(tx);
+    let request = handle.query_td(B256::random());
+    let stalled = async {
+        let message = rx.recv().await.unwrap();
+        // Retain the responder beyond the query's deadline.
+        tokio::time::sleep(Duration::from_millis(5100)).await;
+        let BeaconEngineMessage::QueryTd { tx, .. } = message else { panic!("TD query expected") };
+        assert!(tx.is_closed());
+    };
+    let (result, ()) = tokio::join!(request, stalled);
+    assert_matches!(result, Err(TotalDifficultyError::Timeout));
+}
+
+#[test]
+fn query_td_rejects_hash_to_height_aliases_in_storage() {
+    let harness = TestHarness::new(MAINNET.clone());
+    harness.provider.enable_database_provider();
+    let header =
+        alloy_consensus::Header { number: 10, difficulty: U256::from(2), ..Default::default() };
+    let stale_hash = B256::random();
+    // DatabaseProvider::header(hash) resolves through height; stale hash indexes can return
+    // the canonical sibling's header. A sealed header supplied by that API trusts the input hash.
+    harness.provider.add_block(stale_hash, Block { header, ..Default::default() });
+    harness.provider.header_tds.lock().insert(stale_hash, U256::from(100));
+    assert_eq!(harness.tree.query_td(stale_hash).unwrap(), None);
+}
+
+#[test]
+fn query_td_genesis_alias_cannot_invent_a_td() {
+    let mut harness = TestHarness::new(MAINNET.clone());
+    let alias = B256::random();
+    let genesis = Block {
+        header: alloy_consensus::Header { difficulty: U256::from(7), ..Default::default() },
+        ..Default::default()
+    };
+    harness.tree.state.tree_state.insert_executed(ExecutedBlock::new(
+        Arc::new(RecoveredBlock::new(genesis, vec![], alias)),
+        Arc::new(BlockExecutionOutput::default()),
+        SortedTrieData::default(),
+    ));
+    assert_eq!(harness.tree.query_td(alias).unwrap(), None);
 }

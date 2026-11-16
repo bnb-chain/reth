@@ -222,3 +222,41 @@ mod tests {
         ));
     }
 }
+
+/// Errors returned by an internal exact-hash total difficulty query.
+#[derive(Debug, thiserror::Error)]
+pub enum TotalDifficultyError {
+    /// The engine stopped before answering the query.
+    #[error("consensus engine unavailable during total difficulty query")]
+    EngineUnavailable,
+    /// The engine did not answer within the query deadline.
+    #[error("total difficulty query timed out")]
+    Timeout,
+    /// A storage lookup failed.
+    #[error(transparent)]
+    Provider(#[from] ProviderError),
+    /// The branch cannot be represented by a 256-bit total difficulty.
+    #[error("total difficulty overflow at {hash}")]
+    Overflow {
+        /// The block at which addition overflowed.
+        hash: alloy_primitives::B256,
+    },
+    /// The available headers do not form a descending parent chain.
+    #[error("invalid ancestry at {hash}: expected height {expected}, got {actual}")]
+    InvalidAncestry {
+        /// The parent block being checked.
+        hash: alloy_primitives::B256,
+        /// Expected parent height.
+        expected: u64,
+        /// Actual parent height.
+        actual: u64,
+    },
+    /// The bounded query could not reach a trusted TD anchor.
+    #[error("total difficulty query exceeded {limit} headers for {hash}")]
+    WalkLimit {
+        /// The requested block.
+        hash: alloy_primitives::B256,
+        /// Maximum headers examined in one engine request.
+        limit: usize,
+    },
+}
