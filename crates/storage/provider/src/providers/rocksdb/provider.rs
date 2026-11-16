@@ -109,6 +109,9 @@ impl fmt::Debug for RocksDBWriteCtx {
 /// Default cache size for `RocksDB` block cache (128 MB).
 const DEFAULT_CACHE_SIZE: usize = 128 << 20;
 
+/// Maximum serialized size of newly appended account-history shards.
+const MAX_ACCOUNT_HISTORY_SHARD_BYTES: usize = 128;
+
 /// Default block size for `RocksDB` tables (16 KB).
 const DEFAULT_BLOCK_SIZE: usize = 16 * 1024;
 
@@ -1587,21 +1590,22 @@ impl RocksDBProvider {
         let mut last_shard = last_shard_opt.unwrap_or_else(BlockNumberList::empty);
         last_shard.append(indices).map_err(ProviderError::other)?;
 
-        if last_shard.len() <= NUM_OF_INDICES_IN_SHARD as u64 {
+        if last_shard.serialized_size() <= MAX_ACCOUNT_HISTORY_SHARD_BYTES {
             return Ok(vec![(last_key, last_shard)]);
         }
-        let chunks = last_shard.iter().chunks(NUM_OF_INDICES_IN_SHARD);
-        let mut chunks_peekable = chunks.into_iter().peekable();
         let mut shards = Vec::new();
-        while let Some(chunk) = chunks_peekable.next() {
-            let shard = BlockNumberList::new_pre_sorted(chunk);
-            let highest_block_number = if chunks_peekable.peek().is_some() {
-                shard.iter().next_back().expect("`chunks` does not return empty list")
-            } else {
-                u64::MAX
-            };
-            shards.push((ShardedKey::new(address, highest_block_number), shard));
+        let mut shard = BlockNumberList::empty();
+        let mut highest = 0;
+        for index in last_shard.iter() {
+            shard.0.insert(index);
+            if shard.serialized_size() > MAX_ACCOUNT_HISTORY_SHARD_BYTES {
+                shard.remove_range(index..);
+                shards.push((ShardedKey::new(address, highest), shard));
+                shard = BlockNumberList::new_pre_sorted([index]);
+            }
+            highest = index;
         }
+        shards.push((last_key, shard));
         Ok(shards)
     }
 
@@ -2155,7 +2159,7 @@ impl<'a> RocksDBBatch<'a> {
     /// Appends indices to an account history shard with proper shard management.
     ///
     /// Loads the existing shard (if any), appends new indices, and rechunks into
-    /// multiple shards if needed (respecting `NUM_OF_INDICES_IN_SHARD` limit).
+    /// multiple shards if needed, each serialized into at most 128 bytes.
     ///
     /// # Requirements
     ///
@@ -3846,10 +3850,11 @@ mod tests {
         let provider = RocksDBBuilder::new(temp_dir.path()).with_default_tables().build().unwrap();
 
         let address = Address::repeat_byte(0x42);
-        let limit = NUM_OF_INDICES_IN_SHARD;
+        let limit = 50;
 
-        // Add exactly NUM_OF_INDICES_IN_SHARD + 1 indices to trigger a split
+        // Roaring encodes 50 adjacent indices in exactly 128 bytes.
         let indices: Vec<u64> = (0..=(limit as u64)).collect();
+        assert_eq!(IntegerList::new_pre_sorted(0..50).serialized_size(), 128);
         let mut batch = provider.batch();
         batch.append_account_history_shard(address, indices).unwrap();
         batch.commit().unwrap();
@@ -3877,10 +3882,11 @@ mod tests {
         let provider = RocksDBBuilder::new(temp_dir.path()).with_default_tables().build().unwrap();
 
         let address = Address::repeat_byte(0x43);
-        let limit = NUM_OF_INDICES_IN_SHARD;
+        let limit = 50;
 
-        // First batch: add NUM_OF_INDICES_IN_SHARD indices
+        // Roaring encodes 50 adjacent indices in exactly 128 bytes.
         let first_batch_indices: Vec<u64> = (0..limit as u64).collect();
+        assert_eq!(IntegerList::new_pre_sorted(0..50).serialized_size(), 128);
         let mut batch = provider.batch();
         batch.append_account_history_shard(address, first_batch_indices).unwrap();
         batch.commit().unwrap();
@@ -3891,7 +3897,6 @@ mod tests {
         assert!(shard.is_some());
         assert_eq!(shard.unwrap().len(), limit as u64);
 
-        // Second batch: add another NUM_OF_INDICES_IN_SHARD + 1 indices (causing 2 more shards)
         let second_batch_indices: Vec<u64> = (limit as u64..=(2 * limit) as u64).collect();
         let mut batch = provider.batch();
         batch.append_account_history_shard(address, second_batch_indices).unwrap();
@@ -3913,6 +3918,61 @@ mod tests {
             provider.get::<tables::AccountsHistory>(sentinel_key).unwrap().is_some(),
             "sentinel shard should exist"
         );
+    }
+
+    #[test]
+    fn account_history_byte_limit_preserves_legacy_tails() {
+        let dir = TempDir::new().unwrap();
+        let address = Address::ZERO;
+        let key = ShardedKey::new(address, u64::MAX);
+        let provider = RocksDBBuilder::new(dir.path()).with_default_tables().build().unwrap();
+        assert!(IntegerList::new_pre_sorted([u64::MAX]).to_bytes().len() <= 128);
+        let indices = (0..80).map(|n| n * 65_536).collect::<Vec<_>>();
+        let legacy = IntegerList::new(indices[..60].iter().copied()).unwrap();
+        assert!(legacy.serialized_size() > 128);
+        provider.put::<tables::AccountsHistory>(key, &legacy).unwrap();
+        let mut batch = provider.batch();
+        batch.append_account_history_shard(address, indices[60..].iter().copied()).unwrap();
+        batch.commit().unwrap();
+        drop(provider);
+        let provider = RocksDBBuilder::new(dir.path()).with_default_tables().build().unwrap();
+        let shards = provider.account_history_shards(address).unwrap();
+        assert_eq!(shards.iter().flat_map(|(_, list)| list.iter()).collect::<Vec<_>>(), indices);
+        assert_eq!(shards.last().unwrap().0.highest_block_number, u64::MAX);
+        for (key, list) in &shards {
+            assert!(!list.is_empty());
+            assert!(list.to_bytes().len() <= 128);
+            if key.highest_block_number != u64::MAX {
+                assert_eq!(key.highest_block_number, list.iter().next_back().unwrap());
+            }
+        }
+        for &block in &indices {
+            let info =
+                provider.snapshot().account_history_info(address, block, None, u64::MAX).unwrap();
+            assert_eq!(info, HistoryInfo::InChangeset(block));
+        }
+        for pair in indices.windows(2) {
+            assert_eq!(
+                provider
+                    .snapshot()
+                    .account_history_info(address, pair[0] + 1, None, u64::MAX)
+                    .unwrap(),
+                HistoryInfo::InChangeset(pair[1])
+            );
+        }
+        let mut batch = provider.batch();
+        batch.prune_account_history_to(address, indices[19]).unwrap();
+        batch.commit().unwrap();
+        let mut batch = provider.batch();
+        batch.unwind_account_history_to(address, indices[59]).unwrap();
+        batch.commit().unwrap();
+        let shards = provider.account_history_shards(address).unwrap();
+        assert_eq!(
+            shards.iter().flat_map(|(_, list)| list.iter()).collect::<Vec<_>>(),
+            indices[20..60]
+        );
+        assert!(shards.iter().all(|(_, list)| list.to_bytes().len() <= 128));
+        assert_eq!(shards.last().unwrap().0.highest_block_number, u64::MAX);
     }
 
     #[test]
