@@ -309,6 +309,10 @@ impl<T: PayloadTypes, N: NodePrimitives> Display for EngineApiRequest<T, N> {
 /// Result of a local combined import. Indexing is not a database transaction or a durability
 /// guarantee; a valid indexed block is retained if forkchoice is stale or rejected.
 #[derive(Debug)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "The local handoff returns one complete forkchoice snapshot inline, avoiding an allocation per built block."
+)]
 pub enum LocalBlockOutcome {
     /// The executed insertion was skipped and the exact hash is not known.
     NotRetained,
