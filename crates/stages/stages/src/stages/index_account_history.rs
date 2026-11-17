@@ -724,7 +724,7 @@ mod tests {
 
             // Verify RocksDB has the data
             let rocksdb = db.factory.rocksdb_provider();
-            let result = rocksdb.get::<tables::AccountsHistory>(shard(u64::MAX)).unwrap();
+            let result = history(&rocksdb);
             assert!(result.is_some(), "RocksDB should contain account history");
 
             let block_list = result.unwrap();
@@ -749,7 +749,7 @@ mod tests {
             assert_eq!(output, ExecOutput::done(StageCheckpoint::new(20_000)));
             drop(provider);
 
-            let result = rocksdb.get::<tables::AccountsHistory>(shard(u64::MAX)).unwrap().unwrap();
+            let result = history(&rocksdb).unwrap();
             assert_eq!(result.iter().collect::<Vec<_>>(), (6..=10).collect::<Vec<_>>());
             let provider = db.factory.provider().unwrap();
             assert!(provider.get_prune_checkpoint(PruneSegment::AccountHistory).unwrap().is_none());
@@ -759,7 +759,7 @@ mod tests {
             let output = stage.execute(&provider, input()).unwrap();
             assert_eq!(output, ExecOutput::done(StageCheckpoint::new(20_000)));
             provider.commit().unwrap();
-            let result = rocksdb.get::<tables::AccountsHistory>(shard(u64::MAX)).unwrap().unwrap();
+            let result = history(&rocksdb).unwrap();
             assert_eq!(result.iter().collect::<Vec<_>>(), (6..=10).collect::<Vec<_>>());
             let provider = db.factory.provider().unwrap();
             assert_eq!(
@@ -787,7 +787,7 @@ mod tests {
 
             // Verify RocksDB has blocks 0-10 before unwind
             let rocksdb = db.factory.rocksdb_provider();
-            let result = rocksdb.get::<tables::AccountsHistory>(shard(u64::MAX)).unwrap();
+            let result = history(&rocksdb);
             assert!(result.is_some(), "RocksDB should have data before unwind");
             let blocks_before: Vec<u64> = result.unwrap().iter().collect();
             assert_eq!(blocks_before, (0..=10).collect::<Vec<_>>());
@@ -802,7 +802,7 @@ mod tests {
 
             // Verify RocksDB now only has blocks 0-5 (blocks 6-10 removed)
             let rocksdb = db.factory.rocksdb_provider();
-            let result = rocksdb.get::<tables::AccountsHistory>(shard(u64::MAX)).unwrap();
+            let result = history(&rocksdb);
             assert!(result.is_some(), "RocksDB should still have data after unwind");
             let blocks_after: Vec<u64> = result.unwrap().iter().collect();
             assert_eq!(blocks_after, (0..=5).collect::<Vec<_>>(), "Should only have blocks 0-5");
@@ -822,7 +822,7 @@ mod tests {
             provider.commit().unwrap();
 
             let rocksdb = db.factory.rocksdb_provider();
-            let result = rocksdb.get::<tables::AccountsHistory>(shard(u64::MAX)).unwrap();
+            let result = history(&rocksdb);
             assert!(result.is_some());
             let blocks: Vec<u64> = result.unwrap().iter().collect();
             assert_eq!(blocks, (0..=5).collect::<Vec<_>>());
@@ -834,10 +834,16 @@ mod tests {
             provider.commit().unwrap();
 
             let rocksdb = db.factory.rocksdb_provider();
-            let result = rocksdb.get::<tables::AccountsHistory>(shard(u64::MAX)).unwrap();
-            assert!(result.is_some(), "RocksDB should have merged data");
+            let result = history(&rocksdb);
+            assert!(result.is_some(), "RocksDB should contain both batches");
             let blocks: Vec<u64> = result.unwrap().iter().collect();
             assert_eq!(blocks, (0..=10).collect::<Vec<_>>());
+        }
+
+        fn history(rocksdb: &reth_provider::providers::RocksDBProvider) -> Option<BlockNumberList> {
+            let shards = rocksdb.account_history_shards(ADDRESS).unwrap();
+            let indices = shards.iter().flat_map(|(_, list)| list.iter()).collect::<Vec<_>>();
+            (!indices.is_empty()).then(|| BlockNumberList::new_pre_sorted(indices))
         }
     }
 }

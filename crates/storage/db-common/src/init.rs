@@ -1068,8 +1068,7 @@ where
     tx.put::<tables::HashedAccounts>(hashed_address, account)?;
     account_changeset_writer
         .append_account_changeset_entry(AccountBeforeTx { address: *address, info: None })?;
-    history_batch
-        .put::<tables::AccountsHistory>(ShardedKey::new(*address, u64::MAX), history_list)?;
+    history_batch.append_account_history_shard(*address, history_list.iter())?;
 
     if let Some(storage) = &genesis_account.storage {
         let mut hashed_storage_cursor = tx.cursor_dup_write::<tables::HashedStorages>()?;
@@ -1085,10 +1084,7 @@ where
                 reth_db_api::models::StorageBeforeTx { address: *address, key, value: U256::ZERO },
             )?;
 
-            history_batch.put::<tables::StoragesHistory>(
-                StorageShardedKey::new(*address, key, u64::MAX),
-                history_list,
-            )?;
+            history_batch.append_storage_history_shard(*address, key, history_list.iter())?;
         }
     }
 
@@ -1379,20 +1375,14 @@ mod tests {
         assert_eq!(
             accounts,
             vec![
-                (
-                    ShardedKey::new(address_with_balance, u64::MAX),
-                    IntegerList::new([block]).unwrap()
-                ),
-                (
-                    ShardedKey::new(address_with_storage, u64::MAX),
-                    IntegerList::new([block]).unwrap()
-                )
+                (ShardedKey::new(address_with_balance, block), IntegerList::new([block]).unwrap()),
+                (ShardedKey::new(address_with_storage, block), IntegerList::new([block]).unwrap())
             ]
         );
         assert_eq!(
             storages,
             vec![(
-                StorageShardedKey::new(address_with_storage, storage_key, u64::MAX),
+                StorageShardedKey::new(address_with_storage, storage_key, block),
                 IntegerList::new([block]).unwrap()
             )]
         );
@@ -1597,12 +1587,13 @@ mod tests {
         let factory = create_test_provider_factory_with_chain_spec(chain_spec);
         init_genesis(&factory).unwrap();
 
+        let highest = if factory.cached_storage_settings().storage_v2 { 0 } else { u64::MAX };
         let expected_accounts = vec![
-            (ShardedKey::new(address_with_balance, u64::MAX), IntegerList::new([0]).unwrap()),
-            (ShardedKey::new(address_with_storage, u64::MAX), IntegerList::new([0]).unwrap()),
+            (ShardedKey::new(address_with_balance, highest), IntegerList::new([0]).unwrap()),
+            (ShardedKey::new(address_with_storage, highest), IntegerList::new([0]).unwrap()),
         ];
         let expected_storages = vec![(
-            StorageShardedKey::new(address_with_storage, storage_key, u64::MAX),
+            StorageShardedKey::new(address_with_storage, storage_key, highest),
             IntegerList::new([0]).unwrap(),
         )];
 
