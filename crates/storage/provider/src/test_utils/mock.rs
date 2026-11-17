@@ -20,7 +20,10 @@ use alloy_primitives::{
     B256, U256,
 };
 use parking_lot::Mutex;
-use reth_chain_state::{CanonStateNotifications, CanonStateSubscriptions, ExecutedBlock};
+use reth_chain_state::{
+    CanonStateNotifications, CanonStateSubscriptions, ChainInfoTracker, ExecutedBlock,
+    ForkChoiceNotifications, ForkChoiceSubscriptions,
+};
 use reth_chainspec::{ChainInfo, EthChainSpec};
 use reth_db::transaction::DbTx;
 use reth_db_api::{
@@ -103,6 +106,8 @@ pub struct MockEthProvider<T: NodePrimitives = EthPrimitives, ChainSpec = reth_c
     snap_account_proof: Arc<Mutex<Option<Vec<Bytes>>>>,
     /// Storage proof returned to snap handler tests.
     snap_storage_proof: Arc<Mutex<Option<Vec<Bytes>>>>,
+    /// Fork choice state and notifications for RPC tests.
+    pub chain_info_tracker: ChainInfoTracker<T>,
     tx: TxMock,
     prune_modes: Arc<PruneModes>,
 }
@@ -149,6 +154,7 @@ where
             snap_storage_range_requests: self.snap_storage_range_requests.clone(),
             snap_account_proof: self.snap_account_proof.clone(),
             snap_storage_proof: self.snap_storage_proof.clone(),
+            chain_info_tracker: self.chain_info_tracker.clone(),
             tx: self.tx.clone(),
             prune_modes: self.prune_modes.clone(),
         }
@@ -180,6 +186,7 @@ impl<T: NodePrimitives> MockEthProvider<T, reth_chainspec::ChainSpec> {
             snap_storage_range_requests: Default::default(),
             snap_account_proof: Default::default(),
             snap_storage_proof: Default::default(),
+            chain_info_tracker: ChainInfoTracker::new(Default::default(), None, None),
             tx: Default::default(),
             prune_modes: Default::default(),
         }
@@ -358,6 +365,7 @@ impl<T: NodePrimitives, ChainSpec> MockEthProvider<T, ChainSpec> {
             snap_storage_range_requests: self.snap_storage_range_requests,
             snap_account_proof: self.snap_account_proof,
             snap_storage_proof: self.snap_storage_proof,
+            chain_info_tracker: self.chain_info_tracker,
             tx: self.tx,
             prune_modes: self.prune_modes,
         }
@@ -1391,6 +1399,24 @@ impl<T: NodePrimitives, ChainSpec: Send + Sync> StateReader for MockEthProvider<
         _block: BlockNumber,
     ) -> ProviderResult<Option<ExecutionOutcome<Self::Receipt>>> {
         Ok(None)
+    }
+}
+
+impl<T: NodePrimitives, ChainSpec: Send + Sync> ForkChoiceSubscriptions
+    for MockEthProvider<T, ChainSpec>
+{
+    type Header = T::BlockHeader;
+
+    fn subscribe_safe_block(&self) -> ForkChoiceNotifications<Self::Header> {
+        ForkChoiceNotifications(self.chain_info_tracker.subscribe_safe_block())
+    }
+
+    fn subscribe_finalized_block(&self) -> ForkChoiceNotifications<Self::Header> {
+        ForkChoiceNotifications(self.chain_info_tracker.subscribe_finalized_block())
+    }
+
+    fn subscribe_finalized_header_hashes(&self) -> broadcast::Receiver<B256> {
+        self.chain_info_tracker.subscribe_finalized_header_hashes()
     }
 }
 

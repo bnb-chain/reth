@@ -3508,7 +3508,7 @@ where
     ) -> Result<PayloadStatus, InsertBlockProcessingError> {
         let (block, error) = error.split();
 
-        if let error::InsertBlockErrorKind::Consensus(ref consensus_error) = error &&
+        if let error::InsertBlockErrorKind::Consensus(consensus_error) = &error &&
             self.consensus.is_transient_error(consensus_error)
         {
             debug!(target: "engine::tree", block_hash = %block.hash(),
@@ -3540,7 +3540,7 @@ where
                     .map_err(InsertBlockFatalError::from)?
             };
 
-        // keep track of the invalid header
+        // Keep track of the invalid header.
         self.state.invalid_headers.insert(block.block_with_parent());
         self.emit_event(EngineApiEvent::BeaconConsensus(ConsensusEngineEvent::InvalidBlock {
             block: Box::new(block),

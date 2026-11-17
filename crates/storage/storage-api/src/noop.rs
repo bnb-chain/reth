@@ -699,6 +699,10 @@ impl<C: Send + Sync, N: NodePrimitives> ForkChoiceSubscriptions for NoopProvider
         let (_, rx) = tokio::sync::watch::channel(None);
         ForkChoiceNotifications(rx)
     }
+
+    fn subscribe_finalized_header_hashes(&self) -> tokio::sync::broadcast::Receiver<B256> {
+        tokio::sync::broadcast::channel(1).1
+    }
 }
 
 #[cfg(feature = "chain-state")]

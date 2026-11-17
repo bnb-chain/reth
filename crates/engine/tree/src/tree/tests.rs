@@ -108,6 +108,7 @@ impl FullConsensus<EthPrimitives> for ClockConsensus {
         _: &RecoveredBlock<Block>,
         _: &BlockExecutionResult<reth_ethereum_primitives::Receipt>,
         _: Option<reth_consensus::ReceiptRootBloom>,
+        _: Option<B256>,
     ) -> Result<(), ConsensusError> {
         Ok(())
     }

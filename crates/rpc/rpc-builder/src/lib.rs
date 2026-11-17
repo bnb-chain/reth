@@ -868,7 +868,7 @@ where
         + ChangeSetReader,
     Pool: TransactionPool + 'static,
     Network: NetworkInfo + Peers + Clone + 'static,
-    EthApi: FullEthApiServer,
+    EthApi: FullEthApiServer<Provider: ForkChoiceSubscriptions>,
     reth_evm::BlockEnvFor<EthApi::Evm>: reth_rpc_eth_types::BlockOverridesExt,
     EvmConfig: ConfigureEvm<Primitives = N> + 'static,
     Consensus: FullConsensus<N> + Clone + 'static,
