@@ -3508,6 +3508,16 @@ where
     ) -> Result<PayloadStatus, InsertBlockProcessingError> {
         let (block, error) = error.split();
 
+        if let error::InsertBlockErrorKind::Consensus(ref consensus_error) = error &&
+            self.consensus.is_transient_error(consensus_error)
+        {
+            debug!(target: "engine::tree", block_hash = %block.hash(),
+                %consensus_error, "Deferring payload with transient consensus error");
+            // The caller must retry. Neither this hash nor its descendants
+            // are known invalid, and there is no latest-valid verdict yet.
+            return Ok(PayloadStatus::from_status(PayloadStatusEnum::Accepted));
+        }
+
         let validation_err = error.ensure_validation_error()?;
 
         // If the error was due to an invalid payload, the payload is added to the
@@ -3530,22 +3540,8 @@ where
                     .map_err(InsertBlockFatalError::from)?
             };
 
-        // keep track of the invalid header unless the consensus impl considers it transient
-        let is_transient = match &validation_err {
-            InsertBlockValidationError::Consensus(err) => self.consensus.is_transient_error(err),
-            _ => false,
-        };
-        if is_transient {
-            warn!(
-                target: "engine::tree",
-                invalid_hash=%block.hash(),
-                invalid_number=block.number(),
-                %validation_err,
-                "Skipping invalid header cache insert for transient validation error",
-            );
-        } else {
-            self.state.invalid_headers.insert(block.block_with_parent());
-        }
+        // keep track of the invalid header
+        self.state.invalid_headers.insert(block.block_with_parent());
         self.emit_event(EngineApiEvent::BeaconConsensus(ConsensusEngineEvent::InvalidBlock {
             block: Box::new(block),
             error: validation_err.to_string(),
