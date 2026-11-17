@@ -4,6 +4,11 @@
 [advisories]
 yanked = "warn"
 ignore = [
+    # crypto-bigint 0.5.5 is required by elliptic-curve 0.13 (k256/p256).
+    # Follow the existing v2.8 exception until that stack supports the fixed 0.7.6+.
+    "RUSTSEC-2026-0387",
+    # pin-utils is unmaintained with no patched release; retained by transitive dependencies.
+    "RUSTSEC-2026-0441",
     # https://rustsec.org/advisories/RUSTSEC-2024-0436 paste! is unmaintained
     "RUSTSEC-2024-0436",
     # https://rustsec.org/advisories/RUSTSEC-2025-0141 bincode is unmaintained, need to transition all deps to wincode first
