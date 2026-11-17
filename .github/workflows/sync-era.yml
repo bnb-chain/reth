@@ -39,11 +39,11 @@ jobs:
             block: 10000
             unwind-target: "0x118a6e922a8c6cab221fc5adfe5056d2b72d58c6580e9c5629de55299e2cf8de"
     steps:
-      - uses: actions/checkout@v6
-      - uses: rui314/setup-mold@v1
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: mozilla-actions/sccache-action@v0.0.9
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: rui314/setup-mold@339e96b4ff1f3bd865856ba4cbbe8818a7acb038 # v1
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           cache-on-failure: true
       - name: Build ${{ matrix.chain.bin }}

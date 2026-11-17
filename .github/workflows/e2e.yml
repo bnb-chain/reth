@@ -26,7 +26,7 @@ jobs:
     timeout-minutes: 90
     steps:
       - name: Free disk space
-        uses: jlumbroso/free-disk-space@main
+        uses: jlumbroso/free-disk-space@cf1e78c50ca91e757bab3edc229027eebfc07871 # main
         with:
           tool-cache: false
           android: true
@@ -35,13 +35,13 @@ jobs:
           large-packages: true
           docker-images: true
           swap-storage: true
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: mozilla-actions/sccache-action@v0.0.9
-      - uses: taiki-e/install-action@nextest
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+      - uses: taiki-e/install-action@e800962fea8b802cd1bd32c4e6f08fbda4bb0048 # nextest
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y liburing-dev pkg-config libclang-dev
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           cache-on-failure: true
       - name: Run e2e tests

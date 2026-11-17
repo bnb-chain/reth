@@ -39,15 +39,15 @@ jobs:
           # - name: 'Build and push the nightly profiling op-reth image'
           #   command: 'make IMAGE_NAME=$OP_IMAGE_NAME DOCKER_IMAGE_NAME=$OP_DOCKER_IMAGE_NAME PROFILE=profiling op-docker-build-push-nightly-profiling'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Remove bloatware
-        uses: laverdet/remove-bloatware@v1.0.0
+        uses: laverdet/remove-bloatware@a027d55a72759ee60f8e538ffd01f114e982fd57 # v1.0.0
         with:
           docker: true
           lang: rust
-      - uses: rui314/setup-mold@v1
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: rui314/setup-mold@339e96b4ff1f3bd865856ba4cbbe8818a7acb038 # v1
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           cache-on-failure: true
       - name: Install cross main

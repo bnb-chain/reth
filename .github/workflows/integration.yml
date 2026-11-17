@@ -41,7 +41,7 @@ jobs:
           persist-credentials: false
       - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
       - run: .github/scripts/install_llvm.sh ubuntu
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y liburing-dev pkg-config libclang-dev
       - name: Install Geth
@@ -86,7 +86,7 @@ jobs:
           persist-credentials: false
       - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
       - run: .github/scripts/install_llvm.sh ubuntu
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
       - uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
         with:
           tool: nextest
