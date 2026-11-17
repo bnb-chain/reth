@@ -328,8 +328,7 @@ where
                     .inner
                     .clone()
                     .get_logs_in_block_range(
-                        // Stored filters don't retain the request's topic-position count.
-                        (*filter).into(),
+                        *filter,
                         from_block_number,
                         to_block_number,
                         self.inner.query_limits,
@@ -362,8 +361,7 @@ where
             }
         };
 
-        // Stored filters don't retain the request's topic-position count.
-        self.logs_for_filter(filter.into(), self.inner.query_limits).await
+        self.logs_for_filter(filter, self.inner.query_limits).await
     }
 
     /// Returns logs matching given filter object.
@@ -386,7 +384,7 @@ where
         + EthBlocks,
 {
     /// Handler for `eth_newFilter`
-    async fn new_filter(&self, filter: Filter) -> RpcResult<FilterId> {
+    async fn new_filter(&self, filter: LogFilter) -> RpcResult<FilterId> {
         trace!(target: "rpc::eth", "Serving eth_newFilter");
         self.inner
             .install_filter(FilterKind::<RpcTransaction<Eth::NetworkTypes>>::Log(Box::new(filter)))
@@ -1006,7 +1004,7 @@ impl<T: 'static> PendingTransactionKind<T> {
 
 #[derive(Clone, Debug)]
 enum FilterKind<T> {
-    Log(Box<Filter>),
+    Log(Box<LogFilter>),
     Block,
     FinalizedHeader(Arc<Mutex<broadcast::Receiver<B256>>>),
     PendingTransaction(PendingTransactionKind<T>),
@@ -1447,11 +1445,14 @@ impl<
 mod tests {
     use super::*;
     use crate::{eth::EthApi, EthApiBuilder};
+    use alloy_consensus::{Header, TxLegacy, TxReceipt};
     use alloy_network::Ethereum;
-    use alloy_primitives::{Bloom, FixedBytes};
+    use alloy_primitives::{Address, Bloom, Bytes, FixedBytes, LogData, Signature};
+    use alloy_rpc_types_eth::Log;
     use rand::Rng;
     use reth_chainspec::{ChainSpec, ChainSpecProvider};
-    use reth_ethereum_primitives::TxType;
+    use reth_db_api::models::StoredBlockBodyIndices;
+    use reth_ethereum_primitives::{Block, BlockBody, Receipt, TransactionSigned, TxType};
     use reth_evm_ethereum::EthEvmConfig;
     use reth_network_api::noop::NoopNetwork;
     use reth_provider::test_utils::MockEthProvider;
@@ -1509,7 +1510,7 @@ mod tests {
         // Existing filter routes still share the same manager and lifecycle.
         provider.add_header(second.hash(), second.unseal());
         let block = filter.new_block_filter().await.unwrap();
-        let log = filter.new_filter(Filter::default()).await.unwrap();
+        let log = filter.new_filter(Filter::default().into()).await.unwrap();
         assert!(filter.uninstall_filter(block).await.unwrap());
         assert!(filter.uninstall_filter(log).await.unwrap());
     }
@@ -2472,5 +2473,105 @@ mod tests {
             .await
             .unwrap();
         assert!(logs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn installed_log_filters_preserve_wildcard_topic_positions() {
+        let provider = MockEthProvider::default();
+        let tx = TransactionSigned::new_unhashed(
+            TxLegacy { gas_limit: 21_000, ..Default::default() }.into(),
+            Signature::test_signature(),
+        );
+        let receipt = Receipt {
+            tx_type: TxType::Legacy,
+            cumulative_gas_used: 21_000,
+            logs: (0..=4)
+                .map(|count| alloy_primitives::Log {
+                    address: Address::ZERO,
+                    data: LogData::new_unchecked(
+                        (1..=count).map(B256::with_last_byte).collect(),
+                        Bytes::new(),
+                    ),
+                })
+                .collect(),
+            success: true,
+        };
+        let add_block = |number, parent_hash| {
+            let header =
+                Header { number, parent_hash, logs_bloom: receipt.bloom(), ..Default::default() };
+            let hash = header.hash_slow();
+            provider.add_block(
+                hash,
+                Block {
+                    header,
+                    body: BlockBody { transactions: vec![tx.clone()], ..Default::default() },
+                },
+            );
+            provider.add_receipts(number, vec![receipt.clone()]);
+            provider.add_block_body_indices(
+                number,
+                StoredBlockBodyIndices { first_tx_num: number - 1, tx_count: 1 },
+            );
+            hash
+        };
+        let first = add_block(1, B256::ZERO);
+        let module = EthFilter::new(
+            build_test_eth_api(provider.clone()),
+            Default::default(),
+            Runtime::test(),
+        )
+        .into_rpc();
+
+        // Raw JSON preserves trailing wildcards, which Filter's serializer can discard.
+        let cases = [
+            (serde_json::json!({}), 0),
+            (serde_json::json!({"topics": []}), 0),
+            (serde_json::json!({"topics": [null]}), 1),
+            (serde_json::json!({"topics": [[], [], []]}), 3),
+            (serde_json::json!({"topics": [null, null, null, null]}), 4),
+            (serde_json::json!({"topics": [B256::with_last_byte(1), null]}), 2),
+        ];
+        let mut installed = Vec::new();
+        for (params, positions) in cases {
+            let direct: Vec<Log> =
+                module.call("eth_getLogs", jsonrpsee::rpc_params![params.clone()]).await.unwrap();
+            assert_eq!(
+                direct.iter().map(|log| log.topics().len()).collect::<Vec<_>>(),
+                (positions..=4).collect::<Vec<_>>(),
+                "{params}"
+            );
+            let id: FilterId =
+                module.call("eth_newFilter", jsonrpsee::rpc_params![params.clone()]).await.unwrap();
+            for method in ["eth_getFilterLogs", "eth_getFilterChanges"] {
+                let logs: Vec<Log> =
+                    module.call(method, jsonrpsee::rpc_params![id.clone()]).await.unwrap();
+                assert_eq!(logs, direct, "{method}: {params}");
+            }
+            installed.push((id, params, positions));
+        }
+
+        add_block(2, first);
+        for (id, params, positions) in installed {
+            let changes: Vec<Log> = module
+                .call("eth_getFilterChanges", jsonrpsee::rpc_params![id.clone()])
+                .await
+                .unwrap();
+            assert_eq!(
+                changes.iter().map(|log| log.topics().len()).collect::<Vec<_>>(),
+                (positions..=4).collect::<Vec<_>>(),
+                "later poll: {params}"
+            );
+            assert!(changes.iter().all(|log| log.block_number == Some(2)));
+            let empty: Vec<Log> = module
+                .call("eth_getFilterChanges", jsonrpsee::rpc_params![id.clone()])
+                .await
+                .unwrap();
+            assert!(empty.is_empty());
+            let direct: Vec<Log> =
+                module.call("eth_getLogs", jsonrpsee::rpc_params![params]).await.unwrap();
+            let logs: Vec<Log> =
+                module.call("eth_getFilterLogs", jsonrpsee::rpc_params![id]).await.unwrap();
+            assert_eq!(logs, direct);
+        }
     }
 }

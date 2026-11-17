@@ -11,8 +11,11 @@ use std::future::Future;
 #[cfg_attr(feature = "client", rpc(server, client, namespace = "eth"))]
 pub trait EthFilterApi<T: RpcObject, L: RpcObject> {
     /// Creates a new filter and returns its id.
+    ///
+    /// Retains the requested topic-position count so subsequent polls only match logs with at
+    /// least that many topics, including positions specified as wildcards.
     #[method(name = "newFilter")]
-    async fn new_filter(&self, filter: Filter) -> RpcResult<FilterId>;
+    async fn new_filter(&self, filter: LogFilter) -> RpcResult<FilterId>;
 
     /// Creates a new block filter and returns its id.
     #[method(name = "newBlockFilter")]

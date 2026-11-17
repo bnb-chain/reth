@@ -134,7 +134,9 @@ async fn test_filter_calls<C>(client: &C)
 where
     C: ClientT + SubscriptionClientT + Sync,
 {
-    EthFilterApiClient::<Transaction, Log>::new_filter(client, Filter::default()).await.unwrap();
+    EthFilterApiClient::<Transaction, Log>::new_filter(client, Filter::default().into())
+        .await
+        .unwrap();
     EthFilterApiClient::<Transaction, Log>::new_pending_transaction_filter(client, None)
         .await
         .unwrap();
@@ -147,7 +149,7 @@ where
     let id = EthFilterApiClient::<Transaction, Log>::new_block_filter(client).await.unwrap();
     EthFilterApiClient::<Transaction, Log>::filter_changes(client, id.clone()).await.unwrap();
     EthFilterApiClient::<Transaction, Log>::logs(client, Filter::default().into()).await.unwrap();
-    let id = EthFilterApiClient::<Transaction, Log>::new_filter(client, Filter::default())
+    let id = EthFilterApiClient::<Transaction, Log>::new_filter(client, Filter::default().into())
         .await
         .unwrap();
     EthFilterApiClient::<Transaction, Log>::filter_logs(client, id.clone()).await.unwrap();
