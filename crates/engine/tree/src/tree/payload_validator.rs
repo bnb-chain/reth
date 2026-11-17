@@ -310,6 +310,34 @@ where
     txpool_prewarm: Option<txpool_prewarm::Handle<Evm::Primitives, P, Evm>>,
     /// Scratch buffer reused for BAL hash encoding across validated blocks.
     bal_hash_buf: Vec<u8>,
+    /// Best-effort read hint for one explicitly identified validation request.
+    bal_read_hint: Option<(B256, Arc<DecodedBal>)>,
+}
+
+impl<P, Evm: ConfigureEvm, V> BasicEngineValidator<P, Evm, V> {
+    /// Supplies an optional non-consensus BAL for the next block's cache prefetching.
+    /// Malformed or oversized hints are ignored. Values in the BAL are never trusted:
+    /// prefetching reads accounts and storage from the block's local parent-state provider.
+    pub fn set_bal_read_hint(
+        &mut self,
+        hash: B256,
+        gas_limit: u64,
+        bytes: Option<alloy_primitives::Bytes>,
+    ) {
+        self.bal_read_hint = bytes
+            .and_then(|bytes| decode_bal_read_hint(bytes, gas_limit))
+            .map(|bal| (hash, Arc::new(bal)));
+    }
+}
+
+fn decode_bal_read_hint(bytes: alloy_primitives::Bytes, gas_limit: u64) -> Option<DecodedBal> {
+    // Bound both decoding memory and speculative I/O even for an unvalidated gas limit.
+    if bytes.len() > 1024 * 1024 {
+        return None;
+    }
+    let bal = DecodedBal::from_rlp_bytes(bytes).ok()?;
+    bal.as_bal().validate_gas_limit(gas_limit.min(100_000_000)).ok()?;
+    (!bal.as_bal().is_empty()).then_some(bal)
 }
 
 impl<N, P, Evm, V> BasicEngineValidator<P, Evm, V>
@@ -373,6 +401,7 @@ where
             state_root_strategy: Arc::new(DefaultStateRootStrategy::default()),
             txpool_prewarm: None,
             bal_hash_buf: Vec::new(),
+            bal_read_hint: None,
         }
     }
 
@@ -494,6 +523,9 @@ where
         V: PayloadValidator<T, Block = N::Block> + Clone,
         Evm: ConfigureEngineEvm<T::ExecutionData, Primitives = N>,
     {
+        // Consume even on an early return, and never carry a hint across block hashes.
+        let bal_read_hint =
+            self.bal_read_hint.take().filter(|(hash, _)| *hash == input.hash()).map(|(_, bal)| bal);
         let parent_hash = input.parent_hash();
         let _txpool_pause = self.txpool_prewarm.as_ref().map(txpool_prewarm::Handle::pause);
         let txpool_snapshot =
@@ -609,6 +641,7 @@ where
             gas_used: input.gas_used(),
             withdrawals: input.withdrawals().map(|w| w.to_vec()),
             decoded_bal: decoded_bal.as_ref().map(Arc::clone),
+            bal_read_hint,
             txpool_snapshot: txpool_snapshot.clone(),
             pool_seeds,
         };
@@ -811,6 +844,13 @@ where
                 .ok()
         };
 
+        // Attachment-free imports still produce a BAL that must survive validation for storage.
+        let raw_bal = decoded_bal.as_ref().map(|bal| bal.as_raw_bal().clone()).or_else(|| {
+            built_bal
+                .as_ref()
+                .map(|bal| alloy_eip7928::bal::RawBal::new(alloy_rlp::encode(bal).into()))
+        });
+
         ensure_ok_post_block!(
             self.validate_post_execution(
                 &block,
@@ -931,11 +971,11 @@ where
 
         // The payload's raw bytes are already bound to this header: payload-to-block conversion
         // and downloaded-sidecar verification both check their hash against it, so pairing them
-        // with the BAL this execution produced is sound. The zip leaves the BAL unset for a
-        // downloaded block that carried only a BAL hash and no sidecar.
-        let bal = revm_bal.zip(decoded_bal).map(|(revm_bal, decoded_bal)| {
-            Arc::new(DecodedRevmBal::with_raw_bal(revm_bal, decoded_bal.as_raw_bal().clone()))
-        });
+        // with the BAL this execution produced is sound. Without a sidecar, use the rebuilt
+        // bytes retained above; failed validation never reaches this storage handoff.
+        let bal = revm_bal
+            .zip(raw_bal)
+            .map(|(revm_bal, raw_bal)| Arc::new(DecodedRevmBal::with_raw_bal(revm_bal, raw_bal)));
         let executed_block = self
             .spawn_deferred_trie_task(Arc::new(block), output, hashed_state, trie_output)
             .with_bal(bal);
@@ -1130,8 +1170,8 @@ where
             .in_scope(|| db.merge_transitions(BundleRetention::Reverts));
 
         // The builder only exists when the block declares a BAL. The revm form is the one shared
-        // with the executed block, so it must survive here; the clone only feeds the
-        // post-execution consensus checks, the sole consumer of the alloy form.
+        // with the executed block, so it must survive here. The alloy form feeds consensus
+        // checks and serialization when no received sidecar bytes are available.
         let built_bal = db.take_built_bal().map(|revm_bal| ExecutedBal {
             alloy: revm_bal.clone().into_alloy_bal(),
             revm: Arc::new(revm_bal),
@@ -2213,4 +2253,46 @@ struct ExecutedBal {
     alloy: BlockAccessList,
     /// Revm form, shared with the executed block so consumers can reuse it.
     revm: Arc<RevmBal>,
+}
+
+#[cfg(test)]
+mod read_hint_tests {
+    use super::*;
+    use alloy_eip7928::{constants::ITEM_COST, AccountChanges};
+    use alloy_primitives::{Bytes, U256};
+
+    #[test]
+    fn malformed_empty_and_oversized_read_hints_are_ignored() {
+        for bytes in [
+            Bytes::new(),
+            Bytes::from_static(&[0xc0]),
+            Bytes::from_static(&[0xff]),
+            Bytes::from(vec![0; 1024 * 1024 + 1]),
+        ] {
+            assert!(decode_bal_read_hint(bytes, u64::MAX).is_none());
+        }
+        let mut bytes = alloy_rlp::encode(vec![AccountChanges::default()]);
+        bytes.push(0);
+        assert!(decode_bal_read_hint(bytes.into(), u64::MAX).is_none());
+    }
+
+    #[test]
+    fn read_hints_bound_speculative_io_by_gas_and_absolute_limit() {
+        let item_cost = u64::try_from(ITEM_COST).unwrap();
+        let bytes: Bytes = alloy_rlp::encode(vec![AccountChanges {
+            storage_reads: vec![U256::ZERO],
+            ..Default::default()
+        }])
+        .into();
+        assert!(decode_bal_read_hint(bytes.clone(), item_cost * 2).is_some());
+        assert!(decode_bal_read_hint(bytes, item_cost * 2 - 1).is_none());
+
+        // Small RLP slots can fit under the byte cap while exceeding the I/O cap.
+        let bytes = alloy_rlp::encode(vec![AccountChanges {
+            storage_reads: vec![U256::ZERO; 100_000_000 / ITEM_COST],
+            ..Default::default()
+        }]);
+        assert!(bytes.len() < 1024 * 1024);
+        assert!(decode_bal_read_hint(bytes.into(), u64::MAX).is_none());
+    }
 }

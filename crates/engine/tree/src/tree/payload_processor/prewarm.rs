@@ -72,6 +72,11 @@ const REFRESH_POLL_INTERVAL: Duration = Duration::from_micros(50);
 /// with the workers instead of outliving them.
 #[derive(Debug)]
 pub enum PrewarmMode<Tx> {
+    /// Untrusted addresses/slots: read local parent state, without any state-root update stream.
+    ReadHint {
+        /// Only the BAL's account addresses and storage keys are used.
+        bal: Arc<DecodedBal>,
+    },
     /// Prewarm by executing transactions from a stream, each paired with its block index.
     Transactions {
         /// Stream of transactions pending prewarm execution.
@@ -633,6 +638,9 @@ where
         // mode and move into the spawned producers, so they die with the producers instead of
         // living for the full lifetime of this task.
         match mode {
+            PrewarmMode::ReadHint { bal } => {
+                self.run_bal_prewarm(bal, actions_tx, None);
+            }
             PrewarmMode::Transactions { pending, hints } => {
                 self.spawn_txs_prewarm(pending, actions_tx, hints);
             }
@@ -706,8 +714,8 @@ where
     pub saved_cache: Option<SavedCache>,
     /// Provider to obtain the state
     pub provider: OverlayStateProviderFactory<P, N>,
-    /// Dedicated blocking pool for warming the BAL read-set. `Some` only on the BAL parallel
-    /// execution path; the pool is owned by the [`PayloadProcessor`](super::PayloadProcessor).
+    /// Dedicated blocking pool for warming the BAL read-set, including advisory read hints.
+    /// The pool is owned by the [`PayloadProcessor`](super::PayloadProcessor).
     pub(crate) bal_prewarm_pool: Option<Arc<BalPrewarmPool>>,
     /// The metrics for the prewarm task.
     pub metrics: PrewarmMetrics,
@@ -1025,16 +1033,126 @@ mod tests {
 
     use super::*;
     use alloy_consensus::{transaction::Recovered, TxLegacy};
+    use alloy_eip7928::{
+        bal::Bal, AccountChanges, BalanceChange, BlockAccessIndex, SlotChanges, StorageChange,
+    };
     use alloy_eips::eip7702::constants::EIP7702_CLEARED_DELEGATION;
-    use alloy_primitives::{Address, Signature, TxKind, B256, U256};
+    use alloy_primitives::{keccak256, Address, Signature, TxKind, B256, U256};
     use reth_chainspec::ChainSpec;
-    use reth_ethereum_primitives::{EthPrimitives, TransactionSigned};
+    use reth_db::{tables, transaction::DbTxMut};
+    use reth_ethereum_primitives::{Block, EthPrimitives, TransactionSigned};
     use reth_evm::{execute::WithTxEnv, TxEnvFor};
     use reth_evm_ethereum::EthEvmConfig;
-    use reth_provider::test_utils::MockEthProvider;
+    use reth_primitives_traits::{Account, RecoveredBlock, StorageEntry};
+    use reth_provider::{
+        test_utils::{create_test_provider_factory, MockEthProvider},
+        BlockWriter, StageCheckpointWriter,
+    };
     use reth_stages_api::{StageCheckpoint, StageId};
     use reth_storage_overlay::OverlayManager;
     use revm::database::EmptyDB;
+
+    #[test]
+    fn read_hint_prefetch_uses_local_values_and_handles_missing_accounts() {
+        let address = Address::repeat_byte(1);
+        let absent = Address::repeat_byte(2);
+        let slot = B256::with_last_byte(3);
+        // OverlayStateProvider reads MDBX tables directly, bypassing MockEthProvider's maps.
+        let provider = create_test_provider_factory();
+        let parent = RecoveredBlock::new_unhashed(Block::default(), Vec::new());
+        let parent_hash = parent.hash();
+        let rw = provider.provider_rw().unwrap();
+        rw.insert_block(&parent).unwrap();
+        rw.save_stage_checkpoint(StageId::Finish, StageCheckpoint::new(0)).unwrap();
+        let account = Account { nonce: 7, balance: U256::from(42), ..Default::default() };
+        if rw.cached_storage_settings().use_hashed_state() {
+            rw.tx_ref().put::<tables::HashedAccounts>(keccak256(address), account).unwrap();
+            rw.tx_ref()
+                .put::<tables::HashedStorages>(
+                    keccak256(address),
+                    StorageEntry { key: keccak256(slot), value: U256::from(123) },
+                )
+                .unwrap();
+        } else {
+            rw.tx_ref().put::<tables::PlainAccountState>(address, account).unwrap();
+            rw.tx_ref()
+                .put::<tables::PlainStorageState>(
+                    address,
+                    StorageEntry { key: slot, value: U256::from(123) },
+                )
+                .unwrap();
+        }
+        rw.commit().unwrap();
+        let saved = SavedCache::new(parent_hash, crate::tree::ExecutionCache::new(1_000_000));
+        let ctx = PrewarmContext {
+            env: ExecutionEnv { parent_hash, ..ExecutionEnv::test_default() },
+            evm_config: EthEvmConfig::new(Arc::new(ChainSpec::default())),
+            saved_cache: Some(saved.clone()),
+            provider: OverlayStateProviderFactory::new(
+                provider,
+                OverlayManager::default().overlay_builder(parent_hash),
+            ),
+            bal_prewarm_pool: Some(BalPrewarmPool::new(2)),
+            metrics: PrewarmMetrics::default(),
+            cache_metrics: None,
+            cache_state_metrics: None,
+            terminate_execution: Arc::new(AtomicBool::new(false)),
+            executed_tx_index: Arc::new(AtomicUsize::new(0)),
+            precompile_cache_disabled: false,
+            precompile_cache_map: PrecompileCacheMap::default(),
+            disable_bal_parallel_state_root: false,
+            disable_bal_batch_io: false,
+            prewarm_results: None,
+        };
+        let hint = Bal::from(vec![
+            AccountChanges {
+                address,
+                storage_changes: vec![SlotChanges {
+                    slot: slot.into(),
+                    changes: vec![StorageChange {
+                        block_access_index: BlockAccessIndex::new(1),
+                        new_value: U256::from(999),
+                    }],
+                }],
+                balance_changes: vec![BalanceChange {
+                    block_access_index: BlockAccessIndex::new(1),
+                    post_balance: U256::from(999),
+                }],
+                ..Default::default()
+            },
+            AccountChanges { address: absent, ..Default::default() },
+        ]);
+        let decoded = Arc::new(DecodedBal::from_rlp_bytes(alloy_rlp::encode(hint).into()).unwrap());
+        let (task, actions_tx) =
+            PrewarmCacheTask::new(Runtime::test(), PayloadExecutionCache::default(), ctx);
+        actions_tx
+            .send(PrewarmTaskEvent::Terminate {
+                execution_outcome: None,
+                valid_block_rx: mpsc::channel().1,
+            })
+            .unwrap();
+        task.run::<WithTxEnv<TxEnvFor<EthEvmConfig>, Recovered<TransactionSigned>>>(
+            PrewarmMode::ReadHint { bal: decoded },
+            actions_tx,
+        );
+
+        assert_eq!(
+            saved.cache().get_or_try_insert_storage_with(address, slot, || Err(())),
+            Ok(reth_execution_cache::CachedStatus::Cached(U256::from(123)))
+        );
+        assert_eq!(
+            saved.cache().get_or_try_insert_account_with(address, || Err(())),
+            Ok(reth_execution_cache::CachedStatus::Cached(Some(reth_primitives_traits::Account {
+                nonce: 7,
+                balance: U256::from(42),
+                ..Default::default()
+            })))
+        );
+        assert_eq!(
+            saved.cache().get_or_try_insert_account_with(absent, || Err(())),
+            Ok(reth_execution_cache::CachedStatus::Cached(None))
+        );
+    }
 
     #[test]
     fn terminate_event_stops_transaction_execution() {
