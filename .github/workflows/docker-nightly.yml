@@ -56,7 +56,7 @@ jobs:
           cargo install cross --git https://github.com/cross-rs/cross
       - name: Log in to Docker
         run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io --username ${DOCKER_USERNAME} --password-stdin
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io --username "${DOCKER_USERNAME}" --password-stdin
       - name: Set up Docker builder
         run: |
           docker run --privileged --rm tonistiigi/binfmt --install arm64,amd64
