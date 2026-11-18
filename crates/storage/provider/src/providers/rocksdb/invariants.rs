@@ -310,7 +310,7 @@ impl RocksDBProvider {
                 if let Some(storage) = &account.storage {
                     for key in storage.keys() {
                         self.put::<tables::StoragesHistory>(
-                            StorageShardedKey::last(*addr, *key),
+                            StorageShardedKey::new(*addr, *key, 0),
                             &list,
                         )?;
                     }
@@ -420,7 +420,7 @@ impl RocksDBProvider {
             let genesis = chain_spec.genesis();
             let list = tables::BlockNumberList::new([0]).expect("single block always fits");
             for addr in genesis.alloc.keys() {
-                self.put::<tables::AccountsHistory>(ShardedKey::last(*addr), &list)?;
+                self.put::<tables::AccountsHistory>(ShardedKey::new(*addr, 0), &list)?;
             }
 
             return Ok(None);

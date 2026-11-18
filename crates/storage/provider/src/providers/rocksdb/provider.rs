@@ -5,7 +5,6 @@ use alloy_primitives::{
     map::{AddressMap, HashMap},
     Address, BlockNumber, TxNumber, B256,
 };
-use itertools::Itertools;
 use metrics::Label;
 use parking_lot::Mutex;
 use rayon::prelude::*;
@@ -497,7 +496,17 @@ impl RocksDBBuilder {
                             code: -1,
                         }))
                     })?;
-            Ok(RocksDBProvider(Arc::new(RocksDBProviderInner::ReadWrite { db, metrics })))
+            let provider =
+                RocksDBProvider(Arc::new(RocksDBProviderInner::ReadWrite { db, metrics }));
+            provider.migrate_history_shards::<tables::AccountsHistory>(
+                |key| key.highest_block_number,
+                |key, highest| ShardedKey::new(key.key, highest),
+            )?;
+            provider.migrate_history_shards::<tables::StoragesHistory>(
+                |key| key.sharded_key.highest_block_number,
+                |key, highest| StorageShardedKey::new(key.address, key.sharded_key.key, highest),
+            )?;
+            Ok(provider)
         }
     }
 }
@@ -1553,56 +1562,17 @@ impl RocksDBProvider {
 
         let shard_puts = account_history
             .into_par_iter()
-            .map(|(address, indices)| self.account_history_shards_to_put(address, indices))
-            .collect::<ProviderResult<Vec<_>>>()?;
+            .flat_map_iter(|(address, indices)| {
+                sealed_history_shards(indices, move |highest| ShardedKey::new(address, highest))
+            })
+            .collect::<Vec<_>>();
 
         let mut batch = self.batch();
-        for shards in shard_puts {
-            for (key, shard) in shards {
-                batch.put::<tables::AccountsHistory>(key, &shard)?;
-            }
+        for (key, shard) in shard_puts {
+            batch.put::<tables::AccountsHistory>(key, &shard)?;
         }
         ctx.pending_batches.lock().push(batch.into_inner());
         Ok(())
-    }
-
-    /// Prepares account history shard writes by reading the current last shard and appending
-    /// indices.
-    fn account_history_shards_to_put(
-        &self,
-        address: Address,
-        indices: Vec<u64>,
-    ) -> ProviderResult<Vec<(ShardedKey<Address>, BlockNumberList)>> {
-        if indices.is_empty() {
-            return Ok(Vec::new());
-        }
-        debug_assert!(
-            indices.windows(2).all(|w| w[0] < w[1]),
-            "indices must be strictly increasing: {:?}",
-            indices
-        );
-
-        let last_key = ShardedKey::new(address, u64::MAX);
-        let last_shard_opt = self.get::<tables::AccountsHistory>(last_key.clone())?;
-        let mut last_shard = last_shard_opt.unwrap_or_else(BlockNumberList::empty);
-        last_shard.append(indices).map_err(ProviderError::other)?;
-
-        if last_shard.len() <= NUM_OF_INDICES_IN_SHARD as u64 {
-            return Ok(vec![(last_key, last_shard)]);
-        }
-        let chunks = last_shard.iter().chunks(NUM_OF_INDICES_IN_SHARD);
-        let mut chunks_peekable = chunks.into_iter().peekable();
-        let mut shards = Vec::new();
-        while let Some(chunk) = chunks_peekable.next() {
-            let shard = BlockNumberList::new_pre_sorted(chunk);
-            let highest_block_number = if chunks_peekable.peek().is_some() {
-                shard.iter().next_back().expect("`chunks` does not return empty list")
-            } else {
-                u64::MAX
-            };
-            shards.push((ShardedKey::new(address, highest_block_number), shard));
-        }
-        Ok(shards)
     }
 
     /// Writes storage history indices for the given blocks.
@@ -1637,66 +1607,82 @@ impl RocksDBProvider {
 
         let shard_puts = storage_history
             .into_par_iter()
-            .map(|((address, slot), indices)| {
-                self.storage_history_shards_to_put(address, slot, indices)
+            .flat_map_iter(|((address, slot), indices)| {
+                sealed_history_shards(indices, move |highest| {
+                    StorageShardedKey::new(address, slot, highest)
+                })
             })
-            .collect::<ProviderResult<Vec<_>>>()?;
+            .collect::<Vec<_>>();
 
         let mut batch = self.batch();
-        for shards in shard_puts {
-            for (key, shard) in shards {
-                batch.put::<tables::StoragesHistory>(key, &shard)?;
-            }
+        for (key, shard) in shard_puts {
+            batch.put::<tables::StoragesHistory>(key, &shard)?;
         }
         ctx.pending_batches.lock().push(batch.into_inner());
         Ok(())
     }
 
-    /// Prepares storage history shard writes by reading the current last shard and appending
-    /// indices.
-    fn storage_history_shards_to_put(
+    fn migrate_history_shards<T: Table<Value = BlockNumberList>>(
         &self,
-        address: Address,
-        storage_key: B256,
-        indices: Vec<u64>,
-    ) -> ProviderResult<Vec<(StorageShardedKey, BlockNumberList)>> {
-        if indices.is_empty() {
-            return Ok(Vec::new());
+        highest: impl Fn(&T::Key) -> u64,
+        seal: impl Fn(T::Key, u64) -> T::Key,
+    ) -> ProviderResult<()> {
+        if !self.has_table::<T>() {
+            return Ok(());
+        }
+        // The marker lives in the default CF; history CF clears must not reset the layout version.
+        let marker = format!("reth.history-shards.{}.version", T::NAME);
+        let db = self.0.db_rw();
+        if let Some(version) = db.get(marker.as_bytes()).map_err(ProviderError::other)? {
+            if version != b"1" {
+                return Err(ProviderError::other(std::io::Error::other(
+                    "unsupported RocksDB history shard version",
+                )));
+            }
+            return Ok(());
         }
 
-        debug_assert!(
-            indices.windows(2).all(|w| w[0] < w[1]),
-            "indices must be strictly increasing: {:?}",
-            indices
-        );
-
-        let last_key = StorageShardedKey::last(address, storage_key);
-        let last_shard_opt = self.get::<tables::StoragesHistory>(last_key.clone())?;
-        let mut last_shard = last_shard_opt.unwrap_or_else(BlockNumberList::empty);
-
-        last_shard.append(indices).map_err(ProviderError::other)?;
-
-        if last_shard.len() <= NUM_OF_INDICES_IN_SHARD as u64 {
-            return Ok(vec![(last_key, last_shard)]);
+        tracing::info!(target: "providers::rocksdb", table = T::NAME, "Sealing legacy history tails");
+        let cf = self.get_cf_handle::<T>()?;
+        let mut batch = self.batch();
+        batch.auto_commit_threshold = Some(16 * 1024 * 1024);
+        let mut converted = 0u64;
+        for entry in self.0.iterator_cf(&cf, IteratorMode::Start) {
+            let (key_bytes, value_bytes) = entry.map_err(ProviderError::other)?;
+            let key = T::Key::decode(&key_bytes)?;
+            if highest(&key) != u64::MAX {
+                continue;
+            }
+            let list = BlockNumberList::decompress(&value_bytes)?;
+            if let Some(last) = list.iter().next_back() {
+                if last == u64::MAX {
+                    return Err(ProviderError::other(std::io::Error::other(
+                        "cannot seal history at the reserved sentinel block",
+                    )));
+                }
+                let sealed_key = seal(key, last);
+                if let Some(existing) = self
+                    .0
+                    .get_cf(&cf, sealed_key.clone().encode().as_ref())
+                    .map_err(ProviderError::other)? &&
+                    BlockNumberList::decompress(&existing)? != list
+                {
+                    return Err(ProviderError::other(std::io::Error::other(
+                        "legacy history tail conflicts with a sealed shard",
+                    )));
+                }
+                // RocksDB writes the rename atomically, including across interrupted migrations.
+                batch.inner.put_cf(&cf, sealed_key.encode().as_ref(), value_bytes.as_ref());
+            }
+            batch.inner.delete_cf(&cf, key_bytes.as_ref());
+            batch.maybe_auto_commit()?;
+            converted += 1;
         }
-
-        let chunks = last_shard.iter().chunks(NUM_OF_INDICES_IN_SHARD);
-        let mut chunks_peekable = chunks.into_iter().peekable();
-        let mut shards = Vec::new();
-
-        while let Some(chunk) = chunks_peekable.next() {
-            let shard = BlockNumberList::new_pre_sorted(chunk);
-            let highest_block_number = if chunks_peekable.peek().is_some() {
-                shard.iter().next_back().expect("`chunks` does not return empty list")
-            } else {
-                u64::MAX
-            };
-
-            shards
-                .push((StorageShardedKey::new(address, storage_key, highest_block_number), shard));
-        }
-
-        Ok(shards)
+        batch.commit()?;
+        db.put_opt(marker.as_bytes(), b"1", &synced_write_options())
+            .map_err(ProviderError::other)?;
+        tracing::info!(target: "providers::rocksdb", table = T::NAME, converted, "History tails sealed");
+        Ok(())
     }
 }
 
@@ -1895,14 +1881,22 @@ impl<'db> RocksReadSnapshot<'db> {
             }))
         })?;
 
-        if !iter.valid() {
-            return fallback();
-        }
-
-        let Some(key_bytes) = iter.key() else {
-            return fallback();
-        };
-        if !key_matches(key_bytes)? {
+        if !iter.key().map(key_matches).transpose()?.unwrap_or(false) {
+            // Sealed histories have no MAX tail. A preceding visible shard distinguishes
+            // an unchanged plain-state value from a key that has never been written.
+            iter.seek_for_prev(encoded_key);
+            while iter.key().is_some_and(&prev_key_matches) {
+                if let Some(value) = iter.value() &&
+                    BlockNumberList::decompress(value)?
+                        .iter()
+                        .next()
+                        .is_some_and(|first| first <= visible_tip)
+                {
+                    return Ok(HistoryInfo::InPlainState);
+                }
+                iter.prev();
+            }
+            iter.status().map_err(ProviderError::other)?;
             return fallback();
         }
 
@@ -2152,41 +2146,29 @@ impl<'a> RocksDBBatch<'a> {
         self.provider.get::<T>(key)
     }
 
-    /// Appends indices to an account history shard with proper shard management.
+    /// Writes independent account-history shards, keyed by their highest block.
     ///
-    /// Loads the existing shard (if any), appends new indices, and rechunks into
-    /// multiple shards if needed (respecting `NUM_OF_INDICES_IN_SHARD` limit).
-    ///
-    /// # Requirements
-    ///
-    /// - The `indices` MUST be strictly increasing and contain no duplicates.
-    /// - This method MUST only be called once per address per batch. The batch reads existing
-    ///   shards from committed DB state, not from pending writes. Calling twice for the same
-    ///   address will cause the second call to overwrite the first.
+    /// Indices must be strictly increasing and follow all committed indices for this address.
+    /// Disjoint ranges may be appended repeatedly within one batch without reading the database.
     pub fn append_account_history_shard(
         &mut self,
         address: Address,
         indices: impl IntoIterator<Item = u64>,
     ) -> ProviderResult<()> {
         let indices: Vec<u64> = indices.into_iter().collect();
-        for (key, shard) in self.provider.account_history_shards_to_put(address, indices)? {
+        for (key, shard) in
+            sealed_history_shards(indices, |highest| ShardedKey::new(address, highest))
+        {
             self.put::<tables::AccountsHistory>(key, &shard)?;
         }
 
         Ok(())
     }
 
-    /// Appends indices to a storage history shard with proper shard management.
+    /// Writes independent storage-history shards, keyed by their highest block.
     ///
-    /// Loads the existing shard (if any), appends new indices, and rechunks into
-    /// multiple shards if needed (respecting `NUM_OF_INDICES_IN_SHARD` limit).
-    ///
-    /// # Requirements
-    ///
-    /// - The `indices` MUST be strictly increasing and contain no duplicates.
-    /// - This method MUST only be called once per (address, `storage_key`) pair per batch. The
-    ///   batch reads existing shards from committed DB state, not from pending writes. Calling
-    ///   twice for the same key will cause the second call to overwrite the first.
+    /// Indices must be strictly increasing and follow committed indices for this account and slot.
+    /// Disjoint ranges may be appended repeatedly within one batch without reading the database.
     pub fn append_storage_history_shard(
         &mut self,
         address: Address,
@@ -2195,162 +2177,71 @@ impl<'a> RocksDBBatch<'a> {
     ) -> ProviderResult<()> {
         let indices: Vec<u64> = indices.into_iter().collect();
 
-        for (key, shard) in
-            self.provider.storage_history_shards_to_put(address, storage_key, indices)?
-        {
+        for (key, shard) in sealed_history_shards(indices, |highest| {
+            StorageShardedKey::new(address, storage_key, highest)
+        }) {
             self.put::<tables::StoragesHistory>(key, &shard)?;
         }
 
         Ok(())
     }
 
-    /// Unwinds account history for the given address, keeping only blocks <= `keep_to`.
-    ///
-    /// Mirrors MDBX `unwind_history_shards` behavior:
-    /// - Deletes shards entirely above `keep_to`
-    /// - Truncates boundary shards and re-keys to `u64::MAX` sentinel
-    /// - Preserves shards entirely below `keep_to`
+    /// Removes later account-history shards and seals the retained boundary at its actual end.
     pub fn unwind_account_history_to(
         &mut self,
         address: Address,
         keep_to: BlockNumber,
     ) -> ProviderResult<()> {
-        let shards = self.provider.account_history_shards(address)?;
-        if shards.is_empty() {
-            return Ok(());
-        }
-
-        // Find the first shard that might contain blocks > keep_to.
-        // A shard is affected if it's the sentinel (u64::MAX) or its highest_block_number > keep_to
-        let boundary_idx = shards.iter().position(|(key, _)| {
-            key.highest_block_number == u64::MAX || key.highest_block_number > keep_to
-        });
-
-        // Repair path: no shards affected means all blocks <= keep_to, just ensure sentinel exists
-        let Some(boundary_idx) = boundary_idx else {
-            let (last_key, last_value) = shards.last().expect("shards is non-empty");
-            if last_key.highest_block_number != u64::MAX {
-                self.delete::<tables::AccountsHistory>(last_key.clone())?;
-                self.put::<tables::AccountsHistory>(
-                    ShardedKey::new(address, u64::MAX),
-                    last_value,
-                )?;
+        for (key, list) in self.provider.account_history_shards(address)? {
+            if key.highest_block_number <= keep_to {
+                continue;
             }
-            return Ok(());
-        };
-
-        // Delete all shards strictly after the boundary (they are entirely > keep_to)
-        for (key, _) in shards.iter().skip(boundary_idx + 1) {
-            self.delete::<tables::AccountsHistory>(key.clone())?;
-        }
-
-        // Process the boundary shard: filter out blocks > keep_to
-        let (boundary_key, boundary_list) = &shards[boundary_idx];
-
-        // Delete the boundary shard (we'll either drop it or rewrite at u64::MAX)
-        self.delete::<tables::AccountsHistory>(boundary_key.clone())?;
-
-        // Build truncated list once; check emptiness directly (avoids double iteration)
-        let new_last =
-            BlockNumberList::new_pre_sorted(boundary_list.iter().take_while(|&b| b <= keep_to));
-
-        if new_last.is_empty() {
-            // Boundary shard is now empty. Previous shard becomes the last and must be keyed
-            // u64::MAX.
-            if boundary_idx == 0 {
-                // Nothing left for this address
-                return Ok(());
+            self.delete::<tables::AccountsHistory>(key)?;
+            let retained =
+                BlockNumberList::new_pre_sorted(list.iter().take_while(|&b| b <= keep_to));
+            if let Some(highest) = retained.iter().next_back() {
+                self.put::<tables::AccountsHistory>(ShardedKey::new(address, highest), &retained)?;
             }
-
-            let (prev_key, prev_value) = &shards[boundary_idx - 1];
-            if prev_key.highest_block_number != u64::MAX {
-                self.delete::<tables::AccountsHistory>(prev_key.clone())?;
-                self.put::<tables::AccountsHistory>(
-                    ShardedKey::new(address, u64::MAX),
-                    prev_value,
-                )?;
-            }
-            return Ok(());
         }
-
-        self.put::<tables::AccountsHistory>(ShardedKey::new(address, u64::MAX), &new_last)?;
-
         Ok(())
     }
 
-    /// Prunes history shards, removing blocks <= `to_block`.
-    ///
-    /// Generic implementation for both account and storage history pruning.
-    /// Mirrors MDBX `prune_shard` semantics. After pruning, the last remaining shard
-    /// (if any) will have the sentinel key (`u64::MAX`).
-    ///
-    /// `shards_complete` must be `false` when `shards` stops short of the key's last shard, so the
-    /// survivor is not re-keyed over a sentinel that is still on disk.
-    #[expect(clippy::too_many_arguments)]
+    /// Removes expired shards and trims only the boundary shard, without merging survivors.
     fn prune_history_shards_inner<K>(
         &mut self,
         shards: Vec<(K, BlockNumberList)>,
-        shards_complete: bool,
         to_block: BlockNumber,
         get_highest: impl Fn(&K) -> u64,
-        is_sentinel: impl Fn(&K) -> bool,
         delete_shard: impl Fn(&mut Self, K) -> ProviderResult<()>,
         put_shard: impl Fn(&mut Self, K, &BlockNumberList) -> ProviderResult<()>,
-        create_sentinel: impl Fn() -> K,
-    ) -> ProviderResult<PruneShardOutcome>
-    where
-        K: Clone,
-    {
-        if shards.is_empty() {
-            return Ok(PruneShardOutcome::Unchanged);
-        }
-
+    ) -> ProviderResult<PruneShardOutcome> {
         let mut deleted = false;
         let mut updated = false;
-        let mut last_remaining: Option<(K, BlockNumberList)> = None;
-
-        for (key, mut block_list) in shards {
-            if !is_sentinel(&key) && get_highest(&key) <= to_block {
+        for (key, mut list) in shards {
+            if get_highest(&key) <= to_block {
                 delete_shard(self, key)?;
                 deleted = true;
             } else {
-                let removed = block_list.remove_range(0..=to_block);
-
-                if block_list.is_empty() {
+                let removed = list.remove_range(0..=to_block);
+                if list.is_empty() {
                     delete_shard(self, key)?;
                     deleted = true;
                 } else if removed > 0 {
-                    put_shard(self, key.clone(), &block_list)?;
-                    last_remaining = Some((key, block_list));
+                    put_shard(self, key, &list)?;
                     updated = true;
-                } else {
-                    last_remaining = Some((key, block_list));
                 }
             }
         }
-
-        if shards_complete &&
-            let Some((last_key, last_value)) = last_remaining &&
-            !is_sentinel(&last_key)
-        {
-            delete_shard(self, last_key)?;
-            put_shard(self, create_sentinel(), &last_value)?;
-            updated = true;
-        }
-
-        if deleted {
-            Ok(PruneShardOutcome::Deleted)
+        Ok(if deleted {
+            PruneShardOutcome::Deleted
         } else if updated {
-            Ok(PruneShardOutcome::Updated)
+            PruneShardOutcome::Updated
         } else {
-            Ok(PruneShardOutcome::Unchanged)
-        }
+            PruneShardOutcome::Unchanged
+        })
     }
 
-    /// Prunes account history for the given address, removing blocks <= `to_block`.
-    ///
-    /// Mirrors MDBX `prune_shard` semantics. After pruning, the last remaining shard
-    /// (if any) will have the sentinel key (`u64::MAX`).
+    /// Prunes account history without changing the keys of surviving shards.
     pub fn prune_account_history_to(
         &mut self,
         address: Address,
@@ -2359,13 +2250,10 @@ impl<'a> RocksDBBatch<'a> {
         let shards = self.provider.account_history_shards(address)?;
         self.prune_history_shards_inner(
             shards,
-            true,
             to_block,
             |key| key.highest_block_number,
-            |key| key.highest_block_number == u64::MAX,
             |batch, key| batch.delete::<tables::AccountsHistory>(key),
             |batch, key, value| batch.put::<tables::AccountsHistory>(key, value),
-            || ShardedKey::new(address, u64::MAX),
         )
     }
 
@@ -2436,7 +2324,6 @@ impl<'a> RocksDBBatch<'a> {
             // Collect the shards for this address that pruning can touch, using raw prefix
             // comparison
             let mut shards = Vec::new();
-            let mut shards_complete = true;
             while iter.valid() {
                 let Some(key_bytes) = iter.key() else { break };
 
@@ -2459,13 +2346,7 @@ impl<'a> RocksDBBatch<'a> {
 
                 iter.next();
 
-                // Shards are ordered by their highest block and their contents partition the
-                // address's history, so this is the last shard holding anything at or below the
-                // target. Peek past it only to tell whether it was the address's last shard,
-                // which decides whether a survivor may be re-keyed to the sentinel.
                 if highest > *to_block {
-                    shards_complete = iter.key().and_then(|next_key| next_key.get(..PREFIX_LEN)) !=
-                        Some(target_prefix);
                     break;
                 }
             }
@@ -2483,13 +2364,10 @@ impl<'a> RocksDBBatch<'a> {
 
             match self.prune_history_shards_inner(
                 shards,
-                shards_complete,
                 *to_block,
                 |key| key.highest_block_number,
-                |key| key.highest_block_number == u64::MAX,
                 |batch, key| batch.delete::<tables::AccountsHistory>(key),
                 |batch, key, value| batch.put::<tables::AccountsHistory>(key, value),
-                || ShardedKey::new(*address, u64::MAX),
             )? {
                 PruneShardOutcome::Deleted => outcomes.deleted += 1,
                 PruneShardOutcome::Updated => outcomes.updated += 1,
@@ -2503,8 +2381,7 @@ impl<'a> RocksDBBatch<'a> {
     /// Prunes storage history for the given address and storage key, removing blocks <=
     /// `to_block`.
     ///
-    /// Mirrors MDBX `prune_shard` semantics. After pruning, the last remaining shard
-    /// (if any) will have the sentinel key (`u64::MAX`).
+    /// Surviving shards retain their original highest-block keys.
     pub fn prune_storage_history_to(
         &mut self,
         address: Address,
@@ -2514,13 +2391,10 @@ impl<'a> RocksDBBatch<'a> {
         let shards = self.provider.storage_history_shards(address, storage_key)?;
         self.prune_history_shards_inner(
             shards,
-            true,
             to_block,
             |key| key.sharded_key.highest_block_number,
-            |key| key.sharded_key.highest_block_number == u64::MAX,
             |batch, key| batch.delete::<tables::StoragesHistory>(key),
             |batch, key, value| batch.put::<tables::StoragesHistory>(key, value),
-            || StorageShardedKey::last(address, storage_key),
         )
     }
 
@@ -2592,7 +2466,6 @@ impl<'a> RocksDBBatch<'a> {
             // Collect the shards for this (address, storage_key) pair that pruning can touch,
             // using prefix comparison
             let mut shards = Vec::new();
-            let mut shards_complete = true;
             while iter.valid() {
                 let Some(key_bytes) = iter.key() else { break };
 
@@ -2615,13 +2488,7 @@ impl<'a> RocksDBBatch<'a> {
 
                 iter.next();
 
-                // Shards are ordered by their highest block and their contents partition the
-                // key's history, so this is the last shard holding anything at or below the
-                // target. Peek past it only to tell whether it was the key's last shard, which
-                // decides whether a survivor may be re-keyed to the sentinel.
                 if highest > *to_block {
-                    shards_complete = iter.key().and_then(|next_key| next_key.get(..PREFIX_LEN)) !=
-                        Some(target_prefix);
                     break;
                 }
             }
@@ -2640,13 +2507,10 @@ impl<'a> RocksDBBatch<'a> {
             // Use existing prune_history_shards_inner logic
             match self.prune_history_shards_inner(
                 shards,
-                shards_complete,
                 *to_block,
                 |key| key.sharded_key.highest_block_number,
-                |key| key.sharded_key.highest_block_number == u64::MAX,
                 |batch, key| batch.delete::<tables::StoragesHistory>(key),
                 |batch, key, value| batch.put::<tables::StoragesHistory>(key, value),
-                || StorageShardedKey::last(*address, *storage_key),
             )? {
                 PruneShardOutcome::Deleted => outcomes.deleted += 1,
                 PruneShardOutcome::Updated => outcomes.updated += 1,
@@ -2657,84 +2521,27 @@ impl<'a> RocksDBBatch<'a> {
         Ok(outcomes)
     }
 
-    /// Unwinds storage history to keep only blocks `<= keep_to`.
-    ///
-    /// Handles multi-shard scenarios by:
-    /// 1. Loading all shards for the `(address, storage_key)` pair
-    /// 2. Finding the boundary shard containing `keep_to`
-    /// 3. Deleting all shards after the boundary
-    /// 4. Truncating the boundary shard to keep only indices `<= keep_to`
-    /// 5. Ensuring the last shard is keyed with `u64::MAX`
+    /// Removes later storage-history shards and seals the retained boundary at its actual end.
     pub fn unwind_storage_history_to(
         &mut self,
         address: Address,
         storage_key: B256,
         keep_to: BlockNumber,
     ) -> ProviderResult<()> {
-        let shards = self.provider.storage_history_shards(address, storage_key)?;
-        if shards.is_empty() {
-            return Ok(());
-        }
-
-        // Find the first shard that might contain blocks > keep_to.
-        // A shard is affected if it's the sentinel (u64::MAX) or its highest_block_number > keep_to
-        let boundary_idx = shards.iter().position(|(key, _)| {
-            key.sharded_key.highest_block_number == u64::MAX ||
-                key.sharded_key.highest_block_number > keep_to
-        });
-
-        // Repair path: no shards affected means all blocks <= keep_to, just ensure sentinel exists
-        let Some(boundary_idx) = boundary_idx else {
-            let (last_key, last_value) = shards.last().expect("shards is non-empty");
-            if last_key.sharded_key.highest_block_number != u64::MAX {
-                self.delete::<tables::StoragesHistory>(last_key.clone())?;
+        for (key, list) in self.provider.storage_history_shards(address, storage_key)? {
+            if key.sharded_key.highest_block_number <= keep_to {
+                continue;
+            }
+            self.delete::<tables::StoragesHistory>(key)?;
+            let retained =
+                BlockNumberList::new_pre_sorted(list.iter().take_while(|&b| b <= keep_to));
+            if let Some(highest) = retained.iter().next_back() {
                 self.put::<tables::StoragesHistory>(
-                    StorageShardedKey::last(address, storage_key),
-                    last_value,
+                    StorageShardedKey::new(address, storage_key, highest),
+                    &retained,
                 )?;
             }
-            return Ok(());
-        };
-
-        // Delete all shards strictly after the boundary (they are entirely > keep_to)
-        for (key, _) in shards.iter().skip(boundary_idx + 1) {
-            self.delete::<tables::StoragesHistory>(key.clone())?;
         }
-
-        // Process the boundary shard: filter out blocks > keep_to
-        let (boundary_key, boundary_list) = &shards[boundary_idx];
-
-        // Delete the boundary shard (we'll either drop it or rewrite at u64::MAX)
-        self.delete::<tables::StoragesHistory>(boundary_key.clone())?;
-
-        // Build truncated list once; check emptiness directly (avoids double iteration)
-        let new_last =
-            BlockNumberList::new_pre_sorted(boundary_list.iter().take_while(|&b| b <= keep_to));
-
-        if new_last.is_empty() {
-            // Boundary shard is now empty. Previous shard becomes the last and must be keyed
-            // u64::MAX.
-            if boundary_idx == 0 {
-                // Nothing left for this (address, storage_key) pair
-                return Ok(());
-            }
-
-            let (prev_key, prev_value) = &shards[boundary_idx - 1];
-            if prev_key.sharded_key.highest_block_number != u64::MAX {
-                self.delete::<tables::StoragesHistory>(prev_key.clone())?;
-                self.put::<tables::StoragesHistory>(
-                    StorageShardedKey::last(address, storage_key),
-                    prev_value,
-                )?;
-            }
-            return Ok(());
-        }
-
-        self.put::<tables::StoragesHistory>(
-            StorageShardedKey::last(address, storage_key),
-            &new_last,
-        )?;
-
         Ok(())
     }
 
@@ -2916,6 +2723,14 @@ enum RocksDBRawIterEnum<'db> {
 }
 
 impl RocksDBRawIterEnum<'_> {
+    /// Positions the iterator at the last key <= `key`.
+    fn seek_for_prev(&mut self, key: impl AsRef<[u8]>) {
+        match self {
+            Self::ReadWrite(iter) => iter.seek_for_prev(key),
+            Self::ReadOnly(iter) => iter.seek_for_prev(key),
+        }
+    }
+
     /// Positions the iterator at the first key >= `key`.
     fn seek(&mut self, key: impl AsRef<[u8]>) {
         match self {
@@ -3161,6 +2976,24 @@ fn current_file_descriptor_limit() -> Option<u64> {
 #[cfg(not(unix))]
 const fn current_file_descriptor_limit() -> Option<u64> {
     None
+}
+
+/// `RocksDB` shards partition each batch and never include indices from older commits.
+fn sealed_history_shards<K>(
+    indices: Vec<u64>,
+    key: impl Fn(u64) -> K,
+) -> impl Iterator<Item = (K, BlockNumberList)> {
+    debug_assert!(indices.windows(2).all(|w| w[0] < w[1]));
+    let mut indices = indices.into_iter();
+    std::iter::from_fn(move || {
+        let mut highest = indices.next()?;
+        let shard = BlockNumberList::new_pre_sorted(
+            std::iter::once(highest)
+                .chain(indices.by_ref().take(NUM_OF_INDICES_IN_SHARD - 1))
+                .inspect(|index| highest = *index),
+        );
+        Some((key(highest), shard))
+    })
 }
 
 #[cfg(test)]
@@ -3848,27 +3681,26 @@ mod tests {
         let address = Address::repeat_byte(0x42);
         let limit = NUM_OF_INDICES_IN_SHARD;
 
-        // Add exactly NUM_OF_INDICES_IN_SHARD + 1 indices to trigger a split
         let indices: Vec<u64> = (0..=(limit as u64)).collect();
         let mut batch = provider.batch();
         batch.append_account_history_shard(address, indices).unwrap();
         batch.commit().unwrap();
 
-        // Should have 2 shards: one completed shard and one sentinel shard
+        // Should have 2 shards: two sealed shards
         let completed_key = ShardedKey::new(address, (limit - 1) as u64);
-        let sentinel_key = ShardedKey::new(address, u64::MAX);
+        let final_key = ShardedKey::new(address, limit as u64);
 
         let completed_shard = provider.get::<tables::AccountsHistory>(completed_key).unwrap();
-        let sentinel_shard = provider.get::<tables::AccountsHistory>(sentinel_key).unwrap();
+        let final_shard = provider.get::<tables::AccountsHistory>(final_key).unwrap();
 
         assert!(completed_shard.is_some(), "completed shard should exist");
-        assert!(sentinel_shard.is_some(), "sentinel shard should exist");
+        assert!(final_shard.is_some(), "final shard should exist");
 
         let completed_shard = completed_shard.unwrap();
-        let sentinel_shard = sentinel_shard.unwrap();
+        let final_shard = final_shard.unwrap();
 
         assert_eq!(completed_shard.len(), limit as u64, "completed shard should be full");
-        assert_eq!(sentinel_shard.len(), 1, "sentinel shard should have 1 element");
+        assert_eq!(final_shard.len(), 1, "final shard should have 1 element");
     }
 
     #[test]
@@ -3879,25 +3711,23 @@ mod tests {
         let address = Address::repeat_byte(0x43);
         let limit = NUM_OF_INDICES_IN_SHARD;
 
-        // First batch: add NUM_OF_INDICES_IN_SHARD indices
         let first_batch_indices: Vec<u64> = (0..limit as u64).collect();
         let mut batch = provider.batch();
         batch.append_account_history_shard(address, first_batch_indices).unwrap();
         batch.commit().unwrap();
 
-        // Should have just a sentinel shard (exactly at limit, not over)
-        let sentinel_key = ShardedKey::new(address, u64::MAX);
-        let shard = provider.get::<tables::AccountsHistory>(sentinel_key.clone()).unwrap();
+        // Should have one sealed shard
+        let final_key = ShardedKey::new(address, (limit - 1) as u64);
+        let shard = provider.get::<tables::AccountsHistory>(final_key).unwrap();
         assert!(shard.is_some());
         assert_eq!(shard.unwrap().len(), limit as u64);
 
-        // Second batch: add another NUM_OF_INDICES_IN_SHARD + 1 indices (causing 2 more shards)
         let second_batch_indices: Vec<u64> = (limit as u64..=(2 * limit) as u64).collect();
         let mut batch = provider.batch();
         batch.append_account_history_shard(address, second_batch_indices).unwrap();
         batch.commit().unwrap();
 
-        // Now we should have: 2 completed shards + 1 sentinel shard
+        // Now we should have: 3 sealed shards
         let first_completed = ShardedKey::new(address, (limit - 1) as u64);
         let second_completed = ShardedKey::new(address, (2 * limit - 1) as u64);
 
@@ -3910,9 +3740,244 @@ mod tests {
             "second completed shard should exist"
         );
         assert!(
-            provider.get::<tables::AccountsHistory>(sentinel_key).unwrap().is_some(),
-            "sentinel shard should exist"
+            provider
+                .get::<tables::AccountsHistory>(ShardedKey::new(address, (2 * limit) as u64))
+                .unwrap()
+                .is_some(),
+            "final shard should exist"
         );
+    }
+
+    #[test]
+    fn history_batches_preserve_sealed_shards_and_pending_appends() {
+        let dir = TempDir::new().unwrap();
+        let provider = RocksDBBuilder::new(dir.path()).with_default_tables().build().unwrap();
+        let address = Address::ZERO;
+        let slot = B256::ZERO;
+        let mut batch = provider.batch();
+        batch.append_account_history_shard(address, [100, 150, 200]).unwrap();
+        batch.append_storage_history_shard(address, slot, [100, 150, 200]).unwrap();
+        batch.commit().unwrap();
+        let first = provider.get::<tables::AccountsHistory>(ShardedKey::new(address, 200)).unwrap();
+        let mut batch = provider.batch();
+        batch.append_account_history_shard(address, [250, 300]).unwrap();
+        batch.append_account_history_shard(address, [520, 550]).unwrap();
+        batch.append_storage_history_shard(address, slot, [250, 300]).unwrap();
+        batch.append_storage_history_shard(address, slot, [520, 550]).unwrap();
+        batch.commit().unwrap();
+        assert_eq!(
+            provider.get::<tables::AccountsHistory>(ShardedKey::new(address, 200)).unwrap(),
+            first
+        );
+        assert_eq!(
+            account_shard_layout(&provider, address),
+            vec![(200, vec![100, 150, 200]), (300, vec![250, 300]), (550, vec![520, 550]),]
+        );
+        assert_eq!(
+            storage_shard_layout(&provider, address, slot),
+            account_shard_layout(&provider, address)
+        );
+        let snapshot = provider.snapshot();
+        for (block, expected) in [
+            (50, HistoryInfo::NotYetWritten),
+            (100, HistoryInfo::InChangeset(100)),
+            (201, HistoryInfo::InChangeset(250)),
+            (301, HistoryInfo::InChangeset(520)),
+            (550, HistoryInfo::InChangeset(550)),
+            (551, HistoryInfo::InPlainState),
+        ] {
+            assert_eq!(snapshot.account_history_info(address, block, None, 550).unwrap(), expected);
+            assert_eq!(
+                snapshot.storage_history_info(address, slot, block, None, 550).unwrap(),
+                expected
+            );
+        }
+        assert_eq!(
+            snapshot.account_history_info(address, 301, None, 300).unwrap(),
+            HistoryInfo::InPlainState
+        );
+        assert_eq!(
+            snapshot.storage_history_info(address, slot, 301, None, 300).unwrap(),
+            HistoryInfo::InPlainState
+        );
+        assert_eq!(
+            snapshot.account_history_info(Address::repeat_byte(1), 551, None, 550).unwrap(),
+            HistoryInfo::NotYetWritten
+        );
+        assert_eq!(
+            snapshot
+                .storage_history_info(address, B256::repeat_byte(1), 551, Some(100), 550)
+                .unwrap(),
+            HistoryInfo::MaybeInPlainState
+        );
+        let secondary = RocksDBBuilder::new(dir.path())
+            .with_default_tables()
+            .with_read_only(true)
+            .build()
+            .unwrap();
+        assert_eq!(
+            secondary.snapshot().account_history_info(address, 551, None, 550).unwrap(),
+            HistoryInfo::InPlainState
+        );
+        assert_eq!(
+            secondary.snapshot().storage_history_info(address, slot, 551, None, 550).unwrap(),
+            HistoryInfo::InPlainState
+        );
+    }
+
+    #[test]
+    fn history_sealed_shards_prune_unwind_and_reopen() {
+        let dir = TempDir::new().unwrap();
+        let address = Address::ZERO;
+        let slot = B256::ZERO;
+        {
+            let provider = RocksDBBuilder::new(dir.path()).with_default_tables().build().unwrap();
+            for indices in [[100, 150], [200, 250], [300, 350]] {
+                let mut batch = provider.batch();
+                batch.append_account_history_shard(address, indices).unwrap();
+                batch.append_storage_history_shard(address, slot, indices).unwrap();
+                batch.commit().unwrap();
+            }
+            let mut batch = provider.batch();
+            batch.prune_account_history_batch(&[(address, 200)]).unwrap();
+            batch.prune_storage_history_batch(&[((address, slot), 200)]).unwrap();
+            batch.commit().unwrap();
+            assert_eq!(
+                account_shard_layout(&provider, address),
+                vec![(250, vec![250]), (350, vec![300, 350])]
+            );
+            let mut batch = provider.batch();
+            batch.unwind_account_history_to(address, 320).unwrap();
+            batch.unwind_storage_history_to(address, slot, 320).unwrap();
+            batch.commit().unwrap();
+        }
+        let provider = RocksDBBuilder::new(dir.path()).with_default_tables().build().unwrap();
+        assert_eq!(
+            account_shard_layout(&provider, address),
+            vec![(250, vec![250]), (300, vec![300])]
+        );
+        assert_eq!(
+            storage_shard_layout(&provider, address, slot),
+            account_shard_layout(&provider, address)
+        );
+        let mut batch = provider.batch();
+        batch.append_account_history_shard(address, [325, 400]).unwrap();
+        batch.append_storage_history_shard(address, slot, [325, 400]).unwrap();
+        batch.commit().unwrap();
+        assert_eq!(
+            provider.snapshot().account_history_info(address, 301, Some(201), 400).unwrap(),
+            HistoryInfo::InChangeset(325)
+        );
+        let mut batch = provider.batch();
+        batch.unwind_account_history_to(address, 300).unwrap();
+        batch.unwind_storage_history_to(address, slot, 300).unwrap();
+        batch.commit().unwrap();
+        assert_eq!(
+            account_shard_layout(&provider, address),
+            vec![(250, vec![250]), (300, vec![300])]
+        );
+        let mut batch = provider.batch();
+        batch.prune_account_history_to(address, 300).unwrap();
+        batch.prune_storage_history_to(address, slot, 300).unwrap();
+        batch.commit().unwrap();
+        assert!(account_shard_layout(&provider, address).is_empty());
+        assert!(storage_shard_layout(&provider, address, slot).is_empty());
+    }
+
+    #[test]
+    fn history_migration_resumes_and_preserves_large_legacy_values() {
+        let dir = TempDir::new().unwrap();
+        let address = Address::ZERO;
+        let slot = B256::ZERO;
+        let indices = (0..144).map(|n| n * 65_536).collect::<Vec<_>>();
+        let list = IntegerList::new(indices.iter().copied()).unwrap();
+        assert!(list.serialized_size() > 128);
+        {
+            let provider = RocksDBBuilder::new(dir.path()).with_default_tables().build().unwrap();
+            for table in [tables::AccountsHistory::NAME, tables::StoragesHistory::NAME] {
+                provider.0.db_rw().delete(format!("reth.history-shards.{table}.version")).unwrap();
+            }
+            // One already-sealed account simulates a committed chunk before interruption.
+            provider
+                .put::<tables::AccountsHistory>(
+                    ShardedKey::new(Address::repeat_byte(1), 5),
+                    &IntegerList::new([0, 5]).unwrap(),
+                )
+                .unwrap();
+            provider.put::<tables::AccountsHistory>(ShardedKey::last(address), &list).unwrap();
+            provider
+                .put::<tables::StoragesHistory>(StorageShardedKey::last(address, slot), &list)
+                .unwrap();
+        }
+        for _ in 0..2 {
+            let provider = RocksDBBuilder::new(dir.path()).with_default_tables().build().unwrap();
+            let last = *indices.last().unwrap();
+            assert_eq!(account_shard_layout(&provider, address), vec![(last, indices.clone())]);
+            assert_eq!(
+                storage_shard_layout(&provider, address, slot),
+                vec![(last, indices.clone())]
+            );
+            assert_eq!(
+                account_shard_layout(&provider, Address::repeat_byte(1)),
+                vec![(5, vec![0, 5])]
+            );
+            assert_eq!(
+                provider.snapshot().account_history_info(address, last + 1, None, last).unwrap(),
+                HistoryInfo::InPlainState
+            );
+        }
+    }
+
+    #[test]
+    fn history_migration_rejects_conflicting_shards() {
+        let dir = TempDir::new().unwrap();
+        {
+            let provider = RocksDBBuilder::new(dir.path()).with_default_tables().build().unwrap();
+            provider.0.db_rw().delete("reth.history-shards.AccountsHistory.version").unwrap();
+            provider
+                .put::<tables::AccountsHistory>(
+                    ShardedKey::last(Address::ZERO),
+                    &IntegerList::new([1, 3]).unwrap(),
+                )
+                .unwrap();
+            provider
+                .put::<tables::AccountsHistory>(
+                    ShardedKey::new(Address::ZERO, 3),
+                    &IntegerList::new([2, 3]).unwrap(),
+                )
+                .unwrap();
+        }
+        let err = RocksDBBuilder::new(dir.path()).with_default_tables().build().unwrap_err();
+        assert_eq!(err.to_string(), "legacy history tail conflicts with a sealed shard");
+    }
+
+    #[test]
+    fn history_migration_rejects_unknown_version_and_reserved_block() {
+        for (version, expected) in [
+            (Some(b"2".as_slice()), "unsupported RocksDB history shard version"),
+            (None, "cannot seal history at the reserved sentinel block"),
+        ] {
+            let dir = TempDir::new().unwrap();
+            {
+                let provider =
+                    RocksDBBuilder::new(dir.path()).with_default_tables().build().unwrap();
+                let db = provider.0.db_rw();
+                let marker = "reth.history-shards.AccountsHistory.version";
+                if let Some(version) = version {
+                    db.put(marker, version).unwrap();
+                } else {
+                    db.delete(marker).unwrap();
+                    provider
+                        .put::<tables::AccountsHistory>(
+                            ShardedKey::last(Address::ZERO),
+                            &IntegerList::new([u64::MAX]).unwrap(),
+                        )
+                        .unwrap();
+                }
+            }
+            let error = RocksDBBuilder::new(dir.path()).with_default_tables().build().unwrap_err();
+            assert_eq!(error.to_string(), expected);
+        }
     }
 
     #[test]
@@ -3930,21 +3995,21 @@ mod tests {
         batch.append_storage_history_shard(address, slot, indices).unwrap();
         batch.commit().unwrap();
 
-        // Should have 2 shards: one completed shard and one sentinel shard
+        // Should have 2 shards: two sealed shards
         let completed_key = StorageShardedKey::new(address, slot, (limit - 1) as u64);
-        let sentinel_key = StorageShardedKey::new(address, slot, u64::MAX);
+        let final_key = StorageShardedKey::new(address, slot, limit as u64);
 
         let completed_shard = provider.get::<tables::StoragesHistory>(completed_key).unwrap();
-        let sentinel_shard = provider.get::<tables::StoragesHistory>(sentinel_key).unwrap();
+        let final_shard = provider.get::<tables::StoragesHistory>(final_key).unwrap();
 
         assert!(completed_shard.is_some(), "completed shard should exist");
-        assert!(sentinel_shard.is_some(), "sentinel shard should exist");
+        assert!(final_shard.is_some(), "final shard should exist");
 
         let completed_shard = completed_shard.unwrap();
-        let sentinel_shard = sentinel_shard.unwrap();
+        let final_shard = final_shard.unwrap();
 
         assert_eq!(completed_shard.len(), limit as u64, "completed shard should be full");
-        assert_eq!(sentinel_shard.len(), 1, "sentinel shard should have 1 element");
+        assert_eq!(final_shard.len(), 1, "final shard should have 1 element");
     }
 
     #[test]
@@ -3962,9 +4027,9 @@ mod tests {
         batch.append_storage_history_shard(address, slot, first_batch_indices).unwrap();
         batch.commit().unwrap();
 
-        // Should have just a sentinel shard (exactly at limit, not over)
-        let sentinel_key = StorageShardedKey::new(address, slot, u64::MAX);
-        let shard = provider.get::<tables::StoragesHistory>(sentinel_key.clone()).unwrap();
+        // Should have one sealed shard
+        let final_key = StorageShardedKey::new(address, slot, (limit - 1) as u64);
+        let shard = provider.get::<tables::StoragesHistory>(final_key).unwrap();
         assert!(shard.is_some());
         assert_eq!(shard.unwrap().len(), limit as u64);
 
@@ -3974,7 +4039,7 @@ mod tests {
         batch.append_storage_history_shard(address, slot, second_batch_indices).unwrap();
         batch.commit().unwrap();
 
-        // Now we should have: 2 completed shards + 1 sentinel shard
+        // Now we should have: 3 sealed shards
         let first_completed = StorageShardedKey::new(address, slot, (limit - 1) as u64);
         let second_completed = StorageShardedKey::new(address, slot, (2 * limit - 1) as u64);
 
@@ -3987,8 +4052,15 @@ mod tests {
             "second completed shard should exist"
         );
         assert!(
-            provider.get::<tables::StoragesHistory>(sentinel_key).unwrap().is_some(),
-            "sentinel shard should exist"
+            provider
+                .get::<tables::StoragesHistory>(StorageShardedKey::new(
+                    address,
+                    slot,
+                    (2 * limit) as u64
+                ))
+                .unwrap()
+                .is_some(),
+            "final shard should exist"
         );
     }
 
@@ -4041,8 +4113,8 @@ mod tests {
         batch.commit().unwrap();
 
         // Verify we have blocks 0-10
-        let key = ShardedKey::new(address, u64::MAX);
-        let result = provider.get::<tables::AccountsHistory>(key.clone()).unwrap();
+        let key = ShardedKey::new(address, 10);
+        let result = provider.get::<tables::AccountsHistory>(key).unwrap();
         assert!(result.is_some());
         let blocks: Vec<u64> = result.unwrap().iter().collect();
         assert_eq!(blocks, (0..=10).collect::<Vec<_>>());
@@ -4053,7 +4125,7 @@ mod tests {
         batch.commit().unwrap();
 
         // Verify only blocks 0-5 remain
-        let result = provider.get::<tables::AccountsHistory>(key).unwrap();
+        let result = provider.get::<tables::AccountsHistory>(ShardedKey::new(address, 5)).unwrap();
         assert!(result.is_some());
         let blocks: Vec<u64> = result.unwrap().iter().collect();
         assert_eq!(blocks, (0..=5).collect::<Vec<_>>());
@@ -4077,9 +4149,7 @@ mod tests {
         batch.commit().unwrap();
 
         // Verify no data remains for this address
-        let key = ShardedKey::new(address, u64::MAX);
-        let result = provider.get::<tables::AccountsHistory>(key).unwrap();
-        assert!(result.is_none(), "Should have no data after full unwind");
+        assert!(provider.account_history_shards(address).unwrap().is_empty());
     }
 
     #[test]
@@ -4100,7 +4170,7 @@ mod tests {
         batch.commit().unwrap();
 
         // Verify blocks 0-5 still remain
-        let key = ShardedKey::new(address, u64::MAX);
+        let key = ShardedKey::new(address, 5);
         let result = provider.get::<tables::AccountsHistory>(key).unwrap();
         assert!(result.is_some());
         let blocks: Vec<u64> = result.unwrap().iter().collect();
@@ -4126,7 +4196,7 @@ mod tests {
         batch.commit().unwrap();
 
         // Verify only block 0 remains
-        let key = ShardedKey::new(address, u64::MAX);
+        let key = ShardedKey::new(address, 0);
         let result = provider.get::<tables::AccountsHistory>(key).unwrap();
         assert!(result.is_some());
         let blocks: Vec<u64> = result.unwrap().iter().collect();
@@ -4171,8 +4241,8 @@ mod tests {
         assert_eq!(shards[0].0.highest_block_number, 50);
         assert_eq!(shards[0].1.iter().collect::<Vec<_>>(), (1..=50).collect::<Vec<_>>());
 
-        // Second shard truncated and re-keyed to MAX
-        assert_eq!(shards[1].0.highest_block_number, u64::MAX);
+        // Second shard truncated and re-keyed to its retained maximum
+        assert_eq!(shards[1].0.highest_block_number, 75);
         assert_eq!(shards[1].1.iter().collect::<Vec<_>>(), (51..=75).collect::<Vec<_>>());
     }
 
@@ -4196,15 +4266,15 @@ mod tests {
 
         batch.commit().unwrap();
 
-        // Unwind to block 60 (removes all of shard2 since 75 > 60, promotes shard1 to MAX)
+        // Unwind to block 60 (removes all of shard2 since 75 > 60, preserves shard1)
         let mut batch = provider.batch();
         batch.unwind_account_history_to(address, 60).unwrap();
         batch.commit().unwrap();
 
-        // Verify: only shard1 remains, now keyed as MAX
+        // Verify: only shard1 remains, still keyed by its maximum
         let shards = provider.account_history_shards(address).unwrap();
         assert_eq!(shards.len(), 1);
-        assert_eq!(shards[0].0.highest_block_number, u64::MAX);
+        assert_eq!(shards[0].0.highest_block_number, 50);
         assert_eq!(shards[0].1.iter().collect::<Vec<_>>(), (1..=50).collect::<Vec<_>>());
     }
 
@@ -4293,7 +4363,8 @@ mod tests {
         batch.unwind_account_history_to(address, 75).unwrap();
         batch.commit().unwrap();
 
-        // Verify: shard1 unchanged, shard2 truncated and re-keyed to MAX, shard3 deleted
+        // Verify: shard1 unchanged, shard2 truncated and re-keyed to its retained maximum, shard3
+        // deleted
         let shards = provider.account_history_shards(address).unwrap();
         assert_eq!(shards.len(), 2);
 
@@ -4301,8 +4372,8 @@ mod tests {
         assert_eq!(shards[0].0.highest_block_number, 50);
         assert_eq!(shards[0].1.iter().collect::<Vec<_>>(), (1..=50).collect::<Vec<_>>());
 
-        // Second shard truncated and re-keyed to MAX
-        assert_eq!(shards[1].0.highest_block_number, u64::MAX);
+        // Second shard truncated and re-keyed to its retained maximum
+        assert_eq!(shards[1].0.highest_block_number, 75);
         assert_eq!(shards[1].1.iter().collect::<Vec<_>>(), (51..=75).collect::<Vec<_>>());
     }
 
@@ -4435,7 +4506,7 @@ mod tests {
                 initial_shards: &[(50, &[30, 40, 50]), (MAX, &[35])],
                 prune_to: 40,
                 expected_outcome: PruneShardOutcome::Deleted,
-                expected_shards: &[(MAX, &[50])],
+                expected_shards: &[(50, &[50])],
             },
             AccountPruneCase {
                 name: "equiv_all_shards_become_empty",
@@ -4445,11 +4516,11 @@ mod tests {
                 expected_shards: &[],
             },
             AccountPruneCase {
-                name: "equiv_non_sentinel_last_shard_promoted",
+                name: "non_sentinel_last_shard_preserved",
                 initial_shards: &[(100, &[50, 75, 100])],
                 prune_to: 60,
                 expected_outcome: PruneShardOutcome::Updated,
-                expected_shards: &[(MAX, &[75, 100])],
+                expected_shards: &[(100, &[75, 100])],
             },
             AccountPruneCase {
                 name: "equiv_filter_within_shard",
@@ -4560,11 +4631,11 @@ mod tests {
             },
             // Equivalence tests
             StoragePruneCase {
-                name: "equiv_sentinel_promotion",
+                name: "non_sentinel_key_preserved",
                 initial_shards: &[(100, &[50, 75, 100])],
                 prune_to: 60,
                 expected_outcome: PruneShardOutcome::Updated,
-                expected_shards: &[(MAX, &[75, 100])],
+                expected_shards: &[(100, &[75, 100])],
             },
             StoragePruneCase {
                 name: "equiv_delete_early_shards_keep_sentinel",
@@ -4578,7 +4649,7 @@ mod tests {
                 initial_shards: &[(50, &[30, 40, 50]), (MAX, &[35])],
                 prune_to: 40,
                 expected_outcome: PruneShardOutcome::Deleted,
-                expected_shards: &[(MAX, &[50])],
+                expected_shards: &[(50, &[50])],
             },
             StoragePruneCase {
                 name: "equiv_all_shards_become_empty",
@@ -4704,7 +4775,7 @@ mod tests {
 
     #[test]
     fn test_prune_invariants() {
-        // Test invariants: no empty shards, sentinel is always last
+        // Test invariants: no empty shards, last key is preserved
         let address = Address::repeat_byte(0x42);
         let storage_key = B256::repeat_byte(0x01);
 
@@ -4713,7 +4784,7 @@ mod tests {
         let invariant_cases: &[(&[(u64, &[u64])], u64)] = &[
             // Account: shards where middle becomes empty
             (&[(10, &[5, 10]), (20, &[15, 20]), (u64::MAX, &[25, 30])], 20),
-            // Account: non-sentinel shard only, partial prune -> must become sentinel
+            // Account: non-sentinel shard only, partial prune -> preserves its key
             (&[(100, &[50, 100])], 60),
         ];
 
@@ -4748,13 +4819,13 @@ mod tests {
                     );
                 }
 
-                // Invariant 2: last shard is sentinel
+                // Invariant 2: last shard key is unchanged
                 if !shards.is_empty() {
                     let last = shards.last().unwrap();
                     assert_eq!(
                         last.0.highest_block_number,
-                        u64::MAX,
-                        "Account: last shard must be sentinel"
+                        initial_shards.last().unwrap().0,
+                        "Account: last shard key must be preserved"
                     );
                 }
             }
@@ -4792,13 +4863,13 @@ mod tests {
                     );
                 }
 
-                // Invariant 2: last shard is sentinel
+                // Invariant 2: last shard key is unchanged
                 if !shards.is_empty() {
                     let last = shards.last().unwrap();
                     assert_eq!(
                         last.0.sharded_key.highest_block_number,
-                        u64::MAX,
-                        "Storage: last shard must be sentinel"
+                        initial_shards.last().unwrap().0,
+                        "Storage: last shard key must be preserved"
                     );
                 }
             }
