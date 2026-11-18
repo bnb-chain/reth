@@ -1562,16 +1562,14 @@ impl RocksDBProvider {
 
         let shard_puts = account_history
             .into_par_iter()
-            .map(|(address, indices)| {
-                sealed_history_shards(&indices, |highest| ShardedKey::new(address, highest))
+            .flat_map_iter(|(address, indices)| {
+                sealed_history_shards(indices, move |highest| ShardedKey::new(address, highest))
             })
             .collect::<Vec<_>>();
 
         let mut batch = self.batch();
-        for shards in shard_puts {
-            for (key, shard) in shards {
-                batch.put::<tables::AccountsHistory>(key, &shard)?;
-            }
+        for (key, shard) in shard_puts {
+            batch.put::<tables::AccountsHistory>(key, &shard)?;
         }
         ctx.pending_batches.lock().push(batch.into_inner());
         Ok(())
@@ -1609,18 +1607,16 @@ impl RocksDBProvider {
 
         let shard_puts = storage_history
             .into_par_iter()
-            .map(|((address, slot), indices)| {
-                sealed_history_shards(&indices, |highest| {
+            .flat_map_iter(|((address, slot), indices)| {
+                sealed_history_shards(indices, move |highest| {
                     StorageShardedKey::new(address, slot, highest)
                 })
             })
             .collect::<Vec<_>>();
 
         let mut batch = self.batch();
-        for shards in shard_puts {
-            for (key, shard) in shards {
-                batch.put::<tables::StoragesHistory>(key, &shard)?;
-            }
+        for (key, shard) in shard_puts {
+            batch.put::<tables::StoragesHistory>(key, &shard)?;
         }
         ctx.pending_batches.lock().push(batch.into_inner());
         Ok(())
@@ -2212,7 +2208,7 @@ impl<'a> RocksDBBatch<'a> {
     ) -> ProviderResult<()> {
         let indices: Vec<u64> = indices.into_iter().collect();
         for (key, shard) in
-            sealed_history_shards(&indices, |highest| ShardedKey::new(address, highest))
+            sealed_history_shards(indices, |highest| ShardedKey::new(address, highest))
         {
             self.put::<tables::AccountsHistory>(key, &shard)?;
         }
@@ -2232,7 +2228,7 @@ impl<'a> RocksDBBatch<'a> {
     ) -> ProviderResult<()> {
         let indices: Vec<u64> = indices.into_iter().collect();
 
-        for (key, shard) in sealed_history_shards(&indices, |highest| {
+        for (key, shard) in sealed_history_shards(indices, |highest| {
             StorageShardedKey::new(address, storage_key, highest)
         }) {
             self.put::<tables::StoragesHistory>(key, &shard)?;
@@ -3034,14 +3030,21 @@ const fn current_file_descriptor_limit() -> Option<u64> {
 }
 
 /// `RocksDB` shards partition each batch and never include indices from older commits.
-fn sealed_history_shards<K>(indices: &[u64], key: impl Fn(u64) -> K) -> Vec<(K, BlockNumberList)> {
+fn sealed_history_shards<K>(
+    indices: Vec<u64>,
+    key: impl Fn(u64) -> K,
+) -> impl Iterator<Item = (K, BlockNumberList)> {
     debug_assert!(indices.windows(2).all(|w| w[0] < w[1]));
-    indices
-        .chunks(NUM_OF_INDICES_IN_SHARD)
-        .map(|chunk| {
-            (key(chunk[chunk.len() - 1]), BlockNumberList::new_pre_sorted(chunk.iter().copied()))
-        })
-        .collect()
+    let mut indices = indices.into_iter();
+    std::iter::from_fn(move || {
+        let mut highest = indices.next()?;
+        let shard = BlockNumberList::new_pre_sorted(
+            std::iter::once(highest)
+                .chain(indices.by_ref().take(NUM_OF_INDICES_IN_SHARD - 1))
+                .inspect(|index| highest = *index),
+        );
+        Some((key(highest), shard))
+    })
 }
 
 #[cfg(test)]
