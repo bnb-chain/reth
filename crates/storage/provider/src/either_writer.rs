@@ -490,7 +490,9 @@ where
         match self {
             Self::Database(cursor) => Ok(cursor.upsert(key, value)?),
             Self::StaticFile(_) => Err(ProviderError::UnsupportedProvider),
-            Self::RocksDB(batch) => batch.put::<tables::StoragesHistory>(key, value),
+            Self::RocksDB(batch) => {
+                batch.append_storage_history_shard(key.address, key.sharded_key.key, value.iter())
+            }
         }
     }
 
@@ -517,7 +519,9 @@ where
         match self {
             Self::Database(cursor) => Ok(cursor.append(key, value)?),
             Self::StaticFile(_) => Err(ProviderError::UnsupportedProvider),
-            Self::RocksDB(batch) => batch.put::<tables::StoragesHistory>(key, value),
+            Self::RocksDB(batch) => {
+                batch.append_storage_history_shard(key.address, key.sharded_key.key, value.iter())
+            }
         }
     }
 
@@ -530,11 +534,13 @@ where
         match self {
             Self::Database(cursor) => Ok(cursor.upsert(key, value)?),
             Self::StaticFile(_) => Err(ProviderError::UnsupportedProvider),
-            Self::RocksDB(batch) => batch.put::<tables::StoragesHistory>(key, value),
+            Self::RocksDB(batch) => {
+                batch.append_storage_history_shard(key.address, key.sharded_key.key, value.iter())
+            }
         }
     }
 
-    /// Gets the last shard for an address and storage key (keyed with `u64::MAX`).
+    /// Gets the mutable MDBX tail; `RocksDB` writes independent, sealed shards.
     pub fn get_last_storage_history_shard(
         &mut self,
         address: Address,
@@ -544,7 +550,7 @@ where
         match self {
             Self::Database(cursor) => Ok(cursor.seek_exact(key)?.map(|(_, v)| v)),
             Self::StaticFile(_) => Err(ProviderError::UnsupportedProvider),
-            Self::RocksDB(batch) => batch.get::<tables::StoragesHistory>(key),
+            Self::RocksDB(_) => Ok(None),
         }
     }
 }
@@ -562,7 +568,7 @@ where
         match self {
             Self::Database(cursor) => Ok(cursor.append(key, value)?),
             Self::StaticFile(_) => Err(ProviderError::UnsupportedProvider),
-            Self::RocksDB(batch) => batch.put::<tables::AccountsHistory>(key, value),
+            Self::RocksDB(batch) => batch.append_account_history_shard(key.key, value.iter()),
         }
     }
 
@@ -575,11 +581,11 @@ where
         match self {
             Self::Database(cursor) => Ok(cursor.upsert(key, value)?),
             Self::StaticFile(_) => Err(ProviderError::UnsupportedProvider),
-            Self::RocksDB(batch) => batch.put::<tables::AccountsHistory>(key, value),
+            Self::RocksDB(batch) => batch.append_account_history_shard(key.key, value.iter()),
         }
     }
 
-    /// Gets the last shard for an address (keyed with `u64::MAX`).
+    /// Gets the mutable MDBX tail; `RocksDB` writes independent, sealed shards.
     pub fn get_last_account_history_shard(
         &mut self,
         address: Address,
@@ -589,7 +595,7 @@ where
                 Ok(cursor.seek_exact(ShardedKey::last(address))?.map(|(_, v)| v))
             }
             Self::StaticFile(_) => Err(ProviderError::UnsupportedProvider),
-            Self::RocksDB(batch) => batch.get::<tables::AccountsHistory>(ShardedKey::last(address)),
+            Self::RocksDB(_) => Ok(None),
         }
     }
 
