@@ -1,6 +1,6 @@
 use alloy_consensus::BlockHeader;
 use alloy_eips::BlockNumHash;
-use alloy_primitives::BlockNumber;
+use alloy_primitives::{BlockNumber, B256};
 use parking_lot::RwLock;
 use reth_chainspec::ChainInfo;
 use reth_primitives_traits::{NodePrimitives, SealedHeader};
@@ -11,7 +11,10 @@ use std::{
     },
     time::Instant,
 };
-use tokio::sync::watch;
+use tokio::sync::{broadcast, watch};
+
+/// Maximum number of finalized header events retained for slow subscribers.
+const FINALIZED_HEADER_BUFFER_SIZE: usize = 4096;
 
 /// Tracks the chain info: canonical head, safe block, finalized block.
 #[derive(Debug, Clone)]
@@ -43,6 +46,7 @@ where
                 canonical_head: RwLock::new(head),
                 safe_block,
                 finalized_block,
+                finalized_header_hashes: broadcast::channel(FINALIZED_HEADER_BUFFER_SIZE).0,
                 persisted_block,
             }),
         }
@@ -129,6 +133,9 @@ where
     pub fn set_finalized(&self, header: SealedHeader<N::BlockHeader>) {
         self.inner.finalized_block.send_if_modified(|current_header| {
             if current_header.as_ref().map(SealedHeader::hash) != Some(header.hash()) {
+                // Publish under the same lock as the watch update to preserve event order.
+                // A watch receiver alone can coalesce several finality advances into one.
+                let _ = self.inner.finalized_header_hashes.send(header.hash());
                 let _ = current_header.replace(header);
                 return true
             }
@@ -154,6 +161,11 @@ where
         &self,
     ) -> watch::Receiver<Option<SealedHeader<N::BlockHeader>>> {
         self.inner.finalized_block.subscribe()
+    }
+
+    /// Subscribe to finalized header hashes without coalescing intermediate updates.
+    pub fn subscribe_finalized_header_hashes(&self) -> broadcast::Receiver<B256> {
+        self.inner.finalized_header_hashes.subscribe()
     }
 
     /// Subscribe to the safe block.
@@ -183,6 +195,8 @@ struct ChainInfoInner<N: NodePrimitives = reth_ethereum_primitives::EthPrimitive
     safe_block: watch::Sender<Option<SealedHeader<N::BlockHeader>>>,
     /// The block that the beacon node considers finalized.
     finalized_block: watch::Sender<Option<SealedHeader<N::BlockHeader>>>,
+    /// Buffered finality events for consumers that need every update.
+    finalized_header_hashes: broadcast::Sender<B256>,
     /// The last block that was persisted to disk.
     persisted_block: watch::Sender<Option<BlockNumHash>>,
 }
@@ -193,6 +207,37 @@ mod tests {
     use alloy_primitives::B256;
     use reth_ethereum_primitives::EthPrimitives;
     use reth_testing_utils::{generators, generators::random_header};
+
+    #[test]
+    fn finalized_hash_events_preserve_updates_and_subscription_boundary() {
+        let mut rng = generators::rng();
+        let initial = random_header(&mut rng, 10, None);
+        let tracker: ChainInfoTracker<EthPrimitives> =
+            ChainInfoTracker::new(initial.clone(), Some(initial.clone()), None);
+        let mut events = tracker.subscribe_finalized_header_hashes();
+        let watch = tracker.subscribe_finalized_block();
+        // Existing finality is not replayed, and duplicate updates are suppressed.
+        tracker.set_finalized(initial);
+        assert!(matches!(events.try_recv(), Err(broadcast::error::TryRecvError::Empty)));
+        let first = random_header(&mut rng, 11, None);
+        let second = random_header(&mut rng, 15, None);
+        tracker.set_canonical_head(second.clone());
+        tracker.set_safe(first.clone());
+        assert!(matches!(events.try_recv(), Err(broadcast::error::TryRecvError::Empty)));
+        tracker.set_finalized(first.clone());
+        tracker.set_finalized(first.clone());
+        let mut later = tracker.subscribe_finalized_header_hashes();
+        tracker.set_finalized(second.clone());
+        // No receiver was polled between the updates. The event feed retains both,
+        // while the watch channel only retains the latest header. Height gaps do
+        // not manufacture events for headers that were never announced.
+        assert_eq!(watch.borrow().as_ref().unwrap().hash(), second.hash());
+        assert_eq!(events.try_recv().unwrap(), first.hash());
+        assert_eq!(events.try_recv().unwrap(), second.hash());
+        assert_eq!(later.try_recv().unwrap(), second.hash());
+        assert!(matches!(events.try_recv(), Err(broadcast::error::TryRecvError::Empty)));
+        assert!(matches!(later.try_recv(), Err(broadcast::error::TryRecvError::Empty)));
+    }
 
     #[test]
     fn test_chain_info() {

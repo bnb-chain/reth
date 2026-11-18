@@ -2,7 +2,7 @@
 
 use crate::table::{Compress, Decompress};
 use bytes::BufMut;
-use core::fmt;
+use core::{fmt, ops::RangeBounds};
 use derive_more::Deref;
 use reth_codecs::DecompressError;
 use roaring::RoaringTreemap;
@@ -66,6 +66,11 @@ impl IntegerList {
     /// Clears the list.
     pub fn clear(&mut self) {
         self.0.clear();
+    }
+
+    /// Removes the integers in the given range, returning how many were removed.
+    pub fn remove_range<R: RangeBounds<u64>>(&mut self, range: R) -> u64 {
+        self.0.remove_range(range)
     }
 
     /// Serializes an [`IntegerList`] into a sequence of bytes.

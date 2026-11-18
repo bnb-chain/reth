@@ -4,15 +4,20 @@ use crate::{fetch::DownloadRequest, flattened_response::FlattenedResponse};
 use alloy_primitives::B256;
 use futures::{future, future::Either};
 use reth_eth_wire::{BlockAccessLists, EthNetworkPrimitives, NetworkPrimitives};
+use reth_eth_wire_types::snap::{
+    GetAccountRangeMessage, GetBlockAccessListsMessage, GetByteCodesMessage,
+    GetStorageRangesMessage, SnapProtocolMessage,
+};
 use reth_network_api::test_utils::PeersHandle;
 use reth_network_p2p::{
     block_access_lists::client::{BalRequirement, BlockAccessListsClient},
-    bodies::client::{BodiesClient, BodiesFut},
+    bodies::client::BodiesClient,
     download::DownloadClient,
     error::{PeerRequestResult, RequestError},
     headers::client::{HeadersClient, HeadersRequest},
     priority::Priority,
-    receipts::client::{ReceiptsClient, ReceiptsFut},
+    receipts::client::{ReceiptsClient, ReceiptsResponse},
+    snap::client::{SnapClient, SnapResponse},
     BlockClient,
 };
 use reth_network_peers::PeerId;
@@ -53,13 +58,28 @@ impl<N: NetworkPrimitives> DownloadClient for FetchClient<N> {
     }
 }
 
-// The `Output` future of the [HeadersClient] impl of [FetchClient] that either returns a response
-// or an error.
-type HeadersClientFuture<T> = Either<FlattenedResponse<T>, future::Ready<T>>;
+impl<N: NetworkPrimitives> FetchClient<N> {
+    /// Sends a `snap/2` request to an available peer.
+    fn send_snap_request(
+        &self,
+        request: SnapProtocolMessage,
+        priority: Priority,
+    ) -> FetchClientFuture<PeerRequestResult<SnapResponse>> {
+        let (response, rx) = oneshot::channel();
+        if self.request_tx.send(DownloadRequest::GetSnap { request, response, priority }).is_ok() {
+            Either::Left(FlattenedResponse::from(rx))
+        } else {
+            Either::Right(future::err(RequestError::ChannelClosed))
+        }
+    }
+}
+
+/// A request future that either waits for a network response or reports a closed request channel.
+type FetchClientFuture<T> = Either<FlattenedResponse<T>, future::Ready<T>>;
 
 impl<N: NetworkPrimitives> HeadersClient for FetchClient<N> {
     type Header = N::BlockHeader;
-    type Output = HeadersClientFuture<PeerRequestResult<Vec<N::BlockHeader>>>;
+    type Output = FetchClientFuture<PeerRequestResult<Vec<N::BlockHeader>>>;
 
     /// Sends a `GetBlockHeaders` request to an available peer.
     fn get_headers_with_priority(
@@ -82,7 +102,7 @@ impl<N: NetworkPrimitives> HeadersClient for FetchClient<N> {
 
 impl<N: NetworkPrimitives> BodiesClient for FetchClient<N> {
     type Body = N::BlockBody;
-    type Output = BodiesFut<N::BlockBody>;
+    type Output = FetchClientFuture<PeerRequestResult<Vec<N::BlockBody>>>;
 
     /// Sends a `GetBlockBodies` request to an available peer.
     fn get_block_bodies_with_priority_and_range_hint(
@@ -97,16 +117,16 @@ impl<N: NetworkPrimitives> BodiesClient for FetchClient<N> {
             .send(DownloadRequest::GetBlockBodies { request, response, priority, range_hint })
             .is_ok()
         {
-            Box::pin(FlattenedResponse::from(rx))
+            Either::Left(FlattenedResponse::from(rx))
         } else {
-            Box::pin(future::err(RequestError::ChannelClosed))
+            Either::Right(future::err(RequestError::ChannelClosed))
         }
     }
 }
 
 impl<N: NetworkPrimitives> ReceiptsClient for FetchClient<N> {
     type Receipt = N::Receipt;
-    type Output = ReceiptsFut<N::Receipt>;
+    type Output = FetchClientFuture<PeerRequestResult<ReceiptsResponse<N::Receipt>>>;
 
     fn get_receipts_with_priority(&self, request: Vec<B256>, priority: Priority) -> Self::Output {
         let (response, rx) = oneshot::channel();
@@ -115,9 +135,9 @@ impl<N: NetworkPrimitives> ReceiptsClient for FetchClient<N> {
             .send(DownloadRequest::GetReceipts { request, response, priority })
             .is_ok()
         {
-            Box::pin(FlattenedResponse::from(rx))
+            Either::Left(FlattenedResponse::from(rx))
         } else {
-            Box::pin(future::err(RequestError::ChannelClosed))
+            Either::Right(future::err(RequestError::ChannelClosed))
         }
     }
 }
@@ -127,21 +147,7 @@ impl<N: NetworkPrimitives> BlockClient for FetchClient<N> {
 }
 
 impl<N: NetworkPrimitives> BlockAccessListsClient for FetchClient<N> {
-    type Output =
-        std::pin::Pin<Box<dyn Future<Output = PeerRequestResult<BlockAccessLists>> + Send + Sync>>;
-
-    /// Sends a `GetBlockAccessLists` request to an available peer.
-    fn get_block_access_lists_with_priority(
-        &self,
-        hashes: Vec<B256>,
-        priority: Priority,
-    ) -> Self::Output {
-        self.get_block_access_lists_with_priority_and_requirement(
-            hashes,
-            priority,
-            BalRequirement::Mandatory,
-        )
-    }
+    type Output = FetchClientFuture<PeerRequestResult<BlockAccessLists>>;
 
     fn get_block_access_lists_with_priority_and_requirement(
         &self,
@@ -160,9 +166,59 @@ impl<N: NetworkPrimitives> BlockAccessListsClient for FetchClient<N> {
             })
             .is_ok()
         {
-            Box::pin(FlattenedResponse::from(rx))
+            Either::Left(FlattenedResponse::from(rx))
         } else {
-            Box::pin(future::err(RequestError::ChannelClosed))
+            Either::Right(future::err(RequestError::ChannelClosed))
         }
+    }
+}
+
+impl<N: NetworkPrimitives> SnapClient for FetchClient<N> {
+    type Output = FetchClientFuture<PeerRequestResult<SnapResponse>>;
+
+    /// Sends a `GetAccountRange` (`snap/2`) request to an available peer.
+    fn get_account_range_with_priority(
+        &self,
+        request: GetAccountRangeMessage,
+        priority: Priority,
+    ) -> Self::Output {
+        self.send_snap_request(SnapProtocolMessage::GetAccountRange(request), priority)
+    }
+
+    /// Sends a `GetStorageRanges` (`snap/2`) request to an available peer.
+    fn get_storage_ranges(&self, request: GetStorageRangesMessage) -> Self::Output {
+        self.get_storage_ranges_with_priority(request, Priority::Normal)
+    }
+
+    /// Sends a `GetStorageRanges` (`snap/2`) request to an available peer.
+    fn get_storage_ranges_with_priority(
+        &self,
+        request: GetStorageRangesMessage,
+        priority: Priority,
+    ) -> Self::Output {
+        self.send_snap_request(SnapProtocolMessage::GetStorageRanges(request), priority)
+    }
+
+    /// Sends a `GetByteCodes` (`snap/2`) request to an available peer.
+    fn get_byte_codes(&self, request: GetByteCodesMessage) -> Self::Output {
+        self.get_byte_codes_with_priority(request, Priority::Normal)
+    }
+
+    /// Sends a `GetByteCodes` (`snap/2`) request to an available peer.
+    fn get_byte_codes_with_priority(
+        &self,
+        request: GetByteCodesMessage,
+        priority: Priority,
+    ) -> Self::Output {
+        self.send_snap_request(SnapProtocolMessage::GetByteCodes(request), priority)
+    }
+
+    /// Sends a `GetBlockAccessLists` (`snap/2`) request to an available peer.
+    fn get_block_access_lists_with_priority(
+        &self,
+        request: GetBlockAccessListsMessage,
+        priority: Priority,
+    ) -> Self::Output {
+        self.send_snap_request(SnapProtocolMessage::GetBlockAccessLists(request), priority)
     }
 }

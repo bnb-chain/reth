@@ -38,6 +38,7 @@ use alloc::{
     vec::Vec,
 };
 use alloy_consensus::Header;
+use alloy_eip7928::BlockAccessListGasError;
 use alloy_primitives::{BlockHash, BlockNumber, Bloom, B256};
 use core::{error::Error, fmt::Display};
 
@@ -85,6 +86,7 @@ pub trait FullConsensus<N: NodePrimitives>: Consensus<N::Block> {
         block: &RecoveredBlock<N::Block>,
         result: &BlockExecutionResult<N::Receipt>,
         receipt_root_bloom: Option<ReceiptRootBloom>,
+        block_access_list_hash: Option<B256>,
     ) -> Result<(), ConsensusError>;
 }
 
@@ -117,7 +119,8 @@ pub trait Consensus<B: Block>: HeaderValidator<B::Header> {
     /// prevent them from being re-validated once the local clock catches up.
     ///
     /// Transient errors will not cause the block hash to be cached as permanently invalid,
-    /// allowing the block to be re-validated later.
+    /// allowing the block to be re-validated later. Engine payload insertion returns
+    /// `ACCEPTED` with no latest-valid hash; the submitter is responsible for retrying.
     fn is_transient_error(&self, _error: &ConsensusError) -> bool {
         false
     }
@@ -328,6 +331,14 @@ pub enum ConsensusError {
     #[error("missing requests hash")]
     RequestsHashMissing,
 
+    /// Error when the block access list hash is missing.
+    #[error("missing block access list hash")]
+    BlockAccessListHashMissing,
+
+    /// Error when the slot number is missing.
+    #[error("missing slot number")]
+    SlotNumberMissing,
+
     /// Error when an unexpected withdrawals root is encountered.
     #[error("unexpected withdrawals root")]
     WithdrawalsRootUnexpected,
@@ -336,9 +347,21 @@ pub enum ConsensusError {
     #[error("unexpected requests hash")]
     RequestsHashUnexpected,
 
+    /// Error when an unexpected block access list hash is encountered.
+    #[error("unexpected block access list hash")]
+    BlockAccessListHashUnexpected,
+
+    /// Error when an unexpected slot number is encountered.
+    #[error("unexpected slot number")]
+    SlotNumberUnexpected,
+
     /// Error when withdrawals are missing.
     #[error("missing withdrawals")]
     BodyWithdrawalsMissing,
+
+    /// Error when withdrawals are present in a block body before Shanghai.
+    #[error("unexpected withdrawals")]
+    BodyWithdrawalsUnexpected,
 
     /// Error when requests are missing.
     #[error("missing requests")]
@@ -474,6 +497,12 @@ pub enum ConsensusError {
     /// EIP-7825: Transaction gas limit exceeds maximum allowed
     #[error(transparent)]
     TransactionGasLimitTooHigh(Box<TxGasLimitTooHighErr>),
+    /// EIP-7928: Error when an unexpected block access list cost is encountered.
+    #[error(transparent)]
+    BlockAccessListCostMoreThanGasLimit(Box<BlockAccessListGasError>),
+    /// EIP-7928: Error when the block access list hash doesn't match the expected value.
+    #[error("block access list hash mismatch: {0}")]
+    BlockAccessListHashMismatch(GotExpectedBoxed<B256>),
     /// Any additional consensus error, for example L2-specific errors.
     #[error(transparent)]
     Other(#[from] Arc<dyn Error + Send + Sync>),
@@ -515,7 +544,7 @@ impl ConsensusError {
 
     /// Returns `true` if this type is a [`ConsensusError::Other`] of that error type.
     pub fn is_other<T: Error + 'static>(&self) -> bool {
-        self.as_other().map(|err| err.is::<T>()).unwrap_or(false)
+        self.as_other().is_some_and(|err| err.is::<T>())
     }
 }
 
@@ -528,6 +557,12 @@ impl From<InvalidTransactionError> for ConsensusError {
 impl From<TxGasLimitTooHighErr> for ConsensusError {
     fn from(value: TxGasLimitTooHighErr) -> Self {
         Self::TransactionGasLimitTooHigh(Box::new(value))
+    }
+}
+
+impl From<BlockAccessListGasError> for ConsensusError {
+    fn from(value: BlockAccessListGasError) -> Self {
+        Self::BlockAccessListCostMoreThanGasLimit(Box::new(value))
     }
 }
 

@@ -34,9 +34,9 @@ pub fn increase_thread_priority() {
     }
 }
 
-/// Deprioritizes known background threads spawned by third-party libraries (`OpenTelemetry`,
-/// `tracing-appender`, `reqwest`) by scanning `/proc/<pid>/task/` for matching thread names and
-/// setting `SCHED_IDLE` scheduling policy + maximum niceness on them.
+/// Deprioritizes known background threads spawned by third-party libraries (`tracing-appender`,
+/// `reqwest`) by scanning `/proc/<pid>/task/` for matching thread names and setting `SCHED_IDLE`
+/// scheduling policy on them.
 ///
 /// This is a hack: these threads are spawned by libraries that do not expose a way to hook into
 /// thread initialization or expose the TIDs, so we have to discover them after the fact by
@@ -52,9 +52,11 @@ pub fn deprioritize_background_threads() {
 }
 
 /// Thread name prefixes to deprioritize.
+///
+/// Do not re-add the OTLP span exporter (`OpenTelemetry.T`) to avoid CPU spinning.
+/// See <https://github.com/paradigmxyz/reth/pull/27370>.
 #[cfg(target_os = "linux")]
-const DEPRIORITIZE_THREAD_PREFIXES: &[&str] =
-    &["OpenTelemetry.T", "tracing-appende", "reqwest-interna"];
+const DEPRIORITIZE_THREAD_PREFIXES: &[&str] = &["tracing-appende", "reqwest-interna"];
 
 #[cfg(target_os = "linux")]
 fn _deprioritize_background_threads() {
@@ -89,7 +91,11 @@ fn _deprioritize_background_threads() {
         // threads when no other (SCHED_OTHER/SCHED_BATCH/RT) threads need the CPU.
         // SAFETY: sched_setscheduler is safe to call with a valid TID.
         unsafe {
-            let param = libc::sched_param { sched_priority: 0 };
+            // musl's `sched_param` carries extra POSIX sporadic-server fields
+            // (`sched_ss_*`) that glibc omits, so a struct literal isn't portable.
+            // Zero all fields, then set `sched_priority` (0 for SCHED_IDLE).
+            let mut param: libc::sched_param = std::mem::zeroed();
+            param.sched_priority = 0;
             if libc::sched_setscheduler(tid, libc::SCHED_IDLE, std::ptr::from_ref(&param)) != 0 {
                 tracing::debug!(
                     tid,

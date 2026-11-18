@@ -18,9 +18,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   prepare-reth:
-    uses: ./.github/workflows/prepare-reth.yml
+    uses: ./.github/workflows/prepare-reth.yml # zizmor: ignore[self-repository] -- actionlint 1.7.12 requires the ./ syntax.
     with:
       image_tag: ghcr.io/paradigmxyz/op-reth:kurtosis-ci
       binary_name: op-reth
@@ -36,12 +39,13 @@ jobs:
     needs:
       - prepare-reth
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Download reth image
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: artifacts
           path: /tmp
@@ -53,7 +57,7 @@ jobs:
           docker image ls -a
 
       - name: Install Foundry
-        uses: foundry-rs/foundry-toolchain@v1
+        uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
 
       - name: Run kurtosis
         run: |
@@ -65,17 +69,17 @@ jobs:
           ENCLAVE_ID=$(curl http://127.0.0.1:9779/api/enclaves | jq --raw-output 'keys[0]')
           GETH_PORT=$(curl "http://127.0.0.1:9779/api/enclaves/$ENCLAVE_ID/services" | jq '."op-el-2151908-node0-op-geth".public_ports.rpc.number')
           RETH_PORT=$(curl "http://127.0.0.1:9779/api/enclaves/$ENCLAVE_ID/services" | jq '."op-el-2151908-node1-op-reth".public_ports.rpc.number')
-          echo "GETH_RPC=http://127.0.0.1:$GETH_PORT" >> $GITHUB_ENV
-          echo "RETH_RPC=http://127.0.0.1:$RETH_PORT" >> $GITHUB_ENV
+          echo "GETH_RPC=http://127.0.0.1:$GETH_PORT" >> "$GITHUB_ENV"
+          echo "RETH_RPC=http://127.0.0.1:$RETH_PORT" >> "$GITHUB_ENV"
 
       - name: Assert that clients advance
         run: |
-          for i in {1..100}; do
+          for _ in {1..100}; do
             sleep 5
-            BLOCK_GETH=$(cast bn --rpc-url $GETH_RPC)
-            BLOCK_RETH=$(cast bn --rpc-url $RETH_RPC)
+            BLOCK_GETH=$(cast bn --rpc-url "$GETH_RPC")
+            BLOCK_RETH=$(cast bn --rpc-url "$RETH_RPC")
 
-            if [ $BLOCK_GETH -ge 100 ] && [ $BLOCK_RETH -ge 100 ] ; then exit 0; fi
+            if [ "$BLOCK_GETH" -ge 100 ] && [ "$BLOCK_RETH" -ge 100 ] ; then exit 0; fi
             echo "Waiting for clients to advance..., Reth: $BLOCK_RETH Geth: $BLOCK_GETH"
           done
           kurtosis service logs -a op-devnet op-el-2151908-2-op-reth-op-node-op-kurtosis
@@ -88,7 +92,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Slack Webhook Action
-        uses: rtCamp/action-slack-notify@v2
+        uses: rtCamp/action-slack-notify@33ca3be66c6f378fe1610fd1d5258632dbed5e58 # v2.4.0
         env:
           SLACK_COLOR: ${{ job.status }}
           SLACK_MESSAGE: "Failed run: https://github.com/paradigmxyz/reth/actions/runs/${{ github.run_id }}"

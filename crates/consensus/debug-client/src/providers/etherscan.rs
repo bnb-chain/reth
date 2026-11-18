@@ -1,26 +1,26 @@
-use crate::BlockProvider;
-use alloy_consensus::BlockHeader;
+use crate::PayloadProvider;
 use alloy_eips::BlockNumberOrTag;
 use alloy_json_rpc::{Response, ResponsePayload};
 use reqwest::Client;
+use reth_node_api::ExecutionPayload;
 use reth_tracing::tracing::{debug, warn};
 use serde::{de::DeserializeOwned, Serialize};
 use std::{sync::Arc, time::Duration};
 use tokio::{sync::mpsc, time::interval};
 
 /// Block provider that fetches new blocks from Etherscan API.
-#[derive(derive_more::Debug, Clone)]
-pub struct EtherscanBlockProvider<RpcBlock, PrimitiveBlock> {
+#[derive(derive_more::Debug)]
+pub struct EtherscanBlockProvider<RpcBlock, ExecutionData> {
     http_client: Client,
     base_url: String,
     api_key: String,
     chain_id: u64,
     interval: Duration,
     #[debug(skip)]
-    convert: Arc<dyn Fn(RpcBlock) -> PrimitiveBlock + Send + Sync>,
+    convert: Arc<dyn Fn(RpcBlock) -> ExecutionData + Send + Sync>,
 }
 
-impl<RpcBlock, PrimitiveBlock> EtherscanBlockProvider<RpcBlock, PrimitiveBlock>
+impl<RpcBlock, ExecutionData> EtherscanBlockProvider<RpcBlock, ExecutionData>
 where
     RpcBlock: Serialize + DeserializeOwned,
 {
@@ -29,7 +29,7 @@ where
         base_url: String,
         api_key: String,
         chain_id: u64,
-        convert: impl Fn(RpcBlock) -> PrimitiveBlock + Send + Sync + 'static,
+        convert: impl Fn(RpcBlock) -> ExecutionData + Send + Sync + 'static,
     ) -> Self {
         Self {
             http_client: Client::new(),
@@ -50,10 +50,10 @@ where
     /// Load block using Etherscan API. Note: only `BlockNumberOrTag::Latest`,
     /// `BlockNumberOrTag::Earliest`, `BlockNumberOrTag::Pending`, `BlockNumberOrTag::Number(u64)`
     /// are supported.
-    pub async fn load_block(
+    pub async fn load_payload(
         &self,
         block_number_or_tag: BlockNumberOrTag,
-    ) -> eyre::Result<PrimitiveBlock> {
+    ) -> eyre::Result<ExecutionData> {
         let tag = match block_number_or_tag {
             BlockNumberOrTag::Number(num) => format!("{num:#x}"),
             tag => tag.to_string(),
@@ -74,7 +74,7 @@ where
 
         let resp = req.send().await?.text().await?;
 
-        debug!(target: "etherscan", %resp, "fetched block from etherscan");
+        debug!(target: "etherscan", %tag, response_bytes = resp.len(), "fetched block from etherscan");
 
         let resp: Response<RpcBlock> = serde_json::from_str(&resp).inspect_err(|err| {
             warn!(target: "etherscan", "Failed to parse block response from etherscan: {}", err);
@@ -88,20 +88,35 @@ where
     }
 }
 
-impl<RpcBlock, PrimitiveBlock> BlockProvider for EtherscanBlockProvider<RpcBlock, PrimitiveBlock>
+// Implemented manually so cloning doesn't require `RpcBlock: Clone` and `ExecutionData: Clone`,
+// which are only used by the shared conversion function.
+impl<RpcBlock, ExecutionData> Clone for EtherscanBlockProvider<RpcBlock, ExecutionData> {
+    fn clone(&self) -> Self {
+        Self {
+            http_client: self.http_client.clone(),
+            base_url: self.base_url.clone(),
+            api_key: self.api_key.clone(),
+            chain_id: self.chain_id,
+            interval: self.interval,
+            convert: Arc::clone(&self.convert),
+        }
+    }
+}
+
+impl<RpcBlock, ExecutionData> PayloadProvider for EtherscanBlockProvider<RpcBlock, ExecutionData>
 where
     RpcBlock: Serialize + DeserializeOwned + 'static,
-    PrimitiveBlock: reth_primitives_traits::Block + 'static,
+    ExecutionData: ExecutionPayload,
 {
-    type Block = PrimitiveBlock;
+    type ExecutionData = ExecutionData;
 
-    async fn subscribe_blocks(&self, tx: mpsc::Sender<Self::Block>) {
+    async fn subscribe_payloads(&self, tx: mpsc::Sender<Self::ExecutionData>) {
         let mut last_block_number: Option<u64> = None;
         let mut interval = interval(self.interval);
         loop {
             interval.tick().await;
-            let block = match self.load_block(BlockNumberOrTag::Latest).await {
-                Ok(block) => block,
+            let payload = match self.load_payload(BlockNumberOrTag::Latest).await {
+                Ok(payload) => payload,
                 Err(err) => {
                     warn!(
                         target: "consensus::debug-client",
@@ -111,12 +126,12 @@ where
                     continue
                 }
             };
-            let block_number = block.header().number();
+            let block_number = payload.block_number();
             if Some(block_number) == last_block_number {
                 continue;
             }
 
-            if tx.send(block).await.is_err() {
+            if tx.send(payload).await.is_err() {
                 // Channel closed.
                 break;
             }
@@ -125,7 +140,7 @@ where
         }
     }
 
-    async fn get_block(&self, block_number: u64) -> eyre::Result<Self::Block> {
-        self.load_block(BlockNumberOrTag::Number(block_number)).await
+    async fn get_payload(&self, block_number: u64) -> eyre::Result<Self::ExecutionData> {
+        self.load_payload(BlockNumberOrTag::Number(block_number)).await
     }
 }

@@ -3,9 +3,11 @@
 use crate::cli::config::RethTransactionPoolConfig;
 use alloy_eips::eip1559::{ETHEREUM_BLOCK_GAS_LIMIT_30M, MIN_PROTOCOL_BASE_FEE};
 use alloy_primitives::Address;
-use clap::{builder::Resettable, Args};
+use clap::{
+    builder::{RangedU64ValueParser, Resettable},
+    Args,
+};
 use reth_cli_util::{parse_duration_from_secs_or_ms, parsers::format_duration_as_secs_or_ms};
-use reth_network::transactions::constants::tx_manager::DEFAULT_REANNOUNCE_TIME;
 use reth_transaction_pool::{
     blobstore::disk::DEFAULT_MAX_CACHED_BLOBS,
     maintain::MAX_QUEUED_TRANSACTION_LIFETIME,
@@ -53,7 +55,6 @@ pub struct DefaultTxPoolValues {
     new_tx_listener_buffer_size: usize,
     max_new_pending_txs_notifications: usize,
     max_queued_lifetime: Duration,
-    reannounce_time: Duration,
     transactions_backup_path: Option<PathBuf>,
     disable_transactions_backup: bool,
     max_batch_size: usize,
@@ -232,12 +233,6 @@ impl DefaultTxPoolValues {
         self
     }
 
-    /// Set the default local transaction reannounce threshold.
-    pub const fn with_reannounce_time(mut self, v: Duration) -> Self {
-        self.reannounce_time = v;
-        self
-    }
-
     /// Set the default transactions backup path
     pub fn with_transactions_backup_path(mut self, v: Option<PathBuf>) -> Self {
         self.transactions_backup_path = v;
@@ -287,7 +282,6 @@ impl Default for DefaultTxPoolValues {
             new_tx_listener_buffer_size: NEW_TX_LISTENER_BUFFER_SIZE,
             max_new_pending_txs_notifications: MAX_NEW_PENDING_TXS_NOTIFICATIONS,
             max_queued_lifetime: MAX_QUEUED_TRANSACTION_LIFETIME,
-            reannounce_time: DEFAULT_REANNOUNCE_TIME,
             transactions_backup_path: None,
             disable_transactions_backup: false,
             max_batch_size: 1,
@@ -299,28 +293,28 @@ impl Default for DefaultTxPoolValues {
 #[derive(Debug, Clone, Args, PartialEq, Eq)]
 #[command(next_help_heading = "TxPool")]
 pub struct TxPoolArgs {
-    /// Max number of transaction in the pending sub-pool.
+    /// Max number of transactions in the pending sub-pool.
     #[arg(long = "txpool.pending-max-count", alias = "txpool.pending_max_count", default_value_t = DefaultTxPoolValues::get_global().pending_max_count)]
     pub pending_max_count: usize,
     /// Max size of the pending sub-pool in megabytes.
     #[arg(long = "txpool.pending-max-size", alias = "txpool.pending_max_size", default_value_t = DefaultTxPoolValues::get_global().pending_max_size)]
     pub pending_max_size: usize,
 
-    /// Max number of transaction in the basefee sub-pool
+    /// Max number of transactions in the basefee sub-pool
     #[arg(long = "txpool.basefee-max-count", alias = "txpool.basefee_max_count", default_value_t = DefaultTxPoolValues::get_global().basefee_max_count)]
     pub basefee_max_count: usize,
     /// Max size of the basefee sub-pool in megabytes.
     #[arg(long = "txpool.basefee-max-size", alias = "txpool.basefee_max_size", default_value_t = DefaultTxPoolValues::get_global().basefee_max_size)]
     pub basefee_max_size: usize,
 
-    /// Max number of transaction in the queued sub-pool
+    /// Max number of transactions in the queued sub-pool
     #[arg(long = "txpool.queued-max-count", alias = "txpool.queued_max_count", default_value_t = DefaultTxPoolValues::get_global().queued_max_count)]
     pub queued_max_count: usize,
     /// Max size of the queued sub-pool in megabytes.
     #[arg(long = "txpool.queued-max-size", alias = "txpool.queued_max_size", default_value_t = DefaultTxPoolValues::get_global().queued_max_size)]
     pub queued_max_size: usize,
 
-    /// Max number of transaction in the blobpool
+    /// Max number of transactions in the blobpool
     #[arg(long = "txpool.blobpool-max-count", alias = "txpool.blobpool_max_count", default_value_t = DefaultTxPoolValues::get_global().blobpool_max_count)]
     pub blobpool_max_count: usize,
     /// Max size of the blobpool in megabytes.
@@ -348,7 +342,8 @@ pub struct TxPoolArgs {
     pub minimal_protocol_basefee: u64,
 
     /// Minimum priority fee required for transaction acceptance into the pool.
-    /// Transactions with priority fee below this value will be rejected.
+    /// Transactions with priority fee below this value will be rejected. For legacy and EIP-2930
+    /// transactions the gas price is used as the priority fee.
     #[arg(long = "txpool.minimum-priority-fee", default_value = Resettable::from(DefaultTxPoolValues::get_global().minimum_priority_fee.map(|v| v.to_string().into())))]
     pub minimum_priority_fee: Option<u128>,
 
@@ -404,12 +399,6 @@ pub struct TxPoolArgs {
     #[arg(long = "txpool.lifetime", value_parser = parse_duration_from_secs_or_ms, value_name = "DURATION", default_value = format_duration_as_secs_or_ms(DefaultTxPoolValues::get_global().max_queued_lifetime))]
     pub max_queued_lifetime: Duration,
 
-    /// Age threshold for hash-only reannouncement of local pending transactions.
-    ///
-    /// Default is effectively disabled at 10 years. Minimum is 1 minute.
-    #[arg(long = "txpool.reannouncetime", alias = "txpool.reannounce-time", value_parser = parse_duration_from_secs_or_ms, value_name = "DURATION", default_value = format_duration_as_secs_or_ms(DefaultTxPoolValues::get_global().reannounce_time))]
-    pub reannounce_time: Duration,
-
     /// Path to store the local transaction backup at, to survive node restarts.
     #[arg(long = "txpool.transactions-backup", alias = "txpool.journal", value_name = "PATH", default_value = Resettable::from(DefaultTxPoolValues::get_global().transactions_backup_path.as_ref().map(|v| v.to_string_lossy().into())))]
     pub transactions_backup_path: Option<PathBuf>,
@@ -424,7 +413,7 @@ pub struct TxPoolArgs {
     pub disable_transactions_backup: bool,
 
     /// Max batch size for transaction pool insertions
-    #[arg(long = "txpool.max-batch-size", default_value_t = DefaultTxPoolValues::get_global().max_batch_size)]
+    #[arg(long = "txpool.max-batch-size", value_parser = RangedU64ValueParser::<usize>::new().range(1..), default_value_t = DefaultTxPoolValues::get_global().max_batch_size)]
     pub max_batch_size: usize,
 }
 
@@ -476,7 +465,6 @@ impl Default for TxPoolArgs {
             new_tx_listener_buffer_size,
             max_new_pending_txs_notifications,
             max_queued_lifetime,
-            reannounce_time,
             transactions_backup_path,
             disable_transactions_backup,
             max_batch_size,
@@ -509,7 +497,6 @@ impl Default for TxPoolArgs {
             new_tx_listener_buffer_size,
             max_new_pending_txs_notifications,
             max_queued_lifetime,
-            reannounce_time,
             transactions_backup_path,
             disable_transactions_backup,
             max_batch_size,
@@ -558,6 +545,7 @@ impl RethTransactionPoolConfig for TxPoolArgs {
             max_new_pending_txs_notifications: self.max_new_pending_txs_notifications,
             max_queued_lifetime: self.max_queued_lifetime,
             max_inflight_delegated_slot_limit: default_config.max_inflight_delegated_slot_limit,
+            enforce_tracked_nonce: default_config.enforce_tracked_nonce,
         }
     }
 
@@ -569,8 +557,8 @@ impl RethTransactionPoolConfig for TxPoolArgs {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
-    use alloy_primitives::address;
     use clap::Parser;
 
     /// A helper type to parse Args more easily
@@ -608,6 +596,17 @@ mod tests {
     }
 
     #[test]
+    fn txpool_max_batch_size_must_be_nonzero() {
+        let zero =
+            CommandParser::<TxPoolArgs>::try_parse_from(["reth", "--txpool.max-batch-size", "0"]);
+        assert!(zero.is_err());
+
+        let valid =
+            CommandParser::<TxPoolArgs>::parse_from(["reth", "--txpool.max-batch-size", "1"]);
+        assert_eq!(valid.args.max_batch_size, 1);
+    }
+
+    #[test]
     fn txpool_args() {
         let args = TxPoolArgs {
             pending_max_count: 1000,
@@ -630,17 +629,13 @@ mod tests {
             max_tx_input_bytes: 131072,
             max_cached_entries: 200,
             no_locals: true,
-            locals: vec![
-                address!("0x0000000000000000000000000000000000000001"),
-                address!("0x0000000000000000000000000000000000000002"),
-            ],
+            locals: vec![Address::with_last_byte(1), Address::with_last_byte(2)],
             no_local_transactions_propagation: true,
             additional_validation_tasks: 4,
             pending_tx_listener_buffer_size: 512,
             new_tx_listener_buffer_size: 256,
             max_new_pending_txs_notifications: 128,
             max_queued_lifetime: Duration::from_secs(7200),
-            reannounce_time: Duration::from_secs(1200),
             transactions_backup_path: Some(PathBuf::from("/tmp/txpool-backup")),
             disable_transactions_backup: false,
             max_batch_size: 10,
@@ -700,8 +695,6 @@ mod tests {
             "128",
             "--txpool.lifetime",
             "7200",
-            "--txpool.reannouncetime",
-            "1200",
             "--txpool.transactions-backup",
             "/tmp/txpool-backup",
             "--txpool.max-batch-size",

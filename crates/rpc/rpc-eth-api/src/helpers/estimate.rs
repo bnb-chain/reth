@@ -2,16 +2,19 @@
 
 use super::{Call, LoadPendingBlock};
 use crate::{AsEthApiError, FromEthApiError, IntoEthApiError};
-use alloy_evm::overrides::apply_state_overrides;
+use alloy_evm::overrides::{apply_block_overrides, apply_state_overrides};
 use alloy_network::TransactionBuilder;
 use alloy_primitives::{TxKind, U256};
-use alloy_rpc_types_eth::{state::StateOverride, BlockId};
+use alloy_rpc_types_eth::{state::EvmOverrides, BlockId};
 use futures::Future;
 use reth_chainspec::MIN_TRANSACTION_GAS;
 use reth_errors::ProviderError;
-use reth_evm::{ConfigureEvm, Database, Evm, EvmEnvFor, EvmFor, TransactionEnvMut, TxEnvFor};
+use reth_evm::{
+    env::BlockEnvironment, ConfigureEvm, Database, Evm, EvmEnvFor, EvmFor, TransactionEnvMut,
+    TxEnvFor,
+};
 use reth_revm::{
-    database::{EvmStateProvider, StateProviderDatabase},
+    database::StateProviderDatabase,
     db::{bal::EvmDatabaseError, State},
 };
 use reth_rpc_convert::{RpcConvert, RpcTxReq};
@@ -23,10 +26,12 @@ use reth_rpc_eth_types::{
     BlockOverridesExt, EthApiError, RpcInvalidTransactionError,
 };
 use reth_rpc_server_types::constants::gas_oracle::{CALL_STIPEND_GAS, ESTIMATE_GAS_ERROR_RATIO};
+use reth_storage_api::{EvmStateProvider, StateProvider};
+use reth_tasks::cancel::is_cancelled;
 use revm::{
     context::Block,
     context_interface::{result::ExecutionResult, Cfg, Transaction},
-    primitives::KECCAK_EMPTY,
+    Database as _,
 };
 use tracing::trace;
 
@@ -52,7 +57,7 @@ where
         mut evm_env: EvmEnvFor<Self::Evm>,
         mut request: RpcTxReq<<Self::RpcConvert as RpcConvert>::Network>,
         state: S,
-        state_override: Option<StateOverride>,
+        overrides: EvmOverrides,
     ) -> Result<U256, Self::Error>
     where
         S: EvmStateProvider,
@@ -76,34 +81,30 @@ where
         // Keep a copy of gas related request values
         let tx_request_gas_limit = request.as_ref().gas_limit();
         let tx_request_gas_price = request.as_ref().gas_price();
-        // the gas limit of the corresponding block
-        let max_gas_limit = evm_env
-            .cfg_env
-            .tx_gas_limit_cap
-            // If EIP-8037 is enabled, the transaction gas limit cap is not applicable
-            .filter(|_| !evm_env.cfg_env.is_amsterdam_eip8037_enabled())
-            .map_or_else(
-                || evm_env.block_env.gas_limit(),
-                |cap| cap.min(evm_env.block_env.gas_limit()),
-            );
-
-        // Determine the highest possible gas limit, considering both the request's specified limit
-        // and the block's limit.
-        let mut highest_gas_limit = tx_request_gas_limit
-            .map(|mut tx_gas_limit| {
-                if max_gas_limit < tx_gas_limit {
-                    // requested gas limit is higher than the allowed gas limit, capping
-                    tx_gas_limit = max_gas_limit;
-                }
-                tx_gas_limit
-            })
-            .unwrap_or(max_gas_limit);
 
         // Configure the evm env
         let mut db = State::builder().with_database(StateProviderDatabase::new(state)).build();
 
+        // Apply any block overrides before deriving block-derived limits and the tx env so
+        // overrides for `gasLimit`, `baseFee` and `blobBaseFee` are visible to estimation.
+        // Mirrors geth's behavior, see:
+        // <https://github.com/ethereum/go-ethereum/pull/30695>
+        if let Some(block_overrides) = overrides.block {
+            apply_block_overrides(
+                (*block_overrides).clone(),
+                &mut db,
+                evm_env.block_env.inner_mut(),
+            );
+            // Let chain-specific block environments observe the overrides (no-op for the
+            // standard `BlockEnv`).
+            evm_env
+                .block_env
+                .apply_block_overrides_ext(&block_overrides)
+                .map_err(EthApiError::InvalidParams)?;
+        }
+
         // Apply any state overrides if specified.
-        if let Some(state_override) = state_override {
+        if let Some(state_override) = overrides.state {
             evm_env
                 .block_env
                 .apply_state_overrides_ext(&state_override)
@@ -111,17 +112,36 @@ where
             apply_state_overrides(state_override, &mut db).map_err(Self::Error::from_eth_err)?;
         }
 
+        // the gas limit of the corresponding block
+        let block_gas_limit = evm_env.block_env.gas_limit();
+        // If EIP-8037 is enabled, the transaction gas limit cap is not applicable
+        let mut max_gas_limit = if evm_env.cfg_env.is_amsterdam_eip8037_enabled() {
+            block_gas_limit
+        } else {
+            evm_env.cfg_env.tx_gas_limit_cap().min(block_gas_limit)
+        };
+
+        // Also bound diagnostic retries by the RPC gas cap. Zero means unlimited.
+        let gas_cap = self.call_gas_limit();
+        if gas_cap != 0 {
+            max_gas_limit = max_gas_limit.min(gas_cap);
+        }
+
+        let mut highest_gas_limit =
+            tx_request_gas_limit.unwrap_or(max_gas_limit).min(max_gas_limit);
+
         let mut tx_env = self.create_txn_env(&evm_env, request, &mut db)?;
 
-        // Check if this is a basic transfer (no input data to account with no code)
+        // Check whether this is a basic transfer: empty input to an account without bytecode.
         let is_basic_transfer = if tx_env.input().is_empty() &&
             let TxKind::Call(to) = tx_env.kind()
         {
-            match db.database.basic_account(&to) {
-                Ok(Some(account)) => {
-                    account.bytecode_hash.is_none() || account.bytecode_hash == Some(KECCAK_EMPTY)
-                }
-                _ => true,
+            // Fetch the account through `Database::basic` so the state overrides applied above
+            // are visible.
+            match db.basic(to) {
+                Ok(Some(account)) => account.is_empty_code_hash(),
+                Ok(None) => true,
+                Err(_) => false,
             }
         } else {
             false
@@ -142,21 +162,19 @@ where
         // Create EVM instance once and reuse it throughout the entire estimation process
         let mut evm = self.evm_config().evm_with_env(&mut db, evm_env);
 
-        // For basic transfers, try using minimum gas before running full binary search
+        // For basic transfers, try 21_000 gas before running the full binary search.
         if is_basic_transfer {
-            // If the tx is a simple transfer (call to an account with no code) we can
-            // shortcircuit. But simply returning
-            // `MIN_TRANSACTION_GAS` is dangerous because there might be additional
-            // field combos that bump the price up, so we try executing the function
-            // with the minimum gas limit to make sure.
+            // A basic transfer executes no bytecode and receives no refunds, so the amount
+            // consumed by a successful run is the exact gas required. EIP-2780 can make that less
+            // than 21_000.
             let mut min_tx_env = tx_env.clone();
-            min_tx_env.set_gas_limit(MIN_TRANSACTION_GAS);
+            min_tx_env.set_gas_limit(MIN_TRANSACTION_GAS.min(max_gas_limit));
 
             // Reuse the same EVM instance
             if let Ok(res) = evm.transact(min_tx_env).map_err(Self::Error::from_evm_err) &&
                 res.result.is_success()
             {
-                return Ok(U256::from(MIN_TRANSACTION_GAS))
+                return Ok(U256::from(res.result.tx_gas_used()))
             }
         }
 
@@ -266,6 +284,10 @@ where
                 break
             };
 
+            if is_cancelled() {
+                return Err(EthApiError::InternalEthError.into())
+            }
+
             let mut mid_tx_env = tx_env.clone();
             mid_tx_env.set_gas_limit(mid_gas_limit);
 
@@ -305,7 +327,7 @@ where
         &self,
         request: RpcTxReq<<Self::RpcConvert as RpcConvert>::Network>,
         at: BlockId,
-        state_override: Option<StateOverride>,
+        overrides: EvmOverrides,
     ) -> impl Future<Output = Result<U256, Self::Error>> + Send
     where
         Self: LoadPendingBlock,
@@ -313,8 +335,14 @@ where
         async move {
             let (evm_env, at) = self.evm_env_at(at).await?;
 
-            self.spawn_with_state(Some(at), move |this, state| {
-                EstimateCall::estimate_gas_with(&this, evm_env, request, state, state_override)
+            self.spawn_blocking_io_with_state(at, move |this, state| {
+                EstimateCall::estimate_gas_with(
+                    &this,
+                    evm_env,
+                    request,
+                    state.into_evm_state_provider(),
+                    overrides,
+                )
             })
             .await
         }

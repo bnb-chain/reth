@@ -82,6 +82,12 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
+// `alloy-trie` and `reth-trie-common` are declared for feature propagation
+// (jemalloc / asm-keccak / test-utils) but not referenced in code; mark them used so
+// `unused_crate_dependencies` does not fire.
+use alloy_trie as _;
+use reth_trie_common as _;
+
 #[expect(missing_docs)]
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_utils;

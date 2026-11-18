@@ -22,13 +22,13 @@ use crate::service::BuildNewPayload;
 /// Note: A `PayloadJob` need to be cancel safe because it might be dropped after the CL has requested the payload via `engine_getPayloadV1` (see also [engine API docs](https://github.com/ethereum/execution-apis/blob/6709c2a795b707202e93c4f2867fa0bf2640a84f/src/engine/paris.md#engine_getpayloadv1))
 pub trait PayloadJob: Future<Output = Result<(), PayloadBuilderError>> {
     /// Represents the payload attributes type that is used to spawn this payload job.
-    type PayloadAttributes: PayloadAttributes + std::fmt::Debug;
+    type PayloadAttributes: PayloadAttributes;
     /// Represents the future that resolves the block that's returned to the CL.
     type ResolvePayloadFuture: Future<Output = Result<Self::BuiltPayload, PayloadBuilderError>>
         + Send
         + 'static;
     /// Represents the built payload type that is returned to the CL.
-    type BuiltPayload: BuiltPayload + Clone + std::fmt::Debug;
+    type BuiltPayload: BuiltPayload + Clone;
 
     /// Returns the best payload that has been built so far.
     ///
@@ -65,6 +65,13 @@ pub trait PayloadJob: Future<Output = Result<(), PayloadBuilderError>> {
     /// If this returns [`KeepPayloadJobAlive::Yes`], then the [`PayloadJob`] will be polled
     /// once more. If this returns [`KeepPayloadJobAlive::No`] then the [`PayloadJob`] will be
     /// dropped after this call.
+    ///
+    /// # Cancellation safety
+    ///
+    /// The returned [`ResolvePayloadFuture`](Self::ResolvePayloadFuture) is not
+    /// cancellation-safe. Dropping it cancels resolving the payload and, when the corresponding
+    /// handle resolve call has removed the payload job, cancels the job identified by that
+    /// `payload_id`.
     ///
     /// The [`PayloadKind`] determines how the payload should be resolved in the
     /// `ResolvePayloadFuture`. [`PayloadKind::Earliest`] should return the earliest available
@@ -104,6 +111,9 @@ pub trait PayloadJobGenerator {
     /// Creates the initial payload and a new [`PayloadJob`] that yields better payloads over time.
     ///
     /// This is called when the CL requests a new payload job via a fork choice update.
+    ///
+    /// Return [`PayloadBuilderError::InvalidAttributes`] to reject the payload attributes; any
+    /// other error is reported to the CL as an internal error.
     ///
     /// # Note
     ///

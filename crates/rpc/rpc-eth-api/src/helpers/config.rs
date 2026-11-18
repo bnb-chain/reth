@@ -67,6 +67,10 @@ where
                 .extend(SystemContract::prague(chain_spec.deposit_contract().map(|c| c.address)));
         }
 
+        if chain_spec.is_amsterdam_active_at_timestamp(timestamp) {
+            system_contracts.extend(SystemContract::amsterdam());
+        }
+
         // Fork config only exists for timestamp-based hardforks.
         let fork_id = chain_spec
             .fork_id(&Head { timestamp, number: u64::MAX, ..Default::default() })

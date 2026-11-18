@@ -3,18 +3,13 @@
 use crate::PayloadBuilderError;
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use alloy_eips::{eip4895::Withdrawal, eip7685::Requests};
-use alloy_primitives::{B256, U256};
-use alloy_rlp::Encodable;
+use alloy_primitives::{Bytes, B256, U256};
 use alloy_rpc_types_engine::{PayloadAttributes as EthPayloadAttributes, PayloadId};
 use core::fmt;
 use either::Either;
-use reth_chain_state::ComputedTrieData;
 use reth_execution_types::BlockExecutionOutput;
 use reth_primitives_traits::{NodePrimitives, RecoveredBlock, SealedBlock, SealedHeader};
-use reth_trie_common::{
-    updates::{TrieUpdates, TrieUpdatesSorted},
-    HashedPostState, HashedPostStateSorted,
-};
+use reth_trie_common::{updates::TrieUpdates, HashedPostState};
 
 /// Represents an executed block for payload building purposes.
 ///
@@ -26,44 +21,10 @@ pub struct BuiltPayloadExecutedBlock<N: NodePrimitives> {
     pub recovered_block: Arc<RecoveredBlock<N::Block>>,
     /// Block's execution outcome.
     pub execution_output: Arc<BlockExecutionOutput<N::Receipt>>,
-    /// Block's hashed state.
-    ///
-    /// Supports both unsorted and sorted variants so payload builders can avoid cloning in order
-    /// to convert from one to the other when it's not necessary.
-    pub hashed_state: Either<Arc<HashedPostState>, Arc<HashedPostStateSorted>>,
-    /// Trie updates that result from calculating the state root for the block.
-    ///
-    /// Supports both unsorted and sorted variants so payload builders can avoid cloning in order
-    /// to convert from one to the other when it's not necessary.
-    pub trie_updates: Either<Arc<TrieUpdates>, Arc<TrieUpdatesSorted>>,
-}
-
-impl<N: NodePrimitives> BuiltPayloadExecutedBlock<N> {
-    /// Converts this into an [`reth_chain_state::ExecutedBlock`].
-    ///
-    /// Ensures hashed state and trie updates are in their sorted representations
-    /// as required by `reth_chain_state::ExecutedBlock`.
-    pub fn into_executed_payload(self) -> reth_chain_state::ExecutedBlock<N> {
-        let hashed_state = match self.hashed_state {
-            // Convert unsorted to sorted
-            Either::Left(unsorted) => Arc::new(Arc::unwrap_or_clone(unsorted).into_sorted()),
-            // Already sorted
-            Either::Right(sorted) => sorted,
-        };
-
-        let trie_updates = match self.trie_updates {
-            // Convert unsorted to sorted
-            Either::Left(unsorted) => Arc::new(Arc::unwrap_or_clone(unsorted).into_sorted()),
-            // Already sorted
-            Either::Right(sorted) => sorted,
-        };
-
-        reth_chain_state::ExecutedBlock::new(
-            self.recovered_block,
-            self.execution_output,
-            ComputedTrieData::without_trie_input(hashed_state, trie_updates),
-        )
-    }
+    /// Block's hashed state (unsorted).
+    pub hashed_state: Arc<HashedPostState>,
+    /// Trie updates that result from calculating the state root for the block (unsorted).
+    pub trie_updates: Arc<TrieUpdates>,
 }
 
 /// Represents a successfully built execution payload (block).
@@ -80,6 +41,13 @@ pub trait BuiltPayload: Send + Sync + fmt::Debug {
 
     /// Returns the total fees collected from all transactions in this block.
     fn fees(&self) -> U256;
+
+    /// Returns the EIP-7928 block access list included in this payload.
+    ///
+    /// Returns `None` for payloads that do not carry a block access list.
+    fn block_access_list(&self) -> Option<&Bytes> {
+        None
+    }
 
     /// Returns the complete execution result including state updates.
     ///
@@ -122,6 +90,19 @@ pub trait PayloadAttributes:
     ///
     /// `Some` for post-Amsterdam blocks, `None` for earlier blocks.
     fn slot_number(&self) -> Option<u64>;
+
+    /// Returns the target gas limit for the new payload.
+    ///
+    /// `Some` for payload attributes that specify the desired gas limit, `None` if the builder
+    /// should use its configured target.
+    fn target_gas_limit(&self) -> Option<u64> {
+        None
+    }
+
+    /// Returns the EIP-7805 inclusion-list transactions supplied by the consensus layer.
+    fn inclusion_list_transactions(&self) -> Option<&[Bytes]> {
+        None
+    }
 }
 
 impl PayloadAttributes for EthPayloadAttributes {
@@ -143,6 +124,10 @@ impl PayloadAttributes for EthPayloadAttributes {
 
     fn slot_number(&self) -> Option<u64> {
         self.slot_number
+    }
+
+    fn target_gas_limit(&self) -> Option<u64> {
+        self.target_gas_limit
     }
 }
 
@@ -217,13 +202,19 @@ pub fn payload_id(
     hasher.update(attributes.prev_randao.as_slice());
     hasher.update(attributes.suggested_fee_recipient.as_slice());
     if let Some(withdrawals) = &attributes.withdrawals {
-        let mut buf = Vec::new();
-        withdrawals.encode(&mut buf);
-        hasher.update(buf);
+        hasher.update(alloy_rlp::encode(withdrawals));
     }
 
     if let Some(parent_beacon_block) = attributes.parent_beacon_block_root {
         hasher.update(parent_beacon_block);
+    }
+
+    if let Some(slot_number) = attributes.slot_number {
+        hasher.update(slot_number.to_be_bytes());
+    }
+
+    if let Some(target_gas_limit) = attributes.target_gas_limit {
+        hasher.update(target_gas_limit.to_be_bytes());
     }
 
     let out = hasher.finalize();
@@ -236,8 +227,7 @@ pub fn payload_id(
 mod tests {
     use super::*;
     use alloy_eips::eip4895::Withdrawal;
-    use alloy_primitives::{Address, B64};
-    use core::str::FromStr;
+    use alloy_primitives::{address, b256, b64, Address};
 
     #[test]
     fn attributes_serde() {
@@ -248,99 +238,109 @@ mod tests {
     #[test]
     fn test_payload_id_basic() {
         // Create a parent block and payload attributes
-        let parent =
-            B256::from_str("0x3b8fb240d288781d4aac94d3fd16809ee413bc99294a085798a589dae51ddd4a")
-                .unwrap();
+        let parent = b256!("0x3b8fb240d288781d4aac94d3fd16809ee413bc99294a085798a589dae51ddd4a");
         let attributes = EthPayloadAttributes {
             timestamp: 0x5,
-            prev_randao: B256::from_str(
-                "0x0000000000000000000000000000000000000000000000000000000000000000",
-            )
-            .unwrap(),
-            suggested_fee_recipient: Address::from_str(
-                "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b",
-            )
-            .unwrap(),
+            prev_randao: B256::ZERO,
+            suggested_fee_recipient: address!("0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b"),
             withdrawals: None,
             parent_beacon_block_root: None,
             slot_number: None,
+            ..Default::default()
         };
 
         // Verify that the generated payload ID matches the expected value
-        assert_eq!(
-            payload_id(&parent, &attributes),
-            PayloadId(B64::from_str("0xa247243752eb10b4").unwrap())
-        );
+        assert_eq!(payload_id(&parent, &attributes), PayloadId(b64!("0xa247243752eb10b4")));
     }
 
     #[test]
     fn test_payload_id_with_withdrawals() {
         // Set up the parent and attributes with withdrawals
-        let parent =
-            B256::from_str("0x9876543210abcdef9876543210abcdef9876543210abcdef9876543210abcdef")
-                .unwrap();
+        let parent = b256!("0x9876543210abcdef9876543210abcdef9876543210abcdef9876543210abcdef");
         let attributes = EthPayloadAttributes {
             timestamp: 1622553200,
             prev_randao: B256::from_slice(&[1; 32]),
-            suggested_fee_recipient: Address::from_str(
-                "0xb94f5374fce5edbc8e2a8697c15331677e6ebf0b",
-            )
-            .unwrap(),
+            suggested_fee_recipient: address!("0xb94f5374fce5edbc8e2a8697c15331677e6ebf0b"),
             withdrawals: Some(vec![
                 Withdrawal {
                     index: 1,
                     validator_index: 123,
-                    address: Address::from([0xAA; 20]),
+                    address: Address::repeat_byte(0xAA),
                     amount: 10,
                 },
                 Withdrawal {
                     index: 2,
                     validator_index: 456,
-                    address: Address::from([0xBB; 20]),
+                    address: Address::repeat_byte(0xBB),
                     amount: 20,
                 },
             ]),
             parent_beacon_block_root: None,
             slot_number: None,
+            ..Default::default()
         };
 
         // Verify that the generated payload ID matches the expected value
-        assert_eq!(
-            payload_id(&parent, &attributes),
-            PayloadId(B64::from_str("0xedddc2f84ba59865").unwrap())
-        );
+        assert_eq!(payload_id(&parent, &attributes), PayloadId(b64!("0xedddc2f84ba59865")));
     }
 
     #[test]
     fn test_payload_id_with_parent_beacon_block_root() {
         // Set up the parent and attributes with a parent beacon block root
-        let parent =
-            B256::from_str("0x9876543210abcdef9876543210abcdef9876543210abcdef9876543210abcdef")
-                .unwrap();
+        let parent = b256!("0x9876543210abcdef9876543210abcdef9876543210abcdef9876543210abcdef");
         let attributes = EthPayloadAttributes {
             timestamp: 1622553200,
-            prev_randao: B256::from_str(
-                "0x123456789abcdef123456789abcdef123456789abcdef123456789abcdef1234",
-            )
-            .unwrap(),
-            suggested_fee_recipient: Address::from_str(
-                "0xc94f5374fce5edbc8e2a8697c15331677e6ebf0b",
-            )
-            .unwrap(),
-            withdrawals: None,
-            parent_beacon_block_root: Some(
-                B256::from_str(
-                    "0x2222222222222222222222222222222222222222222222222222222222222222",
-                )
-                .unwrap(),
+            prev_randao: b256!(
+                "0x123456789abcdef123456789abcdef123456789abcdef123456789abcdef1234"
             ),
+            suggested_fee_recipient: address!("0xc94f5374fce5edbc8e2a8697c15331677e6ebf0b"),
+            withdrawals: None,
+            parent_beacon_block_root: Some(B256::repeat_byte(0x22)),
             slot_number: None,
+            ..Default::default()
         };
 
         // Verify that the generated payload ID matches the expected value
-        assert_eq!(
-            payload_id(&parent, &attributes),
-            PayloadId(B64::from_str("0x0fc49cd532094cce").unwrap())
-        );
+        assert_eq!(payload_id(&parent, &attributes), PayloadId(b64!("0x0fc49cd532094cce")));
+    }
+
+    #[test]
+    fn test_payload_id_with_slot_number() {
+        let parent = b256!("0x9876543210abcdef9876543210abcdef9876543210abcdef9876543210abcdef");
+        let mut attributes = EthPayloadAttributes {
+            timestamp: 1622553200,
+            prev_randao: B256::from_slice(&[1; 32]),
+            suggested_fee_recipient: address!("0xb94f5374fce5edbc8e2a8697c15331677e6ebf0b"),
+            withdrawals: Some(vec![]),
+            parent_beacon_block_root: Some(B256::from_slice(&[2; 32])),
+            slot_number: Some(1),
+            ..Default::default()
+        };
+
+        let first = payload_id(&parent, &attributes);
+        attributes.slot_number = Some(2);
+
+        assert_ne!(first, payload_id(&parent, &attributes));
+    }
+
+    #[test]
+    fn test_payload_id_with_target_gas_limit() {
+        let parent = b256!("0x9876543210abcdef9876543210abcdef9876543210abcdef9876543210abcdef");
+        #[allow(clippy::needless_update)]
+        let mut attributes = EthPayloadAttributes {
+            timestamp: 1622553200,
+            prev_randao: B256::from_slice(&[1; 32]),
+            suggested_fee_recipient: address!("0xb94f5374fce5edbc8e2a8697c15331677e6ebf0b"),
+            withdrawals: Some(vec![]),
+            parent_beacon_block_root: Some(B256::from_slice(&[2; 32])),
+            slot_number: Some(1),
+            target_gas_limit: Some(30_000_000),
+            ..Default::default()
+        };
+
+        let first = payload_id(&parent, &attributes);
+        attributes.target_gas_limit = Some(60_000_000);
+
+        assert_ne!(first, payload_id(&parent, &attributes));
     }
 }

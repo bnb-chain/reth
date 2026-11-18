@@ -273,7 +273,7 @@ where
 impl<K> Eq for LinkEntry<K>
 where
     K: EnrKeyUnambiguous,
-    K::PublicKey: Eq + PartialEq,
+    K::PublicKey: Eq,
 {
 }
 impl<K> Hash for LinkEntry<K>
@@ -339,6 +339,13 @@ impl<K: EnrKeyUnambiguous> fmt::Display for NodeEntry<K> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.enr.to_base64().fmt(f)
     }
+}
+
+/// Returns whether the value starts with a recognized EIP-1459 entry prefix.
+pub(crate) fn has_entry_prefix(value: &str) -> bool {
+    [ROOT_V1_PREFIX, BRANCH_PREFIX, LINK_PREFIX, ENR_PREFIX]
+        .iter()
+        .any(|prefix| value.starts_with(prefix))
 }
 
 /// Parses the value of the key value pair

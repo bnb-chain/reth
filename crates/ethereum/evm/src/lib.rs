@@ -18,20 +18,28 @@
 extern crate alloc;
 
 use alloc::{borrow::Cow, sync::Arc};
-use alloy_consensus::Header;
+use alloy_consensus::{Header, Transaction};
+use alloy_eips::merge::SLOT_DURATION_SECS;
 use alloy_evm::{
-    eth::{EthBlockExecutionCtx, EthBlockExecutorFactory},
+    eth::{EthBlockExecutionCtx, EthBlockExecutorFactory, EthTxResult},
     EthEvmFactory, FromRecoveredTx, FromTxWithEncoded,
 };
-use core::{convert::Infallible, fmt::Debug};
+use alloy_primitives::{Address, B256};
+#[cfg(feature = "jit")]
+use core::any::Any;
+use core::{any::TypeId, convert::Infallible, fmt::Debug};
 use reth_chainspec::{ChainSpec, EthChainSpec, MAINNET};
 use reth_ethereum_primitives::{Block, EthPrimitives, TransactionSigned};
 use reth_evm::{
     eth::NextEvmEnvAttributes, precompiles::PrecompilesMap, ConfigureEvm, EvmEnv, EvmFactory,
-    NextBlockEnvAttributes, TransactionEnvMut,
+    HaltReasonFor, JitBackend, NextBlockEnvAttributes, SenderRecoveryCache, TransactionEnvMut,
+    TxExecutionResultFor,
 };
 use reth_primitives_traits::{SealedBlock, SealedHeader};
-use revm::{context::BlockEnv, primitives::hardfork::SpecId};
+use revm::{
+    context::{result::ResultAndState, BlockEnv},
+    primitives::hardfork::SpecId,
+};
 
 #[cfg(feature = "std")]
 use reth_evm::{ConfigureEngineEvm, ExecutableTxIterator};
@@ -76,6 +84,8 @@ mod test_utils;
 #[cfg(feature = "test-utils")]
 pub use test_utils::*;
 
+pub mod factory;
+
 /// Ethereum-related EVM configuration.
 #[derive(Debug, Clone)]
 pub struct EthEvmConfig<C = ChainSpec, EvmFactory = EthEvmFactory> {
@@ -83,6 +93,8 @@ pub struct EthEvmConfig<C = ChainSpec, EvmFactory = EthEvmFactory> {
     pub executor_factory: EthBlockExecutorFactory<RethReceiptBuilder, Arc<C>, EvmFactory>,
     /// Ethereum block assembler.
     pub block_assembler: EthBlockAssembler<C>,
+    /// Cache of recovered transaction senders, if enabled.
+    pub sender_recovery_cache: Option<SenderRecoveryCache>,
 }
 
 impl EthEvmConfig {
@@ -109,6 +121,7 @@ impl<ChainSpec, EvmFactory> EthEvmConfig<ChainSpec, EvmFactory> {
     pub fn new_with_evm_factory(chain_spec: Arc<ChainSpec>, evm_factory: EvmFactory) -> Self {
         Self {
             block_assembler: EthBlockAssembler::new(chain_spec.clone()),
+            sender_recovery_cache: None,
             executor_factory: EthBlockExecutorFactory::new(
                 RethReceiptBuilder::default(),
                 chain_spec,
@@ -120,6 +133,12 @@ impl<ChainSpec, EvmFactory> EthEvmConfig<ChainSpec, EvmFactory> {
     /// Returns the chain spec associated with this configuration.
     pub const fn chain_spec(&self) -> &Arc<ChainSpec> {
         self.executor_factory.spec()
+    }
+
+    /// Uses the provided sender recovery cache.
+    pub fn with_sender_recovery_cache(mut self, cache: SenderRecoveryCache) -> Self {
+        self.sender_recovery_cache = Some(cache);
+        self
     }
 }
 
@@ -152,6 +171,45 @@ where
 
     fn block_assembler(&self) -> &Self::BlockAssembler {
         &self.block_assembler
+    }
+
+    fn with_jit_support_enabled(self, enabled: bool) -> Self
+    where
+        Self: Sized,
+    {
+        #[cfg(feature = "jit")]
+        {
+            let mut this = self;
+            let mut evm_factory = this.executor_factory.evm_factory().clone();
+            if let Some(factory) =
+                (&mut evm_factory as &mut dyn Any).downcast_mut::<factory::RethEvmFactory>()
+            {
+                factory.set_jit_support(enabled);
+            }
+            this.executor_factory = EthBlockExecutorFactory::new(
+                *this.executor_factory.receipt_builder(),
+                this.executor_factory.spec().clone(),
+                evm_factory,
+            );
+            this
+        }
+
+        #[cfg(not(feature = "jit"))]
+        {
+            let _ = enabled;
+            self
+        }
+    }
+
+    fn jit_backend(&self) -> Option<&dyn JitBackend> {
+        #[cfg(feature = "jit")]
+        if let Some(factory) = (self.executor_factory.evm_factory() as &dyn Any)
+            .downcast_ref::<factory::RethEvmFactory>()
+        {
+            return Some(factory);
+        }
+
+        None
     }
 
     fn evm_env(&self, header: &Header) -> Result<EvmEnv<SpecId>, Self::Error> {
@@ -213,6 +271,46 @@ where
             extra_data: attributes.extra_data,
             slot_number: attributes.slot_number,
         })
+    }
+
+    fn reuses_prewarm_results(&self) -> bool {
+        // Custom factories may change transaction validation or read state outside the database.
+        let factory = TypeId::of::<EvmF>();
+        factory == TypeId::of::<EthEvmFactory>() ||
+            factory == TypeId::of::<factory::RethEvmFactory>()
+    }
+
+    fn prewarm_tx_result(
+        &self,
+        tx: &TransactionSigned,
+        result: ResultAndState<HaltReasonFor<Self>>,
+    ) -> Option<TxExecutionResultFor<Self>> {
+        Some(EthTxResult {
+            result,
+            blob_gas_used: tx.blob_gas_used().unwrap_or_default(),
+            tx_type: tx.tx_type(),
+        })
+    }
+
+    fn speculative_next_evm_env(
+        &self,
+        parent: &SealedHeader,
+        beneficiary: Address,
+    ) -> Option<EvmEnv> {
+        let Ok(evm_env) = self.next_evm_env(
+            parent,
+            &NextBlockEnvAttributes {
+                timestamp: parent.timestamp + SLOT_DURATION_SECS,
+                suggested_fee_recipient: beneficiary,
+                prev_randao: B256::ZERO,
+                gas_limit: parent.gas_limit,
+                parent_beacon_block_root: None,
+                withdrawals: None,
+                extra_data: Bytes::new(),
+                slot_number: None,
+            },
+        );
+        Some(evm_env)
     }
 }
 
@@ -302,10 +400,16 @@ where
         payload: &ExecutionData,
     ) -> Result<impl ExecutableTxIterator<Self>, Self::Error> {
         let txs = payload.payload.transactions().clone();
-        let convert = |tx: Bytes| {
+        let sender_recovery_cache = self.sender_recovery_cache.clone();
+        let convert = move |tx: Bytes| {
             let tx =
                 TxTy::<Self::Primitives>::decode_2718_exact(tx.as_ref()).map_err(AnyError::new)?;
-            let signer = tx.try_recover().map_err(AnyError::new)?;
+            let signer = if let Some(cache) = &sender_recovery_cache {
+                cache.recover(&tx)
+            } else {
+                tx.try_recover()
+            }
+            .map_err(AnyError::new)?;
             Ok::<_, AnyError>(tx.with_signer(signer))
         };
 
@@ -317,14 +421,22 @@ where
 mod tests {
     use super::*;
     use alloy_consensus::Header;
+    use alloy_evm::{
+        eth::{EthEvm, EthEvmContext},
+        Database,
+    };
     use alloy_genesis::Genesis;
     use reth_chainspec::{Chain, ChainSpec};
     use reth_evm::{execute::ProviderError, EvmEnv};
     use revm::{
-        context::{BlockEnv, CfgEnv},
+        context::{
+            result::{EVMError, HaltReason},
+            BlockEnv, CfgEnv, TxEnv,
+        },
         database::CacheDB,
-        database_interface::EmptyDBTyped,
+        database_interface::{DBErrorMarker, EmptyDBTyped},
         inspector::NoOpInspector,
+        Inspector,
     };
 
     #[test]
@@ -416,14 +528,14 @@ mod tests {
         let db = CacheDB::<EmptyDBTyped<ProviderError>>::default();
 
         let evm_env = EvmEnv {
-            cfg_env: CfgEnv::new().with_spec_and_mainnet_gas_params(SpecId::CONSTANTINOPLE),
+            cfg_env: CfgEnv::new().with_spec_and_mainnet_gas_params(SpecId::PETERSBURG),
             ..Default::default()
         };
 
         let evm = evm_config.evm_with_env(db, evm_env);
 
         // Check that the spec ID is setup properly
-        assert_eq!(evm.cfg.spec, SpecId::CONSTANTINOPLE);
+        assert_eq!(evm.cfg.spec, SpecId::PETERSBURG);
     }
 
     #[test]
@@ -483,7 +595,7 @@ mod tests {
         let db = CacheDB::<EmptyDBTyped<ProviderError>>::default();
 
         let evm_env = EvmEnv {
-            cfg_env: CfgEnv::new().with_spec_and_mainnet_gas_params(SpecId::CONSTANTINOPLE),
+            cfg_env: CfgEnv::new().with_spec_and_mainnet_gas_params(SpecId::PETERSBURG),
             ..Default::default()
         };
 
@@ -493,5 +605,82 @@ mod tests {
         assert_eq!(evm.block, evm_env.block_env);
         assert_eq!(evm.cfg, evm_env.cfg_env);
         assert_eq!(evm.tx, Default::default());
+    }
+
+    #[test]
+    fn test_reuses_prewarm_results_only_for_known_factories() {
+        assert!(EthEvmConfig::mainnet().reuses_prewarm_results());
+        assert!(EthEvmConfig::new_with_evm_factory(
+            MAINNET.clone(),
+            factory::RethEvmFactory::default()
+        )
+        .reuses_prewarm_results());
+
+        #[derive(Debug, Clone)]
+        struct CustomFactory(EthEvmFactory);
+
+        impl EvmFactory for CustomFactory {
+            type Evm<DB: Database, I: Inspector<Self::Context<DB>>> =
+                EthEvm<DB, I, Self::Precompiles>;
+            type Context<DB: Database> = EthEvmContext<DB>;
+            type Tx = TxEnv;
+            type Error<DBError: DBErrorMarker> = EVMError<DBError>;
+            type HaltReason = HaltReason;
+            type Spec = SpecId;
+            type BlockEnv = BlockEnv;
+            type Precompiles = PrecompilesMap;
+
+            fn create_evm<DB: Database>(
+                &self,
+                db: DB,
+                input: EvmEnv,
+            ) -> Self::Evm<DB, NoOpInspector> {
+                self.0.create_evm(db, input)
+            }
+
+            fn create_evm_with_inspector<DB: Database, I: Inspector<Self::Context<DB>>>(
+                &self,
+                db: DB,
+                input: EvmEnv,
+                inspector: I,
+            ) -> Self::Evm<DB, I> {
+                self.0.create_evm_with_inspector(db, input, inspector)
+            }
+        }
+
+        assert!(!EthEvmConfig::new_with_evm_factory(
+            MAINNET.clone(),
+            CustomFactory(EthEvmFactory::default())
+        )
+        .reuses_prewarm_results());
+    }
+
+    #[cfg(feature = "jit")]
+    #[test]
+    fn test_jit_support_downcast_updates_reth_factory() {
+        let evm_config = EthEvmConfig::new_with_evm_factory(
+            MAINNET.clone(),
+            factory::RethEvmFactory::disabled(),
+        );
+
+        assert!(evm_config.jit_backend().is_some());
+        assert!(!evm_config.executor_factory.evm_factory().jit_support_enabled());
+
+        let evm_config = evm_config.with_jit_support();
+        assert!(evm_config.executor_factory.evm_factory().jit_support_enabled());
+
+        let evm_config = evm_config.with_jit_support_enabled(false);
+        assert!(!evm_config.executor_factory.evm_factory().jit_support_enabled());
+    }
+
+    #[cfg(feature = "jit")]
+    #[test]
+    fn test_jit_support_downcast_ignores_plain_factory() {
+        let evm_config = EthEvmConfig::mainnet();
+
+        assert!(evm_config.jit_backend().is_none());
+
+        let evm_config = evm_config.with_jit_support();
+        assert!(evm_config.jit_backend().is_none());
     }
 }

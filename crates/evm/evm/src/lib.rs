@@ -18,9 +18,12 @@
 extern crate alloc;
 
 use crate::execute::{BasicBlockBuilder, Executor};
-use alloc::vec::Vec;
+use alloc::{string::String, vec::Vec};
 use alloy_eips::eip4895::Withdrawals;
-use alloy_evm::{block::BlockExecutorFactory, precompiles::PrecompilesMap};
+use alloy_evm::{
+    block::{BlockExecutorFactory, BlockExecutorFor},
+    precompiles::PrecompilesMap,
+};
 use alloy_primitives::{Address, Bytes, B256};
 use core::{error::Error, fmt::Debug};
 use execute::{BasicBlockExecutor, BlockAssembler, BlockBuilder};
@@ -28,7 +31,7 @@ use reth_execution_errors::BlockExecutionError;
 use reth_primitives_traits::{
     BlockTy, HeaderTy, NodePrimitives, ReceiptTy, SealedBlock, SealedHeader, TxTy,
 };
-use revm::{database::State, primitives::hardfork::SpecId};
+use revm::{context::result::ResultAndState, database::State, primitives::hardfork::SpecId};
 
 pub mod either;
 /// EVM environment configuration.
@@ -41,6 +44,8 @@ pub use aliases::*;
 mod engine;
 #[cfg(feature = "std")]
 pub use engine::{ConfigureEngineEvm, ConvertTx, ExecutableTxIterator, ExecutableTxTuple};
+mod sender_recovery;
+pub use sender_recovery::SenderRecoveryCache;
 
 #[cfg(feature = "metrics")]
 pub mod metrics;
@@ -261,6 +266,34 @@ pub trait ConfigureEvm: Clone + Debug + Send + Sync + Unpin {
         self.block_executor_factory().evm_factory()
     }
 
+    /// Returns a config with JIT support enabled for subsequently created EVMs, if supported.
+    ///
+    /// This is one of three gates required before an EVM can execute JIT-compiled code: the binary
+    /// must be built with the `jit` feature, runtime compilation must be enabled by `--jit` or the
+    /// `reth_jit` RPC method, and this local support flag must be enabled for the config that
+    /// creates the EVM.
+    #[auto_impl(keep_default_for(&, Arc))]
+    fn with_jit_support_enabled(self, _enabled: bool) -> Self
+    where
+        Self: Sized,
+    {
+        self
+    }
+
+    /// Returns a config with local JIT support enabled for subsequently created EVMs, if supported.
+    #[auto_impl(keep_default_for(&, Arc))]
+    fn with_jit_support(self) -> Self
+    where
+        Self: Sized,
+    {
+        self.with_jit_support_enabled(true)
+    }
+
+    /// Returns the JIT backend, if supported.
+    fn jit_backend(&self) -> Option<&dyn JitBackend> {
+        None
+    }
+
     /// Returns a new EVM with the given database configured with the given environment settings,
     /// including the spec id and transaction environment.
     ///
@@ -317,6 +350,19 @@ pub trait ConfigureEvm: Clone + Debug + Send + Sync + Unpin {
         self.block_executor_factory().create_executor(evm, ctx)
     }
 
+    /// Creates a strategy with a DB state borrow that can be shorter than the execution context.
+    fn create_executor_with_state<'a, 'db, DB, I>(
+        &'a self,
+        evm: EvmFor<Self, &'db mut State<DB>, I>,
+        ctx: <Self::BlockExecutorFactory as BlockExecutorFactory>::ExecutionCtx<'a>,
+    ) -> BlockExecutorFor<'a, Self::BlockExecutorFactory, &'db mut State<DB>, I>
+    where
+        DB: Database,
+        I: InspectorFor<Self, &'db mut State<DB>>,
+    {
+        self.block_executor_factory().create_executor(evm, ctx)
+    }
+
     /// Creates a strategy for execution of a given block.
     fn executor_for_block<'a, DB: Database>(
         &'a self,
@@ -353,8 +399,29 @@ pub trait ConfigureEvm: Clone + Debug + Send + Sync + Unpin {
         DB: Database,
         I: InspectorFor<Self, &'a mut State<DB>> + 'a,
     {
+        self.create_block_builder_with(evm, parent, ctx, |executor| executor)
+    }
+
+    /// Creates a [`BlockBuilder`] like [`ConfigureEvm::create_block_builder`], with a customized
+    /// executor.
+    fn create_block_builder_with<'a, DB, I, E>(
+        &'a self,
+        evm: EvmFor<Self, &'a mut State<DB>, I>,
+        parent: &'a SealedHeader<HeaderTy<Self::Primitives>>,
+        ctx: <Self::BlockExecutorFactory as BlockExecutorFactory>::ExecutionCtx<'a>,
+        f: impl FnOnce(BlockExecutorForEvm<'a, Self, DB, I>) -> E,
+    ) -> impl BlockBuilder<Primitives = Self::Primitives, Executor = E>
+    where
+        DB: Database,
+        I: InspectorFor<Self, &'a mut State<DB>> + 'a,
+        E: alloy_evm::block::BlockExecutor<
+            Evm = EvmFor<Self, &'a mut State<DB>, I>,
+            Transaction = TxTy<Self::Primitives>,
+            Receipt = ReceiptTy<Self::Primitives>,
+        >,
+    {
         BasicBlockBuilder {
-            executor: self.create_executor(evm, ctx.clone()),
+            executor: f(self.create_executor(evm, ctx.clone())),
             ctx,
             assembler: self.block_assembler(),
             parent,
@@ -442,6 +509,72 @@ pub trait ConfigureEvm: Clone + Debug + Send + Sync + Unpin {
     ) -> impl Executor<DB, Primitives = Self::Primitives, Error = BlockExecutionError> {
         BasicBlockExecutor::new(self, db)
     }
+
+    /// Returns whether engine validation may commit transaction results from speculative prewarm
+    /// execution instead of executing the transactions again.
+    ///
+    /// Return `true` only if all of these hold, see also [`Self::prewarm_tx_result`]:
+    /// - the block executor executes a transaction by checking that its gas limit, capped by the
+    ///   transaction gas limit cap, fits into the block gas limit minus the last receipt's
+    ///   cumulative gas used, and then running [`Evm::transact`] with the transaction environment;
+    /// - [`Evm::transact`] performs the standard caller nonce and balance validation, and rejects
+    ///   transactions with the largest nonce even if nonce checks are disabled;
+    /// - EVMs created by this configuration with JIT support disabled call inspector hooks for
+    ///   every executed instruction;
+    /// - execution depends only on recorded database reads and the transaction and block
+    ///   environments reproduced during prewarming, with no unrecorded external state.
+    ///
+    /// [`Evm::transact`]: alloy_evm::Evm::transact
+    fn reuses_prewarm_results(&self) -> bool {
+        false
+    }
+
+    /// Wraps a speculative prewarm execution result of `tx` into the result consumed by
+    /// [`BlockExecutor::commit_transaction`](alloy_evm::block::BlockExecutor::commit_transaction).
+    ///
+    /// Only called if [`Self::reuses_prewarm_results`] returns `true`.
+    /// Returning `None` rejects and consumes this speculative result; the engine executes the
+    /// transaction normally instead.
+    fn prewarm_tx_result(
+        &self,
+        tx: &TxTy<Self::Primitives>,
+        result: ResultAndState<HaltReasonFor<Self>>,
+    ) -> Option<TxExecutionResultFor<Self>> {
+        let _ = (tx, result);
+        None
+    }
+
+    /// Returns the predicted environment of the block after `parent` with `beneficiary`, in which
+    /// engine validation speculatively executes pool transactions before the block arrives.
+    ///
+    /// Validation reuses such results only for blocks whose environment matches the predicted
+    /// one, apart from the beneficiary, timestamp, prevrandao and gas limit, which the
+    /// transactions must not have observed. Only called if [`Self::reuses_prewarm_results`]
+    /// returns `true`. Returns `None` if the environment cannot be predicted, which disables
+    /// recording pool transaction results.
+    fn speculative_next_evm_env(
+        &self,
+        parent: &SealedHeader<HeaderTy<Self::Primitives>>,
+        beneficiary: Address,
+    ) -> Option<EvmEnvFor<Self>> {
+        let _ = (parent, beneficiary);
+        None
+    }
+}
+
+/// JIT backend controls exposed by an EVM configuration.
+pub trait JitBackend: Send + Sync {
+    /// Enables or disables JIT compilation.
+    fn set_enabled(&self, enabled: bool) -> Result<(), String>;
+
+    /// Pauses JIT helper execution while keeping queueing and resident compiled code available.
+    fn pause(&self);
+
+    /// Resumes background JIT work.
+    fn resume(&self);
+
+    /// Clears JIT runtime state.
+    fn clear(&self);
 }
 
 /// Represents additional attributes required to configure the next block.

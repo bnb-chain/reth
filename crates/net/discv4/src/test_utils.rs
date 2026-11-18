@@ -1,7 +1,5 @@
 //! Mock discovery support
 
-// TODO(rand): update ::random calls after rand_09 migration
-
 use crate::{
     proto::{FindNode, Message, Neighbours, NodeEndpoint, Packet, Ping, Pong},
     receive_loop, send_loop, Discv4, Discv4Config, Discv4Service, EgressSender, IngressEvent,
@@ -51,7 +49,7 @@ impl MockDiscovery {
     /// Creates a new instance and opens a socket
     pub async fn new() -> io::Result<(Self, mpsc::Sender<MockCommand>)> {
         let mut rng = thread_rng();
-        let socket = SocketAddr::from_str("0.0.0.0:0").unwrap();
+        let socket = SocketAddr::from_str("127.0.0.1:0").unwrap();
         let (secret_key, pk) = SECP256K1.generate_keypair(&mut rng);
         let id = pk2id(&pk);
         let socket = Arc::new(UdpSocket::bind(socket).await?);
@@ -71,7 +69,7 @@ impl MockDiscovery {
         tasks.spawn(receive_loop(udp, ingress_tx, local_enr.id));
 
         let udp = Arc::clone(&socket);
-        tasks.spawn(send_loop(udp, egress_rx));
+        tasks.spawn(send_loop(udp, None, local_addr.is_ipv4(), egress_rx));
 
         let (tx, command_rx) = mpsc::channel(128);
         let this = Self {
@@ -242,7 +240,7 @@ pub async fn create_discv4() -> (Discv4, Discv4Service) {
 /// Creates a new testing instance for [`Discv4`] and its service with the given config.
 pub async fn create_discv4_with_config(config: Discv4Config) -> (Discv4, Discv4Service) {
     let mut rng = thread_rng();
-    let socket = SocketAddr::from_str("0.0.0.0:0").unwrap();
+    let socket = SocketAddr::from_str("127.0.0.1:0").unwrap();
     let (secret_key, pk) = SECP256K1.generate_keypair(&mut rng);
     let id = pk2id(&pk);
     let local_enr =
@@ -267,8 +265,9 @@ pub fn rng_endpoint(rng: &mut impl Rng) -> NodeEndpoint {
 /// Generates a random [`NodeRecord`] using the provided random number generator.
 pub fn rng_record(rng: &mut impl RngCore) -> NodeRecord {
     let NodeEndpoint { address, udp_port, tcp_port } = rng_endpoint(rng);
-    // TODO(rand)
-    NodeRecord { address, tcp_port, udp_port, id: B512::random() }
+    let mut id = B512::ZERO;
+    rng.fill_bytes(&mut id[..]);
+    NodeRecord { address, tcp_port, udp_port, id }
 }
 
 /// Generates a random IPv6 [`NodeRecord`] using the provided random number generator.
@@ -276,8 +275,9 @@ pub fn rng_ipv6_record(rng: &mut impl RngCore) -> NodeRecord {
     let mut ip = [0u8; 16];
     rng.fill_bytes(&mut ip);
     let address = IpAddr::V6(ip.into());
-    // TODO(rand)
-    NodeRecord { address, tcp_port: rng.r#gen(), udp_port: rng.r#gen(), id: B512::random() }
+    let mut id = B512::ZERO;
+    rng.fill_bytes(&mut id[..]);
+    NodeRecord { address, tcp_port: rng.r#gen(), udp_port: rng.r#gen(), id }
 }
 
 /// Generates a random IPv4 [`NodeRecord`] using the provided random number generator.
@@ -285,8 +285,9 @@ pub fn rng_ipv4_record(rng: &mut impl RngCore) -> NodeRecord {
     let mut ip = [0u8; 4];
     rng.fill_bytes(&mut ip);
     let address = IpAddr::V4(ip.into());
-    // TODO(rand)
-    NodeRecord { address, tcp_port: rng.r#gen(), udp_port: rng.r#gen(), id: B512::random() }
+    let mut id = B512::ZERO;
+    rng.fill_bytes(&mut id[..]);
+    NodeRecord { address, tcp_port: rng.r#gen(), udp_port: rng.r#gen(), id }
 }
 
 /// Generates a random [`Message`] using the provided random number generator.
@@ -298,13 +299,16 @@ pub fn rng_message(rng: &mut impl RngCore) -> Message {
             expire: rng.r#gen(),
             enr_sq: None,
         }),
-        2 => Message::Pong(Pong {
-            to: rng_endpoint(rng),
-            echo: B256::random(),
-            expire: rng.r#gen(),
-            enr_sq: None,
-        }),
-        3 => Message::FindNode(FindNode { id: B512::random(), expire: rng.r#gen() }),
+        2 => {
+            let mut echo = B256::ZERO;
+            rng.fill_bytes(&mut echo[..]);
+            Message::Pong(Pong { to: rng_endpoint(rng), echo, expire: rng.r#gen(), enr_sq: None })
+        }
+        3 => {
+            let mut id = B512::ZERO;
+            rng.fill_bytes(&mut id[..]);
+            Message::FindNode(FindNode { id, expire: rng.r#gen() })
+        }
         4 => {
             let num: usize = rng.gen_range(1..=SAFE_MAX_DATAGRAM_NEIGHBOUR_RECORDS);
             Message::Neighbours(Neighbours {

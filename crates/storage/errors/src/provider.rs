@@ -7,8 +7,10 @@ use reth_codecs::DecompressError;
 use reth_primitives_traits::{transaction::signed::RecoveryError, GotExpected};
 use reth_prune_types::PruneSegmentError;
 use reth_static_file_types::StaticFileSegment;
-use revm_database_interface::{bal::EvmDatabaseError, DBErrorMarker};
-use revm_state::bal::BalError;
+use revm::{
+    database_interface::{bal::EvmDatabaseError, DBErrorMarker},
+    state::bal::BalError,
+};
 
 /// Provider result type.
 pub type ProviderResult<Ok> = Result<Ok, ProviderError>;
@@ -69,6 +71,31 @@ pub enum ProviderError {
     /// When required header related data was not found but was required.
     #[error("no header found for {_0:?}")]
     HeaderNotFound(BlockHashOrNumber),
+    /// Total difficulty cannot be rebuilt because ancestor headers are absent.
+    ///
+    /// Distinct from a missing TD row: here the chain itself has no history to sum, as after
+    /// `init-state --without-evm`, which inserts the tip before backfilling placeholders.
+    #[error("cannot rebuild total difficulty for block {number}: header {missing} is absent")]
+    TotalDifficultyHistoryIncomplete {
+        /// The block whose total difficulty was requested.
+        number: u64,
+        /// The first ancestor header found to be missing.
+        missing: u64,
+    },
+    /// Total difficulty is missing for a block and the inline rebuild would be too large.
+    ///
+    /// The rebuild runs inside the caller's read transaction and would not finish before
+    /// `--db.read-transaction-timeout`, so it is refused rather than retried forever.
+    #[error(
+        "total difficulty missing for block {number} and rebuilding it would span {span} blocks; \
+         stop the node and run `db rebuild-td` to repair the HeaderTerminalDifficulties table"
+    )]
+    TotalDifficultyRebuildTooLarge {
+        /// The block whose total difficulty could not be resolved.
+        number: u64,
+        /// How many blocks the rebuild would have had to walk.
+        span: u64,
+    },
     /// The specific transaction identified by hash or id is missing.
     #[error("no transaction found for {_0:?}")]
     TransactionNotFound(HashOrNumber),
@@ -122,18 +149,6 @@ pub enum ProviderError {
         requested: BlockNumber,
         /// The earliest available block number.
         earliest_available: BlockNumber,
-    },
-    /// Historical state at the requested block may be inconsistent because pipeline sync is in
-    /// progress. The Execution stage has advanced `PlainState` beyond the history index coverage,
-    /// so the `InPlainState` fallback would return data from a future block.
-    #[error("historical state at block #{block} is inconsistent during pipeline sync: execution tip is #{execution_tip} but history index only covers up to #{history_tip}")]
-    HistoryStateInconsistent {
-        /// The block number being queried.
-        block: BlockNumber,
-        /// Block number up to which the Execution stage has committed `PlainState`.
-        execution_tip: BlockNumber,
-        /// Block number up to which the history index has been built.
-        history_tip: BlockNumber,
     },
     /// Provider does not support this particular request.
     #[error("this provider does not support this request")]
@@ -200,6 +215,35 @@ pub enum ProviderError {
         /// The block number to which the database must be unwound.
         unwind_to: BlockNumber,
     },
+    /// A persisted snap attempt record this build cannot read.
+    #[error(
+        "snap attempt record version {found:?} is not supported, this build writes {supported}"
+    )]
+    UnsupportedSnapAttemptVersion {
+        /// Version found on disk, absent when the record carries no numeric version.
+        found: Option<u64>,
+        /// Version this build writes.
+        supported: u32,
+    },
+    /// Snap sync was selected on a database that predates the hashed state layout it downloads
+    /// into.
+    #[error("snap sync requires the hashed state layout, which this database predates")]
+    SnapStorageLayoutUnsupported,
+    /// State a snap attempt is still downloading was about to be marked complete.
+    #[error("snap attempt {attempt} has not verified the downloaded state")]
+    UnverifiedSnapState {
+        /// Attempt that owns the unverified state.
+        attempt: u64,
+    },
+    /// The staged pipeline was selected on a database holding state a snap attempt left
+    /// unverified, which only snap can finish or replace.
+    #[error(
+        "snap attempt {attempt} left unverified state, restart with snap sync or wipe the database"
+    )]
+    SnapStateRequiresSnapSync {
+        /// Attempt that owns the unverified state.
+        attempt: u64,
+    },
     /// Any other error type wrapped into a cloneable [`AnyError`].
     #[error(transparent)]
     Other(#[from] AnyError),
@@ -234,7 +278,7 @@ impl ProviderError {
     /// Returns true if this type is a [`ProviderError::Other`] of that error
     /// type. Returns false otherwise.
     pub fn is_other<T: core::error::Error + 'static>(&self) -> bool {
-        self.as_other().map(|err| err.is::<T>()).unwrap_or(false)
+        self.as_other().is_some_and(|err| err.is::<T>())
     }
 }
 

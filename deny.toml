@@ -18,6 +18,12 @@ ignore = [
     "RUSTSEC-2026-0173",
     # https://rustsec.org/advisories/RUSTSEC-2026-0247 bitmaps is unmaintained, transitive dep via imbl -> reth-transaction-pool
     "RUSTSEC-2026-0247",
+    # https://rustsec.org/advisories/RUSTSEC-2026-0387 crypto-bigint 0.5.5 is pinned by elliptic-curve 0.13 (k256/p256).
+    # Match upstream Reth and Alloy until that dependency stack supports the fixed 0.7.6+ release.
+    "RUSTSEC-2026-0387",
+    # https://rustsec.org/advisories/RUSTSEC-2026-0441 pin-utils is unmaintained, with no patched release.
+    # Transitive WASM dependency via wasmtimer; await its migration to pin-project-lite.
+    "RUSTSEC-2026-0441",
 ]
 
 # This section is considered when running `cargo deny check bans`.
@@ -30,7 +36,10 @@ multiple-versions = "warn"
 wildcards = "allow"
 highlight = "all"
 # List of crates to deny
-deny = [{ name = "openssl" }]
+deny = [
+    { name = "openssl" },
+    { name = "reqwest", deny-multiple-versions = true },
+]
 # Certain crates/versions that will be skipped when doing duplicate detection.
 skip = []
 # Similarly to `skip` allows you to skip certain crates during duplicate
@@ -68,7 +77,10 @@ allow = [
 
 # Allow 1 or more licenses on a per-crate basis, so that particular licenses
 # aren't accepted for every possible crate as with the normal allow list
-exceptions = []
+exceptions = [
+    # GMP bindings for the optional faster modexp precompile.
+    { allow = ["LGPL-3.0-or-later"], name = "gmp-mpfr-sys" },
+]
 
 [[licenses.clarify]]
 name = "rustls-webpki"
@@ -84,7 +96,7 @@ license-files = [{ path = "LICENSE", hash = 0x001c7e6c }]
 unknown-registry = "warn"
 # Lint level for what to happen when a crate from a git repository that is not
 # in the allow list is encountered
-unknown-git = "deny"
+unknown-git = "allow"
 unused-allowed-source = "allow"
 # Frequently patched dependencies
 allow-git = [
@@ -99,4 +111,7 @@ allow-git = [
     "https://github.com/bnb-chain/reth-bsc-triedb.git",
     "https://github.com/bnb-chain/reth-core.git",
     "https://github.com/sigp/discv5",
+    "https://github.com/paradigmxyz/revmc",
+    "https://github.com/paradigmxyz/revmc?branch=main",
+    "https://github.com/TheDan64/inkwell",
 ]

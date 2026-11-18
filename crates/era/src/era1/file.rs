@@ -6,7 +6,7 @@
 //! See also <https://github.com/eth-clients/e2store-format-specs/blob/main/formats/era1.md>.
 
 use crate::{
-    common::file_ops::{EraFileFormat, FileReader, StreamReader, StreamWriter},
+    common::file_ops::{EraFileFormat, StreamReader, StreamWriter},
     e2s::{
         error::E2sError,
         file::{E2StoreReader, E2StoreWriter},
@@ -24,7 +24,6 @@ use crate::{
 use alloy_primitives::BlockNumber;
 use std::{
     collections::VecDeque,
-    fs::File,
     io::{Read, Seek, Write},
 };
 
@@ -256,8 +255,6 @@ impl<R: Read + Seek> Era1Reader<R> {
     }
 }
 
-impl FileReader for Era1Reader<File> {}
-
 /// Writer for Era1 files that builds on top of [`E2StoreWriter`]
 #[derive(Debug)]
 pub struct Era1Writer<W: Write> {
@@ -406,7 +403,7 @@ impl<W: Write> Era1Writer<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::file_ops::FileWriter;
+    use crate::common::file_ops::{FileReader, FileWriter};
     use alloy_primitives::{B256, U256};
     use std::io::Cursor;
     use tempfile::tempdir;
@@ -440,7 +437,7 @@ mod tests {
             blocks.push(create_test_block(block_num, 32));
         }
 
-        let accumulator = Accumulator::new(B256::from([0xAA; 32]));
+        let accumulator = Accumulator::new(B256::repeat_byte(0xAA));
 
         let mut offsets = Vec::with_capacity(block_count);
         for i in 0..block_count {

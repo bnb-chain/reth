@@ -1,10 +1,9 @@
 use crate::{ExExContextDyn, ExExEvent, ExExNotifications, ExExNotificationsStream};
 use alloy_eips::BlockNumHash;
 use reth_exex_types::ExExHead;
-use reth_node_api::{FullNodeComponents, NodePrimitives, NodeTypes, PrimitivesTy};
+use reth_node_api::{FullNodeComponents, NodeTypes, PrimitivesTy};
 use reth_node_core::node_config::NodeConfig;
 use reth_payload_builder::PayloadBuilderHandle;
-use reth_provider::BlockReader;
 use reth_tasks::TaskExecutor;
 use std::fmt::Debug;
 use tokio::sync::mpsc::{error::SendError, UnboundedSender};
@@ -42,7 +41,6 @@ pub struct ExExContext<Node: FullNodeComponents> {
 impl<Node> Debug for ExExContext<Node>
 where
     Node: FullNodeComponents,
-    Node::Provider: Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ExExContext")
@@ -59,8 +57,6 @@ where
 impl<Node> ExExContext<Node>
 where
     Node: FullNodeComponents,
-    Node::Provider: Debug + BlockReader,
-    Node::Types: NodeTypes<Primitives: NodePrimitives>,
 {
     /// Returns dynamic version of the context
     pub fn into_dyn(self) -> ExExContextDyn<PrimitivesTy<Node::Types>> {
@@ -71,7 +67,6 @@ where
 impl<Node> ExExContext<Node>
 where
     Node: FullNodeComponents,
-    Node::Types: NodeTypes<Primitives: NodePrimitives>,
 {
     /// Returns the transaction pool of the node.
     pub fn pool(&self) -> &Node::Pool {
@@ -119,6 +114,12 @@ where
         self.notifications.set_with_head(head);
     }
 
+    /// As [`set_notifications_with_head`](Self::set_notifications_with_head), but backfills up to
+    /// the node's current canonical head rather than the head captured at launch.
+    pub fn catch_up_notifications_with_head(&mut self, head: ExExHead) -> eyre::Result<()> {
+        self.notifications.catch_up_with_head(head)
+    }
+
     /// Sends an [`ExExEvent::FinishedHeight`] to the ExEx task manager letting it know that this
     /// ExEx has processed the corresponding block.
     ///
@@ -136,7 +137,6 @@ mod tests {
     use crate::ExExContext;
     use reth_exex_types::ExExHead;
     use reth_node_api::FullNodeComponents;
-    use reth_provider::BlockReader;
 
     /// <https://github.com/paradigmxyz/reth/issues/12054>
     #[test]
@@ -146,10 +146,7 @@ mod tests {
             ctx: ExExContext<Node>,
         }
 
-        impl<Node: FullNodeComponents> ExEx<Node>
-        where
-            Node::Provider: BlockReader,
-        {
+        impl<Node: FullNodeComponents> ExEx<Node> {
             async fn _test_bounds(mut self) -> eyre::Result<()> {
                 self.ctx.pool();
                 self.ctx.evm_config();

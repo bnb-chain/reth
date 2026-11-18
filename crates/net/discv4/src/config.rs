@@ -10,6 +10,7 @@ use reth_net_nat::{NatResolver, ResolveNatInterval};
 use reth_network_peers::NodeRecord;
 use std::{
     collections::{HashMap, HashSet},
+    net::IpAddr,
     time::Duration,
 };
 
@@ -49,12 +50,23 @@ pub struct Discv4Config {
     pub enable_lookup: bool,
     /// Whether to enforce EIP-868 extension.
     pub enable_eip868: bool,
+    /// Whether to only respond with nodes that have a known EIP-868 ENR record (fork ID) in
+    /// `Neighbours` responses.
+    ///
+    /// When enabled, the node will filter out entries that have not yet been confirmed to support
+    /// EIP-868 (i.e., have no `fork_id`) when responding to `FindNode` requests. This helps
+    /// callers discover only peers that advertise their fork ID.
+    pub enforce_eip868_neighbours: bool,
     /// Whether to respect expiration timestamps in messages.
     pub enforce_expiration_timestamps: bool,
     /// Additional pairs to include in The [`Enr`](enr::Enr) if EIP-868 extension is enabled <https://eips.ethereum.org/EIPS/eip-868>
     pub additional_eip868_rlp_pairs: HashMap<Vec<u8>, Bytes>,
     /// If configured, try to resolve public ip
     pub external_ip_resolver: Option<NatResolver>,
+    /// External IP of the opposite family to the local [`NodeRecord`] address, advertised in the
+    /// local EIP-868 ENR next to it (`ip` + `ip6`). Serving that family requires a secondary
+    /// socket of that family (shared-port mode).
+    pub secondary_advertised_ip: Option<IpAddr>,
     /// If configured and a `external_ip_resolver` is configured, try to resolve the external ip
     /// using this interval.
     pub resolve_external_ip_interval: Option<Duration>,
@@ -123,9 +135,11 @@ impl Default for Discv4Config {
             enable_dht_random_walk: true,
             enable_lookup: true,
             enable_eip868: true,
+            enforce_eip868_neighbours: false,
             enforce_expiration_timestamps: true,
             additional_eip868_rlp_pairs: Default::default(),
             external_ip_resolver: Some(Default::default()),
+            secondary_advertised_ip: None,
             // By default retry public IP using a 5min interval
             resolve_external_ip_interval: Some(Duration::from_secs(60 * 5)),
         }
@@ -218,6 +232,16 @@ impl Discv4ConfigBuilder {
         self
     }
 
+    /// Whether to only include nodes with a known EIP-868 ENR record (fork ID) in `Neighbours`
+    /// responses.
+    pub const fn enforce_eip868_neighbours(
+        &mut self,
+        enforce_eip868_neighbours: bool,
+    ) -> &mut Self {
+        self.config.enforce_eip868_neighbours = enforce_eip868_neighbours;
+        self
+    }
+
     /// Whether to enforce expiration timestamps in messages.
     pub const fn enforce_expiration_timestamps(
         &mut self,
@@ -277,6 +301,12 @@ impl Discv4ConfigBuilder {
     /// Configures if and how the external IP of the node should be resolved.
     pub fn external_ip_resolver(&mut self, external_ip_resolver: Option<NatResolver>) -> &mut Self {
         self.config.external_ip_resolver = external_ip_resolver;
+        self
+    }
+
+    /// Sets the secondary-family external IP advertised in the local EIP-868 ENR.
+    pub const fn secondary_advertised_ip(&mut self, ip: IpAddr) -> &mut Self {
+        self.config.secondary_advertised_ip = Some(ip);
         self
     }
 

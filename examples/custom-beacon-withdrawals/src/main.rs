@@ -3,7 +3,7 @@
 
 #![warn(unused_crate_dependencies)]
 
-use alloy_eips::eip4895::Withdrawal;
+use alloy_eips::{eip4788::SYSTEM_ADDRESS, eip4895::Withdrawal};
 use alloy_evm::{
     block::{BlockExecutorFactory, ExecutableTx, GasOutput},
     eth::{EthBlockExecutionCtx, EthBlockExecutor, EthTxResult},
@@ -20,7 +20,6 @@ use reth_ethereum::{
             block::StateDB,
             execute::{BlockExecutionError, BlockExecutor, InternalBlockExecutionError},
             Evm, EvmEnv, EvmEnvFor, ExecutionCtxFor, InspectorFor, NextBlockEnvAttributes,
-            OnStateHook,
         },
         revm::{
             context::TxEnv,
@@ -42,7 +41,6 @@ use reth_ethereum::{
 };
 use std::{fmt::Display, sync::Arc};
 
-pub const SYSTEM_ADDRESS: Address = address!("0xfffffffffffffffffffffffffffffffffffffffe");
 pub const WITHDRAWALS_ADDRESS: Address = address!("0x4200000000000000000000000000000000000000");
 
 fn main() {
@@ -192,7 +190,7 @@ pub struct CustomBlockExecutor<'a, Evm> {
 
 impl<E> BlockExecutor for CustomBlockExecutor<'_, E>
 where
-    E: Evm<DB: StateDB, Tx = TxEnv>,
+    E: Evm<DB: StateDB, Spec: Into<SpecId> + Clone, Tx = TxEnv>,
 {
     type Transaction = TransactionSigned;
     type Receipt = Receipt;
@@ -225,10 +223,6 @@ where
 
         // Invoke inner finish method to apply Ethereum post-execution changes
         self.inner.finish()
-    }
-
-    fn set_state_hook(&mut self, _hook: Option<Box<dyn OnStateHook>>) {
-        self.inner.set_state_hook(_hook)
     }
 
     fn evm_mut(&mut self) -> &mut Self::Evm {

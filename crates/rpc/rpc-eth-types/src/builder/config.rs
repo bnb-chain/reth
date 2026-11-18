@@ -84,12 +84,14 @@ pub struct EthConfig {
     pub max_blocks_per_filter: u64,
     /// Maximum number of logs that can be returned in a single response in `eth_getLogs` calls.
     pub max_logs_per_response: usize,
-    /// Gas limit for `eth_call` and call tracing RPC methods.
+    /// Gas limit for `eth_call`, `eth_estimateGas`, and call tracing RPC methods.
     ///
     /// Defaults to [`RPC_DEFAULT_GAS_CAP`]
     pub rpc_gas_cap: u64,
     /// Max number of blocks for `eth_simulateV1`.
     pub rpc_max_simulate_blocks: u64,
+    /// Whether to compute state roots for `eth_simulateV1` responses.
+    pub compute_state_root_for_eth_simulate: bool,
     ///
     /// Sets TTL for stale filters
     pub stale_filter_ttl: Duration,
@@ -137,6 +139,7 @@ impl Default for EthConfig {
             max_logs_per_response: DEFAULT_MAX_LOGS_PER_RESPONSE,
             rpc_gas_cap: RPC_DEFAULT_GAS_CAP.into(),
             rpc_max_simulate_blocks: DEFAULT_MAX_SIMULATE_BLOCKS,
+            compute_state_root_for_eth_simulate: false,
             stale_filter_ttl: DEFAULT_STALE_FILTER_TTL,
             fee_history_cache: FeeHistoryCacheConfig::default(),
             proof_permits: DEFAULT_PROOF_PERMITS,
@@ -193,7 +196,8 @@ impl EthConfig {
         self
     }
 
-    /// Configures the maximum gas limit for `eth_call` and call tracing RPC methods
+    /// Configures the maximum gas limit for `eth_call`, `eth_estimateGas`, and call tracing RPC
+    /// methods.
     pub const fn rpc_gas_cap(mut self, rpc_gas_cap: u64) -> Self {
         self.rpc_gas_cap = rpc_gas_cap;
         self
@@ -202,6 +206,12 @@ impl EthConfig {
     /// Configures the maximum gas limit for `eth_call` and call tracing RPC methods
     pub const fn rpc_max_simulate_blocks(mut self, max_blocks: u64) -> Self {
         self.rpc_max_simulate_blocks = max_blocks;
+        self
+    }
+
+    /// Configures whether to compute state roots for `eth_simulateV1` responses.
+    pub const fn compute_state_root_for_eth_simulate(mut self, enabled: bool) -> Self {
+        self.compute_state_root_for_eth_simulate = enabled;
         self
     }
 

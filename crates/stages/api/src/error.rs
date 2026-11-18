@@ -6,6 +6,7 @@ use reth_errors::{BlockExecutionError, DatabaseError, RethError};
 use reth_network_p2p::error::DownloadError;
 use reth_provider::ProviderError;
 use reth_prune::{PruneSegment, PruneSegmentError, PrunerError, UnwindTargetPrunedError};
+use reth_stages_types::StageId;
 use reth_static_file_types::StaticFileSegment;
 use thiserror::Error;
 use tokio::sync::broadcast::error::SendError;
@@ -103,15 +104,6 @@ pub enum StageError {
     /// Post Execute Commit error
     #[error("post execute commit error occurred: {_0}")]
     PostExecuteCommit(&'static str),
-    /// `TrieDB` is behind the execution stage checkpoint.
-    /// This indicates a gap between triedb state and execution state that requires an unwind.
-    #[error("TrieDB is behind execution stage: triedb_block={triedb_block}, execution_start_block={execution_start_block}. Unwinding to triedb checkpoint.")]
-    TrieDBBehind {
-        /// The block number at which triedb checkpoint is.
-        triedb_block: u64,
-        /// The block number at which execution stage wants to start.
-        execution_start_block: u64,
-    },
     /// Internal error
     #[error(transparent)]
     Internal(#[from] RethError),
@@ -182,4 +174,7 @@ pub enum PipelineError {
     /// Unwind target pruned error.
     #[error(transparent)]
     UnwindTargetPruned(#[from] UnwindTargetPrunedError),
+    /// A partial run named a stage this pipeline does not contain.
+    #[error("pipeline does not contain stage {0}")]
+    MissingStage(StageId),
 }

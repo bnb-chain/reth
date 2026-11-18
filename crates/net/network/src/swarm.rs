@@ -4,7 +4,7 @@ use crate::{
     peers::{InboundConnectionError, PeersManager},
     protocol::IntoRlpxSubProtocol,
     session::{Direction, PendingSessionHandshakeError, SessionEvent, SessionId, SessionManager},
-    state::{NetworkState, StateAction},
+    state::{NetworkState, SessionActivation, StateAction},
 };
 use futures::Stream;
 use reth_eth_wire::{
@@ -19,6 +19,7 @@ use std::{
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
+    time::Instant,
 };
 use tracing::trace;
 
@@ -111,9 +112,15 @@ impl<N: NetworkPrimitives> Swarm<N> {
 }
 
 impl<N: NetworkPrimitives> Swarm<N> {
-    /// Triggers a new outgoing connection to the given node
-    pub(crate) fn dial_outbound(&mut self, remote_addr: SocketAddr, remote_id: PeerId) {
-        self.sessions.dial_outbound(remote_addr, remote_id)
+    /// Triggers an outgoing connection, returning whether a session was started.
+    pub(crate) fn dial_outbound(&mut self, remote_addr: SocketAddr, remote_id: PeerId) -> bool {
+        if let Err(err) = self.sessions.try_dial_outbound(remote_addr, remote_id) {
+            trace!(target: "net", %err, "Outgoing connection rejected, capacity already reached.");
+            // Leave retries to the refill timer so a saturated session manager cannot busy-loop.
+            self.peers_mut().on_outgoing_pending_session_gracefully_closed(&remote_id);
+            return false
+        }
+        true
     }
 
     /// Handles a polled [`SessionEvent`]
@@ -133,15 +140,17 @@ impl<N: NetworkPrimitives> Swarm<N> {
                 direction,
                 timeout,
                 range_info,
+                supports_snap,
             } => {
-                self.state.on_session_activated(
-                    peer_id,
-                    capabilities.clone(),
-                    status.clone(),
-                    messages.clone(),
+                self.state.on_session_activated(SessionActivation {
+                    peer: peer_id,
+                    capabilities: capabilities.clone(),
+                    status: status.clone(),
+                    request_tx: messages.clone(),
                     timeout,
                     range_info,
-                );
+                    supports_snap,
+                });
                 Some(SwarmEvent::SessionEstablished {
                     peer_id,
                     remote_addr,
@@ -237,19 +246,32 @@ impl<N: NetworkPrimitives> Swarm<N> {
     fn on_state_action(&mut self, event: StateAction<N>) -> Option<SwarmEvent<N>> {
         match event {
             StateAction::Connect { remote_addr, peer_id } => {
-                self.dial_outbound(remote_addr, peer_id);
-                return Some(SwarmEvent::OutgoingTcpConnection { remote_addr, peer_id })
+                if self.dial_outbound(remote_addr, peer_id) {
+                    return Some(SwarmEvent::OutgoingTcpConnection { remote_addr, peer_id })
+                }
             }
             StateAction::Disconnect { peer_id, reason } => {
                 self.sessions.disconnect(peer_id, reason);
             }
             StateAction::NewBlock { peer_id, block: msg } => {
-                let msg = PeerMessage::NewBlock(msg);
-                self.sessions.send_message(&peer_id, msg);
+                if !self.state.peer_knows_block(&peer_id, &msg.hash) {
+                    let hash = msg.hash;
+                    let number = msg.number();
+                    if self.sessions.send_message(&peer_id, PeerMessage::NewBlock(msg)) {
+                        self.state.on_block_admitted(&peer_id, hash, number);
+                    }
+                }
             }
-            StateAction::NewBlockHashes { peer_id, hashes } => {
-                let msg = PeerMessage::NewBlockHashes(hashes);
-                self.sessions.send_message(&peer_id, msg);
+            StateAction::NewBlockHashes { peer_id, mut hashes } => {
+                hashes.0.retain(|block| !self.state.peer_knows_block(&peer_id, &block.hash));
+                if !hashes.is_empty() &&
+                    self.sessions
+                        .send_message(&peer_id, PeerMessage::NewBlockHashes(hashes.clone()))
+                {
+                    for block in hashes.0 {
+                        self.state.on_block_admitted(&peer_id, block.hash, block.number);
+                    }
+                }
             }
             StateAction::PeerAdded(peer_id) => return Some(SwarmEvent::PeerAdded(peer_id)),
             StateAction::PeerRemoved(peer_id) => return Some(SwarmEvent::PeerRemoved(peer_id)),
@@ -300,6 +322,55 @@ impl<N: NetworkPrimitives> Swarm<N> {
     pub(crate) const fn on_network_state_change(&mut self, network_state: NetworkConnectionState) {
         self.peers_mut().on_network_state_change(network_state);
     }
+
+    /// Shares ordinary gossip's known-block cache, marking knowledge only after session admission.
+    /// Returns true when the peer already knows the announcement or the session accepted it.
+    /// This is not a transport acknowledgement and does not advance the peer's advertised head.
+    pub(crate) fn send_block_announcement_once_at(
+        &mut self,
+        peer_id: PeerId,
+        message: PeerMessage<N>,
+        admitted: Instant,
+    ) -> bool {
+        match message {
+            PeerMessage::NewBlock(block) => {
+                if self.state.peer_knows_block(&peer_id, &block.hash) {
+                    metrics::counter!("network.block_announcement_duplicates_total", "kind" => "new_block", "path" => "targeted").increment(1);
+                    return true
+                }
+                let hash = block.hash;
+                if !self.sessions.send_message_at(&peer_id, PeerMessage::NewBlock(block), admitted)
+                {
+                    return false
+                }
+                self.state.mark_peer_knows_block(peer_id, hash);
+                true
+            }
+            PeerMessage::NewBlockHashes(mut hashes) => {
+                let before = hashes.len();
+                hashes.0.retain(|block| !self.state.peer_knows_block(&peer_id, &block.hash));
+                let duplicates = before - hashes.len();
+                if duplicates > 0 {
+                    metrics::counter!("network.block_announcement_duplicates_total", "kind" => "new_block_hashes", "path" => "targeted").increment(duplicates as u64);
+                }
+                if hashes.is_empty() {
+                    return true
+                }
+                if !self.sessions.send_message_at(
+                    &peer_id,
+                    PeerMessage::NewBlockHashes(hashes.clone()),
+                    admitted,
+                ) {
+                    return false
+                }
+                for block in hashes.0 {
+                    self.state.mark_peer_knows_block(peer_id, block.hash);
+                }
+                true
+            }
+            _ => unreachable!("manager admission only accepts full blocks or block hashes"),
+        }
+    }
 }
 
 impl<N: NetworkPrimitives> Stream for Swarm<N> {
@@ -326,7 +397,8 @@ impl<N: NetworkPrimitives> Stream for Swarm<N> {
             }
 
             // poll all sessions
-            match this.sessions.poll(cx) {
+            match this.sessions.poll(cx, |peer_id| this.state.peers().has_inbound_capacity(peer_id))
+            {
                 Poll::Pending => {}
                 Poll::Ready(event) => {
                     if let Some(event) = this.on_session_event(event) {

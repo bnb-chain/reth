@@ -10,17 +10,18 @@ use reth_db_api::{
     transaction::{DbTx, DbTxMut},
 };
 use reth_libmdbx::{ffi::MDBX_dbi, CommitLatency, Transaction, TransactionKind, WriteFlags, RW};
+use reth_primitives_traits::FastInstant as Instant;
 use reth_storage_errors::db::{DatabaseWriteError, DatabaseWriteOperation};
 use reth_tracing::tracing::{debug, instrument, trace, warn};
+use rustc_hash::FxHashMap;
 use std::{
     backtrace::Backtrace,
-    collections::HashMap,
     marker::PhantomData,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 /// Duration after which we emit the log about long-lived database transactions.
@@ -33,13 +34,16 @@ pub struct Tx<K: TransactionKind> {
     inner: Transaction<K>,
 
     /// Cached MDBX DBIs for reuse.
-    dbis: Arc<HashMap<&'static str, MDBX_dbi>>,
+    dbis: Arc<FxHashMap<&'static str, MDBX_dbi>>,
 
     /// Handler for metrics with its own [Drop] implementation for cases when the transaction isn't
     /// closed by [`Tx::commit`] or [`Tx::abort`], but we still need to report it in the metrics.
     ///
     /// If [Some], then metrics are reported.
     metrics_handler: Option<MetricsHandler<K>>,
+    /// Persistent read-ahead setting for gets and newly created cursors.
+    #[cfg(target_os = "linux")]
+    prefetch: AtomicBool,
 }
 
 impl<K: TransactionKind> Tx<K> {
@@ -48,7 +52,7 @@ impl<K: TransactionKind> Tx<K> {
     #[track_caller]
     pub(crate) fn new(
         inner: Transaction<K>,
-        dbis: Arc<HashMap<&'static str, MDBX_dbi>>,
+        dbis: Arc<FxHashMap<&'static str, MDBX_dbi>>,
         env_metrics: Option<Arc<DatabaseEnvMetrics>>,
     ) -> reth_libmdbx::Result<Self> {
         let metrics_handler = env_metrics
@@ -59,7 +63,13 @@ impl<K: TransactionKind> Tx<K> {
                 Ok(handler)
             })
             .transpose()?;
-        Ok(Self { inner, dbis, metrics_handler })
+        Ok(Self {
+            inner,
+            dbis,
+            metrics_handler,
+            #[cfg(target_os = "linux")]
+            prefetch: AtomicBool::new(false),
+        })
     }
 
     /// Returns a reference to the inner libmdbx transaction.
@@ -101,6 +111,8 @@ impl<K: TransactionKind> Tx<K> {
         Ok(Cursor::new_with_metrics(
             inner,
             self.metrics_handler.as_ref().map(|h| h.env_metrics.table_operation_metrics(T::NAME)),
+            #[cfg(target_os = "linux")]
+            self.prefetch.load(Ordering::Relaxed),
         ))
     }
 
@@ -177,6 +189,11 @@ struct MetricsHandler<K: TransactionKind> {
     /// Cached internal transaction ID provided by libmdbx.
     txn_id: u64,
     /// The time when transaction has started.
+    ///
+    /// This is a TSC-backed [`reth_primitives_traits::FastInstant`] rather than
+    /// [`std::time::Instant`] because
+    /// [`MetricsHandler::log_backtrace_on_long_read_transaction`] reads it on every database
+    /// operation.
     start: Instant,
     /// Duration after which we emit the log about long-lived database transactions.
     long_transaction_duration: Duration,
@@ -192,8 +209,8 @@ struct MetricsHandler<K: TransactionKind> {
     /// Shared database environment metrics.
     env_metrics: Arc<DatabaseEnvMetrics>,
     /// Backtrace of the location where the transaction has been opened. Reported only with debug
-    /// assertions, because capturing the backtrace on every transaction opening is expensive.
-    #[cfg(debug_assertions)]
+    /// assertions outside DST, because capturing every transaction opening is expensive.
+    #[cfg(all(debug_assertions, not(feature = "dst")))]
     open_backtrace: Backtrace,
     _marker: PhantomData<K>,
 }
@@ -207,7 +224,7 @@ impl<K: TransactionKind> MetricsHandler<K> {
             close_recorded: false,
             record_backtrace: true,
             backtrace_recorded: AtomicBool::new(false),
-            #[cfg(debug_assertions)]
+            #[cfg(all(debug_assertions, not(feature = "dst")))]
             open_backtrace: Backtrace::force_capture(),
             env_metrics,
             _marker: PhantomData,
@@ -248,9 +265,9 @@ impl<K: TransactionKind> MetricsHandler<K> {
             let open_duration = self.start.elapsed();
             if open_duration >= self.long_transaction_duration {
                 self.backtrace_recorded.store(true, Ordering::Relaxed);
-                #[cfg(debug_assertions)]
+                #[cfg(all(debug_assertions, not(feature = "dst")))]
                 let open_backtrace = format_args!("{}", self.open_backtrace);
-                #[cfg(not(debug_assertions))]
+                #[cfg(not(all(debug_assertions, not(feature = "dst"))))]
                 let open_backtrace = tracing::field::Empty;
                 warn!(
                     target: "storage::db::mdbx",
@@ -295,10 +312,17 @@ impl<K: TransactionKind> DbTx for Tx<K> {
         key: &<T::Key as Encode>::Encoded,
     ) -> Result<Option<T::Value>, DatabaseError> {
         self.execute_with_operation_metric::<T, _>(Operation::Get, None, |tx| {
-            tx.get(self.get_dbi::<T>()?, key.as_ref())
-                .map_err(|e| DatabaseError::Read(e.into()))?
-                .map(decode_one::<T>)
-                .transpose()
+            let dbi = self.get_dbi::<T>()?;
+            #[cfg(target_os = "linux")]
+            let value = if self.prefetch.load(Ordering::Relaxed) {
+                tx.get::<super::value_prefetch::PrefetchValue<'_>>(dbi, key.as_ref())
+                    .map(|value| value.map(|value| value.0))
+            } else {
+                tx.get(dbi, key.as_ref())
+            };
+            #[cfg(not(target_os = "linux"))]
+            let value = tx.get(dbi, key.as_ref());
+            value.map_err(|e| DatabaseError::Read(e.into()))?.map(decode_one::<T>).transpose()
         })
     }
 
@@ -345,6 +369,12 @@ impl<K: TransactionKind> DbTx for Tx<K> {
         }
 
         self.inner.disable_timeout();
+    }
+
+    #[cfg(target_os = "linux")]
+    fn prefetch(&self, enabled: bool) -> &Self {
+        self.prefetch.store(enabled, Ordering::Relaxed);
+        self
     }
 }
 

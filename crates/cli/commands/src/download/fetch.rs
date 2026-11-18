@@ -22,7 +22,7 @@ use std::{
     },
     time::Duration,
 };
-use tracing::info;
+use tracing::{info, warn};
 use url::Url;
 
 /// Maximum retry attempts for a single download segment.
@@ -125,6 +125,18 @@ impl ArchiveFetcher {
         &self,
         download_progress: Option<&mut ArchiveDownloadProgress<'_>>,
     ) -> Result<DownloadedArchive> {
+        if let Some(path) = archive_file_url_path(&self.url)? {
+            let size = fs::metadata(&path)?.len();
+            if !self.quiet() {
+                info!(target: "reth::cli",
+                    file = %path.display(),
+                    size = %DownloadProgress::format_size(size),
+                    "Using local archive"
+                );
+            }
+            return Ok(DownloadedArchive { path, size })
+        }
+
         let Some(request_limiter) = self.session.request_limiter() else {
             return self.download_sequential(super::MAX_DOWNLOAD_RETRIES, download_progress)
         };
@@ -150,11 +162,20 @@ impl ArchiveFetcher {
 
     /// Probes the remote source for file size and HTTP range support.
     fn probe(&self, client: &BlockingClient) -> Result<RemoteArchiveProbe> {
-        let probe = client
-            .get(&self.url)
-            .header(RANGE, "bytes=0-0")
-            .send()
-            .and_then(|response| response.error_for_status());
+        let mut attempt = 1;
+        let probe = loop {
+            let probe = client
+                .get(&self.url)
+                .header(RANGE, "bytes=0-0")
+                .send()
+                .and_then(|response| response.error_for_status());
+            // A transient failure here would permanently downgrade the archive to one stream.
+            if probe.is_ok() || attempt == SEGMENT_RETRY_ATTEMPTS {
+                break probe
+            }
+            std::thread::sleep(self.session.retry_delay(piece_retry_backoff(attempt, false)));
+            attempt += 1;
+        };
 
         let (supports_ranges, total_size) = match probe {
             Ok(response) if response.status() == StatusCode::PARTIAL_CONTENT => {
@@ -235,9 +256,12 @@ impl ArchiveFetcher {
                     if attempt < max_download_retries {
                         info!(target: "reth::cli",
                             file = %self.paths.file_name(),
-                            "Download failed, retrying in {RETRY_BACKOFF_SECS}s..."
+                            retry_delay = ?self.session.retry_delay(Duration::from_secs(RETRY_BACKOFF_SECS)),
+                            "Download failed, retrying"
                         );
-                        std::thread::sleep(Duration::from_secs(RETRY_BACKOFF_SECS));
+                        std::thread::sleep(
+                            self.session.retry_delay(Duration::from_secs(RETRY_BACKOFF_SECS)),
+                        );
                     }
                     continue;
                 }
@@ -316,9 +340,12 @@ impl ArchiveFetcher {
                 if attempt < max_download_retries {
                     info!(target: "reth::cli",
                         file = %self.paths.file_name(),
-                        "Download interrupted, retrying in {RETRY_BACKOFF_SECS}s..."
+                        retry_delay = ?self.session.retry_delay(Duration::from_secs(RETRY_BACKOFF_SECS)),
+                        "Download interrupted, retrying"
                     );
-                    std::thread::sleep(Duration::from_secs(RETRY_BACKOFF_SECS));
+                    std::thread::sleep(
+                        self.session.retry_delay(Duration::from_secs(RETRY_BACKOFF_SECS)),
+                    );
                 }
                 continue;
             }
@@ -393,6 +420,19 @@ impl ArchiveFetcher {
     fn quiet(&self) -> bool {
         self.session.progress().is_some()
     }
+}
+
+/// Resolves a `file://` archive URL to its local path.
+fn archive_file_url_path(url: &str) -> Result<Option<PathBuf>> {
+    let Ok(parsed) = Url::parse(url) else { return Ok(None) };
+    if parsed.scheme() != "file" {
+        return Ok(None)
+    }
+
+    parsed
+        .to_file_path()
+        .map(Some)
+        .map_err(|_| eyre::eyre!("Invalid file:// archive URL path: {url}"))
 }
 
 /// The final path and size of one archive fetched to disk.
@@ -525,6 +565,8 @@ struct SegmentedWorkerContext<'a> {
     request_limiter: &'a DownloadRequestLimiter,
     /// Cancellation token shared by the whole command.
     cancel_token: &'a CancellationToken,
+    /// Session carrying the retry-delay override.
+    session: &'a DownloadSession,
 }
 
 impl SegmentedDownload {
@@ -563,6 +605,7 @@ impl SegmentedDownload {
         let worker_context = SegmentedWorkerContext {
             url,
             part_path: paths.part_path(),
+            session: &session,
             shared,
             request_limiter: request_limiter.as_ref(),
             cancel_token,
@@ -635,7 +678,7 @@ impl SegmentedDownload {
         };
 
         while let Some(piece) = state.next_piece(context.cancel_token) {
-            if let Err(error) = Self::download_piece_with_retries(
+            match Self::download_piece_with_retries(
                 client,
                 context.url,
                 &file,
@@ -644,10 +687,25 @@ impl SegmentedDownload {
                 &piece_progress_bytes,
                 context.request_limiter,
                 context.cancel_token,
+                context.session,
             ) {
-                state.note_terminal_failure();
-                terminal_failure.record(error);
-                return;
+                Ok(()) => {}
+                Err(PieceAttemptFailure::Retryable { error, .. }) if state.requeue(piece) => {
+                    warn!(target: "reth::cli",
+                        start = piece.start,
+                        end = piece.end,
+                        %error,
+                        "Piece download failed, requeued"
+                    );
+                }
+                Err(
+                    PieceAttemptFailure::Retryable { error, .. } |
+                    PieceAttemptFailure::Terminal(error),
+                ) => {
+                    state.note_terminal_failure();
+                    terminal_failure.record(error);
+                    return;
+                }
             }
         }
     }
@@ -666,13 +724,16 @@ impl SegmentedDownload {
         piece_progress_bytes: &AtomicU64,
         request_limiter: &DownloadRequestLimiter,
         cancel_token: &CancellationToken,
-    ) -> Result<()> {
+        session: &DownloadSession,
+    ) -> std::result::Result<(), PieceAttemptFailure> {
         for attempt in 1..=SEGMENT_RETRY_ATTEMPTS {
             if cancel_token.is_cancelled() {
-                return Err(eyre::eyre!("Download cancelled"))
+                return Err(PieceAttemptFailure::Terminal(eyre::eyre!("Download cancelled")))
             }
 
-            let _request_permit = request_limiter.acquire(shared, cancel_token)?;
+            let _request_permit = request_limiter
+                .acquire(shared, cancel_token)
+                .map_err(PieceAttemptFailure::Terminal)?;
             match Self::download_piece_once(
                 client,
                 url,
@@ -686,14 +747,17 @@ impl SegmentedDownload {
                 Err(PieceAttemptFailure::Retryable { error: _, throttled })
                     if attempt < SEGMENT_RETRY_ATTEMPTS =>
                 {
-                    std::thread::sleep(piece_retry_backoff(attempt, throttled));
+                    std::thread::sleep(
+                        session.retry_delay(piece_retry_backoff(attempt, throttled)),
+                    );
                 }
-                Err(PieceAttemptFailure::Retryable { error, .. }) => return Err(error),
-                Err(PieceAttemptFailure::Terminal(error)) => return Err(error),
+                Err(failure) => return Err(failure),
             }
         }
 
-        Err(eyre::eyre!("Piece download failed after {SEGMENT_RETRY_ATTEMPTS} attempts"))
+        Err(PieceAttemptFailure::Terminal(eyre::eyre!(
+            "Piece download failed after {SEGMENT_RETRY_ATTEMPTS} attempts"
+        )))
     }
 
     /// Downloads one queued piece once.
@@ -800,12 +864,28 @@ struct SegmentedDownloadState {
     pieces: Mutex<VecDeque<DownloadPiece>>,
     /// Set once a worker hits a fatal error.
     failed: AtomicBool,
+    /// Remaining number of times a piece that exhausted its retries may be requeued.
+    requeues_left: AtomicU64,
 }
 
 impl SegmentedDownloadState {
     /// Creates the shared queue state for one segmented archive attempt.
     fn new(pieces: VecDeque<DownloadPiece>) -> Self {
-        Self { pieces: Mutex::new(pieces), failed: AtomicBool::new(false) }
+        let requeues_left = AtomicU64::new(pieces.len() as u64);
+        Self { pieces: Mutex::new(pieces), failed: AtomicBool::new(false), requeues_left }
+    }
+
+    /// Puts a piece back on the queue, returning `false` once the requeue budget is spent.
+    fn requeue(&self, piece: DownloadPiece) -> bool {
+        if self
+            .requeues_left
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |left| left.checked_sub(1))
+            .is_err()
+        {
+            return false
+        }
+        self.pieces.lock().unwrap().push_back(piece);
+        true
     }
 
     /// Returns the next piece unless cancellation or a fatal error stopped the attempt.
@@ -901,15 +981,8 @@ fn piece_retry_backoff(attempt: u32, throttled: bool) -> Duration {
 
 /// Returns whether an HTTP status should retry the current piece.
 fn is_retryable_piece_status(status: StatusCode) -> bool {
-    matches!(
-        status,
-        StatusCode::REQUEST_TIMEOUT |
-            StatusCode::TOO_MANY_REQUESTS |
-            StatusCode::INTERNAL_SERVER_ERROR |
-            StatusCode::BAD_GATEWAY |
-            StatusCode::SERVICE_UNAVAILABLE |
-            StatusCode::GATEWAY_TIMEOUT
-    )
+    matches!(status, StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_MANY_REQUESTS) ||
+        status.is_server_error()
 }
 
 /// Returns whether a piece request should retry after the given status.
@@ -956,6 +1029,8 @@ fn panic_payload_message(payload: Box<dyn Any + Send + 'static>) -> String {
 mod tests {
     use super::*;
     use reqwest::StatusCode;
+    use reth_cli_util::cancellation::CancellationToken;
+    use std::io::Write;
 
     #[test]
     fn segmented_plan_skips_small_files() {
@@ -990,6 +1065,7 @@ mod tests {
     fn piece_status_retry_policy_retries_200_ok() {
         assert!(should_retry_piece_status(StatusCode::OK));
         assert!(should_retry_piece_status(StatusCode::TOO_MANY_REQUESTS));
+        assert!(should_retry_piece_status(StatusCode::from_u16(520).unwrap()));
         assert!(!should_retry_piece_status(StatusCode::NOT_FOUND));
     }
 
@@ -1014,5 +1090,40 @@ mod tests {
             strategy,
             FetchStrategy::Sequential(SequentialDownloadFallback::NoRangeSupport)
         ));
+    }
+
+    #[test]
+    fn archive_fetcher_uses_file_url_archive_directly() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive_path = dir.path().join("state.tar.zst");
+        {
+            let mut archive = std::fs::File::create(&archive_path).unwrap();
+            archive.write_all(b"local archive bytes").unwrap();
+        }
+
+        let cache_dir = dir.path().join("cache");
+        std::fs::create_dir(&cache_dir).unwrap();
+        let url = Url::from_file_path(&archive_path).unwrap().to_string();
+        let session = DownloadSession::new(None, None, CancellationToken::new());
+        let fetcher = ArchiveFetcher::new(url, &cache_dir, session);
+
+        let downloaded = fetcher.download(None).unwrap();
+
+        assert_eq!(downloaded.path, archive_path);
+        assert_eq!(downloaded.size, b"local archive bytes".len() as u64);
+        assert!(!cache_dir.join("state.tar.zst").exists());
+        assert!(!cache_dir.join("state.tar.zst.part").exists());
+    }
+
+    #[test]
+    fn segmented_state_requeues_failed_pieces_within_budget() {
+        let state = SegmentedDownloadState::new(build_download_pieces(8, 4));
+        let token = CancellationToken::new();
+        let first = state.next_piece(&token).unwrap();
+
+        assert!(state.requeue(first));
+        assert!(state.requeue(first));
+        assert!(!state.requeue(first));
+        assert_eq!(state.pieces.lock().unwrap().back(), Some(&first));
     }
 }

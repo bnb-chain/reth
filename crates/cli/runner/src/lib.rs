@@ -193,11 +193,8 @@ pub struct CliContext {
     pub task_executor: TaskExecutor,
 }
 
-/// Default timeout for graceful shutdown of tasks. Must cover the
-/// engine-tree's final `persist_until_complete` flush of every in-memory
-/// canonical block up to the head; 5 s is not enough with production-validator
-/// buffer sizes on debug builds or slow disks.
-const DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(60);
+/// Default timeout for graceful shutdown of tasks.
+const DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Configuration for [`CliRunner`].
 #[derive(Debug, Clone)]
@@ -301,14 +298,14 @@ const DEFAULT_RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Shut down the given [`Runtime`](reth_tasks::Runtime), and wait for it if `wait` is set.
 ///
-/// Dropping the runtime on the current thread could block due to tokio pool teardown.
-/// Instead, we drop it on a separate thread and optionally wait for completion.
+/// Shuts down the owned tokio runtime even if tasks retain clones of the shared handle.
+/// Pool teardown can block, so it runs on a separate thread.
 fn runtime_shutdown(rt: reth_tasks::Runtime, wait: bool) {
     let (tx, rx) = mpsc::channel();
     std::thread::Builder::new()
         .name("rt-shutdown".to_string())
         .spawn(move || {
-            drop(rt);
+            rt.shutdown_timeout(DEFAULT_RUNTIME_SHUTDOWN_TIMEOUT);
             let _ = tx.send(());
         })
         .unwrap();
@@ -317,5 +314,29 @@ fn runtime_shutdown(rt: reth_tasks::Runtime, wait: bool) {
         let _ = rx.recv_timeout(DEFAULT_RUNTIME_SHUTDOWN_TIMEOUT).inspect_err(|err| {
             tracing::warn!(target: "reth::cli", %err, "runtime shutdown timed out");
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_shutdown_stops_tasks_with_live_runtime_clones() {
+        let runtime = reth_tasks::Runtime::test();
+        let retained = runtime.clone();
+        let task_runtime = runtime.clone();
+        let (started, ready) = mpsc::channel();
+        let task = runtime.handle().spawn(async move {
+            let _runtime = task_runtime;
+            started.send(()).unwrap();
+            std::future::pending::<()>().await;
+        });
+        ready.recv_timeout(Duration::from_secs(5)).unwrap();
+
+        runtime_shutdown(runtime, true);
+
+        assert!(task.is_finished(), "shutdown returned while a task still owned the runtime");
+        assert!(retained.handle().block_on(task).unwrap_err().is_cancelled());
     }
 }

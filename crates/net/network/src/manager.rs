@@ -28,12 +28,15 @@ use crate::{
         BackedOffPeersMetrics, ClosedSessionsMetrics, DirectionalDisconnectMetrics, NetworkMetrics,
         PendingSessionFailureMetrics,
     },
-    network::{NetworkHandle, NetworkHandleMessage},
+    network::{
+        block_ingress_dropped, NetworkHandle, NetworkHandleMessage, QueuedBlockAnnouncement,
+        BLOCK_ANNOUNCEMENT_INGRESS_CAPACITY, BLOCK_ANNOUNCEMENT_POLL_BUDGET,
+    },
     peers::{BackoffReason, PeersManager},
     poll_nested_stream_with_budget,
     protocol::IntoRlpxSubProtocol,
     required_block_filter::RequiredBlockFilter,
-    session::SessionManager,
+    session::{MessageKind, SessionManager},
     state::NetworkState,
     swarm::{Swarm, SwarmEvent},
     transactions::NetworkTransactionEvent,
@@ -42,7 +45,7 @@ use crate::{
 use futures::{Future, StreamExt};
 use parking_lot::Mutex;
 use reth_chainspec::EnrForkIdEntry;
-use reth_eth_wire::{DisconnectReason, EthNetworkPrimitives, NetworkPrimitives};
+use reth_eth_wire::{DisconnectReason, EthNetworkPrimitives, NetworkPrimitives, NewBlockPayload};
 use reth_fs_util::{self as fs, FsPathError};
 use reth_metrics::common::mpsc::MemoryBoundedSender;
 use reth_network_api::{
@@ -112,6 +115,9 @@ pub struct NetworkManager<N: NetworkPrimitives = EthNetworkPrimitives> {
     handle: NetworkHandle<N>,
     /// Receiver half of the command channel set up between this type and the [`NetworkHandle`]
     from_handle_rx: UnboundedReceiverStream<NetworkHandleMessage<N>>,
+    /// Independently bounded targeted block ingress, serviced before ordinary handle messages.
+    full_blocks_rx: mpsc::Receiver<QueuedBlockAnnouncement<N>>,
+    block_hashes_rx: mpsc::Receiver<QueuedBlockAnnouncement<N>>,
     /// Handles block imports according to the `eth` protocol.
     block_import: Box<dyn BlockImport<N::NewBlockPayload>>,
     /// Sender for high level network events.
@@ -298,6 +304,7 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
             discovery_v4_config,
             discovery_v5_config,
             dns_discovery_config,
+            nat.clone(),
         )
         .await?;
         // need to retrieve the addr here since provided port could be `0`
@@ -330,6 +337,8 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
         let swarm = Swarm::new(incoming, sessions, state);
 
         let (to_manager_tx, from_handle_rx) = mpsc::unbounded_channel();
+        let (full_blocks_tx, full_blocks_rx) = mpsc::channel(BLOCK_ANNOUNCEMENT_INGRESS_CAPACITY);
+        let (block_hashes_tx, block_hashes_rx) = mpsc::channel(BLOCK_ANNOUNCEMENT_INGRESS_CAPACITY);
 
         let event_sender: EventSender<NetworkEvent<PeerRequest<N>>> = Default::default();
 
@@ -337,6 +346,8 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
             Arc::clone(&num_active_peers),
             Arc::new(Mutex::new(listener_addr)),
             to_manager_tx,
+            full_blocks_tx,
+            block_hashes_tx,
             secret_key,
             local_peer_id,
             peers_handle,
@@ -359,6 +370,8 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
             swarm,
             handle,
             from_handle_rx: UnboundedReceiverStream::new(from_handle_rx),
+            full_blocks_rx,
+            block_hashes_rx,
             block_import,
             event_sender,
             to_transactions_manager: None,
@@ -413,7 +426,12 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
 
     /// Create a [`NetworkBuilder`] to configure all components of the network
     pub const fn into_builder(self) -> NetworkBuilder<(), (), N> {
-        NetworkBuilder { network: self, transactions: (), request_handler: () }
+        NetworkBuilder {
+            network: self,
+            transactions: (),
+            request_handler: (),
+            eth_block_source: None,
+        }
     }
 
     /// Returns the [`SocketAddr`] that listens for incoming tcp connections.
@@ -462,7 +480,8 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
 
     /// Returns a new [`FetchClient`] that can be cloned and shared.
     ///
-    /// The [`FetchClient`] is the entrypoint for sending requests to the network.
+    /// The [`FetchClient`] is the entrypoint for sending requests to the network, including
+    /// `snap/2` requests via its [`SnapClient`](reth_network_p2p::snap::client::SnapClient) impl.
     pub fn fetch_client(&self) -> FetchClient<N> {
         self.swarm.state().fetch_client()
     }
@@ -573,6 +592,8 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
                     response,
                 })
             }
+            PeerRequest::GetCells { request, response } => self
+                .delegate_eth_request(IncomingEthRequest::GetCells { peer_id, request, response }),
             PeerRequest::GetPooledTransactions { request, response } => {
                 self.notify_tx_manager(NetworkTransactionEvent::GetPooledTransactions {
                     peer_id,
@@ -580,6 +601,8 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
                     response,
                 });
             }
+            PeerRequest::GetSnap { request, response } => self
+                .delegate_eth_request(IncomingEthRequest::GetSnap { peer_id, request, response }),
         }
     }
 
@@ -654,17 +677,11 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
             }
             PeerMessage::NewBlock(block) => {
                 self.within_pow_or_disconnect(peer_id, move |this| {
-                    // Extract TD from the NewBlock message
-                    let td = block.td();
-
-                    // Update the session's current TD (important for BSC and other chains)
-                    if let Some(session) = this.swarm.sessions().active_sessions().get(&peer_id) {
-                        session.update_td(td);
+                    // BSC vote propagation compares this live TD with the local head.
+                    if let Some(td) = block.block.td() {
+                        this.swarm.sessions_mut().update_peer_td(&peer_id, td);
                     }
-
-                    // Update NetworkState's ActivePeer TD
-                    this.swarm.state_mut().on_new_block_with_td(peer_id, block.hash, td);
-
+                    this.swarm.state_mut().mark_peer_knows_block(peer_id, block.hash);
                     // start block import process
                     this.block_import.on_new_block(peer_id, NewBlockEvent::Block(block));
                 });
@@ -684,7 +701,7 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
                     msg,
                 });
             }
-            PeerMessage::SendTransactions(_) => {
+            PeerMessage::SendTransactions(_) | PeerMessage::SendBroadcastPoolTransactions(_) => {
                 unreachable!("Not emitted by session")
             }
             PeerMessage::BlockRangeUpdated(_) => {}
@@ -694,35 +711,83 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
         }
     }
 
+    /// Each block kind receives a finite share; ordinary/control and Swarm processing still run.
+    fn poll_block_announcements(&mut self, cx: &mut Context<'_>) -> bool {
+        let mut exhausted = false;
+        for full in [true, false] {
+            for index in 0..BLOCK_ANNOUNCEMENT_POLL_BUDGET {
+                let incoming = if full {
+                    self.full_blocks_rx.poll_recv(cx)
+                } else {
+                    self.block_hashes_rx.poll_recv(cx)
+                };
+                let Poll::Ready(Some(queued)) = incoming else { break };
+                self.on_block_announcement(queued);
+                exhausted |= index + 1 == BLOCK_ANNOUNCEMENT_POLL_BUDGET;
+            }
+        }
+        exhausted
+    }
+
+    fn on_block_announcement(&mut self, queued: QueuedBlockAnnouncement<N>) {
+        let QueuedBlockAnnouncement { peer_id, message, admitted, guard, deduplicate } = queued;
+        let kind = MessageKind::of_peer(&message);
+        metrics::histogram!("network.block_announcement_manager_queue_wait_seconds", "kind" => kind.label())
+            .record(admitted.elapsed().as_secs_f64());
+        if guard.is_some_and(|ready| !ready(&message)) {
+            block_ingress_dropped(kind, "guard_unready");
+            return
+        }
+        let accepted = if deduplicate {
+            self.swarm.send_block_announcement_once_at(peer_id, message, admitted)
+        } else {
+            self.swarm.sessions().send_message_at(&peer_id, message, admitted)
+        };
+        if !accepted {
+            block_ingress_dropped(kind, "session_rejected");
+        }
+    }
+
     /// Handler for received messages from a handle
     fn on_handle_message(&mut self, msg: NetworkHandleMessage<N>) {
         match msg {
             NetworkHandleMessage::DiscoveryListener(tx) => {
                 self.swarm.state_mut().discovery_mut().add_listener(tx);
             }
-            NetworkHandleMessage::AnnounceBlock(block, hash, total_difficulty) => {
+            NetworkHandleMessage::AnnounceBlock(block, hash) => {
                 if self.handle.mode().is_stake() {
                     // See [EIP-3675](https://eips.ethereum.org/EIPS/eip-3675#devp2p)
                     warn!(target: "net", "Peer performed block propagation, but it is not supported in proof of stake (EIP-3675)");
-                    return;
+                    return
                 }
-                // Include the total_difficulty when announcing our own block
-                // This is essential for BSC and other chains that rely on TD
-                let msg = NewBlockMessage { hash, block: Arc::new(block), td: total_difficulty };
+                let msg = NewBlockMessage { hash, block: Arc::new(block) };
                 self.swarm.state_mut().announce_new_block(msg);
             }
             NetworkHandleMessage::EthRequest { peer_id, request } => {
-                self.swarm.sessions_mut().send_message(&peer_id, PeerMessage::EthRequest(request))
+                self.swarm.sessions_mut().send_message(&peer_id, PeerMessage::EthRequest(request));
             }
             NetworkHandleMessage::SendTransaction { peer_id, msg } => {
-                self.swarm.sessions_mut().send_message(&peer_id, PeerMessage::SendTransactions(msg))
+                self.swarm
+                    .sessions_mut()
+                    .send_message(&peer_id, PeerMessage::SendTransactions(msg));
             }
-            NetworkHandleMessage::SendPooledTransactionHashes { peer_id, msg } => self
-                .swarm
-                .sessions_mut()
-                .send_message(&peer_id, PeerMessage::PooledTransactions(msg)),
+            NetworkHandleMessage::SendBroadcastPoolTransactions { peer_id, msg } => {
+                self.swarm
+                    .sessions_mut()
+                    .send_message(&peer_id, PeerMessage::SendBroadcastPoolTransactions(msg));
+            }
+            NetworkHandleMessage::SendPooledTransactionHashes { peer_id, msg } => {
+                self.swarm
+                    .sessions_mut()
+                    .send_message(&peer_id, PeerMessage::PooledTransactions(msg));
+            }
             NetworkHandleMessage::AddTrustedPeerId(peer_id) => {
                 self.swarm.state_mut().add_trusted_peer_id(peer_id);
+            }
+            NetworkHandleMessage::AddTrustedPeerNode(trusted_peer) => {
+                if !self.swarm.is_shutting_down() {
+                    self.swarm.state_mut().add_trusted_peer_node(trusted_peer);
+                }
             }
             NetworkHandleMessage::AddPeerAddress(peer, kind, addr) => {
                 // only add peer if we are not shutting down
@@ -735,6 +800,12 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
             }
             NetworkHandleMessage::DisconnectPeer(peer_id, reason) => {
                 self.swarm.sessions_mut().disconnect(peer_id, reason);
+            }
+            NetworkHandleMessage::BanPeer(peer_id) => {
+                self.swarm.peers_mut().ban_peer_by_admin(peer_id);
+            }
+            NetworkHandleMessage::UnbanPeer(peer_id) => {
+                self.swarm.peers_mut().unban_peer_by_admin(peer_id);
             }
             NetworkHandleMessage::ConnectPeer(peer_id, kind, addr) => {
                 self.swarm.state_mut().add_and_connect(peer_id, kind, addr);
@@ -768,6 +839,10 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
                     self.swarm.state_mut().update_fork_id(transition.current);
                 }
             }
+            NetworkHandleMessage::SetForkFilter { fork_filter } => {
+                let fork_id = self.swarm.sessions_mut().set_fork_filter(fork_filter);
+                self.swarm.state_mut().update_fork_id(fork_id);
+            }
             NetworkHandleMessage::GetPeerInfos(tx) => {
                 let _ = tx.send(self.get_peer_infos());
             }
@@ -793,7 +868,7 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
                 self.swarm.sessions_mut().update_advertised_block_range(block_range_update);
             }
             NetworkHandleMessage::EthMessage { peer_id, message } => {
-                self.swarm.sessions_mut().send_message(&peer_id, message)
+                self.swarm.sessions_mut().send_message(&peer_id, message);
             }
         }
     }
@@ -811,6 +886,7 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
             SwarmEvent::IncomingTcpConnection { remote_addr, session_id } => {
                 trace!(target: "net", ?session_id, ?remote_addr, "Incoming connection");
                 self.metrics.total_incoming_connections.increment(1);
+                self.update_pending_connection_metrics();
                 self.metrics
                     .incoming_connections
                     .set(self.swarm.peers().num_inbound_connections() as f64);
@@ -855,6 +931,7 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
                 }
 
                 self.update_active_connection_metrics();
+                self.update_pending_connection_metrics();
 
                 let peer_kind = self
                     .swarm
@@ -954,6 +1031,7 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
                         .on_incoming_pending_session_gracefully_closed();
                 }
                 self.closed_sessions_metrics.incoming_pending.increment(1);
+                self.update_pending_connection_metrics();
                 self.metrics
                     .incoming_connections
                     .set(self.swarm.peers().num_inbound_connections() as f64);
@@ -1032,20 +1110,11 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
             .active_sessions()
             .iter()
             .filter_map(|(&peer_id, session)| {
-                let (record, kind) = self.swarm.state().peers().peer_by_id(peer_id)?;
-
-                // Get real-time block info from NetworkState
-                let (best_hash, best_number, best_td) =
-                    self.swarm.state().get_peer_best_block(&peer_id).unwrap_or_else(|| {
-                        // Fallback to status from handshake if no real-time data
-                        (
-                            session.status.blockhash,
-                            session.status.latest_block,
-                            session.status.total_difficulty,
-                        )
-                    });
-
-                Some(session.peer_info(&record, kind, best_hash, best_number, best_td))
+                self.swarm
+                    .state()
+                    .peers()
+                    .peer_by_id(peer_id)
+                    .map(|(record, kind)| session.peer_info(&record, kind))
             })
             .collect()
     }
@@ -1054,21 +1123,13 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
     ///
     /// Returns `None` if there's no active session to the peer.
     fn get_peer_info_by_id(&self, peer_id: PeerId) -> Option<PeerInfo> {
-        let session = self.swarm.sessions().active_sessions().get(&peer_id)?;
-        let (record, kind) = self.swarm.state().peers().peer_by_id(peer_id)?;
-
-        // Get real-time block info from NetworkState
-        let (best_hash, best_number, best_td) =
-            self.swarm.state().get_peer_best_block(&peer_id).unwrap_or_else(|| {
-                // Fallback to status from handshake if no real-time data
-                (
-                    session.status.blockhash,
-                    session.status.latest_block,
-                    session.status.total_difficulty,
-                )
-            });
-
-        Some(session.peer_info(&record, kind, best_hash, best_number, best_td))
+        self.swarm.sessions().active_sessions().get(&peer_id).and_then(|session| {
+            self.swarm
+                .state()
+                .peers()
+                .peer_by_id(peer_id)
+                .map(|(record, kind)| session.peer_info(&record, kind))
+        })
     }
 
     /// Returns [`PeerInfo`] for a given peers.
@@ -1124,6 +1185,13 @@ impl<N: NetworkPrimitives> NetworkManager<N> {
     /// Performs a graceful network shutdown by stopping new connections from being accepted while
     /// draining current and pending connections.
     fn perform_network_shutdown(&mut self) {
+        self.full_blocks_rx.close();
+        self.block_hashes_rx.close();
+        for queue in [&mut self.full_blocks_rx, &mut self.block_hashes_rx] {
+            while let Ok(queued) = queue.try_recv() {
+                block_ingress_dropped(MessageKind::of_peer(&queued.message), "shutdown");
+            }
+        }
         // Set connection status to `Shutdown`. Stops node from accepting
         // new incoming connections as well as sending connection requests to newly
         // discovered nodes.
@@ -1173,6 +1241,7 @@ impl<N: NetworkPrimitives> Future for NetworkManager<N> {
         // will only be closed if the channel was deliberately closed since we always have an
         // instance of `NetworkHandle`
         let start_network_handle = Instant::now();
+        let maybe_more_blocks = this.poll_block_announcements(cx);
         let maybe_more_handle_messages = poll_nested_stream_with_budget!(
             "net",
             "Network message channel",
@@ -1195,10 +1264,10 @@ impl<N: NetworkPrimitives> Future for NetworkManager<N> {
             start_network_handle.elapsed() - poll_durations.acc_network_handle;
 
         // all streams are fully drained and import futures pending
-        if maybe_more_handle_messages || maybe_more_swarm_events {
+        if maybe_more_blocks || maybe_more_handle_messages || maybe_more_swarm_events {
             // make sure we're woken up again
             cx.waker().wake_by_ref();
-            return Poll::Pending;
+            return Poll::Pending
         }
 
         this.update_poll_metrics(start, poll_durations);
@@ -1211,4 +1280,713 @@ impl<N: NetworkPrimitives> Future for NetworkManager<N> {
 struct NetworkManagerPollDurations {
     acc_network_handle: Duration,
     acc_swarm: Duration,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        BlockAnnouncementAdmissionError, NetworkConfigBuilder, PeersConfig, SessionsConfig,
+    };
+    use alloy_primitives::{B256, U128, U256};
+    use futures::{future::poll_fn, task::noop_waker_ref};
+    use metrics::{atomics::AtomicU64, Gauge};
+    use reth_eth_wire::{EthVersion, HelloMessageWithProtocols, NewBlock};
+    use reth_ethereum_primitives::Block;
+    use reth_network_api::Peers;
+    use reth_network_types::{PeerAddr, PeerKind, SessionLimits};
+    use reth_storage_api::noop::NoopProvider;
+    use reth_tasks::Runtime;
+    use tokio::net::{TcpListener, TcpStream};
+
+    fn ingress_test_config() -> crate::NetworkConfig<NoopProvider, EthNetworkPrimitives> {
+        let builder = NetworkConfigBuilder::<EthNetworkPrimitives>::new(
+            SecretKey::new(&mut rand_08::thread_rng()),
+            Runtime::test(),
+        )
+        .disable_discovery()
+        .listener_addr("127.0.0.1:0".parse().unwrap())
+        .peer_config(PeersConfig::test())
+        .with_pow();
+        let hello = HelloMessageWithProtocols::builder(builder.get_peer_id())
+            .protocols([EthVersion::Eth68.into()])
+            .build();
+        builder.hello_message(hello).build(NoopProvider::default())
+    }
+
+    fn ingress_full_message() -> PeerMessage<EthNetworkPrimitives> {
+        let block = Block::default();
+        PeerMessage::NewBlock(NewBlockMessage {
+            hash: block.header.hash_slow(),
+            block: Arc::new(NewBlock { block, td: U128::ZERO }),
+        })
+    }
+
+    fn ingress_hash_message(count: usize) -> PeerMessage<EthNetworkPrimitives> {
+        PeerMessage::NewBlockHashes(reth_eth_wire::NewBlockHashes(vec![
+            reth_eth_wire::BlockHashNumber::default(); count
+        ]))
+    }
+
+    #[tokio::test]
+    async fn targeted_block_manager_ingress_is_bounded_and_shutdown_releases_queued_work() {
+        let mut manager = NetworkManager::new(ingress_test_config()).await.unwrap();
+        let handle = manager.handle().clone();
+        let peer = PeerId::random();
+        for _ in 0..BLOCK_ANNOUNCEMENT_INGRESS_CAPACITY {
+            assert_eq!(
+                handle.try_send_block_announcement(peer, ingress_full_message(), None),
+                Ok(())
+            );
+            assert_eq!(
+                handle.try_send_block_announcement(peer, ingress_hash_message(0), None),
+                Ok(())
+            );
+        }
+        assert_eq!(
+            handle.try_send_block_announcement(peer, ingress_full_message(), None),
+            Err(BlockAnnouncementAdmissionError::Full)
+        );
+        assert_eq!(
+            handle.try_send_block_announcement(peer, ingress_hash_message(1), None),
+            Err(BlockAnnouncementAdmissionError::Full)
+        );
+        assert_eq!(
+            handle.try_send_block_announcement(peer, ingress_hash_message(17), None),
+            Err(BlockAnnouncementAdmissionError::TooManyHashes)
+        );
+        assert_eq!(
+            handle.try_send_block_announcement(
+                peer,
+                PeerMessage::PooledTransactions(
+                    reth_eth_wire::NewPooledTransactionHashes66(Vec::new()).into()
+                ),
+                None
+            ),
+            Err(BlockAnnouncementAdmissionError::NotBlockAnnouncement)
+        );
+        drop(manager.full_blocks_rx.try_recv().unwrap());
+        let marker = Arc::new(());
+        let weak = Arc::downgrade(&marker);
+        let guard: crate::BlockAnnouncementGuard<EthNetworkPrimitives> = Arc::new(move |_| {
+            let _ = &marker;
+            true
+        });
+        assert_eq!(
+            handle.try_send_block_announcement(peer, ingress_full_message(), Some(guard)),
+            Ok(())
+        );
+        manager.perform_network_shutdown();
+        assert!(weak.upgrade().is_none(), "shutdown drops already queued payloads/guards");
+        assert!(manager.full_blocks_rx.is_empty());
+        assert!(manager.block_hashes_rx.is_empty());
+        for message in [ingress_full_message(), ingress_hash_message(1)] {
+            assert_eq!(
+                handle.try_send_block_announcement(peer, message, None),
+                Err(BlockAnnouncementAdmissionError::Closed)
+            );
+        }
+        drop(manager);
+        assert_eq!(
+            handle.try_send_block_announcement(peer, ingress_hash_message(1), None),
+            Err(BlockAnnouncementAdmissionError::Closed)
+        );
+    }
+
+    #[derive(Debug)]
+    struct IngressImportSpy(mpsc::UnboundedSender<NewBlockEvent>);
+
+    impl BlockImport for IngressImportSpy {
+        fn on_new_block(&mut self, _: PeerId, event: NewBlockEvent) {
+            self.0.send(event).unwrap();
+        }
+        fn poll(&mut self, _: &mut Context<'_>) -> Poll<BlockImportEvent<NewBlock>> {
+            Poll::Pending
+        }
+    }
+
+    #[tokio::test]
+    async fn targeted_block_manager_ingress_bypasses_real_transaction_backlog_and_rechecks_guard() {
+        let mut local = NetworkManager::new(ingress_test_config()).await.unwrap();
+        let mut remote = NetworkManager::new(ingress_test_config()).await.unwrap();
+        let (remote_tx, mut received) = mpsc::unbounded_channel();
+        remote.block_import = Box::new(IngressImportSpy(remote_tx));
+        let peer = *remote.peer_id();
+        local.swarm.peers_mut().add_and_connect_kind(
+            peer,
+            PeerKind::Basic,
+            PeerAddr::from_tcp(remote.local_addr()),
+            None,
+        );
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            poll_fn(|cx| {
+                assert!(Pin::new(&mut local).poll(cx).is_pending());
+                assert!(Pin::new(&mut remote).poll(cx).is_pending());
+                if local.get_peer_info_by_id(peer).is_some() &&
+                    remote.get_peer_info_by_id(*local.peer_id()).is_some()
+                {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            }),
+        )
+        .await
+        .unwrap();
+        let handle = local.handle().clone();
+        for _ in 0..400 {
+            handle.send_transactions(peer, Vec::new());
+        }
+        // Exercise the compatibility public entry point as well as the explicit admission API.
+        handle.send_eth_message(peer, ingress_full_message());
+        assert!(handle.try_send_block_announcement(peer, ingress_hash_message(1), None).is_ok());
+        assert_eq!(local.from_handle_rx.as_ref().len(), 400);
+        assert!(futures::poll!(Pin::new(&mut local)).is_pending());
+        let backlog = local.from_handle_rx.as_ref().len();
+        assert!(backlog > 0 && backlog < 400, "ordinary ingress also gets its poll budget");
+        assert!(local.full_blocks_rx.is_empty() && local.block_hashes_rx.is_empty());
+        let mut full = false;
+        let mut hashes = false;
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            poll_fn(|cx| {
+                // Do not poll local again: the older common FIFO remains backlogged.
+                assert!(Pin::new(&mut remote).poll(cx).is_pending());
+                while let Poll::Ready(Some(event)) = received.poll_recv(cx) {
+                    match event {
+                        NewBlockEvent::Block(_) => full = true,
+                        NewBlockEvent::Hashes(_) => hashes = true,
+                    }
+                }
+                if full && hashes {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            }),
+        )
+        .await
+        .expect("both public block lanes must reach the real peer ahead of the manager TX backlog");
+        assert_eq!(local.from_handle_rx.as_ref().len(), backlog);
+
+        let ready = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let guard: crate::BlockAnnouncementGuard<EthNetworkPrimitives> = {
+            let ready = ready.clone();
+            let calls = calls.clone();
+            Arc::new(move |_| {
+                calls.fetch_add(1, Ordering::Relaxed);
+                ready.load(Ordering::Relaxed)
+            })
+        };
+        for message in [ingress_full_message(), ingress_hash_message(1)] {
+            assert!(handle.try_send_block_announcement(peer, message, Some(guard.clone())).is_ok());
+        }
+        ready.store(false, Ordering::Relaxed);
+        assert!(futures::poll!(Pin::new(&mut local)).is_pending());
+        assert_eq!(calls.load(Ordering::Relaxed), 2, "readiness is checked after manager waiting");
+        // Rejection releases both ingress slots; it does not silently create retry work.
+        assert!(local.full_blocks_rx.is_empty() && local.block_hashes_rx.is_empty());
+        // A later full block is a wire-order barrier for both rejected messages. Poll the remote
+        // through this marker so an idle remote manager cannot hide an accidentally forwarded item.
+        let mut marker = Block::default();
+        marker.header.number = 99;
+        let marker = PeerMessage::NewBlock(NewBlockMessage {
+            hash: marker.header.hash_slow(),
+            block: Arc::new(NewBlock { block: marker, td: U128::ZERO }),
+        });
+        assert!(handle.try_send_block_announcement(peer, marker, None).is_ok());
+        assert!(futures::poll!(Pin::new(&mut local)).is_pending());
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            poll_fn(|cx| {
+                assert!(Pin::new(&mut remote).poll(cx).is_pending());
+                match received.poll_recv(cx) {
+                    Poll::Ready(Some(NewBlockEvent::Block(block))) => {
+                        assert_eq!(
+                            block.block.block.header.number, 99,
+                            "rejected full must not reach session"
+                        );
+                        Poll::Ready(())
+                    }
+                    Poll::Ready(Some(NewBlockEvent::Hashes(_))) => {
+                        panic!("rejected hashes must not reach session")
+                    }
+                    _ => Poll::Pending,
+                }
+            }),
+        )
+        .await
+        .unwrap();
+        for _ in 0..BLOCK_ANNOUNCEMENT_INGRESS_CAPACITY {
+            assert!(handle
+                .try_send_block_announcement(peer, ingress_full_message(), Some(guard.clone()))
+                .is_ok());
+            assert!(handle
+                .try_send_block_announcement(peer, ingress_hash_message(1), Some(guard.clone()))
+                .is_ok());
+        }
+        // With both block lanes continuously saturated, ordinary control and Swarm still advance.
+        // Place an inbound block on the socket, then leave the remote manager idle.
+        let (local_tx, mut inbound) = mpsc::unbounded_channel();
+        local.block_import = Box::new(IngressImportSpy(local_tx));
+        remote.handle().send_eth_message(*local.peer_id(), ingress_full_message());
+        assert!(futures::poll!(Pin::new(&mut remote)).is_pending());
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            poll_fn(|cx| {
+                let (tx, mut rx) = tokio::sync::oneshot::channel();
+                // Put this control request ahead of the sustained ordinary traffic for this poll.
+                while local.from_handle_rx.as_mut().try_recv().is_ok() {}
+                handle.send_message(NetworkHandleMessage::GetPeerInfos(tx));
+                for _ in 0..100 {
+                    handle.send_transactions(peer, Vec::new());
+                }
+                let before = calls.load(Ordering::Relaxed);
+                let full_before = local.full_blocks_rx.len();
+                let hashes_before = local.block_hashes_rx.len();
+                assert!(Pin::new(&mut local).poll(cx).is_pending());
+                assert!(
+                    rx.try_recv().is_ok(),
+                    "ordinary control progresses under full/hash saturation"
+                );
+                assert!(calls.load(Ordering::Relaxed) > before);
+                assert_eq!(
+                    full_before - local.full_blocks_rx.len(),
+                    BLOCK_ANNOUNCEMENT_POLL_BUDGET
+                );
+                assert_eq!(
+                    hashes_before - local.block_hashes_rx.len(),
+                    BLOCK_ANNOUNCEMENT_POLL_BUDGET
+                );
+                assert!(!local.full_blocks_rx.is_empty() && !local.block_hashes_rx.is_empty());
+                while handle
+                    .try_send_block_announcement(peer, ingress_full_message(), Some(guard.clone()))
+                    .is_ok()
+                {}
+                while handle
+                    .try_send_block_announcement(peer, ingress_hash_message(1), Some(guard.clone()))
+                    .is_ok()
+                {}
+                if let Poll::Ready(Some(NewBlockEvent::Block(_))) = inbound.poll_recv(cx) {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            }),
+        )
+        .await
+        .expect("Swarm must receive while all three manager ingress lanes stay busy");
+        assert!(received.try_recv().is_err(), "rejected guards must not reach the remote session");
+    }
+
+    #[tokio::test]
+    async fn rejected_dials_release_slots_and_refill() {
+        for limit in [Some(0), Some(1), None] {
+            let mut networks = Vec::new();
+            for index in 0..3 {
+                let sessions = SessionsConfig {
+                    limits: SessionLimits {
+                        max_pending_outbound: if index == 0 { limit } else { None },
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
+                let config = NetworkConfigBuilder::<EthNetworkPrimitives>::new(
+                    SecretKey::new(&mut rand_08::thread_rng()),
+                    Runtime::test(),
+                )
+                .disable_discovery()
+                .listener_addr("127.0.0.1:0".parse().unwrap())
+                .peer_config(PeersConfig::test().with_max_outbound(2))
+                .sessions_config(sessions)
+                .build(NoopProvider::default());
+                networks.push(NetworkManager::new(config).await.unwrap());
+            }
+            let (local, remotes) = networks.split_first_mut().unwrap();
+            for remote in remotes.iter() {
+                local.swarm.peers_mut().add_and_connect_kind(
+                    *remote.peer_id(),
+                    PeerKind::Basic,
+                    PeerAddr::from_tcp(remote.swarm.listener().local_address()),
+                    None,
+                );
+            }
+            let mut cx = Context::from_waker(noop_waker_ref());
+            assert!(Pin::new(&mut *local).poll(&mut cx).is_pending());
+            assert_eq!(
+                local.swarm.peers().num_pending_outbound_connections(),
+                limit.map_or(2, |limit| limit as usize),
+            );
+            assert_eq!(local.swarm.peers().num_outbound_connections(), 0);
+            if limit == Some(0) {
+                continue
+            }
+
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                poll_fn(|cx| {
+                    assert!(Pin::new(&mut *local).poll(cx).is_pending());
+                    for remote in remotes.iter_mut() {
+                        assert!(Pin::new(remote).poll(cx).is_pending());
+                    }
+                    if local.swarm.peers().num_outbound_connections() == 2 {
+                        Poll::Ready(())
+                    } else {
+                        Poll::Pending
+                    }
+                }),
+            )
+            .await
+            .expect("rejected peers must be retried after session capacity becomes available");
+            assert_eq!(local.swarm.peers().num_pending_outbound_connections(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn inbound_replacement_refreshes_pending_connection_metrics() {
+        let config = || {
+            NetworkConfigBuilder::<EthNetworkPrimitives>::new(
+                SecretKey::new(&mut rand_08::thread_rng()),
+                Runtime::test(),
+            )
+            .disable_discovery()
+            .listener_addr("127.0.0.1:0".parse().unwrap())
+            .peer_config(PeersConfig::test())
+            .build(NoopProvider::default())
+        };
+        let mut local = NetworkManager::new(config()).await.unwrap();
+        let mut remote = NetworkManager::new(config()).await.unwrap();
+        let stalled = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let pending_outgoing = Arc::new(AtomicU64::new(0));
+        let total_pending = Arc::new(AtomicU64::new(0));
+        local.metrics.pending_outgoing_connections = Gauge::from_arc(pending_outgoing.clone());
+        local.metrics.total_pending_connections = Gauge::from_arc(total_pending.clone());
+        local.swarm.peers_mut().add_and_connect_kind(
+            *remote.peer_id(),
+            PeerKind::Basic,
+            PeerAddr::from_tcp(stalled.local_addr().unwrap()),
+            None,
+        );
+        assert!(futures::poll!(Pin::new(&mut local)).is_pending());
+        assert_eq!(f64::from_bits(pending_outgoing.load(Ordering::Relaxed)), 1.0);
+        remote.swarm.peers_mut().add_and_connect_kind(
+            *local.peer_id(),
+            PeerKind::Basic,
+            PeerAddr::from_tcp(local.local_addr()),
+            None,
+        );
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            poll_fn(|cx| {
+                assert!(Pin::new(&mut local).poll(cx).is_pending());
+                assert!(Pin::new(&mut remote).poll(cx).is_pending());
+                if local.swarm.peers().num_inbound_connections() == 1 {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(local.swarm.peers().num_pending_outbound_connections(), 0);
+        assert_eq!(f64::from_bits(pending_outgoing.load(Ordering::Relaxed)), 0.0);
+        assert_eq!(f64::from_bits(total_pending.load(Ordering::Relaxed)), 0.0);
+    }
+
+    #[tokio::test]
+    async fn incoming_handshake_failure_refreshes_pending_connection_metrics() {
+        let config = NetworkConfigBuilder::<EthNetworkPrimitives>::new(
+            SecretKey::new(&mut rand_08::thread_rng()),
+            Runtime::test(),
+        )
+        .disable_discovery()
+        .listener_addr("127.0.0.1:0".parse().unwrap())
+        .peer_config(PeersConfig::test())
+        .build(NoopProvider::default());
+        let mut network = NetworkManager::new(config).await.unwrap();
+        let total_pending = Arc::new(AtomicU64::new(0));
+        network.metrics.total_pending_connections = Gauge::from_arc(total_pending.clone());
+        let stream = TcpStream::connect(network.local_addr()).await.unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            poll_fn(|cx| {
+                assert!(Pin::new(&mut network).poll(cx).is_pending());
+                if network.swarm.sessions().num_pending_connections() == 1 {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(f64::from_bits(total_pending.load(Ordering::Relaxed)), 1.0);
+        drop(stream);
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            poll_fn(|cx| {
+                assert!(Pin::new(&mut network).poll(cx).is_pending());
+                if network.swarm.sessions().num_pending_connections() == 0 {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(f64::from_bits(total_pending.load(Ordering::Relaxed)), 0.0);
+    }
+
+    #[tokio::test]
+    async fn peer_info_tracks_total_difficulty_after_handshake() {
+        let config = || {
+            let builder = NetworkConfigBuilder::<EthNetworkPrimitives>::new(
+                SecretKey::new(&mut rand_08::thread_rng()),
+                Runtime::test(),
+            )
+            .disable_discovery()
+            .listener_addr("127.0.0.1:0".parse().unwrap())
+            .peer_config(PeersConfig::test())
+            .with_pow();
+            let hello = HelloMessageWithProtocols::builder(builder.get_peer_id())
+                .protocols([EthVersion::Eth68.into()])
+                .build();
+            builder.hello_message(hello).build(NoopProvider::default())
+        };
+        let mut local = NetworkManager::new(config()).await.unwrap();
+        let mut remote = NetworkManager::new(config()).await.unwrap();
+        let peer_id = *remote.peer_id();
+        local.swarm.peers_mut().add_and_connect_kind(
+            peer_id,
+            PeerKind::Basic,
+            PeerAddr::from_tcp(remote.swarm.listener().local_address()),
+            None,
+        );
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            poll_fn(|cx| {
+                assert!(Pin::new(&mut local).poll(cx).is_pending());
+                assert!(Pin::new(&mut remote).poll(cx).is_pending());
+                if local.get_peer_info_by_id(peer_id).is_some() {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            }),
+        )
+        .await
+        .unwrap();
+        let handshake_td = local.get_peer_info_by_id(peer_id).unwrap().best_td.unwrap();
+        // BSC stops forwarding votes once peer TD trails the local head by more than 1000.
+        for delta in [1002, 2004] {
+            let td = handshake_td + U256::from(delta);
+            let mut block = NewBlock { block: Block::default(), td: U128::from(td) };
+            block.block.header.number = delta / 2;
+            block.block.header.difficulty = U256::from(2);
+            local.on_peer_message(
+                peer_id,
+                PeerMessage::NewBlock(NewBlockMessage {
+                    hash: block.block.header.hash_slow(),
+                    block: Arc::new(block),
+                }),
+            );
+            assert_eq!(local.get_peer_info_by_id(peer_id).unwrap().best_td, Some(td));
+            assert_eq!(local.get_peer_infos()[0].best_td, Some(td));
+            assert_eq!(local.get_peer_infos_by_ids([peer_id])[0].best_td, Some(td));
+            assert_eq!(
+                local.swarm.sessions().active_sessions()[&peer_id].status.total_difficulty,
+                Some(handshake_td),
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn swarm_rejected_block_admission_keeps_retry_eligible() {
+        let config = NetworkConfigBuilder::<EthNetworkPrimitives>::new(
+            SecretKey::new(&mut rand_08::thread_rng()),
+            Runtime::test(),
+        )
+        .disable_discovery()
+        .listener_addr("127.0.0.1:0".parse().unwrap())
+        .build(NoopProvider::default());
+        let mut network = NetworkManager::new(config).await.unwrap();
+        let peer = PeerId::random();
+        let (tx, _rx) = mpsc::channel(1);
+        network.swarm.state_mut().on_session_activated(crate::state::SessionActivation {
+            peer,
+            capabilities: Arc::new(reth_eth_wire::Capabilities::from(Vec::new())),
+            status: Arc::default(),
+            request_tx: reth_network_api::PeerRequestSender::new(peer, tx),
+            timeout: Arc::new(std::sync::atomic::AtomicU64::new(1)),
+            range_info: None,
+            supports_snap: false,
+        });
+        assert!(!network.swarm.sessions().active_sessions().contains_key(&peer));
+        let message = NewBlockMessage {
+            hash: B256::repeat_byte(42),
+            block: Arc::new(NewBlock { block: Block::default(), td: U128::ZERO }),
+        };
+        for hashes_only in [false, true] {
+            for _ in 0..2 {
+                if hashes_only {
+                    network.swarm.state_mut().announce_new_block_hash(message.clone());
+                } else {
+                    network.swarm.state_mut().announce_new_block(message.clone());
+                }
+                assert!(network
+                    .swarm
+                    .poll_next_unpin(&mut Context::from_waker(noop_waker_ref()))
+                    .is_pending());
+                assert!(
+                    !network.swarm.state().peer_knows_block(&peer, &message.hash),
+                    "Swarm must honor SessionManager rejection"
+                );
+            }
+            network.swarm.state_mut().announce_new_block_hash(message.clone());
+            assert!(
+                matches!(
+                    network.swarm.state_mut().poll(&mut Context::from_waker(noop_waker_ref())),
+                    Poll::Ready(crate::state::StateAction::NewBlockHashes { .. })
+                ),
+                "later announcement remains eligible"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn targeted_once_marks_shared_knowledge_only_after_guard_and_session_acceptance() {
+        let mut local = NetworkManager::new(ingress_test_config()).await.unwrap();
+        let mut remote = NetworkManager::new(ingress_test_config()).await.unwrap();
+        let peer = *remote.peer_id();
+        local.handle().add_peer(peer, remote.local_addr());
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            poll_fn(|cx| {
+                assert!(Pin::new(&mut local).poll(cx).is_pending());
+                assert!(Pin::new(&mut remote).poll(cx).is_pending());
+                if local.get_peer_info_by_id(peer).is_some() &&
+                    remote.get_peer_info_by_id(*local.peer_id()).is_some()
+                {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            }),
+        )
+        .await
+        .unwrap();
+        let before = local.get_peer_info_by_id(peer).unwrap();
+        let mut block = Block::default();
+        block.header.number = 42;
+        let block = NewBlockMessage {
+            hash: block.header.hash_slow(),
+            block: Arc::new(NewBlock { block, td: U128::ZERO }),
+        };
+        let handle = local.handle().clone();
+        let mut cx = Context::from_waker(noop_waker_ref());
+        assert_eq!(
+            handle.try_send_block_announcement_once(
+                peer,
+                PeerMessage::NewBlock(block.clone()),
+                Some(Arc::new(|_| false)),
+            ),
+            Ok(())
+        );
+        local.poll_block_announcements(&mut cx);
+        assert!(!local.swarm.state().peer_knows_block(&peer, &block.hash));
+        assert_eq!(
+            handle.try_send_block_announcement_once(
+                peer,
+                PeerMessage::NewBlock(block.clone()),
+                None,
+            ),
+            Ok(())
+        );
+        assert!(!local.swarm.state().peer_knows_block(&peer, &block.hash));
+        local.poll_block_announcements(&mut cx);
+        assert!(local.swarm.state().peer_knows_block(&peer, &block.hash));
+        let after = local.get_peer_info_by_id(peer).unwrap();
+        assert_eq!(after.best_number, before.best_number);
+        assert_eq!(after.best_td, before.best_td);
+        assert!(local.swarm.send_block_announcement_once_at(
+            peer,
+            PeerMessage::NewBlock(block.clone()),
+            Instant::now(),
+        ));
+        let other = B256::repeat_byte(7);
+        assert_eq!(
+            handle.try_send_block_announcement_once(
+                peer,
+                PeerMessage::NewBlockHashes(reth_eth_wire::NewBlockHashes(vec![
+                    reth_eth_wire::BlockHashNumber { hash: block.hash, number: 42 },
+                    reth_eth_wire::BlockHashNumber { hash: other, number: 43 },
+                ])),
+                None,
+            ),
+            Ok(())
+        );
+        local.poll_block_announcements(&mut cx);
+        assert!(local.swarm.state().peer_knows_block(&peer, &other));
+        assert!(local.swarm.send_block_announcement_once_at(
+            peer,
+            PeerMessage::NewBlockHashes(reth_eth_wire::NewBlockHashes(vec![
+                reth_eth_wire::BlockHashNumber { hash: block.hash, number: 42 },
+                reth_eth_wire::BlockHashNumber { hash: other, number: 43 },
+            ])),
+            Instant::now(),
+        ));
+        assert_eq!(local.get_peer_info_by_id(peer).unwrap().best_number, before.best_number);
+        assert_eq!(
+            handle.try_send_block_announcement_once(peer, ingress_hash_message(17), None),
+            Err(BlockAnnouncementAdmissionError::TooManyHashes)
+        );
+        assert_eq!(
+            handle.try_send_block_announcement_once(
+                peer,
+                PeerMessage::PooledTransactions(
+                    reth_eth_wire::NewPooledTransactionHashes66(Vec::new()).into()
+                ),
+                None,
+            ),
+            Err(BlockAnnouncementAdmissionError::NotBlockAnnouncement)
+        );
+    }
+
+    #[tokio::test]
+    async fn targeted_once_missing_session_keeps_each_peer_retryable() {
+        let mut local = NetworkManager::new(ingress_test_config()).await.unwrap();
+        let message = NewBlockMessage {
+            hash: B256::repeat_byte(42),
+            block: Arc::new(NewBlock { block: Block::default(), td: U128::ZERO }),
+        };
+        let first = PeerId::random();
+        let second = PeerId::random();
+        for peer in [first, second] {
+            let (tx, _rx) = mpsc::channel(1);
+            local.swarm.state_mut().on_session_activated(crate::state::SessionActivation {
+                peer,
+                capabilities: Arc::new(reth_eth_wire::Capabilities::from(Vec::new())),
+                status: Arc::default(),
+                request_tx: reth_network_api::PeerRequestSender::new(peer, tx),
+                timeout: Arc::new(std::sync::atomic::AtomicU64::new(1)),
+                range_info: None,
+                supports_snap: false,
+            });
+        }
+        local.swarm.state_mut().mark_peer_knows_block(first, message.hash);
+        for payload in [
+            PeerMessage::NewBlock(message.clone()),
+            PeerMessage::NewBlockHashes(reth_eth_wire::NewBlockHashes(vec![
+                reth_eth_wire::BlockHashNumber { hash: message.hash, number: 0 },
+            ])),
+        ] {
+            assert!(!local.swarm.send_block_announcement_once_at(second, payload, Instant::now()));
+            assert!(!local.swarm.state().peer_knows_block(&second, &message.hash));
+        }
+        assert!(local.swarm.state().peer_knows_block(&first, &message.hash));
+    }
 }

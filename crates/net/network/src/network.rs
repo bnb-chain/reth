@@ -1,6 +1,11 @@
 use crate::{
-    config::NetworkMode, message::PeerMessage, protocol::RlpxSubProtocol,
-    swarm::NetworkConnectionState, transactions::TransactionsHandle, FetchClient,
+    config::NetworkMode,
+    message::PeerMessage,
+    protocol::RlpxSubProtocol,
+    session::{MessageKind, MAX_QUEUED_BLOCK_HASHES},
+    swarm::NetworkConnectionState,
+    transactions::TransactionsHandle,
+    FetchClient,
 };
 use alloy_primitives::B256;
 use enr::Enr;
@@ -9,28 +14,30 @@ use parking_lot::Mutex;
 use reth_discv4::{Discv4, NatResolver};
 use reth_discv5::Discv5;
 use reth_eth_wire::{
-    BlockRangeUpdate, DisconnectReason, EthNetworkPrimitives, NetworkPrimitives,
-    NewPooledTransactionHashes, SharedTransactions,
+    BlockRangeUpdate, BroadcastPoolTransactions, DisconnectReason, EthNetworkPrimitives,
+    NetworkPrimitives, NewPooledTransactionHashes, SharedTransactions,
 };
-use reth_ethereum_forks::Head;
+use reth_ethereum_forks::{ForkFilter, Head};
 use reth_network_api::{
     events::{NetworkPeersEvents, PeerEvent, PeerEventStream},
     test_utils::{PeersHandle, PeersHandleProvider},
-    BlockDownloaderProvider, DiscoveryEvent, NetworkError, NetworkEvent,
+    BlockDownloaderProvider, CellCustody, DiscoveryEvent, NetworkError, NetworkEvent,
     NetworkEventListenerProvider, NetworkInfo, NetworkStatus, PeerInfo, PeerRequest, Peers,
     PeersInfo,
 };
 use reth_network_p2p::sync::{NetworkSyncUpdater, SyncState, SyncStateProvider};
-use reth_network_peers::{NodeRecord, PeerId};
+use reth_network_peers::{NodeRecord, PeerId, TrustedPeer};
 use reth_network_types::{PeerAddr, PeerKind, Reputation, ReputationChangeKind};
 use reth_tokio_util::{EventSender, EventStream};
 use secp256k1::SecretKey;
 use std::{
+    fmt,
     net::SocketAddr,
     sync::{
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc,
     },
+    time::Instant,
 };
 use tokio::sync::{
     mpsc::{self, UnboundedSender},
@@ -56,6 +63,8 @@ impl<N: NetworkPrimitives> NetworkHandle<N> {
         num_active_peers: Arc<AtomicUsize>,
         listener_address: Arc<Mutex<SocketAddr>>,
         to_manager_tx: UnboundedSender<NetworkHandleMessage<N>>,
+        full_blocks_tx: mpsc::Sender<QueuedBlockAnnouncement<N>>,
+        block_hashes_tx: mpsc::Sender<QueuedBlockAnnouncement<N>>,
         secret_key: SecretKey,
         local_peer_id: PeerId,
         peers: PeersHandle,
@@ -70,6 +79,8 @@ impl<N: NetworkPrimitives> NetworkHandle<N> {
         let inner = NetworkInner {
             num_active_peers,
             to_manager_tx,
+            full_blocks_tx,
+            block_hashes_tx,
             listener_address,
             secret_key,
             local_peer_id,
@@ -78,6 +89,7 @@ impl<N: NetworkPrimitives> NetworkHandle<N> {
             is_syncing: Arc::new(AtomicBool::new(false)),
             initial_sync_done: Arc::new(AtomicBool::new(false)),
             chain_id,
+            cell_custody: CellCustody::default(),
             tx_gossip_disabled,
             discv4,
             discv5,
@@ -111,20 +123,25 @@ impl<N: NetworkPrimitives> NetworkHandle<N> {
         self.send_message(NetworkHandleMessage::StatusUpdate { head });
     }
 
+    /// Replaces the network's active [`ForkFilter`] with `fork_filter`, re-deriving the advertised
+    /// [`ForkId`](reth_ethereum_forks::ForkId) for future handshakes and updating the discovery
+    /// ENR entry.
+    ///
+    /// This lets a running node adopt a fork schedule that changed at runtime (e.g. an
+    /// L1-signalled upgrade) without a restart. The caller must build `fork_filter` from the
+    /// updated chain spec advanced to the node's current head, and should do so before the fork's
+    /// activation timestamp so the node announces the upcoming fork ahead of time.
+    pub fn set_fork_filter(&self, fork_filter: ForkFilter) {
+        self.send_message(NetworkHandleMessage::SetForkFilter { fork_filter });
+    }
+
     /// Announce a block over devp2p
     ///
     /// Caution: in `PoS` this is a noop because new blocks are no longer announced over devp2p.
     /// Instead they are sent to the node by CL and can be requested over devp2p.
     /// Broadcasting new blocks is considered a protocol violation.
-    ///
-    /// For BSC and other `PoW`-based chains, the `total_difficulty` parameter is essential.
-    pub fn announce_block(
-        &self,
-        block: N::NewBlockPayload,
-        hash: B256,
-        total_difficulty: Option<alloy_primitives::U256>,
-    ) {
-        self.send_message(NetworkHandleMessage::AnnounceBlock(block, hash, total_difficulty))
+    pub fn announce_block(&self, block: N::NewBlockPayload, hash: B256) {
+        self.send_message(NetworkHandleMessage::AnnounceBlock(block, hash))
     }
 
     /// Sends a [`PeerRequest`] to the given peer's session.
@@ -145,9 +162,101 @@ impl<N: NetworkPrimitives> NetworkHandle<N> {
         })
     }
 
-    /// Send eth message to the peer.
+    /// Send cached full pool transactions to the peer.
+    pub(crate) fn send_broadcast_pool_transactions(
+        &self,
+        peer_id: PeerId,
+        msg: BroadcastPoolTransactions,
+    ) {
+        self.send_message(NetworkHandleMessage::SendBroadcastPoolTransactions { peer_id, msg })
+    }
+
+    /// Send an ETH message to the peer. Full blocks and block hashes use bounded manager lanes;
+    /// other messages retain the ordinary handle channel. Use
+    /// [`Self::try_send_block_announcement`] to observe block admission failures.
     pub fn send_eth_message(&self, peer_id: PeerId, message: PeerMessage<N>) {
-        self.send_message(NetworkHandleMessage::EthMessage { peer_id, message })
+        if MessageKind::of_peer(&message).is_block() {
+            if let Err(error) = self.try_send_block_announcement(peer_id, message, None) {
+                tracing::trace!(target: "net", %peer_id, %error, "Block announcement manager admission rejected");
+            }
+        } else {
+            self.send_message(NetworkHandleMessage::EthMessage { peer_id, message });
+        }
+    }
+
+    /// Tries to admit a targeted full block or block-hash announcement to the manager.
+    ///
+    /// Each kind has an independent global 64-message queue. Hash batches must also fit the
+    /// per-session hash-item limit. Success means manager admission only: the readiness guard,
+    /// peer session or transport can still reject it later. No retry is scheduled.
+    ///
+    /// The optional guard runs at manager dequeue and must perform only bounded, nonblocking
+    /// in-memory checks. It does not guarantee serviceability after session admission or delivery.
+    /// This targeted path preserves forced announcements; it does not consult peer known state.
+    /// The separate [`Self::announce_block`] fanout API retains its existing handle/Swarm path.
+    pub fn try_send_block_announcement(
+        &self,
+        peer_id: PeerId,
+        message: PeerMessage<N>,
+        guard: Option<BlockAnnouncementGuard<N>>,
+    ) -> Result<(), BlockAnnouncementAdmissionError> {
+        self.enqueue_block_announcement(peer_id, message, guard, false)
+    }
+
+    /// Admits a targeted announcement that shares ordinary gossip's per-peer known-block cache.
+    ///
+    /// Success acknowledges only the bounded manager queue. At dequeue, known hashes are
+    /// skipped and eligible hashes become known only after the peer session accepts them.
+    /// Failed session admission leaves them retryable. This does not acknowledge delivery or
+    /// advance the peer's advertised head. Use [`Self::try_send_block_announcement`] for an
+    /// explicitly forced recovery announcement that must bypass peer knowledge.
+    /// Deduplication expires when the hash leaves the peer's bounded history or the session closes.
+    pub fn try_send_block_announcement_once(
+        &self,
+        peer_id: PeerId,
+        message: PeerMessage<N>,
+        guard: Option<BlockAnnouncementGuard<N>>,
+    ) -> Result<(), BlockAnnouncementAdmissionError> {
+        self.enqueue_block_announcement(peer_id, message, guard, true)
+    }
+
+    fn enqueue_block_announcement(
+        &self,
+        peer_id: PeerId,
+        message: PeerMessage<N>,
+        guard: Option<BlockAnnouncementGuard<N>>,
+        deduplicate: bool,
+    ) -> Result<(), BlockAnnouncementAdmissionError> {
+        let admitted = Instant::now();
+        let kind = MessageKind::of_peer(&message);
+        let sender = match &message {
+            PeerMessage::NewBlock(_) => &self.inner.full_blocks_tx,
+            PeerMessage::NewBlockHashes(hashes) if hashes.len() <= MAX_QUEUED_BLOCK_HASHES => {
+                &self.inner.block_hashes_tx
+            }
+            PeerMessage::NewBlockHashes(_) => {
+                block_ingress_dropped(kind, "oversized");
+                return Err(BlockAnnouncementAdmissionError::TooManyHashes)
+            }
+            _ => {
+                block_ingress_dropped(kind, "invalid_type");
+                return Err(BlockAnnouncementAdmissionError::NotBlockAnnouncement)
+            }
+        };
+        sender
+            .try_send(QueuedBlockAnnouncement { peer_id, message, admitted, guard, deduplicate })
+            .map_err(|error| {
+                let (error, reason) = match error {
+                    mpsc::error::TrySendError::Full(_) => {
+                        (BlockAnnouncementAdmissionError::Full, "capacity")
+                    }
+                    mpsc::error::TrySendError::Closed(_) => {
+                        (BlockAnnouncementAdmissionError::Closed, "closed")
+                    }
+                };
+                block_ingress_dropped(kind, reason);
+                error
+            })
     }
 
     /// Send message to get the [`TransactionsHandle`].
@@ -327,6 +436,10 @@ impl<N: NetworkPrimitives> Peers for NetworkHandle<N> {
         self.send_message(NetworkHandleMessage::AddTrustedPeerId(peer));
     }
 
+    fn add_trusted_peer_node(&self, peer: TrustedPeer) {
+        self.send_message(NetworkHandleMessage::AddTrustedPeerNode(peer));
+    }
+
     /// Sends a message to the [`NetworkManager`](crate::NetworkManager) to add a peer to the known
     /// set, with the given kind.
     fn add_peer_kind(
@@ -382,6 +495,17 @@ impl<N: NetworkPrimitives> Peers for NetworkHandle<N> {
         self.send_message(NetworkHandleMessage::DisconnectPeer(peer, Some(reason)))
     }
 
+    /// Sends a message to the [`NetworkManager`](crate::NetworkManager) to ban the given peer and
+    /// disconnect an active non-trusted session if one exists.
+    fn ban_peer(&self, peer: PeerId) {
+        self.send_message(NetworkHandleMessage::BanPeer(peer))
+    }
+
+    /// Sends a message to the [`NetworkManager`](crate::NetworkManager) to unban the given peer.
+    fn unban_peer(&self, peer: PeerId) {
+        self.send_message(NetworkHandleMessage::UnbanPeer(peer))
+    }
+
     /// Sends a message to the [`NetworkManager`](crate::NetworkManager) to connect to the given
     /// peer.
     ///
@@ -434,6 +558,10 @@ impl<N: NetworkPrimitives> NetworkInfo for NetworkHandle<N> {
         self.inner.chain_id.load(Ordering::Relaxed)
     }
 
+    fn cell_custody(&self) -> &CellCustody {
+        &self.inner.cell_custody
+    }
+
     fn is_syncing(&self) -> bool {
         SyncStateProvider::is_syncing(self)
     }
@@ -450,7 +578,7 @@ impl<N: NetworkPrimitives> SyncStateProvider for NetworkHandle<N> {
     // used to guard the txpool
     fn is_initially_syncing(&self) -> bool {
         if self.inner.initial_sync_done.load(Ordering::Relaxed) {
-            return false;
+            return false
         }
         self.inner.is_syncing.load(Ordering::Relaxed)
     }
@@ -475,6 +603,11 @@ impl<N: NetworkPrimitives> NetworkSyncUpdater for NetworkHandle<N> {
     fn update_block_range(&self, update: reth_eth_wire::BlockRangeUpdate) {
         self.send_message(NetworkHandleMessage::InternalBlockRangeUpdate(update));
     }
+
+    /// Replaces the active fork filter to adopt a runtime fork-schedule change.
+    fn set_fork_filter(&self, fork_filter: ForkFilter) {
+        self.send_message(NetworkHandleMessage::SetForkFilter { fork_filter });
+    }
 }
 
 impl<N: NetworkPrimitives> BlockDownloaderProvider for NetworkHandle<N> {
@@ -493,6 +626,9 @@ struct NetworkInner<N: NetworkPrimitives = EthNetworkPrimitives> {
     num_active_peers: Arc<AtomicUsize>,
     /// Sender half of the message channel to the [`crate::NetworkManager`].
     to_manager_tx: UnboundedSender<NetworkHandleMessage<N>>,
+    /// Targeted block announcements bypass ordinary transaction/control handle backlog.
+    full_blocks_tx: mpsc::Sender<QueuedBlockAnnouncement<N>>,
+    block_hashes_tx: mpsc::Sender<QueuedBlockAnnouncement<N>>,
     /// The local address that accepts incoming connections.
     listener_address: Arc<Mutex<SocketAddr>>,
     /// The secret key used for authenticating sessions.
@@ -509,6 +645,8 @@ struct NetworkInner<N: NetworkPrimitives = EthNetworkPrimitives> {
     initial_sync_done: Arc<AtomicBool>,
     /// The chain id
     chain_id: Arc<AtomicU64>,
+    /// Shared blob cell custody bitmap.
+    cell_custody: CellCustody,
     /// Whether to disable transaction gossip
     tx_gossip_disabled: bool,
     /// The instance of the discv4 service
@@ -532,20 +670,33 @@ pub trait NetworkProtocols: Send + Sync {
 pub(crate) enum NetworkHandleMessage<N: NetworkPrimitives = EthNetworkPrimitives> {
     /// Marks a peer as trusted.
     AddTrustedPeerId(PeerId),
+    /// Adds a trusted peer that may use a hostname, registering it for periodic DNS re-resolution.
+    AddTrustedPeerNode(TrustedPeer),
     /// Adds an address for a peer, including its ID, kind, and socket address.
     AddPeerAddress(PeerId, Option<PeerKind>, PeerAddr),
     /// Removes a peer from the peerset corresponding to the given kind.
     RemovePeer(PeerId, PeerKind),
     /// Disconnects a connection to a peer if it exists, optionally providing a disconnect reason.
     DisconnectPeer(PeerId, Option<DisconnectReason>),
+    /// Bans a peer and disconnects an active non-trusted session if one exists.
+    BanPeer(PeerId),
+    /// Unbans a peer.
+    UnbanPeer(PeerId),
     /// Broadcasts an event to announce a new block to all nodes.
-    AnnounceBlock(N::NewBlockPayload, B256, Option<alloy_primitives::U256>),
+    AnnounceBlock(N::NewBlockPayload, B256),
     /// Sends a list of transactions to the given peer.
     SendTransaction {
         /// The ID of the peer to which the transactions are sent.
         peer_id: PeerId,
         /// The shared transactions to send.
         msg: SharedTransactions<N::BroadcastedTransaction>,
+    },
+    /// Sends cached full pool transactions to the given peer.
+    SendBroadcastPoolTransactions {
+        /// The ID of the peer to which the transactions are sent.
+        peer_id: PeerId,
+        /// The cached pool transactions to send.
+        msg: BroadcastPoolTransactions,
     },
     /// Sends a list of transaction hashes to the given peer.
     SendPooledTransactionHashes {
@@ -577,6 +728,11 @@ pub(crate) enum NetworkHandleMessage<N: NetworkPrimitives = EthNetworkPrimitives
         /// The head status to apply.
         head: Head,
     },
+    /// Replaces the active fork filter to adopt a runtime fork-schedule change.
+    SetForkFilter {
+        /// The new fork filter, built from the updated chain spec advanced to the current head.
+        fork_filter: ForkFilter,
+    },
     /// Retrieves the current status via a oneshot sender.
     GetStatus(oneshot::Sender<NetworkStatus>),
     /// Gets `PeerInfo` for the specified peer IDs.
@@ -603,4 +759,54 @@ pub(crate) enum NetworkHandleMessage<N: NetworkPrimitives = EthNetworkPrimitives
     ConnectPeer(PeerId, PeerKind, PeerAddr),
     /// Message to update the node's advertised block range information.
     InternalBlockRangeUpdate(BlockRangeUpdate),
+}
+
+/// Cache-only readiness predicate, shared across a targeted announcement fanout.
+///
+/// Called synchronously by `NetworkManager` after its queue wait. Implementations must not perform
+/// provider/database I/O, wait for execution, or retain execution/trie state.
+pub type BlockAnnouncementGuard<N> = Arc<dyn Fn(&PeerMessage<N>) -> bool + Send + Sync>;
+
+/// Failure to admit a targeted block announcement to the local manager.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum BlockAnnouncementAdmissionError {
+    /// This kind's global manager queue has no free slot.
+    #[error("block announcement manager queue is full")]
+    Full,
+    /// The manager no longer receives announcements.
+    #[error("block announcement manager queue is closed")]
+    Closed,
+    /// Only full blocks and block hashes use this API.
+    #[error("message is not a block announcement")]
+    NotBlockAnnouncement,
+    /// The hash batch exceeds the existing session item limit.
+    #[error("block hash batch exceeds the session limit")]
+    TooManyHashes,
+}
+
+/// Global manager limits are separate from the existing per-peer session quotas.
+pub(crate) const BLOCK_ANNOUNCEMENT_INGRESS_CAPACITY: usize = 64;
+pub(crate) const BLOCK_ANNOUNCEMENT_POLL_BUDGET: usize = 16;
+
+pub(crate) struct QueuedBlockAnnouncement<N: NetworkPrimitives> {
+    pub(crate) peer_id: PeerId,
+    pub(crate) message: PeerMessage<N>,
+    pub(crate) admitted: Instant,
+    pub(crate) guard: Option<BlockAnnouncementGuard<N>>,
+    pub(crate) deduplicate: bool,
+}
+
+impl<N: NetworkPrimitives> fmt::Debug for QueuedBlockAnnouncement<N> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("QueuedBlockAnnouncement")
+            .field("peer_id", &self.peer_id)
+            .field("kind", &MessageKind::of_peer(&self.message))
+            .field("admitted", &self.admitted)
+            .field("deduplicate", &self.deduplicate)
+            .finish_non_exhaustive()
+    }
+}
+
+pub(crate) fn block_ingress_dropped(kind: MessageKind, reason: &'static str) {
+    metrics::counter!("network.block_announcement_ingress_dropped_total", "kind" => kind.label(), "reason" => reason).increment(1);
 }
