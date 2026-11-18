@@ -22,21 +22,6 @@ pub(crate) struct RocksDBMetrics {
 
 impl Default for RocksDBMetrics {
     fn default() -> Self {
-        metrics::describe_histogram!(
-            "rocksdb_history_read_seconds",
-            "History lookup duration by table, caller and stage"
-        );
-        metrics::describe_histogram!(
-            "rocksdb_history_value_bytes",
-            "Encoded history values read by table and caller"
-        );
-        for table in ["AccountsHistory", "StoragesHistory"] {
-            for caller in ["pack", "other"] {
-                for stage in ["lookup", "iterator", "seek", "seek_prev", "prev", "decode"] {
-                    let _ = metrics::histogram!("rocksdb_history_read_seconds", "table" => table, "caller" => caller, "stage" => stage);
-                }
-            }
-        }
         let mut operations = ROCKSDB_TABLES
             .iter()
             .copied()

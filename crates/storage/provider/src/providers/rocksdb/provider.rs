@@ -1851,7 +1851,6 @@ impl<'db> RocksReadSnapshot<'db> {
     where
         T: Table<Value = BlockNumberList>,
     {
-        let _lookup = self.history_timer::<T>("lookup");
         let is_maybe_pruned = lowest_available_block_number.is_some();
         let fallback = || {
             Ok(if is_maybe_pruned {
@@ -1867,21 +1866,14 @@ impl<'db> RocksReadSnapshot<'db> {
         let mut guard = iter_cache.try_lock();
         let mut private_iter;
         let iter = match guard.as_mut() {
-            Some(cached) => cached.get_or_insert_with(|| {
-                let _timer = self.history_timer::<T>("iterator");
-                self.new_raw_iterator_cf(&cf)
-            }),
+            Some(cached) => cached.get_or_insert_with(|| self.new_raw_iterator_cf(&cf)),
             None => {
-                let _timer = self.history_timer::<T>("iterator");
                 private_iter = self.new_raw_iterator_cf(&cf);
                 &mut private_iter
             }
         };
 
-        {
-            let _timer = self.history_timer::<T>("seek");
-            iter.seek(encoded_key);
-        }
+        iter.seek(encoded_key);
         iter.status().map_err(|e| {
             ProviderError::Database(DatabaseError::Read(DatabaseErrorInfo {
                 message: e.to_string().into(),
@@ -1892,20 +1884,16 @@ impl<'db> RocksReadSnapshot<'db> {
         if !iter.key().map(key_matches).transpose()?.unwrap_or(false) {
             // Sealed histories have no MAX tail. A preceding visible shard distinguishes
             // an unchanged plain-state value from a key that has never been written.
-            {
-                let _timer = self.history_timer::<T>("seek_prev");
-                iter.seek_for_prev(encoded_key);
-            }
+            iter.seek_for_prev(encoded_key);
             while iter.key().is_some_and(&prev_key_matches) {
                 if let Some(value) = iter.value() &&
-                    self.decode_history::<T>(value)?
+                    BlockNumberList::decompress(value)?
                         .iter()
                         .next()
                         .is_some_and(|first| first <= visible_tip)
                 {
                     return Ok(HistoryInfo::InPlainState);
                 }
-                let _timer = self.history_timer::<T>("prev");
                 iter.prev();
             }
             iter.status().map_err(ProviderError::other)?;
@@ -1915,17 +1903,14 @@ impl<'db> RocksReadSnapshot<'db> {
         let Some(value_bytes) = iter.value() else {
             return fallback();
         };
-        let chunk = self.decode_history::<T>(value_bytes)?;
+        let chunk = BlockNumberList::decompress(value_bytes)?;
 
         let (rank, found_block) = compute_history_rank(&chunk, block_number);
         // Ignore later Rocks history that is ahead of the companion MDBX snapshot.
         let found_block = found_block.filter(|block| *block <= visible_tip);
 
         let is_before_first_write = if needs_prev_shard_check(rank, found_block, block_number) {
-            {
-                let _timer = self.history_timer::<T>("prev");
-                iter.prev();
-            }
+            iter.prev();
             iter.status().map_err(|e| {
                 ProviderError::Database(DatabaseError::Read(DatabaseErrorInfo {
                     message: e.to_string().into(),
@@ -1938,7 +1923,7 @@ impl<'db> RocksReadSnapshot<'db> {
             // later change. Without a previous shard for the same key, fall back to the existing
             // not-written / maybe-pruned result instead of routing into plain state.
             if found_block.is_none() && !has_prev {
-                return fallback();
+                return fallback()
             }
 
             !has_prev
@@ -1951,42 +1936,6 @@ impl<'db> RocksReadSnapshot<'db> {
             is_before_first_write,
             lowest_available_block_number,
         ))
-    }
-
-    fn history_timer<T: Table>(&self, stage: &'static str) -> Option<HistoryReadTimer> {
-        self.provider.metrics()?;
-        let span = tracing::Span::current();
-        let caller = if span.metadata().is_some_and(|m| m.name() == "txstream_pack") {
-            "pack"
-        } else {
-            "other"
-        };
-        Some(HistoryReadTimer {
-            duration: metrics::histogram!("rocksdb_history_read_seconds", "table" => T::NAME, "caller" => caller, "stage" => stage),
-            started: Instant::now(),
-            caller,
-        })
-    }
-
-    fn decode_history<T: Table>(&self, value: &[u8]) -> ProviderResult<BlockNumberList> {
-        let timer = self.history_timer::<T>("decode");
-        if let Some(timer) = &timer {
-            metrics::histogram!("rocksdb_history_value_bytes", "table" => T::NAME, "caller" => timer.caller)
-                .record(value.len() as f64);
-        }
-        Ok(BlockNumberList::decompress(value)?)
-    }
-}
-
-struct HistoryReadTimer {
-    duration: metrics::Histogram,
-    started: Instant,
-    caller: &'static str,
-}
-
-impl Drop for HistoryReadTimer {
-    fn drop(&mut self) {
-        self.duration.record(self.started.elapsed().as_secs_f64());
     }
 }
 
@@ -2909,11 +2858,11 @@ impl Iterator for RocksDBRawKeyIter<'_> {
                     message: e.to_string().into(),
                     code: -1,
                 })))
-            });
+            })
         }
 
         let Some(key) = self.inner.key() else {
-            return Some(Err(ProviderError::Database(DatabaseError::Decode)));
+            return Some(Err(ProviderError::Database(DatabaseError::Decode)))
         };
         let key = Box::from(key);
         self.inner.next();
