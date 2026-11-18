@@ -55,7 +55,14 @@ mod tests {
         Runtime,
     };
     use reth_transaction_pool::test_utils::{testing_pool, TestPool};
-    use std::{future::Future, sync::Arc, time::Duration};
+    use std::{
+        future::Future,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
+        time::Duration,
+    };
     use tokio::sync::{Mutex, Semaphore};
 
     fn noop_eth_api() -> EthApi<
@@ -75,13 +82,19 @@ mod tests {
         RpcNodeCoreAdapter<MockEthProvider, TestPool, NoopNetwork, EthEvmConfig>,
         EthRpcConverter<ChainSpec>,
     > {
+        mock_eth_api_with_ready(accounts, false)
+    }
+
+    fn mock_eth_api_with_ready(accounts: AddressMap<ExtendedAccount>, enabled: bool) -> MockEthApi {
         let pool = testing_pool();
         let mock_provider = MockEthProvider::default();
 
         let evm_config = EthEvmConfig::new(mock_provider.chain_spec());
         mock_provider.extend_accounts(accounts);
 
-        EthApi::builder(mock_provider, pool, NoopNetwork::default(), evm_config).build()
+        EthApi::builder(mock_provider, pool, NoopNetwork::default(), evm_config)
+            .latest_account_ready(enabled)
+            .build()
     }
 
     #[tokio::test]
@@ -195,6 +208,7 @@ mod tests {
     struct CustomPendingState {
         inner: MockEthApi,
         pending: MockEthProvider,
+        exact_latest_calls: Arc<AtomicUsize>,
     }
 
     impl EthApiTypes for CustomPendingState {
@@ -276,7 +290,12 @@ mod tests {
         }
     }
 
-    impl LoadState for CustomPendingState {}
+    impl LoadState for CustomPendingState {
+        fn latest_state(&self) -> Result<StateProviderBox, Self::Error> {
+            self.exact_latest_calls.fetch_add(1, Ordering::Relaxed);
+            self.provider().latest().map_err(Into::into)
+        }
+    }
 
     impl EthState for CustomPendingState {}
 
@@ -289,12 +308,56 @@ mod tests {
 
         let pending = MockEthProvider::default();
         pending.extend_accounts([(address, ExtendedAccount::new(0, U256::from(42)))]);
-        let eth_api = CustomPendingState { inner: eth_api, pending };
+        let eth_api =
+            CustomPendingState { inner: eth_api, pending, exact_latest_calls: Default::default() };
 
         assert_eq!(
             eth_api.balance(address, Some(BlockId::pending())).await.unwrap(),
             U256::from(42)
         );
         assert_eq!(eth_api.balance(address, None).await.unwrap(), U256::from(1337));
+    }
+    #[tokio::test]
+    async fn ready_mode_is_account_only_and_preserves_pending_and_explicit_state() {
+        for enabled in [false, true] {
+            let address = Address::with_last_byte(1);
+            let inner = mock_eth_api_with_ready(
+                AddressMap::from_iter([(address, ExtendedAccount::new(7, U256::from(1337)))]),
+                enabled,
+            );
+            inner.provider().add_block(B256::ZERO, Block::default());
+            let pending = MockEthProvider::default();
+            pending.extend_accounts([(address, ExtendedAccount::new(9, U256::from(42)))]);
+            let api = CustomPendingState { inner, pending, exact_latest_calls: Default::default() };
+            assert_eq!(api.balance(address, None).await.unwrap(), U256::from(1337));
+            assert_eq!(
+                LoadState::transaction_count(&api, address, Some(BlockId::latest())).await.unwrap(),
+                U256::from(7)
+            );
+            assert_eq!(api.exact_latest_calls.load(Ordering::Relaxed), if enabled { 0 } else { 2 });
+            assert_eq!(
+                api.balance(address, Some(BlockId::pending())).await.unwrap(),
+                U256::from(42)
+            );
+            assert_eq!(
+                LoadState::transaction_count(&api, address, Some(BlockId::pending()))
+                    .await
+                    .unwrap(),
+                U256::from(9)
+            );
+            assert_eq!(
+                api.balance(address, Some(BlockId::number(0))).await.unwrap(),
+                U256::from(1337)
+            );
+            assert_eq!(
+                LoadState::transaction_count(&api, address, Some(BlockId::hash(B256::ZERO)))
+                    .await
+                    .unwrap(),
+                U256::from(7)
+            );
+            // Code RPCs retain the precise latest resolver even when account Ready mode is on.
+            LoadState::get_code(&api, address, Some(BlockId::latest())).await.unwrap();
+            assert_eq!(api.exact_latest_calls.load(Ordering::Relaxed), if enabled { 1 } else { 3 });
+        }
     }
 }

@@ -910,6 +910,7 @@ mod tests {
             );
             assert_eq!(actual.evm_memory_limit, expected.evm_memory_limit);
             assert_eq!(actual.force_blob_sidecar_upcasting, expected.force_blob_sidecar_upcasting);
+            assert_eq!(actual.latest_account_ready, expected.latest_account_ready);
             assert_eq!(
                 actual.sender_recovery_cache.is_some(),
                 expected.sender_recovery_cache.is_some()
@@ -933,6 +934,7 @@ mod tests {
             send_raw_transaction_sync_timeout: Duration::from_secs(9),
             evm_memory_limit: 1 << 20,
             force_blob_sidecar_upcasting: true,
+            latest_account_ready: true,
         };
         let api = EthApiBuilder::new(
             MockEthProvider::default(),
@@ -956,6 +958,7 @@ mod tests {
         .send_raw_transaction_sync_timeout(expected.send_raw_transaction_sync_timeout)
         .evm_memory_limit(expected.evm_memory_limit)
         .force_blob_sidecar_upcasting(expected.force_blob_sidecar_upcasting)
+        .latest_account_ready(expected.latest_account_ready)
         .build();
 
         assert_settings(settings(&api), &expected);
