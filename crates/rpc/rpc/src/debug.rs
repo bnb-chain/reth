@@ -1,3 +1,4 @@
+use self::prestate::PrestateTraceOptions;
 use alloy_consensus::{transaction::TxHashRef, BlockHeader};
 use alloy_eips::{eip2718::Encodable2718, BlockId, BlockNumberOrTag};
 use alloy_evm::{env::BlockEnvironment, Evm};
@@ -55,6 +56,8 @@ use {
     alloy_rpc_types_trace::geth::GethDebugTracerType,
     revm_inspectors::tracing::js::JsInspectorInterrupt, std::time::Duration,
 };
+
+mod prestate;
 
 /// `debug` API implementation.
 ///
@@ -135,6 +138,7 @@ where
                 let block_env = evm_env.block_env.clone();
 
                 let mut transactions = block.transactions_recovered().enumerate().peekable();
+                let prestate = PrestateTraceOptions::new(&opts)?;
                 let inspector = DebugInspector::new(opts).map_err(Eth::Error::from_eth_err)?;
                 let mut evm =
                     eth_api.evm_config().evm_with_env_and_inspector(&mut db, evm_env, inspector);
@@ -147,7 +151,7 @@ where
                     let res = evm.transact(tx_env.clone()).map_err(Eth::Error::from_evm_err)?;
 
                     let (db, inspector, _) = evm.components_mut();
-                    let result = inspector
+                    let mut result = inspector
                         .get_result(
                             Some(TransactionContext {
                                 block_hash: Some(block.hash()),
@@ -161,6 +165,9 @@ where
                         )
                         .map_err(Eth::Error::from_eth_err)?;
 
+                    prestate
+                        .apply(&mut result, &res.state, db)
+                        .map_err(Eth::Error::from_eth_err)?;
                     results.push(TraceResult::Success { result, tx_hash: Some(*tx.tx_hash()) });
                     if transactions.peek().is_some() {
                         inspector.fuse().map_err(Eth::Error::from_eth_err)?;
@@ -193,19 +200,24 @@ where
 
                 let block_env = evm_env.block_env.clone();
                 let mut transactions = block.transactions_recovered().enumerate().peekable();
-                let inspector = match DebugInspector::new(opts) {
-                    Ok(inspector) => inspector,
-                    Err(err) => {
-                        if let Some((_, tx)) = transactions.peek() {
-                            results.push(Some(TraceResult::Error {
-                                error: err.to_string(),
-                                tx_hash: Some(*tx.tx_hash()),
-                            }));
+                let (prestate, inspector) =
+                    match PrestateTraceOptions::new(&opts).and_then(|prestate| {
+                        DebugInspector::new(opts)
+                            .map(|inspector| (prestate, inspector))
+                            .map_err(EthApiError::from)
+                    }) {
+                        Ok(inspector) => inspector,
+                        Err(err) => {
+                            if let Some((_, tx)) = transactions.peek() {
+                                results.push(Some(TraceResult::Error {
+                                    error: err.to_string(),
+                                    tx_hash: Some(*tx.tx_hash()),
+                                }));
+                            }
+                            results.resize(tx_count, None);
+                            return Ok(results)
                         }
-                        results.resize(tx_count, None);
-                        return Ok(results)
-                    }
-                };
+                    };
                 let mut evm =
                     eth_api.evm_config().evm_with_env_and_inspector(&mut db, evm_env, inspector);
 
@@ -224,17 +236,22 @@ where
                     };
 
                     let (db, inspector, _) = evm.components_mut();
-                    let result = match inspector.get_result(
-                        Some(TransactionContext {
-                            block_hash: Some(block.hash()),
-                            tx_hash: Some(tx_hash),
-                            tx_index: Some(index),
-                        }),
-                        &tx_env,
-                        &block_env,
-                        &res,
-                        db,
-                    ) {
+                    let result = match inspector
+                        .get_result(
+                            Some(TransactionContext {
+                                block_hash: Some(block.hash()),
+                                tx_hash: Some(tx_hash),
+                                tx_index: Some(index),
+                            }),
+                            &tx_env,
+                            &block_env,
+                            &res,
+                            db,
+                        )
+                        .and_then(|mut result| {
+                            prestate.apply(&mut result, &res.state, db)?;
+                            Ok(result)
+                        }) {
                         Ok(result) => result,
                         Err(err) => {
                             results.push(Some(TraceResult::Error {
@@ -345,6 +362,7 @@ where
                     tx_info.index.expect("transaction_and_block only returns block transactions")
                         as usize;
 
+                let prestate = PrestateTraceOptions::new(&opts)?;
                 let mut inspector = tracer_interrupt
                     .attach(DebugInspector::new(opts).map_err(Eth::Error::from_eth_err)?);
                 let tx_env = eth_api.evm_config().tx_env(&tx);
@@ -357,7 +375,7 @@ where
                     bal.as_deref(),
                 )?;
 
-                let trace = inspector
+                let mut trace = inspector
                     .get_result(
                         Some(TransactionContext {
                             block_hash: Some(block.hash()),
@@ -371,6 +389,7 @@ where
                     )
                     .map_err(Eth::Error::from_eth_err)?;
 
+                prestate.apply(&mut trace, &res.state, &db).map_err(Eth::Error::from_eth_err)?;
                 Ok(trace)
             },
         );
@@ -413,6 +432,7 @@ where
         let this = self.clone();
         let trace =
             self.eth_api().spawn_with_call_at(call, at, overrides, move |db, evm_env, tx_env| {
+                let prestate = PrestateTraceOptions::new(&tracing_options)?;
                 let mut inspector = tracer_interrupt.attach(
                     DebugInspector::new(tracing_options).map_err(Eth::Error::from_eth_err)?,
                 );
@@ -422,9 +442,10 @@ where
                     tx_env.clone(),
                     &mut inspector,
                 )?;
-                let trace = inspector
+                let mut trace = inspector
                     .get_result(None, &tx_env, &evm_env.block_env, &res, db)
                     .map_err(Eth::Error::from_eth_err)?;
+                prestate.apply(&mut trace, &res.state, &db).map_err(Eth::Error::from_eth_err)?;
                 Ok(trace)
             });
         interrupt.run(trace).await.map_err(|err| match err.as_err() {
@@ -482,15 +503,17 @@ where
                 let (evm_env, tx_env) =
                     eth_api.prepare_call_env(evm_env, call, &mut db, overrides)?;
 
+                let prestate = PrestateTraceOptions::new(&tracing_options)?;
                 let mut inspector = tracer_interrupt.attach(
                     DebugInspector::new(tracing_options).map_err(Eth::Error::from_eth_err)?,
                 );
                 let res =
                     eth_api.inspect(&mut db, evm_env.clone(), tx_env.clone(), &mut inspector)?;
-                let trace = inspector
+                let mut trace = inspector
                     .get_result(None, &tx_env, &evm_env.block_env, &res, &mut db)
                     .map_err(Eth::Error::from_eth_err)?;
 
+                prestate.apply(&mut trace, &res.state, &db).map_err(Eth::Error::from_eth_err)?;
                 Ok(trace)
             },
         );
@@ -565,6 +588,7 @@ where
 
                 // Trace all bundles
                 let mut bundles = bundles.into_iter().peekable();
+                let prestate = PrestateTraceOptions::new(&tracing_options)?;
                 let mut inspector = DebugInspector::new(tracing_options.clone())
                     .map_err(Eth::Error::from_eth_err)?;
                 while let Some(bundle) = bundles.next() {
@@ -591,8 +615,12 @@ where
                             tx_env.clone(),
                             &mut inspector,
                         )?;
-                        let trace = inspector
+                        let mut trace = inspector
                             .get_result(None, &tx_env, &evm_env.block_env, &res, &mut db)
+                            .map_err(Eth::Error::from_eth_err)?;
+
+                        prestate
+                            .apply(&mut trace, &res.state, &db)
                             .map_err(Eth::Error::from_eth_err)?;
 
                         // If there is more transactions, commit the database
