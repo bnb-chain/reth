@@ -1,27 +1,36 @@
 //! Preserve empty prestate accounts while the transaction's original database is available.
 
-use alloy_primitives::B256;
+use alloy_primitives::{map::AddressHashSet, B256};
 use alloy_rpc_types_trace::geth::{
     AccountState, GethDebugBuiltInTracerType, GethDebugTracerConfig, GethDebugTracerType,
     GethDebugTracingOptions, GethTrace, PreStateFrame,
 };
+use jsonrpsee::types::{error::CALL_EXECUTION_FAILED_CODE, ErrorObjectOwned};
 use reth_rpc_eth_types::EthApiError;
-use revm::{state::EvmState, DatabaseRef};
+use revm::{
+    context::JournalTr,
+    context_interface::ContextTr,
+    inspector::JournalExt,
+    interpreter::{CreateInputs, CreateOutcome},
+    state::EvmState,
+    DatabaseRef, Inspector,
+};
 use revm_inspectors::tracing::DebugInspectorError;
 use std::collections::btree_map::Entry;
 
-/// Options not yet represented by Alloy's prestate configuration.
+/// Preserves `includeEmpty` configuration and creation candidates alongside `DebugInspector`.
 #[derive(Default)]
-pub(super) enum PrestateTraceOptions {
+pub(super) enum PrestateInspector {
     #[default]
     None,
     IncludeEmpty {
         storage_enabled: bool,
+        creation_candidates: AddressHashSet,
     },
     Mux(Vec<(GethDebugTracerType, Self)>),
 }
 
-impl PrestateTraceOptions {
+impl PrestateInspector {
     pub(super) fn new(opts: &GethDebugTracingOptions) -> Result<Self, EthApiError> {
         match &opts.tracer {
             Some(tracer) => Self::from_config(tracer, &opts.tracer_config),
@@ -51,11 +60,16 @@ impl PrestateTraceOptions {
                     .into_pre_state_config()
                     .map_err(|err| EthApiError::InvalidParams(err.to_string()))?;
                 if config.is_diff_mode() {
-                    return Err(EthApiError::InvalidParams(
-                        "cannot use diffMode with includeEmpty".to_owned(),
-                    ))
+                    return Err(EthApiError::other(ErrorObjectOwned::owned(
+                        CALL_EXECUTION_FAILED_CODE,
+                        "cannot use diffMode with includeEmpty",
+                        None::<()>,
+                    )))
                 }
-                Ok(Self::IncludeEmpty { storage_enabled: config.storage_enabled() })
+                Ok(Self::IncludeEmpty {
+                    storage_enabled: config.storage_enabled(),
+                    creation_candidates: Default::default(),
+                })
             }
             GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::MuxTracer) => {
                 let config = config
@@ -76,24 +90,24 @@ impl PrestateTraceOptions {
         }
     }
 
-    /// Complete the trace before committing the transaction's state changes.
+    /// Complete the trace and drain creation candidates before committing transaction changes.
     pub(super) fn apply<DB: DatabaseRef>(
-        &self,
+        &mut self,
         trace: &mut GethTrace,
         state: &EvmState,
         db: &DB,
     ) -> Result<(), DebugInspectorError<DB::Error>> {
         match (self, trace) {
             (
-                Self::IncludeEmpty { storage_enabled },
+                Self::IncludeEmpty { storage_enabled, creation_candidates },
                 GethTrace::PreStateTracer(PreStateFrame::Default(pre)),
             ) => {
                 // The inspector omits empty accounts even when includeEmpty was requested.
                 // Read the original database, never the post-execution account balance.
-                for (address, account) in state {
-                    if let Entry::Vacant(entry) = pre.0.entry(*address) {
+                for address in state.keys().copied().chain(creation_candidates.drain()) {
+                    if let Entry::Vacant(entry) = pre.0.entry(address) {
                         let original = db
-                            .basic_ref(*address)
+                            .basic_ref(address)
                             .map_err(DebugInspectorError::Database)?
                             .unwrap_or_default();
                         if original.is_empty() {
@@ -102,7 +116,7 @@ impl PrestateTraceOptions {
                                 original.balance,
                                 None,
                             );
-                            if *storage_enabled {
+                            if *storage_enabled && let Some(account) = state.get(&address) {
                                 account_state.storage.extend(account.storage.iter().map(
                                     |(key, slot)| {
                                         (B256::from(*key), B256::from(slot.original_value))
@@ -125,6 +139,35 @@ impl PrestateTraceOptions {
         }
         Ok(())
     }
+
+    fn record_create<CTX: ContextTr<Journal: JournalExt>>(
+        &mut self,
+        context: &CTX,
+        inputs: &CreateInputs,
+    ) {
+        match self {
+            Self::IncludeEmpty { creation_candidates, .. } => {
+                // The paired DebugInspector loads the caller before this hook. REVM can reject
+                // the endowment before loading the candidate into the transaction's state.
+                if let Some(caller) = context.journal_ref().evm_state().get(&inputs.caller()) {
+                    creation_candidates.insert(inputs.created_address(caller.info.nonce));
+                }
+            }
+            Self::Mux(plans) => {
+                for (_, plan) in plans {
+                    plan.record_create(context, inputs);
+                }
+            }
+            Self::None => {}
+        }
+    }
+}
+
+impl<CTX: ContextTr<Journal: JournalExt>> Inspector<CTX> for PrestateInspector {
+    fn create(&mut self, context: &mut CTX, inputs: &mut CreateInputs) -> Option<CreateOutcome> {
+        self.record_create(context, inputs);
+        None
+    }
 }
 
 #[cfg(test)]
@@ -145,14 +188,11 @@ mod tests {
                 "tracer":"prestateTracer", "tracerConfig":{"includeEmpty":include_empty}
             }))
             .unwrap();
-            assert!(matches!(
-                PrestateTraceOptions::new(&opts).unwrap(),
-                PrestateTraceOptions::None
-            ));
+            assert!(matches!(PrestateInspector::new(&opts).unwrap(), PrestateInspector::None));
         }
         assert!(matches!(
-            PrestateTraceOptions::new(&GethDebugTracingOptions::default()).unwrap(),
-            PrestateTraceOptions::None
+            PrestateInspector::new(&GethDebugTracingOptions::default()).unwrap(),
+            PrestateInspector::None
         ));
         for mux in [false, true] {
             let config = json!({"includeEmpty":true,"diffMode":true});
@@ -162,16 +202,15 @@ mod tests {
                 json!({"tracer":"prestateTracer","tracerConfig":config})
             })
             .unwrap();
-            let err = PrestateTraceOptions::new(&opts).err().unwrap();
-            assert!(
-                matches!(err, EthApiError::InvalidParams(message) if message == "cannot use diffMode with includeEmpty")
-            );
+            let err = ErrorObjectOwned::from(PrestateInspector::new(&opts).err().unwrap());
+            assert_eq!(err.code(), CALL_EXECUTION_FAILED_CODE);
+            assert_eq!(err.message(), "cannot use diffMode with includeEmpty");
         }
         let opts = serde_json::from_value(json!({
             "tracer":"prestateTracer","tracerConfig":{"includeEmpty":"true"}
         }))
         .unwrap();
-        let err = PrestateTraceOptions::new(&opts).err().unwrap();
+        let err = PrestateInspector::new(&opts).err().unwrap();
         assert!(
             matches!(err, EthApiError::InvalidParams(message) if message == "invalid type: string \"true\", expected a boolean")
         );
@@ -196,9 +235,12 @@ mod tests {
         for storage_enabled in [false, true] {
             let mut trace =
                 GethTrace::PreStateTracer(PreStateFrame::Default(PreStateMode::default()));
-            PrestateTraceOptions::IncludeEmpty { storage_enabled }
-                .apply(&mut trace, &state, &db)
-                .unwrap();
+            PrestateInspector::IncludeEmpty {
+                storage_enabled,
+                creation_candidates: Default::default(),
+            }
+            .apply(&mut trace, &state, &db)
+            .unwrap();
             let value = serde_json::to_value(&trace).unwrap();
             let account = &value[format!("{empty:#x}")];
             assert_eq!(account["balance"], "0x0");
@@ -212,10 +254,16 @@ mod tests {
                 assert!(account.get("storage").is_none());
             }
             // Existing output must be preserved when filling missing accounts.
-            PrestateTraceOptions::IncludeEmpty { storage_enabled }
-                .apply(&mut trace, &state, &db)
-                .unwrap();
+            PrestateInspector::IncludeEmpty {
+                storage_enabled,
+                creation_candidates: Default::default(),
+            }
+            .apply(&mut trace, &state, &db)
+            .unwrap();
             assert_eq!(serde_json::to_value(trace).unwrap(), value);
         }
     }
 }
+
+#[cfg(test)]
+mod rpc_tests;
