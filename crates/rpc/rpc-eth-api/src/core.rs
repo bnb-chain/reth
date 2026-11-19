@@ -39,7 +39,7 @@ pub trait FullEthApiServer:
     > + FullEthApi
     + Clone
 where
-    reth_evm::BlockEnvFor<Self::Evm>: reth_rpc_eth_types::BlockOverridesExt,
+    reth_evm::EvmEnvFor<Self::Evm>: reth_rpc_eth_types::BlockOverridesExt,
 {
 }
 
@@ -54,7 +54,7 @@ where
             TxTy<T::Primitives>,
         > + FullEthApi
         + Clone,
-    reth_evm::BlockEnvFor<T::Evm>: reth_rpc_eth_types::BlockOverridesExt,
+    reth_evm::EvmEnvFor<T::Evm>: reth_rpc_eth_types::BlockOverridesExt,
 {
 }
 
@@ -98,7 +98,7 @@ pub trait EthApi<
     ///
     /// See the `eth_capabilities` execution API proposal:
     /// <https://github.com/ethereum/execution-apis/pull/755>.
-    #[method(name = "capabilities")]
+    #[method(name = "capabilities", blocking)]
     fn capabilities(&self) -> RpcResult<EthCapabilities>;
 
     /// Returns information about a block by hash.
@@ -303,8 +303,11 @@ pub trait EthApi<
     #[method(name = "fillTransaction")]
     async fn fill_transaction(&self, request: TxReq) -> RpcResult<FillTransaction<RawTx>>;
 
-    /// Simulate arbitrary number of transactions at an arbitrary blockchain index, with the
-    /// optionality of state overrides
+    /// Simulate transactions at an arbitrary blockchain index, with the optionality of state
+    /// overrides.
+    ///
+    /// The request is bounded by [`CallManyBudget`](reth_rpc_eth_types::utils::CallManyBudget):
+    /// its calls share the RPC gas cap.
     #[method(name = "callMany")]
     async fn call_many(
         &self,
@@ -503,7 +506,7 @@ impl<T>
     > for T
 where
     T: FullEthApi,
-    reth_evm::BlockEnvFor<T::Evm>: reth_rpc_eth_types::BlockOverridesExt,
+    reth_evm::EvmEnvFor<T::Evm>: reth_rpc_eth_types::BlockOverridesExt,
     jsonrpsee_types::error::ErrorObject<'static>: From<T::Error>,
 {
     /// Handler for: `eth_protocolVersion`

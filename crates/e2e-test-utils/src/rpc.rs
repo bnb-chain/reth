@@ -23,7 +23,7 @@ where
     EthApi: EthApiSpec<Provider: BlockReader<Block = BlockTy<Node::Types>>>
         + EthTransactions
         + TraceExt,
-    reth_evm::BlockEnvFor<EthApi::Evm>: reth_rpc_eth_types::BlockOverridesExt,
+    reth_evm::EvmEnvFor<EthApi::Evm>: reth_rpc_eth_types::BlockOverridesExt,
 {
     /// Injects a raw transaction into the node tx pool via RPC server
     ///

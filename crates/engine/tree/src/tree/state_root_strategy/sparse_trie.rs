@@ -7,7 +7,7 @@ use std::{
     sync::Arc,
 };
 
-use super::{evm_state_to_hashed_post_state, StateRootComputeOutcome, StateRootMessage};
+use super::{StateRootComputeOutcome, StateRootMessage};
 use alloy_primitives::{
     map::{hash_map::Entry, B256Map},
     B256,
@@ -242,7 +242,7 @@ where
         let hashing_metrics = metrics.clone();
         let diagnostics = proof_worker_handle.diagnostics().clone();
         executor.spawn_blocking_named("trie-hashing", move || {
-            let _span = trace_span!(parent: parent_span, "run_hashing_task").entered();
+            let _span = trace_span!(parent: &parent_span, "run_hashing_task").entered();
             Self::run_hashing_task(updates, hashed_state_tx, hashing_metrics, diagnostics)
         });
 
@@ -301,9 +301,10 @@ where
                     SparseTrieTaskMessage::PrefetchProofs(targets)
                 }
                 StateRootMessage::StateUpdate(state) => {
+                    let _span = trace_span!(target: "engine::tree::payload_processor::sparse_trie", "hashing_state_update").entered();
+                    let hashed = reth_execution_types::state_update_to_hashed_post_state(&state);
+
                     diagnostics.increment(Progress::UpdatesHashed);
-                    let _span = trace_span!(target: "engine::tree::payload_processor::sparse_trie", "hashing_state_update", n = state.len()).entered();
-                    let hashed = evm_state_to_hashed_post_state(state);
                     SparseTrieTaskMessage::HashedState(hashed)
                 }
                 StateRootMessage::FinishedStateUpdates => {

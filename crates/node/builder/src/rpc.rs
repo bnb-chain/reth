@@ -18,6 +18,7 @@ use crate::{
 };
 use alloy_consensus::BlockHeader;
 use alloy_eips::BlockId;
+use alloy_network::Ethereum;
 use alloy_rpc_types::engine::ClientVersionV1;
 use alloy_rpc_types_engine::ExecutionData;
 use futures::{Stream, StreamExt};
@@ -37,8 +38,8 @@ use reth_node_core::{
 use reth_payload_builder::{PayloadBuilderHandle, PayloadStore};
 use reth_primitives_traits::NodePrimitives;
 use reth_rpc::{
-    eth::{core::EthRpcConverterFor, DevSigner, EthApiTypes, FullEthApiServer},
-    AdminApi,
+    eth::{DevSigner, EthApiTypes, FullEthApiServer},
+    AdminApi, EthApi,
 };
 use reth_rpc_api::{
     eth::helpers::{EthTransactions, GetBlockAccessList},
@@ -49,8 +50,12 @@ use reth_rpc_builder::{
     config::RethRpcServerConfig,
     RpcModuleBuilder, RpcRegistryInner, RpcServerConfig, RpcServerHandle, TransportRpcModules,
 };
+use reth_rpc_convert::RpcConverter;
 use reth_rpc_engine_api::{capabilities::EngineCapabilities, EngineApi};
-use reth_rpc_eth_types::{cache::cache_new_blocks_task, EthConfig, EthStateCache};
+use reth_rpc_eth_api::node::RpcNodeCoreAdapter;
+use reth_rpc_eth_types::{
+    cache::cache_new_blocks_task, receipt::EthReceiptConverter, EthConfig, EthStateCache,
+};
 use reth_tokio_util::EventSender;
 use reth_tracing::tracing::{debug, info};
 use std::{
@@ -531,7 +536,10 @@ pub struct RpcAddOns<
     EVB = BasicEngineValidatorBuilder<PVB>,
     RpcMiddleware = Identity,
     AuthHttpMiddleware = Identity,
-> {
+> where
+    reth_evm::EvmEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+        reth_rpc_eth_types::BlockOverridesExt,
+{
     /// Additional RPC add-ons.
     pub hooks: RpcHooks<Node, EthB::EthApi>,
     /// Builder for `EthApi`
@@ -561,6 +569,8 @@ impl<Node, EthB, PVB, EB, EVB, RpcMiddleware, AuthHttpMiddleware> Debug
 where
     Node: FullNodeComponents,
     EthB: EthApiBuilder<Node>,
+    reth_evm::EvmEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+        reth_rpc_eth_types::BlockOverridesExt,
     PVB: Debug,
     EB: Debug,
     EVB: Debug,
@@ -582,6 +592,8 @@ impl<Node, EthB, PVB, EB, EVB, RpcMiddleware, AuthHttpMiddleware>
 where
     Node: FullNodeComponents,
     EthB: EthApiBuilder<Node>,
+    reth_evm::EvmEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+        reth_rpc_eth_types::BlockOverridesExt,
 {
     /// Creates a new instance of the RPC add-ons.
     pub fn new(
@@ -958,6 +970,8 @@ impl<Node, EthB, EV, EB, Engine> Default
 where
     Node: FullNodeComponents,
     EthB: EthApiBuilder<Node>,
+    reth_evm::EvmEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+        reth_rpc_eth_types::BlockOverridesExt,
     EV: Default,
     EB: Default,
     Engine: Default,
@@ -980,7 +994,7 @@ where
     N: FullNodeComponents,
     N::Provider: ChainSpecProvider<ChainSpec: EthereumHardforks>,
     EthB: EthApiBuilder<N>,
-    reth_evm::BlockEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+    reth_evm::EvmEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
         reth_rpc_eth_types::BlockOverridesExt,
     EB: EngineApiBuilder<N>,
     EVB: EngineValidatorBuilder<N>,
@@ -1310,7 +1324,7 @@ where
     N: FullNodeComponents,
     <N as FullNodeTypes>::Provider: ChainSpecProvider<ChainSpec: EthereumHardforks>,
     EthB: EthApiBuilder<N>,
-    reth_evm::BlockEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+    reth_evm::EvmEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
         reth_rpc_eth_types::BlockOverridesExt,
     PVB: PayloadValidatorBuilder<N>,
     EB: EngineApiBuilder<N>,
@@ -1342,7 +1356,7 @@ impl<N: FullNodeComponents, EthB, EV, EB, Engine, RpcMiddleware, AuthHttpMiddlew
 where
     Self: NodeAddOns<N, Handle = RpcHandle<N, EthB::EthApi>>,
     EthB: EthApiBuilder<N>,
-    reth_evm::BlockEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+    reth_evm::EvmEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
         reth_rpc_eth_types::BlockOverridesExt,
 {
     type EthApi = EthB::EthApi;
@@ -1351,6 +1365,31 @@ where
         &mut self.hooks
     }
 }
+
+/// Helper type alias for [`RpcNodeCoreAdapter`] with components from the given
+/// [`FullNodeComponents`].
+pub type RpcNodeCoreFor<N> = RpcNodeCoreAdapter<
+    <N as FullNodeTypes>::Provider,
+    <N as FullNodeComponents>::Pool,
+    <N as FullNodeComponents>::Network,
+    <N as FullNodeComponents>::Evm,
+>;
+
+/// Helper type alias for [`RpcConverter`] with components from the given [`FullNodeComponents`].
+pub type EthRpcConverterFor<N, NetworkT = Ethereum> = RpcConverter<
+    NetworkT,
+    <N as FullNodeComponents>::Evm,
+    EthReceiptConverter<<<N as FullNodeTypes>::Provider as ChainSpecProvider>::ChainSpec>,
+>;
+
+/// Helper type alias for [`EthApi`] with components from the given [`FullNodeComponents`].
+pub type EthApiFor<N, NetworkT = Ethereum> =
+    EthApi<RpcNodeCoreFor<N>, EthRpcConverterFor<N, NetworkT>>;
+
+/// Helper type alias for [`EthApiBuilder`](reth_rpc::EthApiBuilder) with components from the given
+/// [`FullNodeComponents`].
+pub type EthApiBuilderFor<N, NetworkT = Ethereum> =
+    reth_rpc::EthApiBuilder<RpcNodeCoreFor<N>, EthRpcConverterFor<N, NetworkT>>;
 
 /// `EthApiCtx` struct
 /// This struct is used to pass the necessary context to the `EthApiBuilder` to build the `EthApi`.
@@ -1372,32 +1411,37 @@ impl<'a, N: FullNodeComponents<Types: NodeTypes<ChainSpec: Hardforks + EthereumH
     EthApiCtx<'a, N>
 {
     /// Provides a [`EthApiBuilder`] with preconfigured config and components.
-    pub fn eth_api_builder(self) -> reth_rpc::EthApiBuilder<N, EthRpcConverterFor<N>> {
-        reth_rpc::EthApiBuilder::new_with_components(self.components.clone())
-            .eth_cache(self.cache)
-            .sender_recovery_cache(self.sender_recovery_cache)
-            .eth_state_cache_config(self.config.cache)
-            .task_spawner(self.components.task_executor().clone())
-            .gas_cap(self.config.rpc_gas_cap.into())
-            .max_simulate_blocks(self.config.rpc_max_simulate_blocks)
-            .compute_state_root_for_eth_simulate(self.config.compute_state_root_for_eth_simulate)
-            .eth_proof_window(self.config.eth_proof_window)
-            .fee_history_cache_config(self.config.fee_history_cache)
-            .proof_permits(self.config.proof_permits)
-            .gas_oracle_config(self.config.gas_oracle)
-            .max_batch_size(self.config.max_batch_size)
-            .max_blocking_io_requests(self.config.max_blocking_io_requests)
-            .pending_block_kind(self.config.pending_block_kind)
-            .raw_tx_forwarder(self.config.raw_tx_forwarder)
-            .evm_memory_limit(self.config.rpc_evm_memory_limit)
-            .force_blob_sidecar_upcasting(self.config.force_blob_sidecar_upcasting)
+    pub fn eth_api_builder(self) -> EthApiBuilderFor<N> {
+        reth_rpc::EthApiBuilder::new(
+            self.components.provider().clone(),
+            self.components.pool().clone(),
+            self.components.network().clone(),
+            self.components.evm_config().clone(),
+        )
+        .eth_cache(self.cache)
+        .sender_recovery_cache(self.sender_recovery_cache)
+        .eth_state_cache_config(self.config.cache)
+        .task_spawner(self.components.task_executor().clone())
+        .gas_cap(self.config.rpc_gas_cap.into())
+        .max_simulate_blocks(self.config.rpc_max_simulate_blocks)
+        .compute_state_root_for_eth_simulate(self.config.compute_state_root_for_eth_simulate)
+        .eth_proof_window(self.config.eth_proof_window)
+        .fee_history_cache_config(self.config.fee_history_cache)
+        .proof_permits(self.config.proof_permits)
+        .gas_oracle_config(self.config.gas_oracle)
+        .max_batch_size(self.config.max_batch_size)
+        .max_blocking_io_requests(self.config.max_blocking_io_requests)
+        .pending_block_kind(self.config.pending_block_kind)
+        .raw_tx_forwarder(self.config.raw_tx_forwarder)
+        .evm_memory_limit(self.config.rpc_evm_memory_limit)
+        .force_blob_sidecar_upcasting(self.config.force_blob_sidecar_upcasting)
     }
 }
 
 /// A `EthApi` that knows how to build `eth` namespace API from [`FullNodeComponents`].
 pub trait EthApiBuilder<N: FullNodeComponents>: Default + Send + 'static
 where
-    reth_evm::BlockEnvFor<<Self::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+    reth_evm::EvmEnvFor<<Self::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
         reth_rpc_eth_types::BlockOverridesExt,
 {
     /// The Ethapi implementation this builder will build.
@@ -1424,7 +1468,7 @@ impl<N, EthB, PVB, EB, EVB, RpcMiddleware, AuthHttpMiddleware> EngineValidatorAd
 where
     N: FullNodeComponents,
     EthB: EthApiBuilder<N>,
-    reth_evm::BlockEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+    reth_evm::EvmEnvFor<<EthB::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
         reth_rpc_eth_types::BlockOverridesExt,
     PVB: Send,
     EB: EngineApiBuilder<N>,
@@ -1706,7 +1750,7 @@ async fn prewarm_new_block_bals_task<EthApi: GetBlockAccessList, N: NodePrimitiv
     mut events: impl Stream<Item = CanonStateNotification<N>> + Unpin,
     startup_blocks: usize,
 ) where
-    reth_evm::BlockEnvFor<EthApi::Evm>: reth_rpc_eth_types::BlockOverridesExt,
+    reth_evm::EvmEnvFor<EthApi::Evm>: reth_rpc_eth_types::BlockOverridesExt,
 {
     let mut startup = match eth_api.recovered_block(BlockId::latest()).await {
         Ok(Some(head)) => {
@@ -1813,7 +1857,7 @@ mod tests {
 
             let chain = Chain::new(
                 blocks.clone(),
-                ExecutionOutcome { receipts: vec![vec![]; blocks.len()], ..Default::default() },
+                ExecutionOutcome::default().with_receipts(vec![vec![]; blocks.len()]),
                 Default::default(),
             );
             cache_new_blocks_task(

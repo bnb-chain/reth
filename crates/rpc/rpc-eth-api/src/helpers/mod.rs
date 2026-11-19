@@ -48,14 +48,14 @@ pub use transaction::{EthTransactions, LoadTransaction};
 pub trait TraceExt:
     LoadTransaction + LoadBlock + SpawnBlocking + Trace + Call + GetBlockAccessList
 where
-    reth_evm::BlockEnvFor<Self::Evm>: reth_rpc_eth_types::BlockOverridesExt,
+    reth_evm::EvmEnvFor<Self::Evm>: reth_rpc_eth_types::BlockOverridesExt,
 {
 }
 
 impl<T> TraceExt for T
 where
     T: LoadTransaction + LoadBlock + Trace + Call + GetBlockAccessList,
-    reth_evm::BlockEnvFor<T::Evm>: reth_rpc_eth_types::BlockOverridesExt,
+    reth_evm::EvmEnvFor<T::Evm>: reth_rpc_eth_types::BlockOverridesExt,
 {
 }
 
@@ -73,7 +73,7 @@ pub trait FullEthApi:
     + LoadReceipt
     + GetBlockAccessList
 where
-    reth_evm::BlockEnvFor<Self::Evm>: reth_rpc_eth_types::BlockOverridesExt,
+    reth_evm::EvmEnvFor<Self::Evm>: reth_rpc_eth_types::BlockOverridesExt,
 {
 }
 
@@ -88,6 +88,6 @@ where
         + EthSubscriptions
         + LoadReceipt
         + GetBlockAccessList,
-    reth_evm::BlockEnvFor<T::Evm>: reth_rpc_eth_types::BlockOverridesExt,
+    reth_evm::EvmEnvFor<T::Evm>: reth_rpc_eth_types::BlockOverridesExt,
 {
 }

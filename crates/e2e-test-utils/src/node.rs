@@ -165,7 +165,7 @@ where
         AddOns::EthApi: EthApiSpec<Provider: BlockReader<Block = BlockTy<Node::Types>>>
             + EthTransactions
             + TraceExt,
-        reth_evm::BlockEnvFor<<AddOns::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+        reth_evm::EvmEnvFor<<AddOns::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
             reth_rpc_eth_types::BlockOverridesExt,
     {
         let mut chain = Vec::with_capacity(length as usize);
@@ -189,7 +189,7 @@ where
         AddOns::EthApi: EthApiSpec<Provider: BlockReader<Block = BlockTy<Node::Types>>>
             + EthTransactions
             + TraceExt,
-        reth_evm::BlockEnvFor<<AddOns::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+        reth_evm::EvmEnvFor<<AddOns::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
             reth_rpc_eth_types::BlockOverridesExt,
     {
         Box::pin(async move {
@@ -428,7 +428,7 @@ where
             + TraceExt
             + LoadReceipt
             + 'static,
-        reth_evm::BlockEnvFor<<AddOns::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+        reth_evm::EvmEnvFor<<AddOns::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
             reth_rpc_eth_types::BlockOverridesExt,
     {
         Box::pin(async move {
@@ -570,7 +570,7 @@ where
             + TraceExt
             + LoadReceipt
             + 'static,
-        reth_evm::BlockEnvFor<<AddOns::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+        reth_evm::EvmEnvFor<<AddOns::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
             reth_rpc_eth_types::BlockOverridesExt,
     {
         let txs: Vec<Bytes> = txs.into_iter().collect();
@@ -596,7 +596,7 @@ where
             + TraceExt
             + LoadReceipt
             + 'static,
-        reth_evm::BlockEnvFor<<AddOns::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+        reth_evm::EvmEnvFor<<AddOns::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
             reth_rpc_eth_types::BlockOverridesExt,
     {
         let txs: Vec<Bytes> = txs.into_iter().collect();
@@ -624,7 +624,7 @@ where
             + TraceExt
             + LoadReceipt
             + 'static,
-        reth_evm::BlockEnvFor<<AddOns::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+        reth_evm::EvmEnvFor<<AddOns::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
             reth_rpc_eth_types::BlockOverridesExt,
     {
         // Encoded up front, so the returned future does not hold `T`.
@@ -659,7 +659,7 @@ where
             + TraceExt
             + LoadReceipt
             + 'static,
-        reth_evm::BlockEnvFor<<AddOns::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+        reth_evm::EvmEnvFor<<AddOns::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
             reth_rpc_eth_types::BlockOverridesExt,
     {
         let hashes: Vec<B256> = hashes.into_iter().collect();
@@ -685,7 +685,7 @@ where
             + TraceExt
             + LoadReceipt
             + 'static,
-        reth_evm::BlockEnvFor<<AddOns::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+        reth_evm::EvmEnvFor<<AddOns::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
             reth_rpc_eth_types::BlockOverridesExt,
     {
         let mut hashes = Vec::new();
@@ -720,7 +720,7 @@ where
             + TraceExt
             + LoadReceipt
             + 'static,
-        reth_evm::BlockEnvFor<<AddOns::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
+        reth_evm::EvmEnvFor<<AddOns::EthApi as reth_rpc_api::eth::RpcNodeCore>::Evm>:
             reth_rpc_eth_types::BlockOverridesExt,
     {
         for hash in &hashes {
@@ -1440,6 +1440,29 @@ where
         let res: TestingBuildBlockResponseV1 =
             client.request("testing_buildBlockV1", request.into_params()).await?;
         eyre::Ok(res)
+    }
+
+    /// Terminates the consensus engine after it persisted its canonical chain, and waits for it.
+    ///
+    /// Call this before [`Self::stop`] while a backfill is in flight, e.g. paused at a snap gate.
+    /// Stopping cancels the backfill, and its dropped task can end the engine loop with a fatal
+    /// error before the loop sees the shutdown signal, leaving the engine thread and its database
+    /// handles alive. The engine loop also reports a fatal error once the terminated engine
+    /// exits, so the future of [`Self::take_exit_future`] resolves with an error.
+    ///
+    /// Returns an error if shutdown was already requested or the engine does not terminate within
+    /// [`WAIT_TIMEOUT`].
+    pub async fn shutdown_engine(&self) -> eyre::Result<()> {
+        let done = self
+            .inner
+            .add_ons_handle
+            .engine_shutdown
+            .shutdown()
+            .ok_or_eyre("engine shutdown was already requested")?;
+        tokio::time::timeout(WAIT_TIMEOUT, done)
+            .await
+            .map_err(|_| eyre!("the engine did not shut down within {WAIT_TIMEOUT:?}"))??;
+        Ok(())
     }
 
     /// Stops the node and closes its database, keeping its datadir to launch the node again with

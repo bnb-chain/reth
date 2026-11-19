@@ -1,5 +1,12 @@
 //! The internal transaction pool implementation.
 
+/// Actual removed entries, not requested hashes; fixed reasons and no per-hash labels.
+fn record_removal(reason: &'static str, count: usize) {
+    if count > 0 {
+        reth_metrics::metrics::counter!("transaction_pool.removal_transactions_total", "reason" => reason).increment(count as u64);
+    }
+}
+
 use crate::{
     config::{LocalTransactionConfig, TXPOOL_MAX_ACCOUNT_SLOTS_PER_SENDER},
     error::{
@@ -729,6 +736,7 @@ impl<T: TransactionOrdering> TxPool<T> {
 
         // Update removed transactions metric
         self.metrics.removed_transactions.increment(removed_txs_count);
+        record_removal("canonical_mined", removed_txs_count as usize);
 
         // Update fees internally first without triggering subpool updates based on fee movements
         // This must happen before we update the changed so that all account updates use the new fee
@@ -1040,11 +1048,13 @@ impl<T: TransactionOrdering> TxPool<T> {
         outcome: &mut UpdateOutcome<T::Transaction>,
     ) {
         let mut removed = 0;
+        let mut actually_removed = 0;
         for PoolUpdate { id, current, destination } in updates {
             match destination {
                 Destination::Discard => {
                     // remove the transaction from the pool and subpool
                     if let Some(tx) = self.prune_transaction_by_id(&id) {
+                        actually_removed += 1;
                         outcome.discarded.push(tx);
                     }
                     removed += 1;
@@ -1062,6 +1072,7 @@ impl<T: TransactionOrdering> TxPool<T> {
             }
         }
 
+        record_removal("state_update_invalidated", actually_removed);
         if removed > 0 {
             self.metrics.removed_transactions.increment(removed);
         }
@@ -1090,9 +1101,10 @@ impl<T: TransactionOrdering> TxPool<T> {
         &mut self,
         hashes: Vec<TxHash>,
     ) -> Vec<Arc<ValidPoolTransaction<T::Transaction>>> {
-        let txs =
+        let txs: Vec<_> =
             hashes.into_iter().filter_map(|hash| self.remove_transaction_by_hash(&hash)).collect();
         self.update_size_metrics();
+        record_removal("explicit_remove", txs.len());
         txs
     }
 
@@ -1109,6 +1121,7 @@ impl<T: TransactionOrdering> TxPool<T> {
             }
         }
         self.update_size_metrics();
+        record_removal("explicit_remove_with_descendants", removed.len());
         removed
     }
 
@@ -1125,6 +1138,7 @@ impl<T: TransactionOrdering> TxPool<T> {
             }
         }
         self.update_size_metrics();
+        record_removal("explicit_remove_sender", removed.len());
         removed
     }
 
@@ -1137,9 +1151,10 @@ impl<T: TransactionOrdering> TxPool<T> {
         &mut self,
         hashes: Vec<TxHash>,
     ) -> Vec<Arc<ValidPoolTransaction<T::Transaction>>> {
-        let txs =
+        let txs: Vec<_> =
             hashes.into_iter().filter_map(|hash| self.prune_transaction_by_hash(&hash)).collect();
         self.update_size_metrics();
+        record_removal("explicit_prune", txs.len());
         txs
     }
 
@@ -1281,6 +1296,7 @@ impl<T: TransactionOrdering> TxPool<T> {
         pool: SubPool,
     ) {
         if let Some((replaced, replaced_pool)) = replaced {
+            record_removal("replaced", 1);
             // Remove the replaced transaction
             self.remove_from_subpool(replaced_pool, replaced.id());
         }
@@ -1353,6 +1369,7 @@ impl<T: TransactionOrdering> TxPool<T> {
             ]
         );
 
+        record_removal("capacity", removed.len());
         removed
     }
 
@@ -1996,8 +2013,12 @@ impl<T: PoolTransaction> AllTransactions<T> {
                 self.tx_counter.get(&transaction.sender_id()).copied().unwrap_or_default();
 
             // Reject transactions if sender's capacity is exceeded.
-            // If transaction's nonce matches on-chain nonce always let it through
-            if current_txs >= self.max_account_slots && transaction.nonce() > on_chain_nonce {
+            // If transaction's nonce matches on-chain nonce always let it through.
+            // Replacements of an existing transaction don't increase the sender's count.
+            if current_txs >= self.max_account_slots &&
+                transaction.nonce() > on_chain_nonce &&
+                !self.txs.contains_key(&transaction.transaction_id)
+            {
                 return Err(InsertErr::ExceededSenderTransactionsCapacity {
                     transaction: Arc::new(transaction),
                 })
@@ -2030,7 +2051,8 @@ impl<T: PoolTransaction> AllTransactions<T> {
         on_chain_balance: U256,
         ancestor: Option<TransactionId>,
     ) -> Result<ValidPoolTransaction<T>, InsertErr<T>> {
-        if let Some(ancestor) = ancestor {
+        // the cost of all preceding transactions of the sender
+        let mut cumulative_cost = if let Some(ancestor) = ancestor {
             let Some(ancestor_tx) = self.txs.get(&ancestor) else {
                 // ancestor tx is missing, so we can't insert the new blob
                 self.metrics.blob_transactions_nonce_gaps.increment(1);
@@ -2043,37 +2065,38 @@ impl<T: PoolTransaction> AllTransactions<T> {
                 return Err(InsertErr::BlobTxHasNonceGap { transaction: Arc::new(new_blob_tx) })
             }
 
-            // the max cost executing this transaction requires
-            let mut cumulative_cost = ancestor_tx.next_cumulative_cost() + new_blob_tx.cost();
+            ancestor_tx.next_cumulative_cost()
+        } else {
+            U256::ZERO
+        };
 
-            // check if the new blob would go into overdraft
-            if cumulative_cost > on_chain_balance {
-                // the transaction would go into overdraft
-                return Err(InsertErr::Overdraft { transaction: Arc::new(new_blob_tx) })
-            }
+        // the max cost executing this transaction requires
+        cumulative_cost += new_blob_tx.cost();
 
-            // ensure that a replacement would not shift already propagated blob transactions into
-            // overdraft
-            let id = new_blob_tx.transaction_id;
-            let mut descendants = self.descendant_txs_inclusive(&id).peekable();
-            if let Some((maybe_replacement, _)) = descendants.peek() &&
-                **maybe_replacement == new_blob_tx.transaction_id
-            {
-                // replacement transaction
-                descendants.next();
-
-                // check if any of descendant blob transactions should be shifted into overdraft
-                for (_, tx) in descendants {
-                    cumulative_cost += tx.transaction.cost();
-                    if tx.transaction.is_eip4844() && cumulative_cost > on_chain_balance {
-                        // the transaction would shift
-                        return Err(InsertErr::Overdraft { transaction: Arc::new(new_blob_tx) })
-                    }
-                }
-            }
-        } else if new_blob_tx.cost() > &on_chain_balance {
+        // check if the new blob would go into overdraft
+        if cumulative_cost > on_chain_balance {
             // the transaction would go into overdraft
             return Err(InsertErr::Overdraft { transaction: Arc::new(new_blob_tx) })
+        }
+
+        // ensure that a replacement would not shift already propagated blob transactions into
+        // overdraft
+        let id = new_blob_tx.transaction_id;
+        let mut descendants = self.descendant_txs_inclusive(&id).peekable();
+        if let Some((maybe_replacement, _)) = descendants.peek() &&
+            **maybe_replacement == new_blob_tx.transaction_id
+        {
+            // replacement transaction
+            descendants.next();
+
+            // check if any of descendant blob transactions should be shifted into overdraft
+            for (_, tx) in descendants {
+                cumulative_cost += tx.transaction.cost();
+                if tx.transaction.is_eip4844() && cumulative_cost > on_chain_balance {
+                    // the transaction would shift
+                    return Err(InsertErr::Overdraft { transaction: Arc::new(new_blob_tx) })
+                }
+            }
         }
 
         Ok(new_blob_tx)
@@ -2534,6 +2557,48 @@ mod tests {
 
         let inserted = pool.txs.get(&valid_tx.transaction_id).unwrap();
         assert_eq!(inserted.subpool, SubPool::Pending);
+    }
+
+    #[test]
+    fn test_blob_head_replacement_overdraft() {
+        let on_chain_nonce = 0;
+        let mut f = MockTransactionFactory::default();
+        let mut pool = AllTransactions::default();
+
+        // `with_gas_limit` recomputes the cost after the fee setters
+        let head = MockTransaction::eip4844()
+            .with_max_fee(100)
+            .with_priority_fee(100)
+            .with_nonce(on_chain_nonce)
+            .with_gas_limit(10);
+        let child = head.next();
+        let head_id = f.validated(head.clone()).transaction_id;
+        let child_id = f.validated(child.clone()).transaction_id;
+        assert_eq!(*head.cost(), U256::from(1_000));
+
+        // both fit the balance
+        let on_chain_balance = U256::from(4_500);
+        pool.insert_tx(f.validated(head.clone()), on_chain_balance, on_chain_nonce).unwrap();
+        pool.insert_tx(f.validated(child), on_chain_balance, on_chain_nonce).unwrap();
+        assert_eq!(pool.txs.get(&child_id).unwrap().subpool, SubPool::Pending);
+
+        // the replacement fits the balance on its own, but not together with the child
+        let blob_fee = 3 * head.max_fee_per_blob_gas().unwrap();
+        let replacement = head
+            .rng_hash()
+            .with_max_fee(400)
+            .with_priority_fee(400)
+            .with_blob_fee(blob_fee)
+            .with_gas_limit(10);
+        assert_eq!(*replacement.cost(), U256::from(4_000));
+        let err =
+            pool.insert_tx(f.validated(replacement), on_chain_balance, on_chain_nonce).unwrap_err();
+        assert!(matches!(err, InsertErr::Overdraft { .. }), "{err:?}");
+
+        // nothing changed
+        assert_eq!(pool.txs.get(&head_id).unwrap().transaction.cost(), &U256::from(1_000));
+        assert_eq!(pool.txs.get(&child_id).unwrap().subpool, SubPool::Pending);
+        assert!(pool.txs.get(&child_id).unwrap().state.contains(TxState::ENOUGH_BALANCE));
     }
 
     #[test]
@@ -3494,6 +3559,42 @@ mod tests {
         assert!(pool
             .insert_tx(f.validated(unblocked_tx), on_chain_balance, on_chain_nonce)
             .is_ok());
+    }
+
+    #[test]
+    fn replace_at_sender_capacity() {
+        let on_chain_balance = U256::from(1_000);
+        let on_chain_nonce = 0;
+        let mut f = MockTransactionFactory::default();
+        let mut pool = AllTransactions::default();
+
+        let mut tx = MockTransaction::eip1559().with_nonce(on_chain_nonce);
+        pool.insert_tx(f.validated(tx.clone()), on_chain_balance, on_chain_nonce).unwrap();
+        for _ in 1..pool.max_account_slots {
+            tx = tx.next();
+            pool.insert_tx(f.validated(tx.clone()), on_chain_balance, on_chain_nonce).unwrap();
+        }
+        let sender = f.ids.sender_id(tx.get_sender()).unwrap();
+        assert_eq!(pool.tx_count(sender), pool.max_account_slots);
+
+        // a fee-bumped replacement of the highest nonce does not change the sender's count
+        let replacement = f.validated(tx.clone().rng_hash().inc_price_by(tx.get_gas_price()));
+        let InsertOk { replaced_tx, .. } =
+            pool.insert_tx(replacement.clone(), on_chain_balance, on_chain_nonce).unwrap();
+        assert_eq!(replaced_tx.unwrap().0.hash(), tx.hash());
+        assert!(!pool.contains(tx.hash()));
+        assert!(pool.contains(replacement.hash()));
+        assert_eq!(pool.tx_count(sender), pool.max_account_slots);
+
+        // an underpriced replacement is still rejected as such
+        let underpriced = f.validated(tx.clone().rng_hash());
+        let err = pool.insert_tx(underpriced, on_chain_balance, on_chain_nonce).unwrap_err();
+        assert!(matches!(err, InsertErr::Underpriced { .. }));
+
+        // a new nonce is still over capacity
+        let err =
+            pool.insert_tx(f.validated(tx.next()), on_chain_balance, on_chain_nonce).unwrap_err();
+        assert!(matches!(err, InsertErr::ExceededSenderTransactionsCapacity { .. }));
     }
 
     #[test]
