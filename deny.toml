@@ -24,6 +24,12 @@ ignore = [
     # https://rustsec.org/advisories/RUSTSEC-2026-0441 pin-utils is unmaintained, with no patched release.
     # Transitive WASM dependency via wasmtimer; await its migration to pin-project-lite.
     "RUSTSEC-2026-0441",
+    # https://rustsec.org/advisories/RUSTSEC-2026-0542 humantime is unmaintained, with no patched release.
+    # Retain CLI/config duration compatibility until humantime-serde and callers migrate.
+    "RUSTSEC-2026-0542",
+    # https://rustsec.org/advisories/RUSTSEC-2026-0543 chrono is unmaintained, with no patched release.
+    # Direct and transitive users (including metrics-exporter-prometheus) still require chrono.
+    "RUSTSEC-2026-0543",
 ]
 
 # This section is considered when running `cargo deny check bans`.

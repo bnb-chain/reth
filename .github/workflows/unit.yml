@@ -35,7 +35,8 @@ jobs:
           - type: ethereum
             features: asm-keccak
             exclude_args: ""
-    timeout-minutes: 30
+    # GitHub-hosted runners need more time for a cold workspace build.
+    timeout-minutes: ${{ github.repository == 'paradigmxyz/reth' && 30 || 60 }}
     steps:
       - name: Free disk space
         if: github.repository != 'paradigmxyz/reth'
