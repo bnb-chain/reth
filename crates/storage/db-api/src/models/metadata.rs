@@ -36,6 +36,9 @@ pub struct StorageSettings {
     /// so that settings persisted before this field existed keep their semantics.
     #[serde(default = "serde_default_true")]
     pub hashed_state: bool,
+    /// Skip v2 account and storage history indices. Reenabling requires rebuilding them.
+    #[serde(default)]
+    pub no_history_indices: bool,
 }
 
 /// `serde` default for [`StorageSettings::hashed_state`] — settings persisted before the
@@ -58,7 +61,7 @@ impl StorageSettings {
     ///
     /// Use this when the `--storage.v2` CLI flag is set.
     pub const fn v2() -> Self {
-        Self { storage_v2: true, hashed_state: true }
+        Self { storage_v2: true, hashed_state: true, no_history_indices: false }
     }
 
     /// Creates `StorageSettings` for v2 nodes that keep plain state tables canonical:
@@ -67,14 +70,14 @@ impl StorageSettings {
     /// For chains whose state commitment is not derived from the Merkle-Patricia trie,
     /// so state must stay addressable by plain key.
     pub const fn v2_with_plain_state() -> Self {
-        Self { storage_v2: true, hashed_state: false }
+        Self { storage_v2: true, hashed_state: false, no_history_indices: false }
     }
 
     /// Creates `StorageSettings` for v1/legacy nodes.
     ///
     /// This keeps all data in MDBX, matching the original storage layout.
     pub const fn v1() -> Self {
-        Self { storage_v2: false, hashed_state: false }
+        Self { storage_v2: false, hashed_state: false, no_history_indices: false }
     }
 
     /// Returns `true` if this node uses v2 storage layout.

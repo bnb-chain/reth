@@ -81,18 +81,20 @@ impl Command {
     fn set<N: ProviderNodeTypes>(&self, cmd: SetCommand, tool: &DbTool<N>) -> eyre::Result<()> {
         // Read storage settings
         let provider_rw = tool.provider_factory.database_provider_rw()?;
-        // Destruct settings struct to not miss adding support for new fields
         let settings = provider_rw.storage_settings()?;
         if settings.is_none() {
             println!("No storage settings found, creating new settings.");
         }
 
-        let mut settings @ StorageSettings { storage_v2: _, hashed_state: _ } =
-            settings.unwrap_or_else(StorageSettings::v1);
+        let mut settings = settings.unwrap_or_else(StorageSettings::v1);
 
         // Update the setting based on the key
         match cmd {
             SetCommand::V2 { value } => {
+                eyre::ensure!(
+                    value || !settings.no_history_indices,
+                    "rebuild history indices first"
+                );
                 if settings.storage_v2 == value {
                     println!("storage_v2 is already set to {}", value);
                     return Ok(());

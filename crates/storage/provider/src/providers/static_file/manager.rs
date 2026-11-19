@@ -2548,8 +2548,10 @@ impl<N: NodePrimitives> ChangeSetReader for StaticFileProvider<N> {
                     ?address,
                     "Cannot continue binary search for account changeset fetch"
                 );
-                low = range.end;
-                break;
+                return Err(ProviderError::MissingStaticFileBlock(
+                    StaticFileSegment::AccountChangeSets,
+                    block_number,
+                ))
             }
         }
 
@@ -2649,8 +2651,10 @@ impl<N: NodePrimitives> StorageChangeSetReader for StaticFileProvider<N> {
                     ?storage_key,
                     "Cannot continue binary search for storage changeset fetch"
                 );
-                low = range.end;
-                break;
+                return Err(ProviderError::MissingStaticFileBlock(
+                    StaticFileSegment::StorageChangeSets,
+                    block_number,
+                ))
             }
         }
 

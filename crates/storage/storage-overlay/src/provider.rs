@@ -896,6 +896,17 @@ where
         + StorageChangeSetReader
         + BlockNumReader,
 {
+    fn ensure_rpc_access(&self) -> ProviderResult<()> {
+        if self.provider().cached_storage_settings().no_history_indices &&
+            let (overlay, Some(fallback)) = self.execution_overlay()? &&
+            overlay.block_hashes().is_empty() &&
+            fallback.block_number <= self.provider().best_block_number()?
+        {
+            return Err(ProviderError::StateHistoryIndexDisabled(fallback.block_number - 1))
+        }
+        Ok(())
+    }
+
     fn storage(
         &self,
         address: Address,

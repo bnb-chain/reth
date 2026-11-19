@@ -49,6 +49,12 @@ pub trait StateProvider:
         storage_key: StorageKey,
     ) -> ProviderResult<Option<StorageValue>>;
 
+    /// Rejects external RPC access to historical state that is only available for internal
+    /// recovery.
+    fn ensure_rpc_access(&self) -> ProviderResult<()> {
+        Ok(())
+    }
+
     /// Get account code by its address.
     ///
     /// Returns `None` if the account doesn't exist or account is not a contract

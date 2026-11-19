@@ -132,6 +132,9 @@ pub enum ProviderError {
     /// State is not available for the given block number because it is pruned.
     #[error("state at block #{_0} is pruned")]
     StateAtBlockPruned(BlockNumber),
+    /// Historical RPC state is unavailable when history indices are disabled.
+    #[error("state at block #{_0} is unavailable: history indices are disabled")]
+    StateHistoryIndexDisabled(BlockNumber),
     /// State is not available because the block has not been executed yet.
     #[error("state at block #{requested} is not available, block has not been executed yet (latest executed: #{executed})")]
     BlockNotExecuted {

@@ -1448,8 +1448,9 @@ impl RocksDBProvider {
 
         let write_tx_hash =
             ctx.storage_settings.storage_v2 && ctx.prune_tx_lookup.is_none_or(|m| !m.is_full());
-        let write_account_history = ctx.storage_settings.storage_v2;
-        let write_storage_history = ctx.storage_settings.storage_v2;
+        let write_account_history =
+            ctx.storage_settings.storage_v2 && !ctx.storage_settings.no_history_indices;
+        let write_storage_history = write_account_history;
 
         // Propagate tracing context into rayon-spawned threads so that RocksDB
         // write spans appear as children of write_blocks_data in traces.

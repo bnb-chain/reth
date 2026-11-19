@@ -101,6 +101,9 @@ where
         + RocksDBProviderFactory
         + NodePrimitivesProvider,
 {
+    if provider.cached_storage_settings().no_history_indices {
+        return Ok(())
+    }
     provider.with_rocksdb_batch(|batch| {
         let mut writer = EitherWriter::new_accounts_history(provider, batch)?;
         let list = BlockNumberList::new([block]).expect("single block always fits");
@@ -127,6 +130,9 @@ where
         + RocksDBProviderFactory
         + NodePrimitivesProvider,
 {
+    if provider.cached_storage_settings().no_history_indices {
+        return Ok(())
+    }
     provider.with_rocksdb_batch(|batch| {
         let mut writer = EitherWriter::new_storages_history(provider, batch)?;
         let list = BlockNumberList::new([block]).expect("single block always fits");

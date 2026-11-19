@@ -1793,6 +1793,29 @@ impl<TX: DbTx + 'static, N: NodeTypes> DatabaseProvider<TX, N> {
             .unwrap_or_default();
         Ok(finish.max(execution))
     }
+
+    fn history_from_changesets(
+        &self,
+        segment: StaticFileSegment,
+        block_number: BlockNumber,
+        lowest_available: Option<BlockNumber>,
+        mut changed: impl FnMut(BlockNumber) -> ProviderResult<bool>,
+    ) -> ProviderResult<HistoryInfo> {
+        if lowest_available.is_some_and(|lowest| block_number < lowest) {
+            return Err(ProviderError::StateAtBlockPruned(block_number))
+        }
+        for block in block_number..=self.history_visible_tip()? {
+            let provider =
+                self.static_file_provider.get_segment_provider_for_block(segment, block, None)?;
+            provider
+                .read_changeset_offset(block)?
+                .ok_or(ProviderError::MissingStaticFileBlock(segment, block))?;
+            if changed(block)? {
+                return Ok(HistoryInfo::InChangeset(block))
+            }
+        }
+        Ok(HistoryInfo::InPlainState)
+    }
 }
 
 impl<TX: DbTx + 'static, N: NodeTypes> HistoryReader for DatabaseProvider<TX, N> {
@@ -1802,6 +1825,14 @@ impl<TX: DbTx + 'static, N: NodeTypes> HistoryReader for DatabaseProvider<TX, N>
         block_number: BlockNumber,
         lowest_available_block_number: Option<BlockNumber>,
     ) -> ProviderResult<HistoryInfo> {
+        if self.cached_storage_settings().no_history_indices {
+            return self.history_from_changesets(
+                StaticFileSegment::AccountChangeSets,
+                block_number,
+                lowest_available_block_number,
+                |block| Ok(self.get_account_before_block(block, address)?.is_some()),
+            )
+        }
         let visible_tip = self.history_visible_tip()?;
         let mut reader = EitherReader::new_accounts_history(self, self.history_rocksdb_snapshot())?;
         reader
@@ -1816,6 +1847,14 @@ impl<TX: DbTx + 'static, N: NodeTypes> HistoryReader for DatabaseProvider<TX, N>
         block_number: BlockNumber,
         lowest_available_block_number: Option<BlockNumber>,
     ) -> ProviderResult<HistoryInfo> {
+        if self.cached_storage_settings().no_history_indices {
+            return self.history_from_changesets(
+                StaticFileSegment::StorageChangeSets,
+                block_number,
+                lowest_available_block_number,
+                |block| Ok(self.get_storage_before_block(block, address, storage_key)?.is_some()),
+            )
+        }
         let visible_tip = self.history_visible_tip()?;
         let mut reader = EitherReader::new_storages_history(self, self.history_rocksdb_snapshot())?;
         reader
