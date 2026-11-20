@@ -14,8 +14,8 @@ use revm::{
     context_interface::{transaction::AuthorizationTr, Cfg, ContextTr, Transaction},
     inspector::JournalExt,
     interpreter::{
-        interpreter_types::{Jumps, RuntimeFlag},
-        CreateInputs, CreateOutcome, Interpreter,
+        interpreter_types::{Jumps, LoopControl, RuntimeFlag},
+        CallInputs, CallOutcome, CreateInputs, CreateOutcome, Interpreter,
     },
     primitives::hardfork::SpecId,
     state::EvmState,
@@ -24,7 +24,7 @@ use revm::{
 use revm_inspectors::tracing::DebugInspectorError;
 use std::collections::btree_map::Entry;
 
-/// Preserves `includeEmpty` configuration and creation candidates alongside `DebugInspector`.
+/// Preserves prestate configuration and account observations alongside `DebugInspector`.
 #[derive(Default)]
 pub(super) enum PrestateInspector {
     #[default]
@@ -33,7 +33,9 @@ pub(super) enum PrestateInspector {
         include_empty: bool,
         code_enabled: bool,
         storage_enabled: bool,
-        creation_candidates: AddressHashSet,
+        observed_accounts: AddressHashSet,
+        gas_only_accounts: AddressHashSet,
+        pending_access: Option<(u8, Address, bool)>,
     },
     Mux(Vec<(GethDebugTracerType, Self)>),
 }
@@ -76,7 +78,9 @@ impl PrestateInspector {
                     include_empty,
                     code_enabled: config.code_enabled(),
                     storage_enabled: config.storage_enabled(),
-                    creation_candidates: Default::default(),
+                    observed_accounts: Default::default(),
+                    gas_only_accounts: Default::default(),
+                    pending_access: None,
                 })
             }
             GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::MuxTracer) => {
@@ -103,7 +107,7 @@ impl PrestateInspector {
         }
     }
 
-    /// Complete the trace and drain creation candidates before committing transaction changes.
+    /// Complete the trace and clear account observations before committing transaction changes.
     pub(super) fn apply<DB: DatabaseRef>(
         &mut self,
         trace: &mut GethTrace,
@@ -118,18 +122,27 @@ impl PrestateInspector {
                     include_empty,
                     code_enabled,
                     storage_enabled,
-                    creation_candidates,
+                    observed_accounts,
+                    gas_only_accounts,
+                    pending_access,
                 },
                 GethTrace::PreStateTracer(PreStateFrame::Default(pre)),
             ) => {
                 // The inspector omits empty accounts even when includeEmpty was requested.
                 // Read the original database, never the post-execution account balance.
-                creation_candidates.insert(beneficiary);
+                observed_accounts.insert(beneficiary);
                 if tx.tx_type() == TxType::Eip7702 as u8 {
-                    creation_candidates
+                    observed_accounts
                         .extend(tx.authorization_list().filter_map(|auth| auth.authority()));
                 }
-                for address in state.keys().copied().chain(creation_candidates.drain()) {
+                // CALL can load an empty recipient to calculate its new-account gas surcharge,
+                // then halt before Go's opcode hook observes that account. Storage accesses from
+                // stateful precompiles are still real reads even if a prior CALL failed.
+                let accounts = state.iter().filter_map(|(address, account)| {
+                    (!gas_only_accounts.contains(address) || !account.storage.is_empty())
+                        .then_some(*address)
+                });
+                for address in accounts.chain(observed_accounts.drain()) {
                     if let Entry::Vacant(entry) = pre.0.entry(address) {
                         let original = db
                             .basic_ref(address)
@@ -163,6 +176,8 @@ impl PrestateInspector {
                         }
                     }
                 }
+                gas_only_accounts.clear();
+                *pending_access = None;
             }
             (Self::Mux(plans), GethTrace::MuxTracer(frame)) => {
                 for (tracer, plan) in plans {
@@ -178,8 +193,9 @@ impl PrestateInspector {
 
     fn record_address(&mut self, address: Address) {
         match self {
-            Self::Prestate { creation_candidates, .. } => {
-                creation_candidates.insert(address);
+            Self::Prestate { observed_accounts, gas_only_accounts, .. } => {
+                gas_only_accounts.remove(&address);
+                observed_accounts.insert(address);
             }
             Self::Mux(plans) => {
                 for (_, plan) in plans {
@@ -199,7 +215,41 @@ impl<CTX: ContextTr<Journal: JournalExt>> Inspector<CTX> for PrestateInspector {
         None
     }
 
+    fn call(&mut self, _context: &mut CTX, inputs: &mut CallInputs) -> Option<CallOutcome> {
+        self.record_address(inputs.bytecode_address);
+        None
+    }
+
     fn step(&mut self, interp: &mut Interpreter, context: &mut CTX) {
+        if let Self::Mux(plans) = self {
+            for (_, plan) in plans {
+                plan.step(interp, context);
+            }
+            return
+        }
+        if let Self::Prestate { pending_access, gas_only_accounts, .. } = self {
+            let op = interp.bytecode.opcode();
+            let index = match op {
+                opcode::CALL | opcode::CALLCODE | opcode::DELEGATECALL | opcode::STATICCALL => {
+                    Some(1)
+                }
+                opcode::BALANCE |
+                opcode::EXTCODESIZE |
+                opcode::EXTCODEHASH |
+                opcode::EXTCODECOPY |
+                opcode::SELFDESTRUCT => Some(0),
+                _ => None,
+            };
+            *pending_access =
+                index.and_then(|index| {
+                    let Ok(word) = interp.stack.peek(index) else { return None };
+                    let address = Address::from_word(B256::from(word));
+                    let previously_observed =
+                        context.journal_ref().evm_state().contains_key(&address) &&
+                            !gas_only_accounts.contains(&address);
+                    Some((op, address, previously_observed))
+                });
+        }
         // REVM rejects static creation before invoking create; Go-BSC observes its opcode first.
         if matches!(self, Self::None) || !interp.runtime_flag.is_static() {
             return
@@ -254,6 +304,39 @@ impl<CTX: ContextTr<Journal: JournalExt>> Inspector<CTX> for PrestateInspector {
                 init[..overlap].copy_from_slice(&interp.memory.slice_len(offset, overlap));
             }
             self.record_address(caller.create2_from_code(B256::from(salt), init));
+        }
+    }
+
+    fn step_end(&mut self, interp: &mut Interpreter, context: &mut CTX) {
+        match self {
+            Self::Prestate { pending_access, gas_only_accounts, observed_accounts, .. } => {
+                if let Some((op, address, previously_observed)) = pending_access.take() {
+                    let halted = interp
+                        .bytecode
+                        .action()
+                        .as_ref()
+                        .and_then(|action| action.instruction_result())
+                        .is_some_and(|result| result.is_halt());
+                    if !halted {
+                        gas_only_accounts.remove(&address);
+                        observed_accounts.insert(address);
+                    } else if matches!(
+                        op,
+                        opcode::CALL | opcode::CALLCODE | opcode::DELEGATECALL | opcode::STATICCALL
+                    ) && !previously_observed &&
+                        !observed_accounts.contains(&address) &&
+                        context.journal_ref().evm_state().contains_key(&address)
+                    {
+                        gas_only_accounts.insert(address);
+                    }
+                }
+            }
+            Self::Mux(plans) => {
+                for (_, plan) in plans {
+                    plan.step_end(interp, context);
+                }
+            }
+            Self::None => {}
         }
     }
 }
@@ -366,7 +449,9 @@ mod tests {
                 include_empty: true,
                 code_enabled: true,
                 storage_enabled,
-                creation_candidates: Default::default(),
+                observed_accounts: Default::default(),
+                gas_only_accounts: Default::default(),
+                pending_access: None,
             }
             .apply(&mut trace, &state, &db, &TxEnv::default(), Address::ZERO)
             .unwrap();
@@ -387,7 +472,9 @@ mod tests {
                 include_empty: true,
                 code_enabled: true,
                 storage_enabled,
-                creation_candidates: Default::default(),
+                observed_accounts: Default::default(),
+                gas_only_accounts: Default::default(),
+                pending_access: None,
             }
             .apply(&mut trace, &state, &db, &TxEnv::default(), Address::ZERO)
             .unwrap();

@@ -374,3 +374,129 @@ async fn rejected_creations_retain_prefunded_candidates_in_default_mode() {
         }
     }
 }
+
+#[tokio::test]
+async fn call_gas_checks_do_not_add_unobserved_recipients() {
+    let (module, _, target, _) =
+        rpc!("60006000600060006001604461fffff15000".parse::<Bytes>().unwrap());
+    let recipient = format!("{:#x}", Address::with_last_byte(0x44));
+    for mux in [false, true] {
+        for (gas, expected) in [("0x9c40", false), ("0x186a0", true)] {
+            let opts = prestate_options(json!({"includeEmpty":true}), mux);
+            let request = json!({"jsonrpc":"2.0","id":1,"method":"debug_traceCall","params":[{"to":target,"gas":gas},"latest",opts]});
+            let (response, _) = module.raw_json_request(&request.to_string(), 1).await.unwrap();
+            let response: Value = serde_json::from_str(response.get()).unwrap();
+            assert!(response.get("error").is_none(), "{response}");
+            let pre = if mux { &response["result"]["prestateTracer"] } else { &response["result"] };
+            assert_eq!(
+                pre.get(&recipient),
+                expected.then(|| json!({"balance":"0x0"})).as_ref(),
+                "gas={gas}: {response}"
+            );
+            if mux {
+                if expected {
+                    assert!(response["result"]["callTracer"].get("error").is_none(), "{response}");
+                    assert_eq!(
+                        response["result"]["callTracer"]["calls"][0]["error"],
+                        "insufficient balance for transfer"
+                    );
+                } else {
+                    assert_eq!(response["result"]["callTracer"]["error"], "out of gas");
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn failed_call_gas_checks_preserve_real_reads_across_reverts() {
+    let inner = Address::with_last_byte(0x43);
+    let recipient = Address::with_last_byte(0x44);
+    for (before, after) in [(false, false), (true, false), (false, true)] {
+        // The outer call catches the inner out-of-gas failure and optionally reads the recipient.
+        let code =
+            format!("600060006000600060006043614a38f150{}00", if after { "60443150" } else { "" });
+        let (module, _, target, provider) = rpc!(code.parse::<Bytes>().unwrap());
+        let inner_code =
+            format!("{}60006000600060006001604461fffff15000", if before { "60443150" } else { "" });
+        provider.add_account(
+            inner,
+            ExtendedAccount::new(1, U256::ZERO).with_bytecode(inner_code.parse().unwrap()),
+        );
+        for mux in [false, true] {
+            for access_list in [false, true] {
+                let mut call = json!({"to":target,"gas":"0x7a120"});
+                if access_list {
+                    call["accessList"] = json!([{"address":recipient,"storageKeys":[]}]);
+                }
+                let opts = prestate_options(json!({"includeEmpty":true}), mux);
+                let request = json!({"jsonrpc":"2.0","id":1,"method":"debug_traceCall","params":[call,"latest",opts]});
+                let (response, _) = module.raw_json_request(&request.to_string(), 1).await.unwrap();
+                let response: Value = serde_json::from_str(response.get()).unwrap();
+                assert!(response.get("error").is_none(), "{response}");
+                let pre =
+                    if mux { &response["result"]["prestateTracer"] } else { &response["result"] };
+                assert_eq!(
+                    pre.get(format!("{recipient:#x}")),
+                    (before || after).then(|| json!({"balance":"0x0"})).as_ref(),
+                    "before={before}, after={after}, access_list={access_list}: {response}"
+                );
+                if mux {
+                    assert!(response["result"]["callTracer"].get("error").is_none(), "{response}");
+                    assert_eq!(response["result"]["callTracer"]["calls"][0]["error"], "out of gas");
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn prestate_aliases_follow_json_input_order() {
+    let (module, hash, _, _) = rpc!(Bytes::from_static(&[0]));
+    for mux in [false, true] {
+        for (config, expected) in [
+            (r#"{"includeEmpty":false,"IncludeEmpty":true}"#, true),
+            (r#"{"IncludeEmpty":true,"includeEmpty":false}"#, false),
+            (r#"{"includeEmpty":true,"IncludeEmpty":null}"#, true),
+        ] {
+            // Construct raw JSON so the test preserves wire order before RPC deserialization.
+            let opts = if mux {
+                format!(r#"{{"tracer":"muxTracer","tracerConfig":{{"prestateTracer":{config}}}}}"#)
+            } else {
+                format!(r#"{{"tracer":"prestateTracer","tracerConfig":{config}}}"#)
+            };
+            let request = format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"debug_traceTransaction","params":["{hash:#x}",{opts}]}}"#
+            );
+            let (response, _) = module.raw_json_request(&request, 1).await.unwrap();
+            let response: Value = serde_json::from_str(response.get()).unwrap();
+            assert!(response.get("error").is_none(), "{response}");
+            let pre = if mux { &response["result"]["prestateTracer"] } else { &response["result"] };
+            assert_eq!(
+                pre.get(format!("{:#x}", Address::with_last_byte(0x99))),
+                expected.then(|| json!({"balance":"0x0"})).as_ref(),
+                "{config}: {response}"
+            );
+        }
+        for config in [
+            r#"{"diffMode":true,"includeEmpty":false,"IncludeEmpty":true}"#,
+            r#"{"includeEmpty":true,"diffMode":false,"DiffMode":true}"#,
+        ] {
+            let opts = if mux {
+                format!(r#"{{"tracer":"muxTracer","tracerConfig":{{"prestateTracer":{config}}}}}"#)
+            } else {
+                format!(r#"{{"tracer":"prestateTracer","tracerConfig":{config}}}"#)
+            };
+            let request = format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"debug_traceTransaction","params":["{hash:#x}",{opts}]}}"#
+            );
+            let (response, _) = module.raw_json_request(&request, 1).await.unwrap();
+            let response: Value = serde_json::from_str(response.get()).unwrap();
+            assert_eq!(
+                response["error"],
+                json!({"code":-32000,"message":"cannot use diffMode with includeEmpty"}),
+                "{config}: {response}"
+            );
+        }
+    }
+}
