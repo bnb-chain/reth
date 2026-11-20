@@ -2,6 +2,11 @@ use super::*;
 use crate::{DebugApi, EthApiBuilder};
 use alloy_consensus::{Header, TxEip7702, TxLegacy};
 use alloy_eips::eip7702::{Authorization, SignedAuthorization};
+use alloy_evm::{
+    eth::EthEvmFactory,
+    precompiles::{DynPrecompile, PrecompilesMap},
+    Database, Evm, EvmFactory,
+};
 use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
 use reth_chain_state::CanonStateNotification;
 use reth_chainspec::{ChainSpecBuilder, ChainSpecProvider};
@@ -11,10 +16,14 @@ use reth_execution_types::{Chain, ExecutionOutcome};
 use reth_network_api::noop::NoopNetwork;
 use reth_primitives_traits::{RecoveredBlock, SignerRecoverable};
 use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
-use reth_rpc_api::DebugApiServer;
 use reth_rpc_eth_types::cache::cache_new_blocks_task;
 use reth_tasks::{pool::BlockingTaskGuard, Runtime};
 use reth_transaction_pool::test_utils::testing_pool;
+use revm::{
+    database_interface::DBErrorMarker,
+    inspector::NoOpInspector,
+    precompile::{PrecompileId, PrecompileOutput},
+};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -22,7 +31,10 @@ macro_rules! rpc {
     ($code:expr) => {
         rpc!($code, None)
     };
-    ($code:expr, $authorization:expr) => {{
+    ($code:expr, $authorization:expr) => {
+        rpc!($code, $authorization, EthEvmFactory::default(), Vec::new())
+    };
+    ($code:expr, $authorization:expr, $factory:expr, $preceding:expr) => {{
         let provider = MockEthProvider::default()
             .with_chain_spec(ChainSpecBuilder::mainnet().prague_activated().build());
         let target = Address::with_last_byte(0x42);
@@ -45,8 +57,6 @@ macro_rules! rpc {
             Signature::test_signature(),
         );
         let hash = *tx.hash();
-        let sender = tx.recover_signer().unwrap();
-        provider.add_account(sender, ExtendedAccount::new(0, U256::from(1_000_000)));
         let parent = Header {
             beneficiary: Address::with_last_byte(0x99),
             gas_limit: 30_000_000,
@@ -58,23 +68,30 @@ macro_rules! rpc {
         };
         let parent_hash = parent.hash_slow();
         provider.add_header(parent_hash, parent.clone());
+        let mut transactions: Vec<TransactionSigned> = $preceding;
+        transactions.push(tx);
+        let signers =
+            transactions.iter().map(|tx| tx.recover_signer().unwrap()).collect::<Vec<_>>();
+        for signer in &signers {
+            provider.add_account(*signer, ExtendedAccount::new(0, U256::from(1_000_000)));
+        }
         let block = Block {
             header: Header { parent_hash, number: 1, timestamp: 1, ..parent },
-            body: BlockBody { transactions: vec![tx], ..Default::default() },
+            body: BlockBody { transactions, ..Default::default() },
         };
         provider.add_block(block.header.hash_slow(), block.clone());
         let eth_api = EthApiBuilder::new(
             provider.clone(),
             testing_pool(),
             NoopNetwork::default(),
-            EthEvmConfig::new(provider.chain_spec()),
+            EthEvmConfig::new_with_evm_factory(provider.chain_spec(), $factory),
         )
         .build();
         cache_new_blocks_task(
             eth_api.cache().clone(),
             futures::stream::iter([CanonStateNotification::Commit {
                 new: Arc::new(Chain::new(
-                    [RecoveredBlock::new_unhashed(block, vec![sender])],
+                    [RecoveredBlock::new_unhashed(block, signers)],
                     ExecutionOutcome {
                         receipts: vec![vec![]],
                         first_block: 1,
@@ -594,6 +611,218 @@ async fn prestate_config_rejects_non_objects_at_rpc_boundary() {
             let response: Value = serde_json::from_str(response.get()).unwrap();
             assert!(response.get("error").is_none(), "{response}");
             assert!(response["result"].get(format!("{target:#x}")).is_some(), "{response}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn delegation_after_failed_call() {
+    // Catch an out-of-gas call to 0x43, then call a 7702 authority delegating to 0x44.
+    let code = "600060006000600060006043614a38f15060006000600060006000604561fffff15000";
+    let (module, _, target, provider) = rpc!(code.parse::<Bytes>().unwrap());
+    provider.add_account(
+        Address::with_last_byte(0x43),
+        ExtendedAccount::new(1, U256::ZERO)
+            .with_bytecode("60006000600060006001604461fffff15000".parse().unwrap()),
+    );
+    let delegate = Address::with_last_byte(0x44);
+    provider.add_account(
+        Address::with_last_byte(0x45),
+        ExtendedAccount::new(1, U256::ZERO).with_bytecode(
+            format!("ef0100{}", alloy_primitives::hex::encode(delegate)).parse().unwrap(),
+        ),
+    );
+    let mut mismatches = Vec::new();
+    for mux in [false, true] {
+        let opts = prestate_options(json!({"includeEmpty":true}), mux);
+        let req = json!({"jsonrpc":"2.0","id":1,"method":"debug_traceCall","params":[{"to":target,"gas":"0x7a120"},"latest",opts]});
+        let (res, _) = module.raw_json_request(&req.to_string(), 1).await.unwrap();
+        let res: Value = serde_json::from_str(res.get()).unwrap();
+        assert!(res.get("error").is_none(), "{res}");
+        let pre = if mux { &res["result"]["prestateTracer"] } else { &res["result"] };
+        if pre.get(format!("{delegate:#x}")) != Some(&json!({"balance":"0x0"})) {
+            mismatches.push(mux);
+        }
+    }
+    assert!(mismatches.is_empty(), "{mismatches:?}");
+}
+
+#[tokio::test]
+async fn nonstatic_create2_padding() {
+    let mut mismatches = Vec::new();
+    for (offset, expected) in [(0x100000, true), (0x100001, false)] {
+        let code = format!("6000600062{offset:06x}6000f55000");
+        let (module, _, target, _) = rpc!(code.parse::<Bytes>().unwrap());
+        let candidate = target.create2_from_code(B256::ZERO, []);
+        for mux in [false, true] {
+            let opts = prestate_options(json!({"includeEmpty":true}), mux);
+            let req = json!({"jsonrpc":"2.0","id":1,"method":"debug_traceCall","params":[{"to":target,"gas":"0x7a120"},"latest",opts]});
+            let (res, _) = module.raw_json_request(&req.to_string(), 1).await.unwrap();
+            let res: Value = serde_json::from_str(res.get()).unwrap();
+            assert!(res.get("error").is_none(), "{res}");
+            let pre = if mux { &res["result"]["prestateTracer"] } else { &res["result"] };
+            if pre.get(format!("{candidate:#x}")).is_some() != expected {
+                mismatches.push((offset, mux));
+            }
+        }
+    }
+    assert!(mismatches.is_empty(), "{mismatches:?}");
+}
+
+#[tokio::test]
+async fn repeated_alias_order() {
+    let (module, hash, _, _) = rpc!(Bytes::from_static(&[0]));
+    let req = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"debug_traceTransaction","params":["{hash:#x}",{{"tracer":"prestateTracer","tracerConfig":{{"includeEmpty":false,"IncludeEmpty":false,"includeEmpty":true}}}}]}}"#
+    );
+    let (res, _) = module.raw_json_request(&req, 1).await.unwrap();
+    let res: Value = serde_json::from_str(res.get()).unwrap();
+    assert!(res["result"].get(format!("{:#x}", Address::with_last_byte(0x99))).is_some(), "{res}");
+}
+
+/// The same JSON cases are executed by testdata/prestate/generate.go in Go-BSC.
+#[tokio::test]
+async fn go_bsc_differential_prestate_matrix() {
+    let cases: Vec<serde_json::Value> =
+        serde_json::from_str(include_str!("../../../testdata/prestate/cases.json")).unwrap();
+    let expected: Value =
+        serde_json::from_str(include_str!("../../../testdata/prestate/expected.json")).unwrap();
+    let mut mismatches = Vec::new();
+    for case in cases {
+        let (module, _, target, provider) = rpc!(Bytes::from_static(&[0]));
+        for (address, account) in case["accounts"].as_object().unwrap() {
+            let balance = account
+                .get("balance")
+                .map(|v| serde_json::from_value::<U256>(v.clone()).unwrap())
+                .unwrap_or_default();
+            let mut state = ExtendedAccount::new(account["nonce"].as_u64().unwrap(), balance)
+                .with_bytecode(account["code"].as_str().unwrap().parse().unwrap());
+            if let Some(storage) = account.get("storage") {
+                state = state.extend_storage(storage.as_object().unwrap().iter().map(
+                    |(key, value)| {
+                        (
+                            key.parse::<B256>().unwrap(),
+                            value.as_str().unwrap().parse::<U256>().unwrap(),
+                        )
+                    },
+                ));
+            }
+            provider.add_account(address.parse().unwrap(), state);
+        }
+        for mux in [false, true] {
+            let name = format!("{}/mux={mux}", case["name"].as_str().unwrap());
+            let config = case["config"].as_str().unwrap();
+            let options = if mux {
+                format!(r#"{{"tracer":"muxTracer","tracerConfig":{{"prestateTracer":{config}}}}}"#)
+            } else {
+                format!(r#"{{"tracer":"prestateTracer","tracerConfig":{config}}}"#)
+            };
+            let call = json!({"to":target,"gas":format!("0x{:x}",case["gas"].as_u64().unwrap()),"input":case["input"]});
+            let request = format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"debug_traceCall","params":[{call},"latest",{options}]}}"#
+            );
+            let (response, _) = module.raw_json_request(&request, 1).await.unwrap();
+            let response: Value = serde_json::from_str(response.get()).unwrap();
+            let actual = if expected[&name].get("error").is_some() {
+                assert_eq!(response["error"]["code"], -32000, "{name}: {response}");
+                json!({"error":response["error"]["message"]})
+            } else if mux {
+                response["result"]["prestateTracer"].clone()
+            } else {
+                response["result"].clone()
+            };
+            if actual != expected[&name] {
+                mismatches.push(format!("{name}: expected {}, got {actual}", expected[&name]));
+            }
+        }
+    }
+    assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NativeReadEvmFactory;
+
+impl EvmFactory for NativeReadEvmFactory {
+    type Evm<DB: Database, I: Inspector<Self::Context<DB>>> =
+        <EthEvmFactory as EvmFactory>::Evm<DB, I>;
+    type Context<DB: Database> = <EthEvmFactory as EvmFactory>::Context<DB>;
+    type Tx = <EthEvmFactory as EvmFactory>::Tx;
+    type Error<E: DBErrorMarker> = <EthEvmFactory as EvmFactory>::Error<E>;
+    type HaltReason = <EthEvmFactory as EvmFactory>::HaltReason;
+    type Spec = <EthEvmFactory as EvmFactory>::Spec;
+    type BlockEnv = <EthEvmFactory as EvmFactory>::BlockEnv;
+    type Precompiles = PrecompilesMap;
+
+    fn create_evm<DB: Database>(
+        &self,
+        db: DB,
+        env: alloy_evm::EvmEnv,
+    ) -> Self::Evm<DB, NoOpInspector> {
+        let mut evm = EthEvmFactory::default().create_evm(db, env);
+        install_native_reader(evm.precompiles_mut());
+        evm
+    }
+
+    fn create_evm_with_inspector<DB: Database, I: Inspector<Self::Context<DB>>>(
+        &self,
+        db: DB,
+        env: alloy_evm::EvmEnv,
+        inspector: I,
+    ) -> Self::Evm<DB, I> {
+        let mut evm = EthEvmFactory::default().create_evm_with_inspector(db, env, inspector);
+        install_native_reader(evm.precompiles_mut());
+        evm
+    }
+}
+
+fn install_native_reader(precompiles: &mut PrecompilesMap) {
+    precompiles.extend_precompiles([(
+        Address::with_last_byte(0x20),
+        DynPrecompile::new_stateful(PrecompileId::custom("native-reader"), |_input| {
+            reth_revm::native_reads::account(Address::with_last_byte(0x44));
+            Ok(PrecompileOutput::new(10, Bytes::new(), 0))
+        }),
+    )]);
+}
+
+#[tokio::test]
+async fn native_reads_from_replay_do_not_leak_into_the_target_transaction() {
+    let preceding = TransactionSigned::new_unhashed(
+        TxLegacy {
+            gas_limit: 100_000,
+            to: Address::with_last_byte(0x20).into(),
+            ..Default::default()
+        }
+        .into(),
+        Signature::test_signature(),
+    );
+    let preceding_hash = *preceding.hash();
+    let (module, hash, _, _) =
+        rpc!(Bytes::from_static(&[0]), None, NativeReadEvmFactory, vec![preceding]);
+    for mux in [false, true] {
+        let options = prestate_options(json!({"includeEmpty":true}), mux);
+        for (tx, observed) in [(preceding_hash, true), (hash, false)] {
+            let request = json!({"jsonrpc":"2.0","id":1,"method":"debug_traceTransaction","params":[tx,options]});
+            let (response, _) = module.raw_json_request(&request.to_string(), 1).await.unwrap();
+            let response: Value = serde_json::from_str(response.get()).unwrap();
+            assert!(response.get("error").is_none(), "{response}");
+            let pre = if mux { &response["result"]["prestateTracer"] } else { &response["result"] };
+            assert_eq!(
+                pre.get(format!("{:#x}", Address::with_last_byte(0x44))).is_some(),
+                observed,
+                "{response}"
+            );
+        }
+        let request = json!({"jsonrpc":"2.0","id":1,"method":"debug_traceBlockByNumber","params":["0x1",options]});
+        let (response, _) = module.raw_json_request(&request.to_string(), 1).await.unwrap();
+        let response: Value = serde_json::from_str(response.get()).unwrap();
+        for (index, trace) in response["result"].as_array().unwrap().iter().enumerate() {
+            let pre = if mux { &trace["result"]["prestateTracer"] } else { &trace["result"] };
+            assert_eq!(
+                pre.get(format!("{:#x}", Address::with_last_byte(0x44))).is_some(),
+                index == 0,
+                "{response}"
+            );
         }
     }
 }

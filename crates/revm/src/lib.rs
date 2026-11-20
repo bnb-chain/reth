@@ -31,3 +31,6 @@ pub use revm::{self, database::State, *};
 /// Helper types for execution witness generation.
 #[cfg(feature = "witness")]
 pub mod witness;
+
+#[cfg(feature = "std")]
+pub mod native_reads;

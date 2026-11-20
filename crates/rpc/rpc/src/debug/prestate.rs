@@ -1,12 +1,14 @@
 //! Preserve empty prestate accounts while the transaction's original database is available.
 
 use alloy_consensus::TxType;
-use alloy_primitives::{map::AddressHashSet, Address, B256};
+use alloy_primitives::{map::AddressMap, Address, TxKind, B256, U256};
 use alloy_rpc_types_trace::geth::{
     AccountState, GethDebugBuiltInTracerType, GethDebugTracerConfig, GethDebugTracerType,
     GethDebugTracingOptions, GethTrace, PreStateFrame,
 };
 use jsonrpsee::types::{error::CALL_EXECUTION_FAILED_CODE, ErrorObjectOwned};
+use reth_revm::native_reads::NativeReads;
+use reth_rpc_api::prestate::normalize_prestate_config;
 use reth_rpc_eth_types::EthApiError;
 use revm::{
     bytecode::opcode,
@@ -18,11 +20,10 @@ use revm::{
         CallInputs, CallOutcome, CreateInputs, CreateOutcome, Interpreter,
     },
     primitives::hardfork::SpecId,
-    state::EvmState,
     DatabaseRef, Inspector,
 };
 use revm_inspectors::tracing::DebugInspectorError;
-use std::collections::btree_map::Entry;
+use std::collections::BTreeSet;
 
 /// Preserves prestate configuration and account observations alongside `DebugInspector`.
 #[derive(Default)]
@@ -33,9 +34,9 @@ pub(super) enum PrestateInspector {
         include_empty: bool,
         code_enabled: bool,
         storage_enabled: bool,
-        observed_accounts: AddressHashSet,
-        gas_only_accounts: AddressHashSet,
-        pending_access: Option<(u8, Address, bool)>,
+        observed_accounts: AddressMap<BTreeSet<U256>>,
+        pending_access: Option<(u8, Address, Option<U256>)>,
+        prague: bool,
     },
     Mux(Vec<(GethDebugTracerType, Self)>),
 }
@@ -54,7 +55,7 @@ impl PrestateInspector {
     ) -> Result<Self, EthApiError> {
         match tracer {
             GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::PreStateTracer) => {
-                normalize_prestate_config(config)?;
+                normalize_prestate_config(&mut config.0).map_err(EthApiError::other)?;
                 let include_empty = config
                     .0
                     .get("includeEmpty")
@@ -79,7 +80,7 @@ impl PrestateInspector {
                     code_enabled: config.code_enabled(),
                     storage_enabled: config.storage_enabled(),
                     observed_accounts: Default::default(),
-                    gas_only_accounts: Default::default(),
+                    prague: false,
                     pending_access: None,
                 })
             }
@@ -107,11 +108,20 @@ impl PrestateInspector {
         }
     }
 
-    /// Complete the trace and clear account observations before committing transaction changes.
+    /// Whether this tracer needs explicit native observations.
+    pub(super) fn is_active(&self) -> bool {
+        match self {
+            Self::None => false,
+            Self::Prestate { .. } => true,
+            Self::Mux(plans) => plans.iter().any(|(_, plan)| plan.is_active()),
+        }
+    }
+
+    /// Build prestate from observed reads and the original database, before committing changes.
     pub(super) fn apply<DB: DatabaseRef>(
         &mut self,
         trace: &mut GethTrace,
-        state: &EvmState,
+        native: &NativeReads,
         db: &DB,
         tx: &impl Transaction,
         beneficiary: Address,
@@ -123,66 +133,87 @@ impl PrestateInspector {
                     code_enabled,
                     storage_enabled,
                     observed_accounts,
-                    gas_only_accounts,
                     pending_access,
+                    prague,
                 },
                 GethTrace::PreStateTracer(PreStateFrame::Default(pre)),
             ) => {
-                // The inspector omits empty accounts even when includeEmpty was requested.
-                // Read the original database, never the post-execution account balance.
-                observed_accounts.insert(beneficiary);
-                if tx.tx_type() == TxType::Eip7702 as u8 {
-                    observed_accounts
-                        .extend(tx.authorization_list().filter_map(|auth| auth.authority()));
-                }
-                // CALL and SELFDESTRUCT can load an empty recipient to calculate a gas surcharge,
-                // then halt before Go's opcode hook observes that account. Storage accesses from
-                // stateful precompiles are still real reads even if a prior opcode failed.
-                let accounts = state.iter().filter_map(|(address, account)| {
-                    (!gas_only_accounts.contains(address) || !account.storage.is_empty())
-                        .then_some(*address)
-                });
-                for address in accounts.chain(observed_accounts.drain()) {
-                    if let Entry::Vacant(entry) = pre.0.entry(address) {
-                        let original = db
-                            .basic_ref(address)
+                observed_accounts.entry(tx.caller()).or_default();
+                observed_accounts.entry(beneficiary).or_default();
+                let to = match tx.kind() {
+                    TxKind::Call(to) => to,
+                    TxKind::Create => {
+                        let caller = db
+                            .basic_ref(tx.caller())
                             .map_err(DebugInspectorError::Database)?
                             .unwrap_or_default();
-                        if *include_empty || !original.is_empty() {
-                            let code = if *code_enabled && !original.is_empty_code_hash() {
-                                Some(match original.code {
-                                    Some(code) => code.original_bytes(),
-                                    None => db
-                                        .code_by_hash_ref(original.code_hash)
-                                        .map_err(DebugInspectorError::Database)?
-                                        .original_bytes(),
-                                })
-                            } else {
-                                None
-                            };
-                            let mut account_state = AccountState::from_account_info(
-                                original.nonce,
-                                original.balance,
-                                code,
-                            );
-                            if *storage_enabled && let Some(account) = state.get(&address) {
-                                account_state.storage.extend(account.storage.iter().map(
-                                    |(key, slot)| {
-                                        (B256::from(*key), B256::from(slot.original_value))
-                                    },
-                                ));
-                            }
-                            entry.insert(account_state);
-                        }
+                        tx.caller().create(caller.nonce)
+                    }
+                };
+                observed_accounts.entry(to).or_default();
+                if *prague && tx.kind().is_call() {
+                    let original = db
+                        .basic_ref(to)
+                        .map_err(DebugInspectorError::Database)?
+                        .unwrap_or_default();
+                    let code = match original.code {
+                        Some(code) => code,
+                        None => db
+                            .code_by_hash_ref(original.code_hash)
+                            .map_err(DebugInspectorError::Database)?,
+                    };
+                    if let Some(delegate) = code.eip7702_address() {
+                        observed_accounts.entry(delegate).or_default();
                     }
                 }
-                gas_only_accounts.clear();
+                if tx.tx_type() == TxType::Eip7702 as u8 {
+                    for authority in tx.authorization_list().filter_map(|auth| auth.authority()) {
+                        observed_accounts.entry(authority).or_default();
+                    }
+                }
+                for (address, slots) in &native.accounts {
+                    observed_accounts.entry(*address).or_default().extend(slots);
+                }
+                // The upstream builder uses final journal membership. Replace its default frame:
+                // gas-only loads are not observations, while reads in reverted frames still are.
+                pre.0.clear();
+                for (address, slots) in std::mem::take(observed_accounts) {
+                    let original = db
+                        .basic_ref(address)
+                        .map_err(DebugInspectorError::Database)?
+                        .unwrap_or_default();
+                    if !*include_empty && original.is_empty() {
+                        continue
+                    }
+                    let code = if *code_enabled && !original.is_empty_code_hash() {
+                        Some(match original.code {
+                            Some(code) => code.original_bytes(),
+                            None => db
+                                .code_by_hash_ref(original.code_hash)
+                                .map_err(DebugInspectorError::Database)?
+                                .original_bytes(),
+                        })
+                    } else {
+                        None
+                    };
+                    let mut account =
+                        AccountState::from_account_info(original.nonce, original.balance, code);
+                    if *storage_enabled {
+                        for key in slots {
+                            let value = db
+                                .storage_ref(address, key)
+                                .map_err(DebugInspectorError::Database)?;
+                            account.storage.insert(B256::from(key), B256::from(value));
+                        }
+                    }
+                    pre.0.insert(address, account);
+                }
                 *pending_access = None;
             }
             (Self::Mux(plans), GethTrace::MuxTracer(frame)) => {
                 for (tracer, plan) in plans {
                     if let Some(trace) = frame.0.get_mut(tracer) {
-                        plan.apply(trace, state, db, tx, beneficiary)?;
+                        plan.apply(trace, native, db, tx, beneficiary)?;
                     }
                 }
             }
@@ -193,9 +224,8 @@ impl PrestateInspector {
 
     fn record_address(&mut self, address: Address) {
         match self {
-            Self::Prestate { observed_accounts, gas_only_accounts, .. } => {
-                gas_only_accounts.remove(&address);
-                observed_accounts.insert(address);
+            Self::Prestate { observed_accounts, .. } => {
+                observed_accounts.entry(address).or_default();
             }
             Self::Mux(plans) => {
                 for (_, plan) in plans {
@@ -205,18 +235,28 @@ impl PrestateInspector {
             Self::None => {}
         }
     }
+
+    fn set_prague(&mut self, enabled: bool) {
+        match self {
+            Self::Prestate { prague, .. } => *prague = enabled,
+            Self::Mux(plans) => {
+                for (_, plan) in plans {
+                    plan.set_prague(enabled);
+                }
+            }
+            Self::None => {}
+        }
+    }
 }
 
 impl<CTX: ContextTr<Journal: JournalExt>> Inspector<CTX> for PrestateInspector {
-    fn create(&mut self, context: &mut CTX, inputs: &mut CreateInputs) -> Option<CreateOutcome> {
-        if let Some(caller) = context.journal_ref().evm_state().get(&inputs.caller()) {
-            self.record_address(inputs.created_address(caller.info.nonce));
-        }
+    fn create(&mut self, context: &mut CTX, _inputs: &mut CreateInputs) -> Option<CreateOutcome> {
+        self.set_prague(context.cfg().spec().into().is_enabled_in(SpecId::PRAGUE));
         None
     }
 
-    fn call(&mut self, _context: &mut CTX, inputs: &mut CallInputs) -> Option<CallOutcome> {
-        self.record_address(inputs.bytecode_address);
+    fn call(&mut self, context: &mut CTX, _inputs: &mut CallInputs) -> Option<CallOutcome> {
+        self.set_prague(context.cfg().spec().into().is_enabled_in(SpecId::PRAGUE));
         None
     }
 
@@ -227,33 +267,36 @@ impl<CTX: ContextTr<Journal: JournalExt>> Inspector<CTX> for PrestateInspector {
             }
             return
         }
-        if let Self::Prestate { pending_access, gas_only_accounts, .. } = self {
+        if let Self::Prestate { pending_access, .. } = self {
             let op = interp.bytecode.opcode();
             let index = match op {
-                opcode::CALL | opcode::CALLCODE | opcode::DELEGATECALL | opcode::STATICCALL => {
-                    Some(1)
-                }
+                opcode::SLOAD |
+                opcode::SSTORE |
                 opcode::BALANCE |
                 opcode::EXTCODESIZE |
                 opcode::EXTCODEHASH |
                 opcode::EXTCODECOPY |
                 opcode::SELFDESTRUCT => Some(0),
+                opcode::CALL | opcode::CALLCODE | opcode::DELEGATECALL | opcode::STATICCALL => {
+                    Some(1)
+                }
                 _ => None,
             };
-            *pending_access =
-                index.and_then(|index| {
-                    let Ok(word) = interp.stack.peek(index) else { return None };
-                    let address = Address::from_word(B256::from(word));
-                    let previously_observed =
-                        context.journal_ref().evm_state().contains_key(&address) &&
-                            !gas_only_accounts.contains(&address);
-                    Some((op, address, previously_observed))
-                });
+            *pending_access = index.and_then(|index| {
+                let Ok(word) = interp.stack.peek(index) else { return None };
+                Some(if matches!(op, opcode::SLOAD | opcode::SSTORE) {
+                    (op, interp.input.target_address, Some(word))
+                } else {
+                    (op, Address::from_word(B256::from(word)), None)
+                })
+            });
         }
-        // REVM rejects static creation before invoking create; Go-BSC observes its opcode first.
-        if matches!(self, Self::None) || !interp.runtime_flag.is_static() {
+        if matches!(self, Self::None) {
             return
         }
+        // Go observes CREATE before execution-time failures, but after stack and gas checks.
+        // Derive both static and non-static candidates here, where the original memory offset is
+        // still available (CreateInputs has already discarded it).
         let op = interp.bytecode.opcode();
         let stack_len = match op {
             opcode::CREATE => 3,
@@ -312,29 +355,33 @@ impl<CTX: ContextTr<Journal: JournalExt>> Inspector<CTX> for PrestateInspector {
 
     fn step_end(&mut self, interp: &mut Interpreter, context: &mut CTX) {
         match self {
-            Self::Prestate { pending_access, gas_only_accounts, observed_accounts, .. } => {
-                if let Some((op, address, previously_observed)) = pending_access.take() {
+            Self::Prestate { pending_access, observed_accounts, .. } => {
+                if let Some((op, address, slot)) = pending_access.take() {
                     let halted = interp
                         .bytecode
                         .action()
                         .as_ref()
                         .and_then(|action| action.instruction_result())
                         .is_some_and(|result| result.is_halt());
-                    if !halted {
-                        gas_only_accounts.remove(&address);
-                        observed_accounts.insert(address);
-                    } else if matches!(
+                    if halted {
+                        return
+                    }
+                    let slots = observed_accounts.entry(address).or_default();
+                    if let Some(slot) = slot {
+                        slots.insert(slot);
+                    }
+                    if matches!(
                         op,
-                        opcode::CALL |
-                            opcode::CALLCODE |
-                            opcode::DELEGATECALL |
-                            opcode::STATICCALL |
-                            opcode::SELFDESTRUCT
-                    ) && !previously_observed &&
-                        !observed_accounts.contains(&address) &&
-                        context.journal_ref().evm_state().contains_key(&address)
+                        opcode::CALL | opcode::CALLCODE | opcode::DELEGATECALL | opcode::STATICCALL
+                    ) && interp.runtime_flag.spec_id().is_enabled_in(SpecId::PRAGUE) &&
+                        let Some(delegate) = context
+                            .journal_ref()
+                            .evm_state()
+                            .get(&address)
+                            .and_then(|account| account.info.code.as_ref())
+                            .and_then(|code| code.eip7702_address())
                     {
-                        gas_only_accounts.insert(address);
+                        observed_accounts.entry(delegate).or_default();
                     }
                 }
             }
@@ -348,58 +395,6 @@ impl<CTX: ContextTr<Journal: JournalExt>> Inspector<CTX> for PrestateInspector {
     }
 }
 
-/// Normalize Go's case-insensitive boolean fields before Alloy constructs the actual tracer.
-fn normalize_prestate_config(config: &mut GethDebugTracerConfig) -> Result<(), EthApiError> {
-    let object = match &mut config.0 {
-        serde_json::Value::Object(object) => object,
-        serde_json::Value::Null => return Ok(()),
-        value => {
-            let kind = match value {
-                serde_json::Value::Bool(_) => "bool",
-                serde_json::Value::Number(_) => "number",
-                serde_json::Value::String(_) => "string",
-                _ => "array",
-            };
-            return Err(EthApiError::other(ErrorObjectOwned::owned(
-                CALL_EXECUTION_FAILED_CODE,
-                format!("json: cannot unmarshal {kind} into Go value of type native.PrestateTracerConfig"),
-                None::<()>,
-            )))
-        }
-    };
-    let mut normalized = serde_json::Map::new();
-    for (key, value) in std::mem::take(object) {
-        let Some(field) = ["includeEmpty", "diffMode", "disableCode", "disableStorage"]
-            .into_iter()
-            .find(|field| key.eq_ignore_ascii_case(field))
-        else {
-            normalized.insert(key, value);
-            continue
-        };
-        match value {
-            serde_json::Value::Bool(_) => {
-                normalized.insert(field.to_owned(), value);
-            }
-            serde_json::Value::Null => {}
-            value => {
-                let kind = match value {
-                    serde_json::Value::String(_) => "string",
-                    serde_json::Value::Number(_) => "number",
-                    serde_json::Value::Array(_) => "array",
-                    _ => "object",
-                };
-                return Err(EthApiError::other(ErrorObjectOwned::owned(
-                    CALL_EXECUTION_FAILED_CODE,
-                    format!("json: cannot unmarshal {kind} into Go struct field PrestateTracerConfig.{field} of type bool"),
-                    None::<()>,
-                )))
-            }
-        }
-    }
-    *object = normalized;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -408,7 +403,7 @@ mod tests {
     use revm::{
         context::TxEnv,
         database::{CacheDB, EmptyDB},
-        state::{Account, AccountInfo, EvmStorageSlot},
+        state::AccountInfo,
     };
     use serde_json::json;
 
@@ -458,13 +453,11 @@ mod tests {
             existing,
             AccountInfo { balance: U256::from(7), ..Default::default() },
         );
-        let mut changed =
-            Account::from(AccountInfo { balance: U256::from(1), ..Default::default() });
-        changed.storage.insert(
-            U256::ZERO,
-            EvmStorageSlot::new_changed(U256::ZERO, U256::from(9), Default::default()),
-        );
-        let state = [(empty, changed), (existing, Account::default())].into_iter().collect();
+        let reads = NativeReads {
+            accounts: [(empty, [U256::ZERO].into()), (existing, Default::default())]
+                .into_iter()
+                .collect(),
+        };
         for storage_enabled in [false, true] {
             let mut trace =
                 GethTrace::PreStateTracer(PreStateFrame::Default(PreStateMode::default()));
@@ -473,10 +466,10 @@ mod tests {
                 code_enabled: true,
                 storage_enabled,
                 observed_accounts: Default::default(),
-                gas_only_accounts: Default::default(),
+                prague: false,
                 pending_access: None,
             }
-            .apply(&mut trace, &state, &db, &TxEnv::default(), Address::ZERO)
+            .apply(&mut trace, &reads, &db, &TxEnv::default(), Address::ZERO)
             .unwrap();
             let value = serde_json::to_value(&trace).unwrap();
             let account = &value[format!("{empty:#x}")];
@@ -490,16 +483,16 @@ mod tests {
             } else {
                 assert!(account.get("storage").is_none());
             }
-            // Existing output must be preserved when filling missing accounts.
+            // Rebuilding from the same observations must produce the same original state.
             PrestateInspector::Prestate {
                 include_empty: true,
                 code_enabled: true,
                 storage_enabled,
                 observed_accounts: Default::default(),
-                gas_only_accounts: Default::default(),
+                prague: false,
                 pending_access: None,
             }
-            .apply(&mut trace, &state, &db, &TxEnv::default(), Address::ZERO)
+            .apply(&mut trace, &reads, &db, &TxEnv::default(), Address::ZERO)
             .unwrap();
             assert_eq!(serde_json::to_value(trace).unwrap(), value);
         }

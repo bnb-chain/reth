@@ -1,0 +1,1126 @@
+[
+  {
+    "name": "stop/include",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x00"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true}"
+  },
+  {
+    "name": "stop/omit",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x00"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{}"
+  },
+  {
+    "name": "stop/no_code",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x00"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true,\"disableCode\":true}"
+  },
+  {
+    "name": "stop/no_storage",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x00"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true,\"disableStorage\":true}"
+  },
+  {
+    "name": "call_oog/include",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x60006000600060006001604461fffff15000"
+      }
+    },
+    "gas": 40000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true}"
+  },
+  {
+    "name": "call_oog/omit",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x60006000600060006001604461fffff15000"
+      }
+    },
+    "gas": 40000,
+    "input": "0x",
+    "config": "{}"
+  },
+  {
+    "name": "call_oog/no_code",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x60006000600060006001604461fffff15000"
+      }
+    },
+    "gas": 40000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true,\"disableCode\":true}"
+  },
+  {
+    "name": "call_oog/no_storage",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x60006000600060006001604461fffff15000"
+      }
+    },
+    "gas": 40000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true,\"disableStorage\":true}"
+  },
+  {
+    "name": "call_insufficient_balance/include",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x60006000600060006001604461fffff15000"
+      }
+    },
+    "gas": 100000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true}"
+  },
+  {
+    "name": "call_insufficient_balance/omit",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x60006000600060006001604461fffff15000"
+      }
+    },
+    "gas": 100000,
+    "input": "0x",
+    "config": "{}"
+  },
+  {
+    "name": "call_insufficient_balance/no_code",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x60006000600060006001604461fffff15000"
+      }
+    },
+    "gas": 100000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true,\"disableCode\":true}"
+  },
+  {
+    "name": "call_insufficient_balance/no_storage",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x60006000600060006001604461fffff15000"
+      }
+    },
+    "gas": 100000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true,\"disableStorage\":true}"
+  },
+  {
+    "name": "reverted_call_before_False_after_False/include",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x600060006000600060006043614a38f15000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x0",
+        "code": "0x60006000600060006001604461fffff15000"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true}"
+  },
+  {
+    "name": "reverted_call_before_False_after_False/omit",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x600060006000600060006043614a38f15000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x0",
+        "code": "0x60006000600060006001604461fffff15000"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{}"
+  },
+  {
+    "name": "reverted_call_before_False_after_False/no_code",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x600060006000600060006043614a38f15000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x0",
+        "code": "0x60006000600060006001604461fffff15000"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true,\"disableCode\":true}"
+  },
+  {
+    "name": "reverted_call_before_False_after_False/no_storage",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x600060006000600060006043614a38f15000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x0",
+        "code": "0x60006000600060006001604461fffff15000"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true,\"disableStorage\":true}"
+  },
+  {
+    "name": "reverted_call_before_True_after_False/include",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x600060006000600060006043614a38f15000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x0",
+        "code": "0x6044315060006000600060006001604461fffff15000"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true}"
+  },
+  {
+    "name": "reverted_call_before_True_after_False/omit",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x600060006000600060006043614a38f15000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x0",
+        "code": "0x6044315060006000600060006001604461fffff15000"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{}"
+  },
+  {
+    "name": "reverted_call_before_True_after_False/no_code",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x600060006000600060006043614a38f15000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x0",
+        "code": "0x6044315060006000600060006001604461fffff15000"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true,\"disableCode\":true}"
+  },
+  {
+    "name": "reverted_call_before_True_after_False/no_storage",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x600060006000600060006043614a38f15000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x0",
+        "code": "0x6044315060006000600060006001604461fffff15000"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true,\"disableStorage\":true}"
+  },
+  {
+    "name": "reverted_call_before_False_after_True/include",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x600060006000600060006043614a38f1506044315000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x0",
+        "code": "0x60006000600060006001604461fffff15000"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true}"
+  },
+  {
+    "name": "reverted_call_before_False_after_True/omit",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x600060006000600060006043614a38f1506044315000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x0",
+        "code": "0x60006000600060006001604461fffff15000"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{}"
+  },
+  {
+    "name": "reverted_call_before_False_after_True/no_code",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x600060006000600060006043614a38f1506044315000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x0",
+        "code": "0x60006000600060006001604461fffff15000"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true,\"disableCode\":true}"
+  },
+  {
+    "name": "reverted_call_before_False_after_True/no_storage",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x600060006000600060006043614a38f1506044315000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x0",
+        "code": "0x60006000600060006001604461fffff15000"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true,\"disableStorage\":true}"
+  },
+  {
+    "name": "reverted_call_before_True_after_True/include",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x600060006000600060006043614a38f1506044315000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x0",
+        "code": "0x6044315060006000600060006001604461fffff15000"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true}"
+  },
+  {
+    "name": "reverted_call_before_True_after_True/omit",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x600060006000600060006043614a38f1506044315000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x0",
+        "code": "0x6044315060006000600060006001604461fffff15000"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{}"
+  },
+  {
+    "name": "reverted_call_before_True_after_True/no_code",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x600060006000600060006043614a38f1506044315000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x0",
+        "code": "0x6044315060006000600060006001604461fffff15000"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true,\"disableCode\":true}"
+  },
+  {
+    "name": "reverted_call_before_True_after_True/no_storage",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x600060006000600060006043614a38f1506044315000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x0",
+        "code": "0x6044315060006000600060006001604461fffff15000"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true,\"disableStorage\":true}"
+  },
+  {
+    "name": "delegation_after_oog/include",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x600060006000600060006043614a38f15060006000600060006000604561fffff15000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x0",
+        "code": "0x60006000600060006001604461fffff15000"
+      },
+      "0x0000000000000000000000000000000000000045": {
+        "nonce": 1,
+        "code": "0xef01000000000000000000000000000000000000000044"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true}"
+  },
+  {
+    "name": "delegation_after_oog/omit",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x600060006000600060006043614a38f15060006000600060006000604561fffff15000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x0",
+        "code": "0x60006000600060006001604461fffff15000"
+      },
+      "0x0000000000000000000000000000000000000045": {
+        "nonce": 1,
+        "code": "0xef01000000000000000000000000000000000000000044"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{}"
+  },
+  {
+    "name": "delegation_after_oog/no_code",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x600060006000600060006043614a38f15060006000600060006000604561fffff15000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x0",
+        "code": "0x60006000600060006001604461fffff15000"
+      },
+      "0x0000000000000000000000000000000000000045": {
+        "nonce": 1,
+        "code": "0xef01000000000000000000000000000000000000000044"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true,\"disableCode\":true}"
+  },
+  {
+    "name": "delegation_after_oog/no_storage",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x600060006000600060006043614a38f15060006000600060006000604561fffff15000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x0",
+        "code": "0x60006000600060006001604461fffff15000"
+      },
+      "0x0000000000000000000000000000000000000045": {
+        "nonce": 1,
+        "code": "0xef01000000000000000000000000000000000000000044"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true,\"disableStorage\":true}"
+  },
+  {
+    "name": "create2_padding_100000/include",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x60006000621000006000f55000"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true}"
+  },
+  {
+    "name": "create2_padding_100000/omit",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x60006000621000006000f55000"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{}"
+  },
+  {
+    "name": "create2_padding_100000/no_code",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x60006000621000006000f55000"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true,\"disableCode\":true}"
+  },
+  {
+    "name": "create2_padding_100000/no_storage",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x60006000621000006000f55000"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true,\"disableStorage\":true}"
+  },
+  {
+    "name": "static_create2_padding_100000/include",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x60006000600060006043620f4240fa5000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x0",
+        "code": "0x60006000621000006000f55000"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true}"
+  },
+  {
+    "name": "static_create2_padding_100000/omit",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x60006000600060006043620f4240fa5000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x0",
+        "code": "0x60006000621000006000f55000"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{}"
+  },
+  {
+    "name": "static_create2_padding_100000/no_code",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x60006000600060006043620f4240fa5000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x0",
+        "code": "0x60006000621000006000f55000"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true,\"disableCode\":true}"
+  },
+  {
+    "name": "static_create2_padding_100000/no_storage",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x60006000600060006043620f4240fa5000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x0",
+        "code": "0x60006000621000006000f55000"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true,\"disableStorage\":true}"
+  },
+  {
+    "name": "create2_padding_100001/include",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x60006000621000016000f55000"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true}"
+  },
+  {
+    "name": "create2_padding_100001/omit",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x60006000621000016000f55000"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{}"
+  },
+  {
+    "name": "create2_padding_100001/no_code",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x60006000621000016000f55000"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true,\"disableCode\":true}"
+  },
+  {
+    "name": "create2_padding_100001/no_storage",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x60006000621000016000f55000"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true,\"disableStorage\":true}"
+  },
+  {
+    "name": "static_create2_padding_100001/include",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x60006000600060006043620f4240fa5000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x0",
+        "code": "0x60006000621000016000f55000"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true}"
+  },
+  {
+    "name": "static_create2_padding_100001/omit",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x60006000600060006043620f4240fa5000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x0",
+        "code": "0x60006000621000016000f55000"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{}"
+  },
+  {
+    "name": "static_create2_padding_100001/no_code",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x60006000600060006043620f4240fa5000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x0",
+        "code": "0x60006000621000016000f55000"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true,\"disableCode\":true}"
+  },
+  {
+    "name": "static_create2_padding_100001/no_storage",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x60006000600060006043620f4240fa5000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x0",
+        "code": "0x60006000621000016000f55000"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true,\"disableStorage\":true}"
+  },
+  {
+    "name": "create_insufficient_balance/include",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x600060006001f05000"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true}"
+  },
+  {
+    "name": "create_insufficient_balance/omit",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x600060006001f05000"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{}"
+  },
+  {
+    "name": "create_insufficient_balance/no_code",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x600060006001f05000"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true,\"disableCode\":true}"
+  },
+  {
+    "name": "create_insufficient_balance/no_storage",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x600060006001f05000"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true,\"disableStorage\":true}"
+  },
+  {
+    "name": "static_create/include",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x60006000600060006043620f4240fa5000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x0",
+        "code": "0x600060006001f05000"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true}"
+  },
+  {
+    "name": "static_create/omit",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x60006000600060006043620f4240fa5000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x0",
+        "code": "0x600060006001f05000"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{}"
+  },
+  {
+    "name": "static_create/no_code",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x60006000600060006043620f4240fa5000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x0",
+        "code": "0x600060006001f05000"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true,\"disableCode\":true}"
+  },
+  {
+    "name": "static_create/no_storage",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x60006000600060006043620f4240fa5000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x0",
+        "code": "0x600060006001f05000"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true,\"disableStorage\":true}"
+  },
+  {
+    "name": "storage_revert/include",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x60006000600060006000604361fffff15000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x0",
+        "code": "0x600054506001600055600160005560006000fd",
+        "storage": {
+          "0x0000000000000000000000000000000000000000000000000000000000000000": "0x0000000000000000000000000000000000000000000000000000000000000007"
+        }
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true}"
+  },
+  {
+    "name": "storage_revert/omit",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x60006000600060006000604361fffff15000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x0",
+        "code": "0x600054506001600055600160005560006000fd",
+        "storage": {
+          "0x0000000000000000000000000000000000000000000000000000000000000000": "0x0000000000000000000000000000000000000000000000000000000000000007"
+        }
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{}"
+  },
+  {
+    "name": "storage_revert/no_code",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x60006000600060006000604361fffff15000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x0",
+        "code": "0x600054506001600055600160005560006000fd",
+        "storage": {
+          "0x0000000000000000000000000000000000000000000000000000000000000000": "0x0000000000000000000000000000000000000000000000000000000000000007"
+        }
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true,\"disableCode\":true}"
+  },
+  {
+    "name": "storage_revert/no_storage",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x60006000600060006000604361fffff15000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x0",
+        "code": "0x600054506001600055600160005560006000fd",
+        "storage": {
+          "0x0000000000000000000000000000000000000000000000000000000000000000": "0x0000000000000000000000000000000000000000000000000000000000000007"
+        }
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true,\"disableStorage\":true}"
+  },
+  {
+    "name": "selfdestruct_oog/include",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x600060006000600060006043614a38f15000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x1",
+        "code": "0x6044ff"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true}"
+  },
+  {
+    "name": "selfdestruct_oog/omit",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x600060006000600060006043614a38f15000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x1",
+        "code": "0x6044ff"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{}"
+  },
+  {
+    "name": "selfdestruct_oog/no_code",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x600060006000600060006043614a38f15000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x1",
+        "code": "0x6044ff"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true,\"disableCode\":true}"
+  },
+  {
+    "name": "selfdestruct_oog/no_storage",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x600060006000600060006043614a38f15000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x1",
+        "code": "0x6044ff"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true,\"disableStorage\":true}"
+  },
+  {
+    "name": "selfdestruct_success/include",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x60006000600060006000604361fffff15000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x1",
+        "code": "0x6044ff"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true}"
+  },
+  {
+    "name": "selfdestruct_success/omit",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x60006000600060006000604361fffff15000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x1",
+        "code": "0x6044ff"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{}"
+  },
+  {
+    "name": "selfdestruct_success/no_code",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x60006000600060006000604361fffff15000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x1",
+        "code": "0x6044ff"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true,\"disableCode\":true}"
+  },
+  {
+    "name": "selfdestruct_success/no_storage",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x60006000600060006000604361fffff15000"
+      },
+      "0x0000000000000000000000000000000000000043": {
+        "nonce": 1,
+        "balance": "0x1",
+        "code": "0x6044ff"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true,\"disableStorage\":true}"
+  },
+  {
+    "name": "repeated_alias",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x00"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":false,\"IncludeEmpty\":false,\"includeEmpty\":true}"
+  },
+  {
+    "name": "repeated_alias_null",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x00"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true,\"IncludeEmpty\":false,\"includeEmpty\":null}"
+  },
+  {
+    "name": "invalid_then_valid",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x00"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":\"bad\",\"IncludeEmpty\":true}"
+  },
+  {
+    "name": "valid_then_invalid",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x00"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true,\"IncludeEmpty\":1}"
+  },
+  {
+    "name": "conflict",
+    "accounts": {
+      "0x0000000000000000000000000000000000000042": {
+        "nonce": 1,
+        "code": "0x00"
+      }
+    },
+    "gas": 500000,
+    "input": "0x",
+    "config": "{\"includeEmpty\":true,\"diffMode\":true}"
+  }
+]
