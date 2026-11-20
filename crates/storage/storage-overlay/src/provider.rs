@@ -415,19 +415,63 @@ where
             + DBProvider
             + BlockNumReader,
     {
-        if let Some(overlay) = self.execution_overlay.get() {
-            return Ok((&overlay.overlay, overlay.historical_fallback.as_ref()))
+        self.initialize_execution_overlay(false)?;
+        let overlay = self
+            .execution_overlay
+            .get()
+            .ok_or_else(|| ProviderError::other(OverlayReadError::SnapshotMismatch))?;
+        Ok((&overlay.overlay, overlay.historical_fallback.as_ref()))
+    }
+
+    /// Pins an already completed overlay for this provider's database snapshot.
+    /// Returns false on a cache miss or Computing entry without starting or waiting for work.
+    /// The caller may then try a canonical ancestor; snapshot and pruning errors are propagated.
+    pub fn try_ready_execution_overlay(&self) -> ProviderResult<bool>
+    where
+        Provider::Target: StageCheckpointReader
+            + PruneCheckpointReader
+            + ChangeSetReader
+            + StorageChangeSetReader
+            + DBProvider
+            + BlockNumReader,
+    {
+        self.initialize_execution_overlay(true)
+    }
+
+    fn initialize_execution_overlay(&self, ready_only: bool) -> ProviderResult<bool>
+    where
+        Provider::Target: StageCheckpointReader
+            + PruneCheckpointReader
+            + ChangeSetReader
+            + StorageChangeSetReader
+            + DBProvider
+            + BlockNumReader,
+    {
+        if self.execution_overlay.get().is_some() {
+            return Ok(true);
         }
 
         let builder = self.bound_builder()?;
         let (state_trie_tip_block, finish_tip_block) = builder
             .read_frontiers()
             .ok_or_else(|| ProviderError::other(OverlayReadError::SnapshotMismatch))?;
-        let (overlay, fallback_block_number) = builder.execution_overlay_at_frontiers(
-            self.provider(),
-            state_trie_tip_block,
-            finish_tip_block,
-        )?;
+        let (overlay, fallback_block_number) = if ready_only {
+            let Some(ready) = builder.ready_execution_overlay_at_frontiers(
+                self.provider(),
+                state_trie_tip_block,
+                finish_tip_block,
+            )?
+            else {
+                return Ok(false);
+            };
+            ready
+        } else {
+            builder.execution_overlay_at_frontiers(
+                self.provider(),
+                state_trie_tip_block,
+                finish_tip_block,
+            )?
+        };
         let historical_fallback = fallback_block_number
             .map(|block_number| {
                 let account_history_block_number = self
@@ -457,8 +501,7 @@ where
             .transpose()?;
         let overlay = CachedExecutionOverlay { overlay, historical_fallback };
         let _ = self.execution_overlay.set(overlay);
-        let overlay = self.execution_overlay.get().expect("execution overlay was just initialized");
-        Ok((&overlay.overlay, overlay.historical_fallback.as_ref()))
+        Ok(true)
     }
 
     fn bound_builder(&self) -> ProviderResult<&OverlayBuilder<N>>
@@ -1497,6 +1540,7 @@ mod tests {
         );
         let provider = state_provider_factory.database_provider_ro().unwrap();
 
+        assert!(provider.try_ready_execution_overlay().unwrap());
         assert_eq!(provider.basic_account(&address).unwrap(), Some(account));
         assert_eq!(provider.storage(address, storage_key).unwrap(), Some(storage));
         // The same view remains valid for execution but cannot invent a missing Finish bridge.
@@ -1626,6 +1670,7 @@ mod tests {
                         .overlay_builder(blocks[finish as usize].recovered_block().hash()),
                 );
                 let provider = state_provider_factory.database_provider_ro().unwrap();
+                assert!(provider.try_ready_execution_overlay().unwrap());
                 assert_eq!(
                     provider.basic_account(&address).unwrap().unwrap().balance,
                     U256::from(expected)

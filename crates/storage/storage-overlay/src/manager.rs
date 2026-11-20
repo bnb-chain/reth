@@ -66,7 +66,7 @@ impl<N: NodePrimitives> Default for OverlayManager<N> {
             block_source: None,
             read_context: None,
             state_trie_overlays: Default::default(),
-            execution_overlays: Default::default(),
+            execution_overlays: OverlayCache::retaining_ready(),
             changeset_cache: Default::default(),
             preserved_sparse_trie: Default::default(),
             #[cfg(feature = "rayon")]
@@ -104,7 +104,7 @@ impl<N: NodePrimitives> OverlayManager<N> {
             block_source: None,
             read_context: None,
             state_trie_overlays: Default::default(),
-            execution_overlays: Default::default(),
+            execution_overlays: OverlayCache::retaining_ready(),
             changeset_cache: ChangesetCache::new_with_diagnostic_origin(origin),
             preserved_sparse_trie: Default::default(),
             worker_pool: Some(worker_pool),
@@ -478,6 +478,27 @@ impl<N: NodePrimitives> OverlayManager<N> {
         .map(drop)
     }
 
+    /// Pins an execution overlay without waiting for or starting computation.
+    pub(crate) fn ready_execution_overlay(
+        &self,
+        tip_hash: B256,
+        anchor_hash: B256,
+    ) -> Option<Arc<ExecutionOverlay>> {
+        let key = OverlayCacheKey { anchor_hash, tip_hash };
+        let entry = self.execution_overlays.entries.get(&key).map(|entry| entry.value().clone());
+        let (result, ready) = match entry {
+            Some(OverlayCacheEntry::Ready(overlay)) => ("ready", Some(overlay)),
+            Some(OverlayCacheEntry::Computing(_)) => ("computing", None),
+            None => ("missing", None),
+        };
+        reth_metrics::metrics::counter!("rpc.account_ready.cache_total", "result" => result)
+            .increment(1);
+        if ready.is_some() {
+            self.execution_overlays.touch_ready(key);
+        }
+        ready
+    }
+
     fn execution_overlay_for_parent_inner(
         &self,
         parent_state: &BlockState<N>,
@@ -537,7 +558,10 @@ impl<N: NodePrimitives> OverlayManager<N> {
             metrics.record_cache_reuse();
             span.record("cache_reused", true);
             return match entry {
-                OverlayCacheEntry::Ready(input) => Ok(Some(input)),
+                OverlayCacheEntry::Ready(input) => {
+                    cache.touch_ready(key);
+                    Ok(Some(input))
+                }
                 OverlayCacheEntry::Computing(_) if cache_config.precompute => Ok(None),
                 OverlayCacheEntry::Computing(waiter) => Ok(Some(waiter.wait(metrics))),
             }
@@ -565,13 +589,15 @@ impl<N: NodePrimitives> OverlayManager<N> {
         }
 
         let parent_hash = parent_state.block_ref().recovered_block().parent_hash();
-        cache.retain(|sibling_key, entry| {
-            sibling_key.tip_hash == tip_hash ||
-                !matches!(entry, OverlayCacheEntry::Ready(_)) ||
-                self.blocks
-                    .get(&sibling_key.tip_hash)
-                    .is_none_or(|block| block.recovered_block().parent_hash() != parent_hash)
-        });
+        if cache.ready_order.is_none() {
+            cache.retain(|sibling_key, entry| {
+                sibling_key.tip_hash == tip_hash ||
+                    !matches!(entry, OverlayCacheEntry::Ready(_)) ||
+                    self.blocks
+                        .get(&sibling_key.tip_hash)
+                        .is_none_or(|block| block.recovered_block().parent_hash() != parent_hash)
+            });
+        }
 
         let action = match cache.entries.entry(key) {
             Entry::Occupied(entry) => {
@@ -594,12 +620,19 @@ impl<N: NodePrimitives> OverlayManager<N> {
         };
 
         match action {
-            CacheAction::Ready(input) => Ok(Some(input)),
+            CacheAction::Ready(input) => {
+                cache.touch_ready(key);
+                Ok(Some(input))
+            }
             CacheAction::Wait(waiter) => Ok(Some(waiter.wait(metrics))),
             CacheAction::Compute(waiter) => {
                 let started = std::time::Instant::now();
-                let compute_input =
-                    ComputeOverlayInput::from_blocks(blocks, anchor_hash, cache, true);
+                let compute_input = ComputeOverlayInput::from_blocks(
+                    blocks,
+                    anchor_hash,
+                    cache,
+                    cache.ready_order.is_none(),
+                );
                 span.record(
                     "parent_overlay_reused",
                     matches!(&compute_input, ComputeOverlayInput::ExtendCached { .. }),
@@ -620,6 +653,7 @@ impl<N: NodePrimitives> OverlayManager<N> {
                     }
                 }
 
+                cache.touch_ready(key);
                 Ok(Some(input))
             }
         }
@@ -797,21 +831,56 @@ struct OverlayCacheKey {
 
 struct OverlayCache<T> {
     entries: Arc<DashMap<OverlayCacheKey, OverlayCacheEntry<T>>>,
+    ready_order: Option<Arc<Mutex<Vec<OverlayCacheKey>>>>,
 }
 
 impl<T> Default for OverlayCache<T> {
     fn default() -> Self {
-        Self { entries: Default::default() }
+        Self { entries: Default::default(), ready_order: None }
     }
 }
 
 impl<T> Clone for OverlayCache<T> {
     fn clone(&self) -> Self {
-        Self { entries: Arc::clone(&self.entries) }
+        Self { entries: Arc::clone(&self.entries), ready_order: self.ready_order.clone() }
     }
 }
 
 impl<T> OverlayCache<T> {
+    // Execution overlays retain four recently used Ready entries. Extending a retained parent
+    // copies it instead of consuming it, so concurrent RPC readers can still pin the old state.
+    // This bounds cache ownership, not live Arcs held by readers or computations. Trie overlays
+    // keep their existing consuming policy to avoid copying trie data on the execution path.
+    fn retaining_ready() -> Self {
+        Self { entries: Default::default(), ready_order: Some(Default::default()) }
+    }
+
+    fn touch_ready(&self, key: OverlayCacheKey) {
+        const READY_CAPACITY: usize = 4;
+        let Some(order) = &self.ready_order else { return };
+        // Never acquire this mutex while holding a DashMap guard.
+        let mut order = order.lock();
+        order.retain(|existing| *existing != key && self.entries.contains_key(existing));
+        if matches!(self.entries.get(&key).as_deref(), Some(OverlayCacheEntry::Ready(_))) {
+            order.push(key);
+        }
+        let mut removed = Vec::new();
+        while order.len() > READY_CAPACITY {
+            let evicted = order.remove(0);
+            if let Some(entry) = self
+                .entries
+                .remove_if(&evicted, |_, entry| matches!(entry, OverlayCacheEntry::Ready(_)))
+            {
+                removed.push(entry);
+                reth_metrics::metrics::counter!("execution_overlay.ready_evictions_total")
+                    .increment(1);
+            }
+        }
+        // Dropping the last Arc may free large maps; never make cache readers wait on that work.
+        drop(order);
+        drop(removed);
+    }
+
     fn len(&self) -> usize {
         self.entries.len()
     }
@@ -822,10 +891,14 @@ impl<T> OverlayCache<T> {
 
     /// Returns a ready entry without removing it from the cache.
     fn ready(&self, key: &OverlayCacheKey) -> Option<Arc<T>> {
-        self.entries.get(key).and_then(|entry| match entry.value() {
+        let ready = self.entries.get(key).and_then(|entry| match entry.value() {
             OverlayCacheEntry::Ready(input) => Some(Arc::clone(input)),
             OverlayCacheEntry::Computing(_) => None,
-        })
+        });
+        if ready.is_some() {
+            self.touch_ready(*key);
+        }
+        ready
     }
 
     /// Removes and returns a ready entry.
@@ -1051,7 +1124,10 @@ fn compute_execution_overlay_inner<N: NodePrimitives>(
     let overlay = match input {
         ComputeOverlayInput::ExtendCached { blocks, parent_input } => {
             let mut parent_input = parent_input;
+            let copy_started = Instant::now();
             let overlay = Arc::make_mut(&mut parent_input);
+            reth_metrics::metrics::histogram!("execution_overlay.parent_copy_seconds")
+                .record(copy_started.elapsed().as_secs_f64());
             for block in blocks.iter().rev() {
                 overlay.extend_block(block);
             }
@@ -1083,6 +1159,9 @@ fn compute_execution_overlay_inner<N: NodePrimitives>(
 
 #[cfg(test)]
 mod root_tests;
+
+#[cfg(all(test, feature = "rayon"))]
+mod nonce_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1293,7 +1372,7 @@ mod tests {
     }
 
     #[test]
-    fn computing_sibling_evicts_ready_cached_overlays() {
+    fn computing_sibling_only_evicts_ready_trie_overlays() {
         let manager = OverlayManager::default();
         let mut builder = TestBlockBuilder::eth();
         let anchor_hash = B256::random();
@@ -1320,7 +1399,7 @@ mod tests {
         manager.execution_overlay_for_parent(sibling_hash, anchor_hash).unwrap();
 
         assert!(!manager.state_trie_overlays.entries.contains_key(&first_key));
-        assert!(!manager.execution_overlays.entries.contains_key(&first_key));
+        assert!(manager.execution_overlays.entries.contains_key(&first_key));
     }
 
     #[test]
@@ -1345,7 +1424,7 @@ mod tests {
 
         assert!(!manager.state_trie_overlays.entries.contains_key(&parent_key));
         assert!(manager.state_trie_overlays.entries.contains_key(&child_key));
-        assert!(!manager.execution_overlays.entries.contains_key(&parent_key));
+        assert!(manager.execution_overlays.entries.contains_key(&parent_key));
         assert!(manager.execution_overlays.entries.contains_key(&child_key));
     }
 
@@ -1380,7 +1459,7 @@ mod tests {
             manager.execution_overlay_for_parent(child_hash, anchor_hash).unwrap();
 
         assert!(!manager.state_trie_overlays.entries.contains_key(&parent_key));
-        assert!(!manager.execution_overlays.entries.contains_key(&parent_key));
+        assert!(manager.execution_overlays.entries.contains_key(&parent_key));
         assert_eq!(state_parent.state.accounts.len(), 2);
         assert_eq!(execution_parent.accounts().len(), 2);
         assert_eq!(child_state.accounts.len(), 3);
@@ -1486,7 +1565,7 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "execution overlay was not precomputed");
             thread::sleep(Duration::from_millis(10));
         }
-        assert!(!manager.execution_overlays.entries.contains_key(&OverlayCacheKey {
+        assert!(manager.execution_overlays.entries.contains_key(&OverlayCacheKey {
             anchor_hash,
             tip_hash: blocks[0].recovered_block().hash(),
         }));
@@ -1790,7 +1869,7 @@ mod tests {
             assert_eq!(held_execution.accounts()[&address].as_ref().unwrap().nonce, 1);
             assert_eq!(held_execution.storage()[&address][&U256::ZERO], U256::from(1));
             assert_eq!(manager.state_trie_overlays.entries.contains_key(&key), !write_to_cache);
-            assert_eq!(manager.execution_overlays.entries.contains_key(&key), !write_to_cache);
+            assert!(manager.execution_overlays.entries.contains_key(&key));
         }
     }
 
@@ -1858,5 +1937,32 @@ mod tests {
         assert_eq!(missing.len(), blocks.len());
         assert!(cache.entries.contains_key(&wrong_anchor));
         assert!(cache.entries.contains_key(&wrong_branch));
+    }
+
+    #[test]
+    fn retained_ready_cache_is_lru_bounded_and_does_not_evict_computing() {
+        let cache = OverlayCache::retaining_ready();
+        let keys = (0..6)
+            .map(|i| OverlayCacheKey { anchor_hash: B256::ZERO, tip_hash: B256::with_last_byte(i) })
+            .collect::<Vec<_>>();
+        for key in &keys[..4] {
+            cache.entries.insert(*key, OverlayCacheEntry::Ready(Arc::new(key.tip_hash)));
+            cache.touch_ready(*key);
+        }
+        let pinned = cache.ready(&keys[0]).unwrap();
+        cache.entries.insert(keys[5], OverlayCacheEntry::Computing(Arc::new(OverlayWaiter::new())));
+        cache.entries.insert(keys[4], OverlayCacheEntry::Ready(Arc::new(keys[4].tip_hash)));
+        cache.touch_ready(keys[4]);
+        assert!(cache.ready(&keys[1]).is_none());
+        assert_eq!(cache.ready_order.as_ref().unwrap().lock().len(), 4);
+        assert_eq!(cache.entries.len(), 5);
+        assert!(matches!(
+            cache.entries.get(&keys[5]).unwrap().value(),
+            OverlayCacheEntry::Computing(_)
+        ));
+        cache.retain(|_, _| false);
+        assert_eq!(*pinned, keys[0].tip_hash);
+        cache.touch_ready(keys[0]);
+        assert!(cache.ready_order.as_ref().unwrap().lock().is_empty());
     }
 }

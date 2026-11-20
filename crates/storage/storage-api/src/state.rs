@@ -156,6 +156,14 @@ pub trait StateProviderFactory: BlockIdReader {
     /// Storage provider for latest block.
     fn latest(&self) -> ProviderResult<StateProviderBox>;
 
+    /// State for latency-sensitive account RPCs that explicitly permit a one-block-old view.
+    /// Implementations may return the captured canonical head's ready parent if the head overlay
+    /// is unavailable. Execution, transaction validation and explicit block queries must use exact
+    /// state methods instead. Providers without ready overlays retain exact latest semantics.
+    fn latest_for_account_rpc(&self) -> ProviderResult<StateProviderBox> {
+        self.latest()
+    }
+
     /// Returns a state provider after applying `block` to `parent_hash`.
     #[cfg(feature = "chain-state")]
     fn state_with_block_appended(
