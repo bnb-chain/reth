@@ -1,6 +1,7 @@
 //! Preserve empty prestate accounts while the transaction's original database is available.
 
-use alloy_primitives::{map::AddressHashSet, B256};
+use alloy_consensus::TxType;
+use alloy_primitives::{map::AddressHashSet, Address, B256};
 use alloy_rpc_types_trace::geth::{
     AccountState, GethDebugBuiltInTracerType, GethDebugTracerConfig, GethDebugTracerType,
     GethDebugTracingOptions, GethTrace, PreStateFrame,
@@ -8,10 +9,15 @@ use alloy_rpc_types_trace::geth::{
 use jsonrpsee::types::{error::CALL_EXECUTION_FAILED_CODE, ErrorObjectOwned};
 use reth_rpc_eth_types::EthApiError;
 use revm::{
+    bytecode::opcode,
     context::JournalTr,
-    context_interface::ContextTr,
+    context_interface::{transaction::AuthorizationTr, Cfg, ContextTr, Transaction},
     inspector::JournalExt,
-    interpreter::{CreateInputs, CreateOutcome},
+    interpreter::{
+        interpreter_types::{Jumps, RuntimeFlag},
+        CreateInputs, CreateOutcome, Interpreter,
+    },
+    primitives::hardfork::SpecId,
     state::EvmState,
     DatabaseRef, Inspector,
 };
@@ -23,7 +29,9 @@ use std::collections::btree_map::Entry;
 pub(super) enum PrestateInspector {
     #[default]
     None,
-    IncludeEmpty {
+    Prestate {
+        include_empty: bool,
+        code_enabled: bool,
         storage_enabled: bool,
         creation_candidates: AddressHashSet,
     },
@@ -31,59 +39,64 @@ pub(super) enum PrestateInspector {
 }
 
 impl PrestateInspector {
-    pub(super) fn new(opts: &GethDebugTracingOptions) -> Result<Self, EthApiError> {
+    pub(super) fn new(opts: &mut GethDebugTracingOptions) -> Result<Self, EthApiError> {
         match &opts.tracer {
-            Some(tracer) => Self::from_config(tracer, &opts.tracer_config),
+            Some(tracer) => Self::from_config(tracer, &mut opts.tracer_config),
             None => Ok(Self::None),
         }
     }
 
     fn from_config(
         tracer: &GethDebugTracerType,
-        config: &GethDebugTracerConfig,
+        config: &mut GethDebugTracerConfig,
     ) -> Result<Self, EthApiError> {
         match tracer {
             GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::PreStateTracer) => {
+                normalize_prestate_config(config)?;
                 let include_empty = config
                     .0
                     .get("includeEmpty")
-                    .map(|value| serde_json::from_value::<Option<bool>>(value.clone()))
-                    .transpose()
-                    .map_err(|err| EthApiError::InvalidParams(err.to_string()))?
-                    .flatten()
+                    .and_then(serde_json::Value::as_bool)
                     .unwrap_or_default();
-                if !include_empty {
-                    return Ok(Self::None)
-                }
                 let config = config
                     .clone()
                     .into_pre_state_config()
                     .map_err(|err| EthApiError::InvalidParams(err.to_string()))?;
-                if config.is_diff_mode() {
+                if config.is_diff_mode() && include_empty {
                     return Err(EthApiError::other(ErrorObjectOwned::owned(
                         CALL_EXECUTION_FAILED_CODE,
                         "cannot use diffMode with includeEmpty",
                         None::<()>,
                     )))
                 }
-                Ok(Self::IncludeEmpty {
+                if config.is_diff_mode() {
+                    return Ok(Self::None)
+                }
+                Ok(Self::Prestate {
+                    include_empty,
+                    code_enabled: config.code_enabled(),
                     storage_enabled: config.storage_enabled(),
                     creation_candidates: Default::default(),
                 })
             }
             GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::MuxTracer) => {
-                let config = config
+                let mut mux = config
                     .clone()
                     .into_mux_config()
                     .map_err(|err| EthApiError::InvalidParams(err.to_string()))?;
-                let plans = config
-                    .0
-                    .into_iter()
-                    .map(|(tracer, config)| {
-                        let plan = Self::from_config(&tracer, &config.unwrap_or_default())?;
-                        Ok((tracer, plan))
-                    })
-                    .collect::<Result<_, EthApiError>>()?;
+                let mut plans = Vec::with_capacity(mux.0.len());
+                for (tracer, options) in &mut mux.0 {
+                    let plan = match options {
+                        Some(options) => Self::from_config(tracer, options)?,
+                        None => Self::from_config(tracer, &mut GethDebugTracerConfig::default())?,
+                    };
+                    plans.push((tracer.clone(), plan));
+                }
+                config.0 = serde_json::to_value(mux)
+                    .map_err(|err| EthApiError::InvalidParams(err.to_string()))?;
+                if plans.iter().all(|(_, plan)| matches!(plan, Self::None)) {
+                    return Ok(Self::None)
+                }
                 Ok(Self::Mux(plans))
             }
             _ => Ok(Self::None),
@@ -96,25 +109,48 @@ impl PrestateInspector {
         trace: &mut GethTrace,
         state: &EvmState,
         db: &DB,
+        tx: &impl Transaction,
+        beneficiary: Address,
     ) -> Result<(), DebugInspectorError<DB::Error>> {
         match (self, trace) {
             (
-                Self::IncludeEmpty { storage_enabled, creation_candidates },
+                Self::Prestate {
+                    include_empty,
+                    code_enabled,
+                    storage_enabled,
+                    creation_candidates,
+                },
                 GethTrace::PreStateTracer(PreStateFrame::Default(pre)),
             ) => {
                 // The inspector omits empty accounts even when includeEmpty was requested.
                 // Read the original database, never the post-execution account balance.
+                creation_candidates.insert(beneficiary);
+                if tx.tx_type() == TxType::Eip7702 as u8 {
+                    creation_candidates
+                        .extend(tx.authorization_list().filter_map(|auth| auth.authority()));
+                }
                 for address in state.keys().copied().chain(creation_candidates.drain()) {
                     if let Entry::Vacant(entry) = pre.0.entry(address) {
                         let original = db
                             .basic_ref(address)
                             .map_err(DebugInspectorError::Database)?
                             .unwrap_or_default();
-                        if original.is_empty() {
+                        if *include_empty || !original.is_empty() {
+                            let code = if *code_enabled && !original.is_empty_code_hash() {
+                                Some(match original.code {
+                                    Some(code) => code.original_bytes(),
+                                    None => db
+                                        .code_by_hash_ref(original.code_hash)
+                                        .map_err(DebugInspectorError::Database)?
+                                        .original_bytes(),
+                                })
+                            } else {
+                                None
+                            };
                             let mut account_state = AccountState::from_account_info(
                                 original.nonce,
                                 original.balance,
-                                None,
+                                code,
                             );
                             if *storage_enabled && let Some(account) = state.get(&address) {
                                 account_state.storage.extend(account.storage.iter().map(
@@ -131,7 +167,7 @@ impl PrestateInspector {
             (Self::Mux(plans), GethTrace::MuxTracer(frame)) => {
                 for (tracer, plan) in plans {
                     if let Some(trace) = frame.0.get_mut(tracer) {
-                        plan.apply(trace, state, db)?;
+                        plan.apply(trace, state, db, tx, beneficiary)?;
                     }
                 }
             }
@@ -140,22 +176,14 @@ impl PrestateInspector {
         Ok(())
     }
 
-    fn record_create<CTX: ContextTr<Journal: JournalExt>>(
-        &mut self,
-        context: &CTX,
-        inputs: &CreateInputs,
-    ) {
+    fn record_address(&mut self, address: Address) {
         match self {
-            Self::IncludeEmpty { creation_candidates, .. } => {
-                // The paired DebugInspector loads the caller before this hook. REVM can reject
-                // the endowment before loading the candidate into the transaction's state.
-                if let Some(caller) = context.journal_ref().evm_state().get(&inputs.caller()) {
-                    creation_candidates.insert(inputs.created_address(caller.info.nonce));
-                }
+            Self::Prestate { creation_candidates, .. } => {
+                creation_candidates.insert(address);
             }
             Self::Mux(plans) => {
                 for (_, plan) in plans {
-                    plan.record_create(context, inputs);
+                    plan.record_address(address);
                 }
             }
             Self::None => {}
@@ -165,9 +193,105 @@ impl PrestateInspector {
 
 impl<CTX: ContextTr<Journal: JournalExt>> Inspector<CTX> for PrestateInspector {
     fn create(&mut self, context: &mut CTX, inputs: &mut CreateInputs) -> Option<CreateOutcome> {
-        self.record_create(context, inputs);
+        if let Some(caller) = context.journal_ref().evm_state().get(&inputs.caller()) {
+            self.record_address(inputs.created_address(caller.info.nonce));
+        }
         None
     }
+
+    fn step(&mut self, interp: &mut Interpreter, context: &mut CTX) {
+        // REVM rejects static creation before invoking create; Go-BSC observes its opcode first.
+        if matches!(self, Self::None) || !interp.runtime_flag.is_static() {
+            return
+        }
+        let op = interp.bytecode.opcode();
+        let stack_len = match op {
+            opcode::CREATE => 3,
+            opcode::CREATE2 if interp.runtime_flag.spec_id().is_enabled_in(SpecId::PETERSBURG) => 4,
+            _ => return,
+        };
+        if interp.stack.len() < stack_len {
+            return
+        }
+        let (Ok(offset), Ok(size)) = (interp.stack.peek(1), interp.stack.peek(2)) else { return };
+        let Ok(size) = usize::try_from(size) else { return };
+        let offset = if size == 0 {
+            0
+        } else {
+            let Ok(offset) = usize::try_from(offset) else { return };
+            offset
+        };
+        let Some(end) = offset.checked_add(size) else { return };
+        let shanghai = interp.runtime_flag.spec_id().is_enabled_in(SpecId::SHANGHAI);
+        if shanghai && size > context.cfg().max_initcode_size() {
+            return
+        }
+        let gas = context.cfg().gas_params();
+        let cost = if op == opcode::CREATE2 { gas.create2_cost(size) } else { gas.create_cost() }
+            .saturating_add(
+                gas.memory_cost(end.div_ceil(32))
+                    .saturating_sub(gas.memory_cost(interp.memory.len().div_ceil(32))),
+            )
+            .saturating_add(if shanghai { gas.initcode_cost(size) } else { 0 });
+        // Go invokes its opcode hook only after stack and dynamic gas checks succeed.
+        if cost > interp.gas.remaining() {
+            return
+        }
+        let caller = interp.input.target_address;
+        if op == opcode::CREATE {
+            if let Some(account) = context.journal_ref().evm_state().get(&caller) {
+                self.record_address(caller.create(account.info.nonce));
+            }
+        } else if let Ok(salt) = interp.stack.peek(3) {
+            // Match Go-BSC's GetMemoryCopyPadded limit without expanding EVM memory.
+            const MEMORY_PADDING_LIMIT: usize = 1024 * 1024;
+            if end.saturating_sub(interp.memory.len()) > MEMORY_PADDING_LIMIT {
+                return
+            }
+            let mut init = vec![0; size];
+            let overlap = size.min(interp.memory.len().saturating_sub(offset));
+            if overlap > 0 {
+                init[..overlap].copy_from_slice(&interp.memory.slice_len(offset, overlap));
+            }
+            self.record_address(caller.create2_from_code(B256::from(salt), init));
+        }
+    }
+}
+
+/// Normalize Go's case-insensitive boolean fields before Alloy constructs the actual tracer.
+fn normalize_prestate_config(config: &mut GethDebugTracerConfig) -> Result<(), EthApiError> {
+    let Some(object) = config.0.as_object_mut() else { return Ok(()) };
+    let mut normalized = serde_json::Map::new();
+    for (key, value) in std::mem::take(object) {
+        let Some(field) = ["includeEmpty", "diffMode", "disableCode", "disableStorage"]
+            .into_iter()
+            .find(|field| key.eq_ignore_ascii_case(field))
+        else {
+            normalized.insert(key, value);
+            continue
+        };
+        match value {
+            serde_json::Value::Bool(_) => {
+                normalized.insert(field.to_owned(), value);
+            }
+            serde_json::Value::Null => {}
+            value => {
+                let kind = match value {
+                    serde_json::Value::String(_) => "string",
+                    serde_json::Value::Number(_) => "number",
+                    serde_json::Value::Array(_) => "array",
+                    _ => "object",
+                };
+                return Err(EthApiError::other(ErrorObjectOwned::owned(
+                    CALL_EXECUTION_FAILED_CODE,
+                    format!("json: cannot unmarshal {kind} into Go struct field PrestateTracerConfig.{field} of type bool"),
+                    None::<()>,
+                )))
+            }
+        }
+    }
+    *object = normalized;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -176,6 +300,7 @@ mod tests {
     use alloy_primitives::{Address, U256};
     use alloy_rpc_types_trace::geth::PreStateMode;
     use revm::{
+        context::TxEnv,
         database::{CacheDB, EmptyDB},
         state::{Account, AccountInfo, EvmStorageSlot},
     };
@@ -184,36 +309,38 @@ mod tests {
     #[test]
     fn include_empty_config_validation() {
         for include_empty in [json!(false), json!(null)] {
-            let opts = serde_json::from_value(json!({
+            let mut opts = serde_json::from_value(json!({
                 "tracer":"prestateTracer", "tracerConfig":{"includeEmpty":include_empty}
             }))
             .unwrap();
-            assert!(matches!(PrestateInspector::new(&opts).unwrap(), PrestateInspector::None));
+            assert!(matches!(
+                PrestateInspector::new(&mut opts).unwrap(),
+                PrestateInspector::Prestate { include_empty: false, .. }
+            ));
         }
         assert!(matches!(
-            PrestateInspector::new(&GethDebugTracingOptions::default()).unwrap(),
+            PrestateInspector::new(&mut GethDebugTracingOptions::default()).unwrap(),
             PrestateInspector::None
         ));
         for mux in [false, true] {
             let config = json!({"includeEmpty":true,"diffMode":true});
-            let opts = serde_json::from_value(if mux {
+            let mut opts = serde_json::from_value(if mux {
                 json!({"tracer":"muxTracer","tracerConfig":{"prestateTracer":config}})
             } else {
                 json!({"tracer":"prestateTracer","tracerConfig":config})
             })
             .unwrap();
-            let err = ErrorObjectOwned::from(PrestateInspector::new(&opts).err().unwrap());
+            let err = ErrorObjectOwned::from(PrestateInspector::new(&mut opts).err().unwrap());
             assert_eq!(err.code(), CALL_EXECUTION_FAILED_CODE);
             assert_eq!(err.message(), "cannot use diffMode with includeEmpty");
         }
-        let opts = serde_json::from_value(json!({
+        let mut opts = serde_json::from_value(json!({
             "tracer":"prestateTracer","tracerConfig":{"includeEmpty":"true"}
         }))
         .unwrap();
-        let err = PrestateInspector::new(&opts).err().unwrap();
-        assert!(
-            matches!(err, EthApiError::InvalidParams(message) if message == "invalid type: string \"true\", expected a boolean")
-        );
+        let err = ErrorObjectOwned::from(PrestateInspector::new(&mut opts).err().unwrap());
+        assert_eq!(err.code(), CALL_EXECUTION_FAILED_CODE);
+        assert_eq!(err.message(), "json: cannot unmarshal string into Go struct field PrestateTracerConfig.includeEmpty of type bool");
     }
 
     #[test]
@@ -235,16 +362,18 @@ mod tests {
         for storage_enabled in [false, true] {
             let mut trace =
                 GethTrace::PreStateTracer(PreStateFrame::Default(PreStateMode::default()));
-            PrestateInspector::IncludeEmpty {
+            PrestateInspector::Prestate {
+                include_empty: true,
+                code_enabled: true,
                 storage_enabled,
                 creation_candidates: Default::default(),
             }
-            .apply(&mut trace, &state, &db)
+            .apply(&mut trace, &state, &db, &TxEnv::default(), Address::ZERO)
             .unwrap();
             let value = serde_json::to_value(&trace).unwrap();
             let account = &value[format!("{empty:#x}")];
             assert_eq!(account["balance"], "0x0");
-            assert!(value.get(format!("{existing:#x}")).is_none());
+            assert_eq!(value[format!("{existing:#x}")]["balance"], "0x7");
             if storage_enabled {
                 assert_eq!(
                     account["storage"][format!("{:#066x}", U256::ZERO)],
@@ -254,11 +383,13 @@ mod tests {
                 assert!(account.get("storage").is_none());
             }
             // Existing output must be preserved when filling missing accounts.
-            PrestateInspector::IncludeEmpty {
+            PrestateInspector::Prestate {
+                include_empty: true,
+                code_enabled: true,
                 storage_enabled,
                 creation_candidates: Default::default(),
             }
-            .apply(&mut trace, &state, &db)
+            .apply(&mut trace, &state, &db, &TxEnv::default(), Address::ZERO)
             .unwrap();
             assert_eq!(serde_json::to_value(trace).unwrap(), value);
         }
