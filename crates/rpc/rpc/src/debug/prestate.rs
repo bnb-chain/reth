@@ -135,9 +135,9 @@ impl PrestateInspector {
                     observed_accounts
                         .extend(tx.authorization_list().filter_map(|auth| auth.authority()));
                 }
-                // CALL can load an empty recipient to calculate its new-account gas surcharge,
+                // CALL and SELFDESTRUCT can load an empty recipient to calculate a gas surcharge,
                 // then halt before Go's opcode hook observes that account. Storage accesses from
-                // stateful precompiles are still real reads even if a prior CALL failed.
+                // stateful precompiles are still real reads even if a prior opcode failed.
                 let accounts = state.iter().filter_map(|(address, account)| {
                     (!gas_only_accounts.contains(address) || !account.storage.is_empty())
                         .then_some(*address)
@@ -265,13 +265,13 @@ impl<CTX: ContextTr<Journal: JournalExt>> Inspector<CTX> for PrestateInspector {
         }
         let (Ok(offset), Ok(size)) = (interp.stack.peek(1), interp.stack.peek(2)) else { return };
         let Ok(size) = usize::try_from(size) else { return };
-        let offset = if size == 0 {
+        let memory_offset = if size == 0 {
             0
         } else {
             let Ok(offset) = usize::try_from(offset) else { return };
             offset
         };
-        let Some(end) = offset.checked_add(size) else { return };
+        let Some(end) = memory_offset.checked_add(size) else { return };
         let shanghai = interp.runtime_flag.spec_id().is_enabled_in(SpecId::SHANGHAI);
         if shanghai && size > context.cfg().max_initcode_size() {
             return
@@ -293,6 +293,9 @@ impl<CTX: ContextTr<Journal: JournalExt>> Inspector<CTX> for PrestateInspector {
                 self.record_address(caller.create(account.info.nonce));
             }
         } else if let Ok(salt) = interp.stack.peek(3) {
+            // Go's tracer uses the original offset's low 64 bits even for zero-size initcode.
+            let Ok(offset) = usize::try_from(offset.wrapping_to::<u64>()) else { return };
+            let Some(end) = offset.checked_add(size) else { return };
             // Match Go-BSC's GetMemoryCopyPadded limit without expanding EVM memory.
             const MEMORY_PADDING_LIMIT: usize = 1024 * 1024;
             if end.saturating_sub(interp.memory.len()) > MEMORY_PADDING_LIMIT {
@@ -322,7 +325,11 @@ impl<CTX: ContextTr<Journal: JournalExt>> Inspector<CTX> for PrestateInspector {
                         observed_accounts.insert(address);
                     } else if matches!(
                         op,
-                        opcode::CALL | opcode::CALLCODE | opcode::DELEGATECALL | opcode::STATICCALL
+                        opcode::CALL |
+                            opcode::CALLCODE |
+                            opcode::DELEGATECALL |
+                            opcode::STATICCALL |
+                            opcode::SELFDESTRUCT
                     ) && !previously_observed &&
                         !observed_accounts.contains(&address) &&
                         context.journal_ref().evm_state().contains_key(&address)
@@ -343,7 +350,23 @@ impl<CTX: ContextTr<Journal: JournalExt>> Inspector<CTX> for PrestateInspector {
 
 /// Normalize Go's case-insensitive boolean fields before Alloy constructs the actual tracer.
 fn normalize_prestate_config(config: &mut GethDebugTracerConfig) -> Result<(), EthApiError> {
-    let Some(object) = config.0.as_object_mut() else { return Ok(()) };
+    let object = match &mut config.0 {
+        serde_json::Value::Object(object) => object,
+        serde_json::Value::Null => return Ok(()),
+        value => {
+            let kind = match value {
+                serde_json::Value::Bool(_) => "bool",
+                serde_json::Value::Number(_) => "number",
+                serde_json::Value::String(_) => "string",
+                _ => "array",
+            };
+            return Err(EthApiError::other(ErrorObjectOwned::owned(
+                CALL_EXECUTION_FAILED_CODE,
+                format!("json: cannot unmarshal {kind} into Go value of type native.PrestateTracerConfig"),
+                None::<()>,
+            )))
+        }
+    };
     let mut normalized = serde_json::Map::new();
     for (key, value) in std::mem::take(object) {
         let Some(field) = ["includeEmpty", "diffMode", "disableCode", "disableStorage"]

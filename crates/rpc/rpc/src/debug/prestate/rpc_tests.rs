@@ -243,6 +243,12 @@ async fn static_creation_observes_candidates_but_not_protected_call_or_selfdestr
         ("6000600060006001f55000", inner.create2_from_code(B256::ZERO, []), true),
         ("6000600160006001f55000", inner.create2_from_code(B256::ZERO, [0]), true),
         ("60aa6000536000600260006001f55000", inner.create2_from_code(B256::ZERO, [0xaa, 0]), true),
+        // Zero-size EVM memory expansion is free, but the tracer still bounds the raw offset.
+        ("60006000621000006000f5", inner.create2_from_code(B256::ZERO, []), true),
+        ("60006000621000016000f5", inner.create2_from_code(B256::ZERO, []), false),
+        ("600060006780000000000000006000f5", inner.create2_from_code(B256::ZERO, []), false),
+        ("60006000680100000000000000006000f5", inner.create2_from_code(B256::ZERO, []), true),
+        ("6000621000016000f0", inner.create(1), true),
         ("f0", inner.create(1), false),
         ("60006210000060006001f55000", inner.create2_from_code(B256::ZERO, []), false),
         ("60006000600060006001604461fffff15000", call_target, false),
@@ -497,6 +503,97 @@ async fn prestate_aliases_follow_json_input_order() {
                 json!({"code":-32000,"message":"cannot use diffMode with includeEmpty"}),
                 "{config}: {response}"
             );
+        }
+    }
+}
+
+#[tokio::test]
+async fn selfdestruct_gas_checks_preserve_only_observed_beneficiaries() {
+    let child = Address::with_last_byte(0x43);
+    let beneficiary = Address::with_last_byte(0x44);
+    for (gas, completes) in [(19_000, false), (65_535, true)] {
+        for (before, after) in [(false, false), (true, false), (false, true)] {
+            let code = format!(
+                "60006000600060006000604361{gas:04x}f150{}00",
+                if after { "60443150" } else { "" }
+            );
+            let (module, hash, target, provider) = rpc!(code.parse::<Bytes>().unwrap());
+            let code = format!("{}6044ff", if before { "60443150" } else { "" });
+            provider.add_account(
+                child,
+                ExtendedAccount::new(1, U256::from(1)).with_bytecode(code.parse().unwrap()),
+            );
+            for mux in [false, true] {
+                let opts = prestate_options(json!({"includeEmpty":true}), mux);
+                for (method, params) in [
+                    ("debug_traceCall", json!([{"to":target,"gas":"0x7a120"},"latest",opts])),
+                    ("debug_traceTransaction", json!([hash, opts])),
+                ] {
+                    let request = json!({"jsonrpc":"2.0","id":1,"method":method,"params":params});
+                    let (response, _) =
+                        module.raw_json_request(&request.to_string(), 1).await.unwrap();
+                    let response: Value = serde_json::from_str(response.get()).unwrap();
+                    assert!(response.get("error").is_none(), "{response}");
+                    let pre = if mux {
+                        &response["result"]["prestateTracer"]
+                    } else {
+                        &response["result"]
+                    };
+                    assert_eq!(
+                        pre.get(format!("{beneficiary:#x}")),
+                        (completes || before || after).then(|| json!({"balance":"0x0"})).as_ref(),
+                        "gas={gas}, before={before}, after={after}: {response}"
+                    );
+                    if mux {
+                        assert!(
+                            response["result"]["callTracer"].get("error").is_none(),
+                            "{response}"
+                        );
+                        assert_eq!(
+                            response["result"]["callTracer"]["calls"][0].get("error"),
+                            (!completes).then(|| json!("out of gas")).as_ref(),
+                            "{response}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn prestate_config_rejects_non_objects_at_rpc_boundary() {
+    let (module, hash, target, _) = rpc!(Bytes::from_static(&[0]));
+    for mux in [false, true] {
+        for (config, kind) in [
+            (json!([]), "array"),
+            (json!([true]), "array"),
+            (json!(true), "bool"),
+            (json!(42), "number"),
+            (json!("invalid"), "string"),
+        ] {
+            let opts = prestate_options(config, mux);
+            for (method, params) in [
+                ("debug_traceCall", json!([{"to":target},"latest",opts])),
+                ("debug_traceTransaction", json!([hash, opts])),
+            ] {
+                let request = json!({"jsonrpc":"2.0","id":1,"method":method,"params":params});
+                let (response, _) = module.raw_json_request(&request.to_string(), 1).await.unwrap();
+                let response: Value = serde_json::from_str(response.get()).unwrap();
+                assert_eq!(
+                    response["error"],
+                    json!({"code":-32000,"message":format!("json: cannot unmarshal {kind} into Go value of type native.PrestateTracerConfig")}),
+                    "{response}"
+                );
+            }
+        }
+        if !mux {
+            let opts = prestate_options(Value::Null, mux);
+            let request = json!({"jsonrpc":"2.0","id":1,"method":"debug_traceCall","params":[{"to":target},"latest",opts]});
+            let (response, _) = module.raw_json_request(&request.to_string(), 1).await.unwrap();
+            let response: Value = serde_json::from_str(response.get()).unwrap();
+            assert!(response.get("error").is_none(), "{response}");
+            assert!(response["result"].get(format!("{target:#x}")).is_some(), "{response}");
         }
     }
 }
