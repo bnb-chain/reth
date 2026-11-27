@@ -762,6 +762,42 @@ impl<N: ProviderNodeTypes> StateProviderFactory for BlockchainProvider<N> {
         }
     }
 
+    fn latest_for_account_rpc(&self) -> ProviderResult<StateProviderBox> {
+        let Some(head) = self.canonical_in_memory_state.head_state() else {
+            reth_metrics::metrics::counter!("rpc.account_ready.selection_total", "result" => "database").increment(1);
+            return self.database.latest();
+        };
+        // Follow only the captured canonical head's parent link. Cache capacity is not permission
+        // to serve arbitrarily old state or a Ready entry on a competing fork. Like ordinary
+        // latest, this view is anchored to the head observed when the request resolves its
+        // state.
+        for (lag, candidate) in head.chain().take(2).enumerate() {
+            let factory = OverlayStateProviderFactory::new(
+                self.database.clone(),
+                self.database
+                    .overlay_manager()
+                    .overlay_builder_for_state(Arc::new(candidate.clone())),
+            );
+            let provider = factory.database_provider_ro()?;
+            if provider.try_ready_execution_overlay()? {
+                let result = if lag == 0 { "head_ready" } else { "parent_ready" };
+                reth_metrics::metrics::counter!("rpc.account_ready.selection_total", "result" => result).increment(1);
+                reth_metrics::metrics::histogram!("rpc.account_ready.lag_blocks")
+                    .record(lag as f64);
+                return Ok(Box::new(provider));
+            }
+        }
+        // No suitable Ready view: preserve exact behavior, including its errors and wait. Never
+        // keep walking older ancestors merely to obtain a fast response.
+        reth_metrics::metrics::counter!("rpc.account_ready.selection_total", "result" => "exact_fallback").increment(1);
+        let reason =
+            if head.parent_state_chain().next().is_none() { "no_parent" } else { "no_ready" };
+        reth_metrics::metrics::counter!("rpc.account_ready.fallback_total", "reason" => reason)
+            .increment(1);
+        reth_metrics::metrics::histogram!("rpc.account_ready.lag_blocks").record(0.0);
+        self.state_provider_for_state(head)
+    }
+
     fn state_with_block_appended(
         &self,
         parent_hash: BlockHash,
@@ -3684,5 +3720,126 @@ mod tests {
             assert_eq!(outcome.receipts, vec![receipts], "block {number}");
         }
         Ok(())
+    }
+    #[test]
+    fn account_rpc_uses_only_ready_head_or_its_direct_canonical_parent() {
+        let factory = create_test_provider_factory();
+        let blocks = TestBlockBuilder::eth()
+            .get_executed_blocks(0..5)
+            .enumerate()
+            .map(|(index, mut block)| {
+                let mut output = (*block.execution_output).clone();
+                output.state = revm::database::BundleState::builder(index as u64..=index as u64)
+                    .state_present_account_info(
+                        Address::with_last_byte(index as u8),
+                        revm::state::AccountInfo {
+                            nonce: index as u64 + 7,
+                            balance: U256::from(index),
+                            ..Default::default()
+                        },
+                    )
+                    .build();
+                block.execution_output = Arc::new(output);
+                block
+            })
+            .collect::<Vec<_>>();
+        let writer = factory.provider_rw().unwrap();
+        writer.insert_block(blocks[0].recovered_block()).unwrap();
+        writer.save_stage_checkpoint(StageId::Finish, StageCheckpoint::new(0)).unwrap();
+        writer.commit().unwrap();
+        let provider = BlockchainProvider::new(factory.clone()).unwrap();
+        let manager = factory.overlay_manager();
+        for block in &blocks[1..] {
+            manager.insert_block(block.clone());
+        }
+        let canonical = provider.canonical_in_memory_state();
+        canonical.update_chain(NewCanonicalChain::Commit { new: vec![blocks[1].clone()] });
+        // A cold cache falls back to the exact head, then becomes Ready on the account read.
+        assert_eq!(
+            provider
+                .latest_for_account_rpc()
+                .unwrap()
+                .account_nonce(&Address::with_last_byte(1))
+                .unwrap(),
+            Some(8)
+        );
+        let mut fork = TestBlockBuilder::eth()
+            .get_executed_block_with_number(2, blocks[1].recovered_block().hash());
+        let mut output = (*fork.execution_output).clone();
+        output.state = revm::database::BundleState::builder(2..=2)
+            .state_present_account_info(
+                Address::with_last_byte(99),
+                revm::state::AccountInfo { nonce: 99, ..Default::default() },
+            )
+            .build();
+        fork.execution_output = Arc::new(output);
+        manager.insert_block(fork.clone());
+        let fork_factory = OverlayStateProviderFactory::new(
+            factory.clone(),
+            manager.overlay_builder(fork.recovered_block().hash()),
+        );
+        assert_eq!(
+            fork_factory
+                .database_provider_ro()
+                .unwrap()
+                .account_nonce(&Address::with_last_byte(99))
+                .unwrap(),
+            Some(99)
+        );
+        canonical.update_chain(NewCanonicalChain::Commit { new: vec![blocks[2].clone()] });
+        let ready = provider.latest_for_account_rpc().unwrap();
+        assert_eq!(ready.account_nonce(&Address::with_last_byte(2)).unwrap(), None);
+        assert_eq!(ready.account_nonce(&Address::with_last_byte(99)).unwrap(), None);
+        assert_eq!(
+            ready.account_balance(&Address::with_last_byte(1)).unwrap(),
+            Some(U256::from(1))
+        );
+        // Exact latest and explicit hashes still select block 2 despite its missing overlay.
+        assert_eq!(
+            provider.latest().unwrap().account_nonce(&Address::with_last_byte(2)).unwrap(),
+            Some(9)
+        );
+        assert_eq!(
+            provider
+                .state_by_block_hash(blocks[2].recovered_block().hash())
+                .unwrap()
+                .account_nonce(&Address::with_last_byte(2))
+                .unwrap(),
+            Some(9)
+        );
+        assert_eq!(
+            provider
+                .latest_for_account_rpc()
+                .unwrap()
+                .account_nonce(&Address::with_last_byte(2))
+                .unwrap(),
+            Some(9)
+        );
+        canonical.update_chain(NewCanonicalChain::Reorg {
+            new: vec![fork.clone()],
+            old: vec![blocks[2].clone()],
+        });
+        assert_eq!(
+            provider
+                .latest_for_account_rpc()
+                .unwrap()
+                .account_nonce(&Address::with_last_byte(99))
+                .unwrap(),
+            Some(99)
+        );
+        canonical.update_chain(NewCanonicalChain::Reorg {
+            new: vec![blocks[2].clone()],
+            old: vec![fork],
+        });
+        // A Ready grandparent is too old: neither 4 nor 3 is ready, so serve exact block 4.
+        canonical.update_chain(NewCanonicalChain::Commit { new: blocks[3..].to_vec() });
+        assert_eq!(
+            provider
+                .latest_for_account_rpc()
+                .unwrap()
+                .account_nonce(&Address::with_last_byte(4))
+                .unwrap(),
+            Some(11)
+        );
     }
 }

@@ -677,6 +677,49 @@ impl<N: NodePrimitives> OverlayBuilder<N> {
             + PruneCheckpointReader
             + StageCheckpointReader,
     {
+        let (anchor_hash, fallback) =
+            self.execution_anchor(provider, state_trie_tip_block, finish_tip_block)?;
+        Ok((self.resolve_execution_overlay(anchor_hash)?, fallback))
+    }
+
+    /// Uses the same anchor and historical fallback as exact reads, but never computes an overlay.
+    pub(crate) fn ready_execution_overlay_at_frontiers<Provider>(
+        &self,
+        provider: &Provider,
+        partial: BlockNumHash,
+        finish: BlockNumHash,
+    ) -> ProviderResult<Option<(Arc<ExecutionOverlay>, Option<BlockNumber>)>>
+    where
+        Provider: ChangeSetReader
+            + StorageChangeSetReader
+            + DBProvider
+            + BlockNumReader
+            + PruneCheckpointReader
+            + StageCheckpointReader,
+    {
+        let (anchor, fallback) = self.execution_anchor(provider, partial, finish)?;
+        let overlay = if anchor == self.parent_hash {
+            Some(Arc::new(ExecutionOverlay::default()))
+        } else {
+            self.overlay_manager.ready_execution_overlay(self.parent_hash, anchor)
+        };
+        Ok(overlay.map(|overlay| (overlay, fallback)))
+    }
+
+    fn execution_anchor<Provider>(
+        &self,
+        provider: &Provider,
+        state_trie_tip_block: BlockNumHash,
+        finish_tip_block: BlockNumHash,
+    ) -> ProviderResult<(B256, Option<BlockNumber>)>
+    where
+        Provider: ChangeSetReader
+            + StorageChangeSetReader
+            + DBProvider
+            + BlockNumReader
+            + PruneCheckpointReader
+            + StageCheckpointReader,
+    {
         let anchor_for_parent =
             self.anchor_at_parent_with_frontiers(provider, state_trie_tip_block, finish_tip_block)?;
         let (anchor_hash, fallback_block_number) = match anchor_for_parent {
@@ -692,7 +735,7 @@ impl<N: NodePrimitives> OverlayBuilder<N> {
                 (anchor.hash, state_ahead_of_finish.then(|| anchor.number + 1))
             }
         };
-        Ok((self.resolve_execution_overlay(anchor_hash)?, fallback_block_number))
+        Ok((anchor_hash, fallback_block_number))
     }
 
     /// Resolves the effective overlay (trie updates, hashed state).

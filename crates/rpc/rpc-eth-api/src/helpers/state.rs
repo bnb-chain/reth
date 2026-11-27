@@ -16,6 +16,7 @@ use reth_evm::{ConfigureEvm, EvmEnvFor};
 use reth_primitives_traits::{BlockTy, RecoveredBlock, SealedHeaderFor};
 use reth_rpc_convert::{RpcConvert, RpcTxReq};
 use reth_rpc_eth_types::{
+    account_metrics::AccountRpcTimer,
     error::{FromEvmError, IntoEthApiError},
     EthApiError, PendingBlockEnv, RpcInvalidTransactionError, SignError,
 };
@@ -25,7 +26,7 @@ use reth_storage_api::{
 };
 use reth_transaction_pool::TransactionPool;
 use reth_trie_common::{MultiProofTargetsV2, ProofV2Target};
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Instant};
 
 /// Helper methods for `eth_` methods relating to state (accounts).
 pub trait EthState: LoadState + SpawnBlocking {
@@ -81,12 +82,16 @@ pub trait EthState: LoadState + SpawnBlocking {
         address: Address,
         block_id: Option<BlockId>,
     ) -> impl Future<Output = Result<U256, Self::Error>> + Send {
-        self.spawn_blocking_io_with_state(block_id.unwrap_or_default(), move |_, state| {
-            Ok(state
-                .account_balance(&address)
-                .map_err(Self::Error::from_eth_err)?
-                .unwrap_or_default())
-        })
+        self.spawn_blocking_io_with_account_state(
+            "balance",
+            block_id.unwrap_or_default(),
+            move |_, state| {
+                Ok(state
+                    .account_balance(&address)
+                    .map_err(Self::Error::from_eth_err)?
+                    .unwrap_or_default())
+            },
+        )
     }
 
     /// Returns values stored of given account, at given blocknumber.
@@ -418,6 +423,51 @@ pub trait LoadState:
         }
     }
 
+    /// Account-only dispatch: bounded stale state is explicitly opt-in and restricted to latest.
+    /// Opted-in nonce/balance callers intentionally accept the parent of an already canonical head
+    /// to avoid overlay waits. This is bounded staleness, not exact latest semantics.
+    /// Pending and explicit block queries continue through the precise state resolver.
+    fn spawn_blocking_io_with_account_state<F, R>(
+        &self,
+        method: &'static str,
+        at: BlockId,
+        f: F,
+    ) -> impl Future<Output = Result<R, Self::Error>> + Send
+    where
+        Self: SpawnBlocking,
+        F: FnOnce(Self, StateProviderBox) -> Result<R, Self::Error> + Send + 'static,
+        R: Send + 'static,
+    {
+        async move {
+            let relaxed = at.is_latest() && self.eth_api_settings().latest_account_ready;
+            let timer = Arc::new(AccountRpcTimer::new(method, relaxed));
+            if !relaxed {
+                let result = self.spawn_blocking_io_with_state(at, f).await;
+                timer.finish(result.is_ok());
+                return result;
+            }
+            let queued = Instant::now();
+            let task_timer = Arc::clone(&timer);
+            let result = self
+                .spawn_blocking_io(move |this| {
+                    task_timer.record("queue", queued);
+                    let started = Instant::now();
+                    let state =
+                        this.provider().latest_for_account_rpc().map_err(Self::Error::from_eth_err);
+                    task_timer.record("select", started);
+                    state.and_then(|state| {
+                        let started = Instant::now();
+                        let result = f(this, state);
+                        task_timer.record("read", started);
+                        result
+                    })
+                })
+                .await;
+            timer.finish(result.is_ok());
+            result
+        }
+    }
+
     /// Returns the EVM environment for the given sealed header.
     fn evm_env_for_header(
         &self,
@@ -557,7 +607,7 @@ pub trait LoadState:
         Self: SpawnBlocking,
     {
         let at = block_id.unwrap_or_default();
-        self.spawn_blocking_io_with_state(at, move |this, state| {
+        self.spawn_blocking_io_with_account_state("nonce", at, move |this, state| {
             // first fetch the on chain nonce of the account
             let on_chain_account_nonce = state
                 .account_nonce(&address)

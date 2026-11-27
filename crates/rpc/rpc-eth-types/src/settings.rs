@@ -41,6 +41,9 @@ pub struct EthApiSettings {
     pub evm_memory_limit: u64,
     /// Whether to force upcasting EIP-4844 blob sidecars to EIP-7594 format when Osaka is active.
     pub force_blob_sidecar_upcasting: bool,
+    /// Allow latest nonce/balance RPCs to use a Ready canonical parent, at most one block old.
+    /// Disabled by default. Does not affect pending, explicit blocks, or transaction validation.
+    pub latest_account_ready: bool,
 }
 
 impl Default for EthApiSettings {
@@ -59,6 +62,7 @@ impl Default for EthApiSettings {
             send_raw_transaction_sync_timeout: RPC_DEFAULT_SEND_RAW_TX_SYNC_TIMEOUT_SECS,
             evm_memory_limit: (1 << 32) - 1,
             force_blob_sidecar_upcasting: false,
+            latest_account_ready: false,
         }
     }
 }

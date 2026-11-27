@@ -51,6 +51,7 @@ pub struct EthApiBuilder<N: RpcNodeCore, Rpc, NextEnv = ()> {
     send_raw_transaction_sync_timeout: Duration,
     evm_memory_limit: u64,
     force_blob_sidecar_upcasting: bool,
+    latest_account_ready: bool,
     current_validators_len: Option<Arc<dyn Fn() -> Option<usize> + Send + Sync>>,
 }
 
@@ -113,6 +114,7 @@ impl<N: RpcNodeCore, Rpc, NextEnv> EthApiBuilder<N, Rpc, NextEnv> {
             send_raw_transaction_sync_timeout,
             evm_memory_limit,
             force_blob_sidecar_upcasting,
+            latest_account_ready,
             current_validators_len,
         } = self;
         EthApiBuilder {
@@ -139,6 +141,7 @@ impl<N: RpcNodeCore, Rpc, NextEnv> EthApiBuilder<N, Rpc, NextEnv> {
             send_raw_transaction_sync_timeout,
             evm_memory_limit,
             force_blob_sidecar_upcasting,
+            latest_account_ready,
             current_validators_len,
         }
     }
@@ -176,6 +179,7 @@ where
             send_raw_transaction_sync_timeout: Duration::from_secs(30),
             evm_memory_limit: (1 << 32) - 1,
             force_blob_sidecar_upcasting: false,
+            latest_account_ready: false,
             current_validators_len: None,
         }
     }
@@ -220,6 +224,7 @@ where
             send_raw_transaction_sync_timeout,
             evm_memory_limit,
             force_blob_sidecar_upcasting,
+            latest_account_ready,
             current_validators_len,
         } = self;
         EthApiBuilder {
@@ -246,6 +251,7 @@ where
             send_raw_transaction_sync_timeout,
             evm_memory_limit,
             force_blob_sidecar_upcasting,
+            latest_account_ready,
             current_validators_len,
         }
     }
@@ -279,6 +285,7 @@ where
             send_raw_transaction_sync_timeout,
             evm_memory_limit,
             force_blob_sidecar_upcasting,
+            latest_account_ready,
             current_validators_len,
         } = self;
         EthApiBuilder {
@@ -305,6 +312,7 @@ where
             send_raw_transaction_sync_timeout,
             evm_memory_limit,
             force_blob_sidecar_upcasting,
+            latest_account_ready,
             current_validators_len,
         }
     }
@@ -561,6 +569,7 @@ where
             send_raw_transaction_sync_timeout,
             evm_memory_limit,
             force_blob_sidecar_upcasting,
+            latest_account_ready,
             current_validators_len,
         } = self;
 
@@ -603,6 +612,7 @@ where
             send_raw_transaction_sync_timeout,
             evm_memory_limit,
             force_blob_sidecar_upcasting,
+            latest_account_ready,
         };
 
         EthApiInner::new(
@@ -651,6 +661,14 @@ where
     /// Sets the maximum memory the EVM can allocate per RPC request.
     pub const fn evm_memory_limit(mut self, memory_limit: u64) -> Self {
         self.evm_memory_limit = memory_limit;
+        self
+    }
+
+    /// Opt in to a Ready canonical state at most one block old for latest nonce/balance RPCs.
+    /// This trades freshness for latency during overlay construction; exact block queries and
+    /// internal state consumers retain their existing semantics.
+    pub const fn latest_account_ready(mut self, enabled: bool) -> Self {
+        self.latest_account_ready = enabled;
         self
     }
 
