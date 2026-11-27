@@ -205,6 +205,7 @@ where
                             cause,
                             state: reorg_forkchoice_state,
                             payload_attrs: None,
+                            preserve_finalized: false,
                             tx: reorg_fcu_tx,
                         },
                     ]);
@@ -216,6 +217,7 @@ where
                         cause,
                         state,
                         payload_attrs,
+                        preserve_finalized,
                         tx,
                     }),
                     _,
@@ -225,7 +227,13 @@ where
                     // reorgs that rely on invalid forkchoice state.
                     *this.last_forkchoice_state = Some(state);
                     *this.forkchoice_states_forwarded += 1;
-                    Some(BeaconEngineMessage::ForkchoiceUpdated { cause, state, payload_attrs, tx })
+                    Some(BeaconEngineMessage::ForkchoiceUpdated {
+                        cause,
+                        state,
+                        payload_attrs,
+                        preserve_finalized,
+                        tx,
+                    })
                 }
                 (item, _) => item,
             };

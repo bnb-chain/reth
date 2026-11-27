@@ -294,6 +294,9 @@ pub enum BeaconEngineMessage<Payload: PayloadTypes> {
         state: ForkchoiceState,
         /// The payload attributes for block building.
         payload_attrs: Option<Payload::PayloadAttributes>,
+        /// Whether to preserve the Engine's current finalized checkpoint when applying this
+        /// update.
+        preserve_finalized: bool,
         /// The sender for returning forkchoice updated result.
         tx: oneshot::Sender<RethResult<OnForkChoiceUpdated>>,
     },
@@ -412,9 +415,35 @@ where
         state: ForkchoiceState,
         payload_attrs: Option<Payload::PayloadAttributes>,
     ) -> Result<ForkchoiceUpdated, BeaconForkChoiceUpdateError> {
-        self.send_fork_choice_updated(state, payload_attrs)
-            .map_err(|_| BeaconForkChoiceUpdateError::EngineUnavailable)
-            .await?
+        self.send_fork_choice_updated(state, payload_attrs, false).await
+    }
+
+    /// Applies a locally computed forkchoice without lowering or reorging out known finality.
+    pub async fn fork_choice_updated_preserving_finality(
+        &self,
+        state: ForkchoiceState,
+    ) -> Result<ForkchoiceUpdated, BeaconForkChoiceUpdateError> {
+        self.send_fork_choice_updated(state, None, true).await
+    }
+
+    async fn send_fork_choice_updated(
+        &self,
+        state: ForkchoiceState,
+        payload_attrs: Option<Payload::PayloadAttributes>,
+        preserve_finalized: bool,
+    ) -> Result<ForkchoiceUpdated, BeaconForkChoiceUpdateError> {
+        let (tx, rx) = oneshot::channel();
+        self.to_engine
+            .send(BeaconEngineMessage::ForkchoiceUpdated {
+                cause: Span::current(),
+                state,
+                payload_attrs,
+                preserve_finalized,
+                tx,
+            })
+            .map_err(|_| BeaconForkChoiceUpdateError::EngineUnavailable)?;
+        rx.await
+            .map_err(|_| BeaconForkChoiceUpdateError::EngineUnavailable)?
             .map_err(BeaconForkChoiceUpdateError::internal)?
             .await
     }
@@ -435,23 +464,6 @@ where
             .await
             .map_err(|_| TotalDifficultyError::Timeout)?
             .map_err(|_| TotalDifficultyError::EngineUnavailable)?
-    }
-
-    /// Sends a forkchoice update message to the beacon consensus engine and returns the receiver to
-    /// wait for a response.
-    fn send_fork_choice_updated(
-        &self,
-        state: ForkchoiceState,
-        payload_attrs: Option<Payload::PayloadAttributes>,
-    ) -> oneshot::Receiver<RethResult<OnForkChoiceUpdated>> {
-        let (tx, rx) = oneshot::channel();
-        let _ = self.to_engine.send(BeaconEngineMessage::ForkchoiceUpdated {
-            cause: Span::current(),
-            state,
-            payload_attrs,
-            tx,
-        });
-        rx
     }
 }
 

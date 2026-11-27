@@ -1692,13 +1692,26 @@ where
                                 cause,
                                 state,
                                 payload_attrs,
+                                preserve_finalized,
                                 tx,
                             } => {
                                 let _cause = cause.enter();
                                 let start = Instant::now();
                                 let mut state = state;
-                                let output =
-                                    self.process_forkchoice(&mut state, payload_attrs, None)?;
+                                // Read the floor on the tree thread: it may have advanced since
+                                // the caller prepared or queued this request.
+                                let floor = if preserve_finalized {
+                                    self.canonical_in_memory_state.get_finalized_num_hash()
+                                } else {
+                                    None
+                                };
+                                let output = match self.preserve_finality(&mut state, floor) {
+                                    Ok(true) => {
+                                        self.process_forkchoice(&mut state, payload_attrs, floor)?
+                                    }
+                                    Ok(false) => Ok(OnForkChoiceUpdated::invalid_state()),
+                                    Err(err) => Err(err),
+                                };
 
                                 if let Err(err) = tx.send(output.map_err(Into::into)) {
                                     self.metrics
@@ -1930,7 +1943,7 @@ where
             return Ok(Ok(LocalBlockOutcome::StaleHead { actual_head }));
         }
         let finalized_guard = self.canonical_in_memory_state.get_finalized_num_hash();
-        match self.preserve_local_finality(&mut state, finalized_guard) {
+        match self.preserve_finality(&mut state, finalized_guard) {
             Ok(true) => {}
             Ok(false) => return Ok(Ok(LocalBlockOutcome::FinalityConflict)),
             Err(error) => return Ok(Err(error)),
@@ -1948,9 +1961,9 @@ where
         }))
     }
 
-    /// A local stale snapshot must not lower already-confirmed finality. Safe may otherwise
+    /// A stale snapshot must not lower already-confirmed finality. Safe may otherwise
     /// change under Parlia reorgs; it is raised only when it is older than the finalized floor.
-    fn preserve_local_finality(
+    fn preserve_finality(
         &self,
         state: &mut ForkchoiceState,
         floor: Option<BlockNumHash>,

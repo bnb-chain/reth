@@ -49,6 +49,7 @@ where
                     cause,
                     state,
                     payload_attrs,
+                    preserve_finalized,
                     tx,
                 }) => {
                     if this.skipped < this.threshold {
@@ -58,7 +59,13 @@ where
                         continue
                     }
                     *this.skipped = 0;
-                    Some(BeaconEngineMessage::ForkchoiceUpdated { cause, state, payload_attrs, tx })
+                    Some(BeaconEngineMessage::ForkchoiceUpdated {
+                        cause,
+                        state,
+                        payload_attrs,
+                        preserve_finalized,
+                        tx,
+                    })
                 }
                 next => next,
             };

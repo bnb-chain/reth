@@ -480,6 +480,7 @@ impl TestHarness {
             .tree
             .on_engine_message(FromEngine::Request(
                 BeaconEngineMessage::ForkchoiceUpdated {
+                    preserve_finalized: false,
                     cause: tracing::Span::none(),
                     state: fcu_state,
                     payload_attrs: None,
@@ -1352,6 +1353,7 @@ async fn test_engine_request_during_backfill() {
         .tree
         .on_engine_message(FromEngine::Request(
             BeaconEngineMessage::ForkchoiceUpdated {
+                preserve_finalized: false,
                 cause: tracing::Span::none(),
                 state: ForkchoiceState {
                     head_block_hash: B256::random(),
@@ -1509,6 +1511,7 @@ fn test_backpressure_waits_for_persistence_before_reading_incoming() {
         .to_tree_tx
         .send(FromEngine::Request(
             BeaconEngineMessage::ForkchoiceUpdated {
+                preserve_finalized: false,
                 cause: tracing::Span::none(),
                 state: ForkchoiceState {
                     head_block_hash: B256::random(),
@@ -2057,6 +2060,7 @@ async fn test_fcu_with_canonical_ancestor_updates_latest_block() {
         .tree
         .on_engine_message(FromEngine::Request(
             BeaconEngineMessage::ForkchoiceUpdated {
+                preserve_finalized: false,
                 cause: tracing::Span::none(),
                 state: ForkchoiceState {
                     head_block_hash: ancestor_block.hash(),
@@ -4573,4 +4577,37 @@ fn query_td_genesis_alias_cannot_invent_a_td() {
         SortedTrieData::default(),
     ));
     assert_eq!(harness.tree.query_td(alias).unwrap(), None);
+}
+
+#[tokio::test]
+async fn import_forkchoice_preserves_finality_while_advancing_head() {
+    let mut builder = TestBlockBuilder::eth();
+    let blocks: Vec<_> = builder.get_executed_blocks(1..5).collect();
+    let mut h = TestHarness::new(MAINNET.clone()).with_blocks(blocks[..3].to_vec());
+    h.tree.state.tree_state.insert_executed(blocks[3].clone());
+    let floor = blocks[2].recovered_block().clone_sealed_header();
+    h.tree.canonical_in_memory_state.set_finalized(floor.clone());
+    let head = blocks[3].recovered_block().hash();
+    let stale = blocks[1].recovered_block().hash();
+    let (tx, rx) = oneshot::channel();
+    h.tree
+        .on_engine_message(FromEngine::Request(
+            BeaconEngineMessage::ForkchoiceUpdated {
+                cause: tracing::Span::none(),
+                state: ForkchoiceState {
+                    head_block_hash: head,
+                    safe_block_hash: stale,
+                    finalized_block_hash: stale,
+                },
+                payload_attrs: None,
+                preserve_finalized: true,
+                tx,
+            }
+            .into(),
+        ))
+        .unwrap();
+    assert!(rx.await.unwrap().unwrap().await.unwrap().payload_status.is_valid());
+    assert_eq!(h.tree.state.tree_state.canonical_block_hash(), head);
+    assert_eq!(h.tree.canonical_in_memory_state.get_finalized_num_hash(), Some(floor.num_hash()));
+    assert_eq!(h.tree.canonical_in_memory_state.get_safe_num_hash(), Some(floor.num_hash()));
 }
