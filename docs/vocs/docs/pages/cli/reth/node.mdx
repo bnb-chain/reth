@@ -837,11 +837,10 @@ Debug:
           The path to store engine API messages at. If specified, all of the intercepted engine API messages will be written to specified location
 
       --debug.invalid-block-hook <INVALID_BLOCK_HOOK>
-          Determines which type of invalid block hook to install
+          Enables optional invalid block diagnostics. Disabled by default.
 
-          Example: `witness,prestate`
+          The `witness` hook synchronously re-executes invalid blocks and writes diagnostic files to the data directory without retention limits. Enable only for troubleshooting.
 
-          [default: witness]
           [possible values: witness, pre-state, opcode]
 
       --debug.healthy-node-rpc-url <URL>
