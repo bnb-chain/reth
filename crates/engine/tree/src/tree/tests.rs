@@ -4590,7 +4590,8 @@ async fn import_forkchoice_preserves_finality_while_advancing_head() {
     let head = blocks[3].recovered_block().hash();
     let stale = blocks[1].recovered_block().hash();
     let (tx, rx) = oneshot::channel();
-    h.tree
+    let flow = h
+        .tree
         .on_engine_message(FromEngine::Request(
             BeaconEngineMessage::ForkchoiceUpdated {
                 cause: tracing::Span::none(),
@@ -4606,6 +4607,7 @@ async fn import_forkchoice_preserves_finality_while_advancing_head() {
             .into(),
         ))
         .unwrap();
+    assert!(flow.is_continue());
     assert!(rx.await.unwrap().unwrap().await.unwrap().payload_status.is_valid());
     assert_eq!(h.tree.state.tree_state.canonical_block_hash(), head);
     assert_eq!(h.tree.canonical_in_memory_state.get_finalized_num_hash(), Some(floor.num_hash()));

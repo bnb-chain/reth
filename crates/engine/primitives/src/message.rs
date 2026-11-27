@@ -14,7 +14,7 @@ use core::{
     pin::Pin,
     task::{ready, Context, Poll},
 };
-use futures::{future::Either, FutureExt, TryFutureExt};
+use futures::{future::Either, FutureExt};
 use reth_errors::RethResult;
 use reth_payload_builder_primitives::PayloadBuilderError;
 use reth_payload_primitives::PayloadTypes;
