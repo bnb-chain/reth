@@ -88,14 +88,14 @@ pub struct DebugArgs {
     #[arg(long = "debug.engine-api-store", help_heading = "Debug", value_name = "PATH")]
     pub engine_api_store: Option<PathBuf>,
 
-    /// Determines which type of invalid block hook to install
+    /// Enables optional invalid block diagnostics. Disabled by default.
     ///
-    /// Example: `witness,prestate`
+    /// The `witness` hook synchronously re-executes invalid blocks and writes diagnostic files
+    /// to the data directory without retention limits. Enable only for troubleshooting.
     #[arg(
         long = "debug.invalid-block-hook",
         help_heading = "Debug",
-        value_parser = InvalidBlockSelectionValueParser::default(),
-        default_value = "witness"
+        value_parser = InvalidBlockSelectionValueParser::default()
     )]
     pub invalid_block_hook: Option<InvalidBlockSelection>,
 
@@ -146,7 +146,7 @@ impl Default for DebugArgs {
             reorg_frequency: None,
             reorg_depth: None,
             engine_api_store: None,
-            invalid_block_hook: Some(InvalidBlockSelection::default()),
+            invalid_block_hook: None,
             healthy_node_rpc_url: None,
             ethstats: None,
             startup_sync_state_idle: false,
@@ -378,6 +378,8 @@ mod tests {
     fn test_parse_default_debug_args() {
         let default_args = DebugArgs::default();
         let args = CommandParser::<DebugArgs>::parse_from(["reth"]).args;
+        assert_eq!(default_args.invalid_block_hook, None);
+        assert_eq!(args.invalid_block_hook, None);
         assert_eq!(args, default_args);
     }
 

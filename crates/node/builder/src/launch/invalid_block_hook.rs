@@ -53,7 +53,9 @@ where
 /// Creates an invalid block hook based on the node configuration.
 ///
 /// This function constructs the appropriate [`InvalidBlockHook`] based on the debug
-/// configuration in the node config. It supports:
+/// configuration in the node config. Diagnostics are disabled by default; without an explicit
+/// selection, this returns a no-op hook without creating output directories or an RPC client.
+/// It supports:
 /// - Witness hooks for capturing block witness data
 /// - Healthy node verification via RPC
 ///
@@ -140,4 +142,77 @@ where
     }
 
     Ok(Some(client))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_consensus::{Block, BlockBody, Header};
+    use alloy_primitives::B256;
+    use reth_evm_ethereum::EthEvmConfig;
+    use reth_primitives_traits::{RecoveredBlock, SealedHeader};
+    use reth_provider::{test_utils::MockEthProvider, BlockExecutionOutput};
+
+    #[tokio::test]
+    async fn default_invalid_block_hook_does_not_write_diagnostics() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = NodeConfig::default();
+        let data_dir = ChainPath::new(
+            temp_dir.path().to_str().unwrap().parse().unwrap(),
+            config.chain.chain(),
+            Default::default(),
+        );
+        let hook = create_invalid_block_hook(
+            &config,
+            &data_dir,
+            MockEthProvider::default(),
+            EthEvmConfig::mainnet(),
+            config.chain.chain().id(),
+        )
+        .await
+        .unwrap();
+
+        let parent = SealedHeader::seal_slow(Header::default());
+        for byte in 1..=3 {
+            let block = RecoveredBlock::new_unhashed(
+                Block {
+                    header: Header {
+                        parent_hash: parent.hash(),
+                        number: 1,
+                        state_root: B256::repeat_byte(byte),
+                        ..Default::default()
+                    },
+                    body: BlockBody::default(),
+                },
+                Vec::new(),
+            );
+            hook.on_invalid_block(&parent, &block, &BlockExecutionOutput::default(), None);
+        }
+
+        assert!(!data_dir.invalid_block_hooks().exists());
+        assert_eq!(std::fs::read_dir(temp_dir.path()).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn explicit_witness_hook_creates_diagnostic_directory() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut config = NodeConfig::default();
+        config.debug.invalid_block_hook = Some([InvalidBlockHookType::Witness].into());
+        let data_dir = ChainPath::new(
+            temp_dir.path().to_str().unwrap().parse().unwrap(),
+            config.chain.chain(),
+            Default::default(),
+        );
+        let _hook = create_invalid_block_hook(
+            &config,
+            &data_dir,
+            MockEthProvider::default(),
+            EthEvmConfig::mainnet(),
+            config.chain.chain().id(),
+        )
+        .await
+        .unwrap();
+
+        assert!(data_dir.invalid_block_hooks().join("witness").is_dir());
+    }
 }
