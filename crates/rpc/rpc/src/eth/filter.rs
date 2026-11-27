@@ -229,7 +229,7 @@ where
     > {
         // Finality can advance without a new head. Drain its events before the block
         // cursor check, and refresh the timeout even when there are no new events.
-        {
+        let block_option = {
             let mut filters = self.inner.active_filters.inner.lock().await;
             let filter =
                 filters.get_mut(&id).ok_or_else(|| EthFilterError::FilterNotFound(id.clone()))?;
@@ -255,29 +255,46 @@ where
                 filter.last_poll_timestamp = Instant::now();
                 return Ok(FilterChanges::Hashes(hashes))
             }
-        }
-        let info = self.provider().chain_info()?;
-        let best_number = info.best_number;
+            match &filter.kind {
+                FilterKind::Log(filter) => Some(filter.block_option),
+                _ => None,
+            }
+        };
+        let best_number = self.provider().chain_info()?.best_number;
+        let (lower_bound, end_block) =
+            if let Some(FilterBlockOption::Range { from_block, to_block }) = block_option {
+                // Latest and pending leave the unread range open when polling.
+                let bound = |num: Option<BlockNumberOrTag>| {
+                    num.filter(|num| !num.is_latest() && !num.is_pending())
+                        .map(|num| self.provider().convert_block_number(num))
+                        .transpose()
+                        .map(Option::flatten)
+                };
+                let (from, to) = (bound(from_block)?, bound(to_block)?);
+                if let (Some(from), Some(to)) = (from, to) &&
+                    from > to
+                {
+                    return Err(EthFilterError::InvalidBlockRangeParams)
+                }
+                (from.unwrap_or_default(), to.unwrap_or(best_number).min(best_number))
+            } else {
+                (0, best_number)
+            };
 
-        // start_block is the block from which we should start fetching changes, the next block from
-        // the last time changes were polled, in other words the best block at last poll + 1
         let (start_block, kind) = {
             let mut filters = self.inner.active_filters.inner.lock().await;
             let filter = filters.get_mut(&id).ok_or(EthFilterError::FilterNotFound(id))?;
-
             if filter.block > best_number {
-                // no new blocks since the last poll
                 return Ok(FilterChanges::Empty)
             }
-
-            // update filter
-            // we fetch all changes from [filter.block..best_block], so we advance the filter's
-            // block to `best_block +1`, the next from which we should start fetching changes again
-            let mut block = best_number + 1;
-            std::mem::swap(&mut filter.block, &mut block);
             filter.last_poll_timestamp = Instant::now();
-
-            (block, filter.kind.clone())
+            let start = filter.block.max(lower_bound);
+            if start > end_block {
+                return Ok(FilterChanges::Empty)
+            }
+            // Reserve only this poll's range. A safe or finalized upper bound may lag the tip.
+            filter.block = end_block + 1;
+            (start, filter.kind.clone())
         };
 
         match kind {
@@ -302,17 +319,7 @@ where
             }
             FilterKind::Log(filter) => {
                 let (from_block_number, to_block_number) = match filter.block_option {
-                    FilterBlockOption::Range { from_block, to_block } => {
-                        let from = from_block
-                            .map(|num| self.provider().convert_block_number(num))
-                            .transpose()?
-                            .flatten();
-                        let to = to_block
-                            .map(|num| self.provider().convert_block_number(num))
-                            .transpose()?
-                            .flatten();
-                        logs_utils::get_filter_block_range(from, to, start_block, info)?
-                    }
+                    FilterBlockOption::Range { .. } => (start_block, end_block),
                     FilterBlockOption::AtBlockHash(block_hash) => {
                         // blockHash is equivalent to fromBlock = toBlock = the block number with
                         // hash blockHash
@@ -2475,11 +2482,13 @@ mod tests {
         assert!(logs.is_empty());
     }
 
-    #[tokio::test]
-    async fn installed_log_filters_preserve_wildcard_topic_positions() {
-        let provider = MockEthProvider::default();
+    fn add_block_with_topic_counts(
+        provider: &MockEthProvider,
+        number: u64,
+        parent_hash: B256,
+    ) -> B256 {
         let tx = TransactionSigned::new_unhashed(
-            TxLegacy { gas_limit: 21_000, ..Default::default() }.into(),
+            TxLegacy { nonce: number, gas_limit: 21_000, ..Default::default() }.into(),
             Signature::test_signature(),
         );
         let receipt = Receipt {
@@ -2496,25 +2505,25 @@ mod tests {
                 .collect(),
             success: true,
         };
-        let add_block = |number, parent_hash| {
-            let header =
-                Header { number, parent_hash, logs_bloom: receipt.bloom(), ..Default::default() };
-            let hash = header.hash_slow();
-            provider.add_block(
-                hash,
-                Block {
-                    header,
-                    body: BlockBody { transactions: vec![tx.clone()], ..Default::default() },
-                },
-            );
-            provider.add_receipts(number, vec![receipt.clone()]);
-            provider.add_block_body_indices(
-                number,
-                StoredBlockBodyIndices { first_tx_num: number - 1, tx_count: 1 },
-            );
-            hash
-        };
-        let first = add_block(1, B256::ZERO);
+        let header =
+            Header { number, parent_hash, logs_bloom: receipt.bloom(), ..Default::default() };
+        let hash = header.hash_slow();
+        provider.add_block(
+            hash,
+            Block { header, body: BlockBody { transactions: vec![tx], ..Default::default() } },
+        );
+        provider.add_receipts(number, vec![receipt]);
+        provider.add_block_body_indices(
+            number,
+            StoredBlockBodyIndices { first_tx_num: number - 1, tx_count: 1 },
+        );
+        hash
+    }
+
+    #[tokio::test]
+    async fn installed_log_filters_preserve_wildcard_topic_positions() {
+        let provider = MockEthProvider::default();
+        let first = add_block_with_topic_counts(&provider, 1, B256::ZERO);
         let module = EthFilter::new(
             build_test_eth_api(provider.clone()),
             Default::default(),
@@ -2550,7 +2559,7 @@ mod tests {
             installed.push((id, params, positions));
         }
 
-        add_block(2, first);
+        add_block_with_topic_counts(&provider, 2, first);
         for (id, params, positions) in installed {
             let changes: Vec<Log> = module
                 .call("eth_getFilterChanges", jsonrpsee::rpc_params![id.clone()])
@@ -2573,5 +2582,44 @@ mod tests {
                 module.call("eth_getFilterLogs", jsonrpsee::rpc_params![id]).await.unwrap();
             assert_eq!(logs, direct);
         }
+    }
+
+    #[tokio::test]
+    async fn installed_log_filter_polls_only_unread_blocks_in_range() {
+        let provider = MockEthProvider::default();
+        let first = add_block_with_topic_counts(&provider, 1, B256::ZERO);
+        let second = add_block_with_topic_counts(&provider, 2, first);
+        let module = EthFilter::new(
+            build_test_eth_api(provider.clone()),
+            Default::default(),
+            Runtime::test(),
+        )
+        .into_rpc();
+        let install = async |params: serde_json::Value| -> FilterId {
+            module.call("eth_newFilter", jsonrpsee::rpc_params![params]).await.unwrap()
+        };
+        let blocks = async |method: &str, id: &FilterId| -> Vec<u64> {
+            let logs: Vec<Log> = module.call(method, jsonrpsee::rpc_params![id]).await.unwrap();
+            logs.into_iter().map(|log| log.block_number.unwrap()).collect()
+        };
+        let past = install(serde_json::json!({"fromBlock": "0x1"})).await;
+        let limited = install(serde_json::json!({"fromBlock": "0x3", "toBlock": "0x3"})).await;
+        let latest = install(serde_json::json!({"fromBlock": "latest"})).await;
+        let changes = "eth_getFilterChanges";
+
+        // The installation head is eligible for the first poll.
+        assert_eq!(blocks(changes, &past).await, [2; 5]);
+        assert!(blocks(changes, &limited).await.is_empty());
+        let third = add_block_with_topic_counts(&provider, 3, second);
+        add_block_with_topic_counts(&provider, 4, third);
+        assert_eq!(blocks(changes, &past).await, [[3; 5], [4; 5]].concat());
+        assert_eq!(blocks(changes, &latest).await, [[2; 5], [3; 5], [4; 5]].concat());
+        assert_eq!(blocks(changes, &limited).await, [3; 5]);
+        assert!(blocks(changes, &limited).await.is_empty());
+        assert!(blocks(changes, &past).await.is_empty());
+        assert_eq!(
+            blocks("eth_getFilterLogs", &past).await,
+            [[1; 5], [2; 5], [3; 5], [4; 5]].concat()
+        );
     }
 }
